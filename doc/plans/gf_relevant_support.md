@@ -192,3 +192,61 @@ Reading and caveats:
   round); the final recurrence is run once, and the full-mesh grade is the offline `grade` above.
 - Open: one run of the 12-unit leg (`refine12`, before the fault handler was on) died with a segmentation fault in
   `SparseScatter` on rank 0 after 41 min; the identical rerun with `PYTHONFAULTHANDLER=1` completed. Not explained.
+
+### 8.1 The Phase 3 review (Opus, read-only) and what was done
+
+Fixed (commit after `a4acc508`, with tests that go red under the old code):
+- **Retire ranking resolution.** `low = 1/(1 + s_ret/smax)` lies in (0.5, 1] and the selections bin scores to 32
+  mantissa bits, so every row below ~2e-10 `smax` fell into one bin and was retired in key order (plus a pickled
+  allgather of that bin). Now `low = 1/s_ret` (relative resolution). Test: 40 decades of scores, the retired rows
+  are exactly the k lowest.
+- **Exchange plans held across graph-cache insertions.** `importance_scores` built four plans up front and held them
+  for every shift; `mpi_comm._cached_dist_graph` evicted first-in-first-out and a hit did not refresh an entry, so
+  a later plan's construction could `Free()` a graph a live plan still used (a collective on a freed
+  communicator is a segmentation fault). History-dependent, which fits "one crash, not reproduced". Plans are now
+  built right before their matvecs and the cache is least-recently-used. The review could not tie this to a
+  fault inside `scatter_discovered`; the crash site in the first 12-unit run was `SparseScatter` and is
+  **not proven** to be this.
+- Complex seeds: the removal identity needs seeds real up to a phase per column as well as real `H`; a column
+  with a relative phase is now declined (`|s^T s| = s^H s`).
+- The record's `swapped` lists the swaps made (it used to include the one the last pass would have made);
+  a `-1` key slot can no longer wrap onto the last K slot; one copy of the solutions through `set_p_keys`;
+  `queue_progress()` in the solve loops.
+
+Open (not changed; each is a design question, not a bug fix):
+1. **The fallback and the settle test the estimated remaining gain** (sum of the top-k `s_cand`), which is not an
+   error measure: K only grows, so the last candidate pool is a superset of round 0's, and a retired row
+   re-enters F with a tiny score. The design's full-mesh grade of the rerun needs the self-energy, which exists
+   only outside the unit; `dG_holdout` is computed and not used. The 12-unit grade above is the offline check.
+2. **Hermitian, not complex-symmetric.** The scores use `X_i(D) = s_i^H R e_D`, i.e. real `H`; the Hermitian form
+   needs `Y = R(z*) s` (a second solve per shift). Declined for complex `H` and, now, complex seeds. Per the
+   user's rule, new code must not add to this (§7).
+3. **Solve accuracy.** Residuals of 1e-3 to 1e-1 leave noise in `X(D)` of the size of the smallest `s_ret`. A
+   noise floor (refuse swaps inside it) or a multi-shift block Lanczos on `P H P` (Hermitian, no breakdown, all
+   shifts from one Krylov sequence) is the principled fix.
+4. Memory: `|M|^2` scatter copies `data` once per shift after the first compaction; four plans' buffers; no
+   budget check before `set_p_keys` (design B.2 asks for one); K is never trimmed.
+5. Rank-count invariance of the refined P is a tolerance on G, not exact (columns stop on different iterations).
+
+## 9. Phase 4 (hopping-cost budget): what was measured, what is left
+
+- **NiO it.1 (§6 rig), cost budget α = 0.3 / 0.5 on top of eta 1e-3: no effect.** Σ identical to the eta leg (worst
+  Im Σ -2.005e-4, max|dΣ_mats| 2.0e-4 / 2.1e-4), wall 1405 / 1415 s against 1377 s, VmHWM 0.80 / 0.82 GB against
+  0.81, ground state 624,576 in every leg, heaviest unit 525,194 / 536,037 against 536,037. Cause:
+  `B_GS = round(8·α·(−log slater_weight_min))` is 55 hops at α 0.3 and swm 1e-10, and the Green's-function floor is
+  `C_max` of a 624k-determinant ground state, so the budget never binds. C is a lever for a much larger
+  `slater_weight_min`, a metal or a long chain, not for this workload. It stays opt-in (`BasisOptions.cost_budget`,
+  default off); the soft tail (4.8/4.9) was not started (no measured gain).
+- **Per-row form cost** (`test_apply_nio_bench.py`, 103k-row block, width 1, one build, 6 reps): the cost form
+  (18 weight groups on NiO it.1) adds 1.09 → 1.16 µs per input row, +6.3 %, one run on an otherwise idle machine;
+  the plan's rule is "coarsen κ if ≥ 5 %". Not coarsened (κ = 8 kept): the form is off by default and the
+  measurement is a single run.
+- **Mask seams (4.6).** `z - hOp` is a fresh operator without hOp's weighted mask: the RIXS R1 solve and
+  `_FrozenShiftedSystem.boundary` now install it (test: a violating row never appears in the R1 solution on the
+  sparse and the frozen tier; the frozen leak check no longer counts out-of-window rows as leaks). `gs_connectivity`
+  sets and clears it too (untested: it matters only for a GS basis with a weighted window). `gf_shift_recycling`
+  receives a masked `hOp` and `gf_admission`'s caller sets the weighted mask: audited, unchanged.
+- `weighted_parts` (4.1): `symmetries.weighted_parts` is the one unpacker; tails ride through `widen`, the floor and
+  the symmetry check; the operator refuses a tail it cannot honour.
+- Tests added: rank-count invariance of a cost-restricted ground-state basis at `-n 1/2/3`; the causality floor admits
+  every single transition (dropping the floor turns it red).

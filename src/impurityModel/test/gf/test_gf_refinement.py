@@ -347,3 +347,29 @@ def test_the_block_solver_equals_a_direct_solve_per_column_and_leaves_together_o
     np.testing.assert_allclose(got, want, atol=1e-9)
     assert rel.max() < 1e-10 and rel[2] == 0.0
     assert comm.allreduce(it, op=MPI.MAX) == comm.allreduce(it, op=MPI.MIN)
+
+
+@pytest.mark.mpi
+def test_the_retire_ranking_resolves_scores_many_decades_below_the_largest():
+    """The ``k`` retired rows are exactly the ``k`` lowest ``s_ret`` even when most scores sit 1e-10 and more below
+    the largest (selections bin scores to 32 mantissa bits: a ranking by ``1 / (1 + s / s_max)`` would put them
+    all in one bin and retire by key order)."""
+    from impurityModel.ed.gf_refinement import ImportanceScores, _select_swap
+
+    comm = MPI.COMM_WORLD
+    _dets, _op, _basis_, matrix, _h, _index, _in_p = _setup(comm)
+    n_p = matrix.n_p_local
+    # distinct scores over 40 decades, spread over the ranks in an order unrelated to the keys
+    ranks_n = np.array(comm.allgather(n_p))
+    total = int(ranks_n.sum())
+    first = int(ranks_n[: comm.rank].sum())
+    order = np.random.default_rng(3).permutation(total)[first : first + n_p]
+    s_ret = 10.0 ** (-40.0 * order / max(total - 1, 1))
+    s_cand = np.full(matrix.n_k_local, 1.0)
+    s_cand[matrix.p_to_k_slot()] = -np.inf  # every candidate beats every retained row
+    scores = ImportanceScores(s_ret, s_cand)
+    k = 7
+    retire, admit, _gain = _select_swap(matrix, scores, np.zeros(n_p, dtype=bool), k)
+    got = np.sort(np.concatenate(comm.allgather(s_ret[retire])))
+    want = np.sort(np.concatenate(comm.allgather(s_ret)))[:k]
+    np.testing.assert_array_equal(got, want)

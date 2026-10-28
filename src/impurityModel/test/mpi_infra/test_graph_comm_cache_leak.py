@@ -43,3 +43,28 @@ def test_freed_communicators_leave_no_cached_graphs():
     # reduced anyway so a divergence would surface as a failure rather than an XPASS on one rank.
     grown = comm.allreduce(grown, op=MPI.MAX)
     assert grown == 0, f"{grown} cache entries survived {N_CYCLES} freed communicators"
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="dist-graph communicators are only built on >1 rank")
+def test_a_graph_that_was_just_used_is_not_the_one_evicted(monkeypatch):
+    """Least recently used, not first in: a plan holds its graph for many matvecs, and a later plan's
+    construction must not free it (a collective on a freed graph is a segmentation fault, not an error)."""
+    comm = MPI.COMM_WORLD.Dup()
+    monkeypatch.setattr(mpi_comm, "_MAX_CACHED_GRAPHS", 3)
+    nxt, prv = (comm.rank + 1) % comm.size, (comm.rank - 1) % comm.size
+
+    def graph(multiplicity):  # distinct topologies: the same neighbour listed `multiplicity` times
+        return mpi_comm._cached_dist_graph(comm, [prv] * multiplicity, [nxt] * multiplicity)
+
+    try:
+        first = graph(1)
+        graph(2)
+        graph(3)
+        assert graph(1) is first, "a hit returns the cached graph"
+        graph(4)  # evicts the least recently used entry (multiplicity 2), not the one just hit
+        assert first != MPI.COMM_NULL
+        assert graph(1) is first
+    finally:
+        mpi_comm.forget_comm(comm)
+        comm.Free()

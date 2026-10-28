@@ -23,6 +23,8 @@ from typing import Optional
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.work_queue import queue_progress
+
 
 @dataclass
 class ImportanceScores:
@@ -68,6 +70,7 @@ def solve_shifted(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
     rel = np.sqrt(_dot(comm, r, r).real) / bnorm
     it = 0
     while rel > rtol and it < maxit:
+        queue_progress()  # see work_queue: a solve can take minutes on the rank hosting the unit queue
         rho_new = _dot(comm, r_hat, r)
         if abs(rho_new) < 1e-300 or abs(omega) < 1e-300:
             break
@@ -139,6 +142,7 @@ def solve_shifted_block(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
     active = ~done & (rel > rtol)
     it = 0
     while active.any() and it < maxit:
+        queue_progress()
         rho_new = _cdots(comm, r_hat, r)
         active &= ~((np.abs(rho_new) < 1e-300) | (np.abs(omega) < 1e-300))
         if not active.any():
@@ -188,12 +192,8 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
     in_p[p_kslot[alive]] = True
     comm = matrix.comm
     block = min(max(seeds.shape[1], 1), SOLVE_BLOCK_COLUMNS)
-    plan_p = matrix.exchange_plan(block, "importance", rows="P")
-    plan_p_tail = (
-        matrix.exchange_plan(seeds.shape[1] % block, "importance", rows="P") if seeds.shape[1] % block else None
-    )
-    plan_all = matrix.exchange_plan(1, "importance", rows="all")
-    plan_all_m = matrix.exchange_plan(max(seeds.shape[1], 1), "importance", rows="all")
+    # A plan holds a cached dist-graph communicator that a later `exchange_plan` may evict (and free): build each
+    # one right before the matvecs that use it, never ahead of other plans' construction.
     s_ret = np.full(n_p, -np.inf)
     s_cand = np.full(n_k, -np.inf)
     out = ImportanceScores(s_ret, s_cand)
@@ -201,6 +201,7 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
         z = complex(shift)
         if first_order:
             inv_p = np.where(alive, 1.0 / (z - diag_p), 0.0)
+            plan_all = matrix.exchange_plan(1, "importance", rows="all")
             sigma = matrix.matvec(inv_p[:, None], rows="all", plan=plan_all, squared=True)[:, 0]
             # A retained determinant's own column is not among its neighbours.
             sigma[p_kslot[alive]] -= (np.abs(diag_p[alive]) ** 2) * inv_p[alive]
@@ -212,7 +213,7 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
         worst, iters = 0.0, 0
         for j0 in range(0, seeds.shape[1], block):
             cols = slice(j0, min(j0 + block, seeds.shape[1]))
-            plan = plan_p if cols.stop - cols.start == block else plan_p_tail
+            plan = matrix.exchange_plan(cols.stop - cols.start, "importance", rows="P")
             x, it, rel = solve_shifted_block(
                 lambda v, plan=plan: matrix.matvec(np.ascontiguousarray(v), rows="P", plan=plan),
                 z,
@@ -224,6 +225,7 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
             )
             X[:, cols] = np.where(alive[:, None], x, 0.0)
             worst, iters = max(worst, float(rel.max())), max(iters, it)
+        plan_all_m = matrix.exchange_plan(max(seeds.shape[1], 1), "importance", rows="all")
         flow = matrix.matvec(X, rows="all", plan=plan_all_m)
         s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, (np.abs(flow) ** 2).max(axis=1) / denom))
         ret = (np.abs(X) ** 2).max(axis=1) * denom[p_kslot]
@@ -235,16 +237,23 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
     return out
 
 
+def _pslots_of(matrix, keys):
+    """The P slot of each key, ``-1`` for a key that is not in K or not in P (a ``-1`` K slot would wrap to the
+    last entry of ``k_to_p_slot``)."""
+    slots = np.asarray(matrix.key_slots(keys))
+    k_to_p = matrix.k_to_p_slot()
+    return np.where(slots >= 0, k_to_p[np.maximum(slots, 0)], -1)
+
+
 def seed_block_on_p_slots(matrix, states):
     """The seed states (this rank's determinants, as a list of ``ManyBodyState`` columns) as the ``(n_p_local, m)``
     block on the matrix's P slots; every seed key must be in ``P``. Rank-local."""
     block = np.zeros((matrix.n_p_local, len(states)), dtype=complex)
-    k_to_p = matrix.k_to_p_slot()
     for j, state in enumerate(states):
         keys = list(state.keys())
         if not keys:
             continue
-        pslots = k_to_p[matrix.key_slots(keys)]
+        pslots = _pslots_of(matrix, keys)
         if (pslots < 0).any():
             raise ValueError("a seed determinant is not in the matrix's P")
         block[pslots, j] = np.asarray(state)[:, 0]
@@ -343,6 +352,15 @@ def matrix_is_real(matrix):
     return _allreduce(matrix.comm, worst, MPI.MAX) <= 1e-12
 
 
+def seeds_real_up_to_a_phase(matrix, block, tol=1e-10):
+    """Whether every column of the seed block on the P slots is real up to one global phase (``|s^T s| = s^H s``).
+    The removal identity reads ``X_i(D) = s_i^H R e_D`` off the solution of column ``i`` only then. **Collective.**"""
+    gram = np.stack([(block * block).sum(axis=0), (np.abs(block) ** 2).sum(axis=0)]).astype(complex)
+    if matrix.comm is not None and matrix.comm.size > 1:
+        matrix.comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+    return bool(np.all(np.abs(gram[0]) >= (1.0 - tol) * gram[1].real))
+
+
 def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2, broaden=1.0):
     """``(Z, Z_holdout)``: the shifts the scores are maximised over and a disjoint set the change is judged on.
 
@@ -389,10 +407,9 @@ def _exempt_pslots(matrix, seed_keys, seed_block, extra_keys):
 
     n_p = matrix.n_p_local
     exempt = np.zeros(n_p, dtype=bool)
-    k_to_p = matrix.k_to_p_slot()
     for keys in (seed_keys, extra_keys):
         if len(keys):
-            pslots = k_to_p[matrix.key_slots(keys)]
+            pslots = _pslots_of(matrix, keys)
             exempt[pslots[pslots >= 0]] = True
     flow = matrix.matvec(seed_block, rows="P", plan=matrix.exchange_plan(seed_block.shape[1], "refine_shell", rows="P"))
     weight = (np.abs(flow) ** 2).max(axis=1)
@@ -423,8 +440,9 @@ def _select_swap(matrix, scores, exempt, k_max):
     swappable = alive & ~exempt
     r_slots = np.flatnonzero(swappable)
     s_ret = np.where(np.isfinite(scores.s_ret[r_slots]), scores.s_ret[r_slots], 0.0)
-    smax = _allreduce(comm, float(s_ret.max()) if s_ret.size else 0.0, MPI.MAX)
-    low = 1.0 / (1.0 + s_ret / smax) if smax > 0.0 else np.ones_like(s_ret)
+    # Larger = less important, with the relative resolution of a float (the selections bin scores to 32 mantissa
+    # bits: `1 / (1 + s/smax)` would put every row below 2e-10 smax into one bin, broken by key order).
+    low = 1.0 / np.maximum(s_ret, 1e-300)
     cand_keys, low_keys = _LazyKeys(matrix, f_slots), _LazyKeys(matrix, p_kslot[r_slots])
     top_cand = collective_top_k_mask(cand, cand_keys, k_max, comm)
     gain = _allreduce(comm, float(cand[top_cand].sum()), MPI.SUM)
@@ -481,6 +499,9 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
     rtol = REFINE_RTOL if spec.rtol is None else spec.rtol
     maxit = REFINE_MAXIT if spec.maxit is None else spec.maxit
     broaden = REFINE_BROADEN if spec.broaden is None else spec.broaden
+    if not seeds_real_up_to_a_phase(matrix, seed_block(matrix, seed_keys, seed_q0)):
+        record["declined"] = "complex seeds"
+        return RefineOutcome(None, record)
     zs, z_hold = pick_shifts(lambda z: g_cf(first, z), eval_meshes, broaden=broaden)
     if not zs:
         record["declined"] = "no evaluation mesh"
@@ -506,11 +527,14 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
         if first_gain is None:
             first_gain = gain
         n_swap = int(_allreduce(comm, float(len(retire)), MPI.SUM))
-        record["swapped"].append(n_swap)
         if gain <= spec.tol * scale or n_swap == 0 or round_ == spec.rounds:
             break
-        old_k = matrix.p_to_k_slot()[matrix.alive().astype(bool)]
-        old_x = [x[matrix.alive().astype(bool)] for x in scores.solutions]
+        record["swapped"].append(n_swap)  # the swaps made, not the one the last pass would have made
+        alive = matrix.alive().astype(bool)
+        old_k = matrix.p_to_k_slot()[alive]
+        old_x = scores.solutions if alive.all() else [x[alive] for x in scores.solutions]
+        del scores, seeds  # one copy of the solutions through the (memory-hungry) set_p_keys
+        warm = None
         keep = np.ones(matrix.n_p_local, dtype=bool)
         keep[retire] = False
         keep &= matrix.alive().astype(bool)

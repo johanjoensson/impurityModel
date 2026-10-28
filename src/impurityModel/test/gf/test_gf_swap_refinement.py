@@ -61,7 +61,7 @@ def test_refinement_keeps_the_cap_and_beats_breadth_first_growth(cap, comm):
 def test_a_refinement_that_finds_nothing_to_swap_leaves_the_unit_alone(comm):
     g_breadth, _ = _run(17, comm=comm)
     g_ref, info = _run(17, RefineSpec(rounds=3, tol=1e-12, swap=0.4), comm=comm)
-    assert info["refine"]["swapped"] == [0]
+    assert info["refine"]["swapped"] == [] and info["refine"]["rounds"] == 0
     np.testing.assert_allclose(g_ref, g_breadth, atol=1e-10)  # another matvec mode: equal to rounding
 
 
@@ -149,3 +149,59 @@ def test_the_record_keeps_the_worst_residual_of_every_pass(monkeypatch, comm):
     _g, info = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
     rec = info["refine"]
     assert rec["residual"] == [3e-2] * len(rec["gain"])
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_unit_settles_on_the_tolerance_and_says_so(comm):
+    """``gain <= tol * max|G|``: a huge tolerance settles at once (no swap made), a tiny one with one round does
+    not and swaps once."""
+    _g, loose = _run(10, RefineSpec(rounds=3, tol=1e9, swap=0.4), comm=comm)
+    assert loose["refine"]["settled"] and loose["refine"]["swapped"] == []
+    _g, tight = _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4), comm=comm)
+    assert not tight["refine"]["settled"] and len(tight["refine"]["swapped"]) == 1
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_refinement_whose_estimate_grows_falls_back_to_round_zeros_support(monkeypatch, comm):
+    """The fallback restores round 0's P (the matrix, the support and the returned G agree on it)."""
+    from impurityModel.ed import gf_refinement
+
+    g_breadth, info0 = _run(10, comm=comm)
+    real, calls = gf_refinement._select_swap, []
+
+    def worse(matrix, scores, exempt, k_max):
+        retire, admit, gain = real(matrix, scores, exempt, k_max)
+        calls.append(1)
+        return retire, admit, gain * (1.0 if len(calls) == 1 else 1e6)
+
+    monkeypatch.setattr(gf_refinement, "_select_swap", worse)
+    g_ref, info = _run(10, RefineSpec(rounds=3, tol=1e-12, swap=0.4), comm=comm)
+    assert info["refine"].get("fell_back") is True, info["refine"]
+    np.testing.assert_allclose(g_ref, g_breadth, atol=1e-10)
+    assert _gather(info["proxy"].retained_keys(), comm) == _gather(info0["proxy"].retained_keys(), comm)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_seeds_that_are_not_real_up_to_a_phase_decline_the_refinement(monkeypatch, comm):
+    """The removal identity is exact only for real ``H`` and seeds real up to one phase per column: a column with
+    a relative phase between its determinants is declined, a globally rotated one is not."""
+    import sys
+
+    from impurityModel.test.support.gf_oracles import _det
+
+    module = sys.modules[__name__]
+    real_seeds = module._seeds
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
+    def seeds(relative_phase):
+        a, b = real_seeds()
+        phase = np.exp(1j * relative_phase)
+        first = ManyBodyState({_det([0, 2, 3]): 1.0 + 0j, _det([1, 2, 3]): 0.5 * phase})
+        return [first, b]
+
+    monkeypatch.setattr(module, "_seeds", lambda: seeds(np.pi / 2))
+    _g, declined = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
+    assert declined["refine"]["declined"] == "complex seeds"
+    monkeypatch.setattr(module, "_seeds", lambda: seeds(np.pi))  # real, a sign: still fine
+    _g, fine = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
+    assert fine["refine"]["declined"] is None

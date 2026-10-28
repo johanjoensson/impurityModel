@@ -63,8 +63,9 @@ def _cached_dist_graph(comm, sources, destinations):
     neighbourhood lists themselves. What changes is how often the expensive rebuild behind it
     fires: measured 51% -> 3% on a NiO 10-bath build.
 
-    Eviction is FIFO past ``_MAX_CACHED_GRAPHS``. It is safe for the same reason: insertion
-    order is identical on every rank, so all ranks free the same communicator together.
+    Eviction is least-recently-used past ``_MAX_CACHED_GRAPHS`` (a hit refreshes an entry, so a graph a
+    caller built a plan on a moment ago is the last to go). It is safe for the same reason: the order
+    of hits and insertions is identical on every rank, so all ranks free the same communicator together.
     """
     key = id(comm)
     local_sig = (tuple(sources), tuple(destinations))
@@ -88,6 +89,7 @@ def _cached_dist_graph(comm, sources, destinations):
 
     cached = graphs.get(global_sig)
     if cached is not None:
+        graphs.move_to_end(global_sig)  # least recently *used*: a hit must not leave a live graph first in line
         return cached
 
     graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
