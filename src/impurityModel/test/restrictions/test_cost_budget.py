@@ -1,7 +1,10 @@
 """``hopping_cost_weights`` / ``cost_budget_restriction``: costs follow the coupling distance."""
 
+import numpy as np
+
 from impurityModel.ed.basis_restrictions import (
     _impurity_coupling_distance,
+    build_weighted_restrictions,
     cost_budget_restriction,
     hopping_cost_weights,
 )
@@ -114,3 +117,80 @@ def test_no_weighted_restrictions_means_no_floor():
     basis = _floor_basis([_det([0, 2])], None, None)
     assert get_effective_weighted_bounds(basis) is None
     assert floor_weighted_restrictions(basis) is None
+
+
+def test_build_weighted_restrictions_ands_the_two_budgets_and_needs_its_inputs():
+
+    hops = {(0, 1): 1.0, (1, 2): 0.1, (0, 3): 1.0, (3, 4): 0.1}
+    op = _chain_op(hops, 5)
+    bath = ({0: [[1, 2]]}, {0: [[3, 4]]})
+    imp = {0: [[0]]}
+    both = build_weighted_restrictions(bath, 2, cost_budget=1.0, h_op=op, impurity_orbitals=imp, slater_weight_min=1e-6)
+    assert len(both) == 2
+    total = round(8 * 1.0 * -np.log(1e-6))
+    dist = _dist(hops, 5)
+    assert both[1] == cost_budget_restriction(bath, total, dist)
+    assert len(build_weighted_restrictions(bath, 2)) == 1
+    with pytest.raises(ValueError, match="needs h_op"):
+        build_weighted_restrictions(bath, None, cost_budget=1.0)
+    with pytest.raises(ValueError, match="slater_weight_min > 0"):
+        build_weighted_restrictions(bath, None, cost_budget=1.0, h_op=op, impurity_orbitals=imp, slater_weight_min=0.0)
+
+
+# --- the cost budget through calc_gs ----------------------------------------------------------------
+
+
+def _chain_siam():
+    """imp {0, 1}; valence chain 2 - 3 and conduction chain 4 - 5 hanging off orbital 0 only (weak second hops)."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    terms = {((o, "c"), (o, "a")): e for o, e in ((0, -2.0), (1, -2.0), (2, -4.0), (3, -4.0), (4, 4.0), (5, 4.0))}
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = 6.0
+    for a, b, t in ((0, 2, 1.0), (0, 4, 1.0), (2, 3, 0.05), (4, 5, 0.05), (1, 3, 0.05)):
+        terms[((a, "c"), (b, "a"))] = t
+        terms[((b, "c"), (a, "a"))] = t
+    bs = BlockStructure(
+        blocks=[[0, 1]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    return ManyBodyOperator(terms), {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[4, 5]]}), bs
+
+
+def _gs_basis(cost_budget, swm=1e-12):
+    from impurityModel.ed.groundstate import calc_gs
+
+    op, imp, bath, bs = _chain_siam()
+    weighted = build_weighted_restrictions(
+        bath, None, cost_budget=cost_budget, h_op=op, impurity_orbitals=imp, slater_weight_min=swm
+    )
+    setup = dict(
+        impurity_orbitals=imp,
+        bath_states=bath,
+        N0={0: 1},
+        mixed_valence={0: 1},
+        tau=0.01,
+        dense_cutoff=1000,
+        comm=None,
+        truncation_threshold=100000,
+        weighted_restrictions=weighted,
+    )
+    _p, es, basis, _r, _i = calc_gs(op, setup, bs, np.eye(2, dtype=complex), verbose=False, slaterWeightMin=swm)
+    return weighted, min(es), basis
+
+
+def test_a_cost_budget_bounds_every_ground_state_determinant_and_a_large_one_changes_nothing():
+
+    _w, e_free, basis_free = _gs_basis(None)
+    weighted, _e_tight, basis_tight = _gs_basis(0.05)  # 8 * 0.05 * 27.6 = 11: below the cost of a far site (24)
+    # The mixed-valence seeds are generated without the weighted restrictions (as with excitation_budget); the
+    # expansion honours them, so the tight budget removes determinants.
+    assert weighted[0] == ({3: -24, 5: 24}, (-24, -13))
+    assert basis_tight.size < basis_free.size
+    _w, e_big, basis_big = _gs_basis(50.0)
+    np.testing.assert_allclose(e_big, e_free, atol=1e-10)
+    assert basis_big.size == basis_free.size

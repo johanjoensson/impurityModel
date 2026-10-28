@@ -139,6 +139,16 @@ def add_arguments(parser):
     parser.add_argument("--deltaNIXS", type=float, default=0.100, help="Smearing HWHM for NIXS (eV).")
     add_cap_argument(parser)
     parser.add_argument(
+        "--cost_budget",
+        type=float,
+        default=None,
+        help=(
+            "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
+            "bounded by round(8*alpha*-log(slater_weight_min)). Composes with --excitation_budget; "
+            "default: off (see doc/plans/gf_relevant_support.md)."
+        ),
+    )
+    parser.add_argument(
         "--excitation_budget",
         type=int,
         default=None,
@@ -267,6 +277,7 @@ def run(args):
         occ_cutoff=1e-6,
         tau=k_B * args.T,
         excitation_budget=resolve_excitation_budget(args.excitation_budget),
+        cost_budget=args.cost_budget,
     )
     run_spectra(model, spectra_options, basis, comm, verbosity=verbosity)
 

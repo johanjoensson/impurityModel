@@ -655,3 +655,9 @@ def test_the_prune_keys_reach_the_solver_options(written):
 def test_the_prune_keys_refuse_a_contradiction_by_name(written, body, match):
     with pytest.raises(InputError, match=match):
         build(load_input(written(SELFENERGY + "\n[solver]\n" + body)))
+
+
+def test_the_cost_budget_reaches_the_basis_options(written):
+    assert build(load_input(written(SELFENERGY))).basis.cost_budget is None
+    text = SELFENERGY + "\n[many_body_basis]\ncost_budget = 1.5\n"
+    assert build(load_input(written(text))).basis.cost_budget == 1.5

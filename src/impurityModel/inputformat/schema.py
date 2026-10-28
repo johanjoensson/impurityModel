@@ -970,6 +970,16 @@ _TABLE_LIST += [
                 "expected to be re-measured, so a copy here would freeze a stale one.",
                 choices=("auto", "none"),
             ),
+            Key(
+                "cost_budget",
+                Kind.DIMENSIONLESS,
+                None,
+                "Hopping-cost budget alpha: bath excitations cost by the coupling distance of the orbital "
+                "from the impurity (nearest site free), bounded by 8 * alpha * -log(slater_weight_min) "
+                "and widened for the Green's-function bases to contain the ground-state basis. Composes "
+                "with excitation_budget. Absent disables it. Positive.",
+                minimum=0.0,
+            ),
             Key("chain_restrict", Kind.BOOL, True, "Apply chain occupation restrictions."),
             Key(
                 "occ_cutoff",

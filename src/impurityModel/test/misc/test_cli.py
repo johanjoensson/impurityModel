@@ -369,3 +369,8 @@ def test_a_settle_flag_replaces_a_recorded_pruning():
     for flags in (["--gf-settle-ratio", "1"], ["--gf-settle", "on"], ["--gf-settle-retry", "on"]):
         out = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle", *flags]))
         assert (out.gf_prune_tol, out.gf_first_shell_tol) == (None, None)
+
+
+def test_the_cost_budget_flag_is_parsed_by_both_clis():
+    assert _parse(selfenergy.add_arguments, ["h0.pickle"]).cost_budget is None
+    assert _parse(selfenergy.add_arguments, ["h0.pickle", "--cost_budget", "1.5"]).cost_budget == 1.5

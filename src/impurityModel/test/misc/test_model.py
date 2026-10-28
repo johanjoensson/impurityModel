@@ -590,3 +590,11 @@ def test_the_prune_options_accept_the_defaults_a_relaxed_shell_and_an_explicit_s
     assert SolverOptions().gf_prune_tol is None and SolverOptions().gf_first_shell_tol is None
     assert SolverOptions(gf_prune_tol=1e-4, gf_first_shell_tol=0.0).gf_first_shell_tol == 0.0
     assert SolverOptions(gf_prune_tol=1e-4, gf_settle=False).gf_settle is False
+
+
+def test_the_cost_budget_must_be_positive_and_defaults_to_off():
+    assert BasisOptions(nominal_occ={0: 8}).cost_budget is None
+    assert BasisOptions(nominal_occ={0: 8}, cost_budget=2.0).cost_budget == 2.0
+    for bad in (0.0, -1.0):
+        with pytest.raises(ValueError, match="cost_budget"):
+            BasisOptions(nominal_occ={0: 8}, cost_budget=bad)

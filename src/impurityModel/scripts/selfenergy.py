@@ -110,6 +110,16 @@ def add_arguments(parser):
     parser.add_argument("--dN", type=int, default=None, help="Impurity occupation window (+-dN) for the excited bases.")
     add_cap_argument(parser)
     parser.add_argument(
+        "--cost_budget",
+        type=float,
+        default=None,
+        help=(
+            "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
+            "bounded by round(8*alpha*-log(slater_weight_min)). Composes with --excitation_budget; "
+            "default: off (see doc/plans/gf_relevant_support.md)."
+        ),
+    )
+    parser.add_argument(
         "--excitation_budget",
         type=int,
         default=None,
@@ -386,6 +396,8 @@ def run(args):
         if args.excitation_budget is not None:
             # An explicitly passed flag overrides the archived budget (negative disables).
             basis = replace(basis, excitation_budget=resolve_excitation_budget(args.excitation_budget))
+        if args.cost_budget is not None:
+            basis = replace(basis, cost_budget=args.cost_budget)
         if args.truncation_threshold is not CAP_NOT_GIVEN:
             # Likewise an explicit cap, including an explicit `auto`, overrides the archived one.
             basis = replace(basis, truncation_threshold=args.truncation_threshold)
@@ -419,6 +431,7 @@ def run(args):
             chain_restrict=args.chain_restrict,
             tau=args.tau,
             excitation_budget=resolve_excitation_budget(args.excitation_budget),
+            cost_budget=args.cost_budget,
         )
         solver = SolverOptions(
             dense_cutoff=args.dense_cutoff,

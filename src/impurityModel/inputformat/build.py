@@ -693,6 +693,7 @@ def _build_basis(resolved):
         chain_restrict=table["chain_restrict"],
         tau=resolved.tables["temperature"]["tau"],
         excitation_budget=resolve_excitation_budget(None if budget == "auto" else (-1 if budget == "none" else budget)),
+        cost_budget=table["cost_budget"],
     )
     if table["occ_cutoff"] is not None:
         kwargs["occ_cutoff"] = table["occ_cutoff"]

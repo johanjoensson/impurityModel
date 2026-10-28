@@ -1251,6 +1251,8 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "slater_weight_min": float(_archive_attr(attrs, "slater_min", 0.0)),
         "dN": dN,
         "excitation_budget": excitation_budget,
+        # Absent from archives written before the cost budget existed: those runs had none.
+        "cost_budget": _optional_float(_archive_attr(attrs, "cost_budget")),
         # Absent from archives written before it was recorded: those runs used the default.
         "e_pt2_tol": _optional_float(_archive_attr(attrs, "e_pt2_tol")),
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
@@ -1317,6 +1319,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         slater_weight_min=raw["slater_weight_min"],
         tau=raw["tau"],
         excitation_budget=raw["excitation_budget"],
+        cost_budget=raw["cost_budget"],
         e_pt2_tol=raw["e_pt2_tol"],
     )
     solver = SolverOptions(
@@ -1400,6 +1403,12 @@ class BasisOptions:
         value (with a warning -- it would otherwise build an empty admissible window). A memory
         lever on metals; judge its accuracy on the eigenvector/spectral criterion, not ``E0``
         (see ``doc/plans/restrictions_redux.md``).
+    cost_budget : float or None
+        ``alpha`` of the hopping-cost budget: a weighted restriction whose per-bath-orbital cost is
+        ``round(8 * (d(o) - d_min))`` on the coupling distance ``d`` (``-log`` of the best-path product of
+        hoppings), bounded by ``round(8 * alpha * -log(slater_weight_min))`` and widened for the
+        Green's-function bases to contain the whole ground-state basis. Composes (AND) with
+        ``excitation_budget``. ``None`` (default) disables it.
     e_pt2_tol : float or None
         Residual Epstein-Nesbet PT2 energy the ground-state CIPSI expansion is converged to (the
         *summed* PT2 contribution of every determinant left out, which is what the energy error
@@ -1423,6 +1432,7 @@ class BasisOptions:
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002
     excitation_budget: Optional[int] = EXCITATION_BUDGET_DEFAULT
+    cost_budget: Optional[float] = None
     e_pt2_tol: Optional[float] = None
     de2_min: Optional[float] = None
 
@@ -1431,6 +1441,8 @@ class BasisOptions:
             raise ValueError(f"e_pt2_tol must be positive (or None for the default), got {self.e_pt2_tol}")
         if self.de2_min is not None and not self.de2_min >= 0:
             raise ValueError(f"de2_min must be non-negative (or None for the default), got {self.de2_min}")
+        if self.cost_budget is not None and not self.cost_budget > 0:
+            raise ValueError(f"cost_budget must be positive (or None to disable it), got {self.cost_budget}")
         if self.excitation_budget is not None and self.excitation_budget < 0:
             warnings.warn(
                 f"excitation_budget={self.excitation_budget} is negative: the excitation budget is disabled",

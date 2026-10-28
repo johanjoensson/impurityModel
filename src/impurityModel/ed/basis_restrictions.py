@@ -909,13 +909,23 @@ def floor_weighted_restrictions(basis):
     return floored
 
 
-def build_weighted_restrictions(bath_states, excitation_budget=None):
+def build_weighted_restrictions(
+    bath_states,
+    excitation_budget=None,
+    *,
+    cost_budget=None,
+    h_op=None,
+    impurity_orbitals=None,
+    slater_weight_min=None,
+):
     """Assemble the ground-state weighted restrictions a driver enables via its options.
 
-    Currently just the optional excitation budget (see :func:`excitation_budget_restriction`),
-    returned as a *list* so more weighted restrictions can be appended later and so it matches
-    :meth:`ManyBodyOperator.set_weighted_restrictions`' contract. Returns ``None`` when nothing
-    is requested (the drivers then leave ``Basis.weighted_restrictions`` unset).
+    The optional excitation budget (see :func:`excitation_budget_restriction`) and the optional
+    hopping-cost budget (see :func:`cost_budget_restriction`), returned as a *list* so more weighted
+    restrictions can be appended later and so it matches
+    :meth:`ManyBodyOperator.set_weighted_restrictions`' contract. Both entries, when present, are ANDed
+    by the operator. Returns ``None`` when nothing is requested (the drivers then leave
+    ``Basis.weighted_restrictions`` unset).
 
     Parameters
     ----------
@@ -923,6 +933,16 @@ def build_weighted_restrictions(bath_states, excitation_budget=None):
         ``(valence_baths, conduction_baths)`` in the solver basis.
     excitation_budget : int, optional
         Maximum total bath excitations; ``None`` disables the budget.
+    cost_budget : float, optional
+        ``alpha``: the ground-state cost budget is ``round(COST_KAPPA * alpha * -log(slater_weight_min))``,
+        i.e. ``alpha`` times the hopping distance at which one excitation's amplitude falls below the
+        determinant cutoff. ``None`` disables it; it needs ``h_op``, ``impurity_orbitals`` and
+        ``slater_weight_min``.
+    h_op : operator, optional
+        The Hamiltonian whose hoppings define the coupling distance.
+    impurity_orbitals : dict, optional
+        ``Basis.impurity_orbitals`` layout (group -> blocks of orbitals).
+    slater_weight_min : float, optional
 
     Returns
     -------
@@ -934,4 +954,18 @@ def build_weighted_restrictions(bath_states, excitation_budget=None):
         budget = excitation_budget_restriction(bath_states, excitation_budget)
         if budget is not None:
             restrictions.append(budget)
+    if cost_budget is not None:
+        if h_op is None or impurity_orbitals is None or slater_weight_min is None:
+            raise ValueError("cost_budget needs h_op, impurity_orbitals and slater_weight_min")
+        if not slater_weight_min > 0:
+            raise ValueError(f"cost_budget needs slater_weight_min > 0, got {slater_weight_min}")
+        _valence, _conduction = bath_states
+        imp = [o for blocks in impurity_orbitals.values() for blk in blocks for o in blk]
+        n_bath = sum(len(blk) for baths in bath_states for blocks in baths.values() for blk in blocks)
+        # The legacy coupling cutoff is irrelevant to the distance matrix itself; the metric is the weighted one.
+        dist_matrix, _ = _impurity_coupling_distance(h_op, len(imp) + n_bath, imp, 1e-12, 0)
+        total = round(COST_KAPPA * cost_budget * -np.log(slater_weight_min))
+        entry = cost_budget_restriction(bath_states, total, dist_matrix)
+        if entry is not None:
+            restrictions.append(entry)
     return restrictions or None

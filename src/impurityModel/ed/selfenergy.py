@@ -579,7 +579,14 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "truncation_threshold": cap_policy,
         # Optional excitation-budget weighted restriction on the ground-state basis; the GF
         # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
-        "weighted_restrictions": build_weighted_restrictions(bath_states, excitation_budget),
+        "weighted_restrictions": build_weighted_restrictions(
+            bath_states,
+            excitation_budget,
+            cost_budget=basis.cost_budget,
+            h_op=h,
+            impurity_orbitals=impurity_orbitals,
+            slater_weight_min=slaterWeightMin,
+        ),
         # The residual PT2 energy the ground-state refinement converges to.
         "e_pt2_tol": GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
         # ...and its optional per-determinant floor.

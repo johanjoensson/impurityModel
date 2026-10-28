@@ -399,7 +399,12 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         # excited bases inherit it (widened) via spectra/greens_function; RIXS attaches it
         # explicitly (rixs.py).
         "weighted_restrictions": build_weighted_restrictions(
-            (valence_baths, conduction_baths), basis.excitation_budget
+            (valence_baths, conduction_baths),
+            basis.excitation_budget,
+            cost_budget=basis.cost_budget,
+            h_op=hOp,
+            impurity_orbitals=impurity_orbitals,
+            slater_weight_min=basis.slater_weight_min,
         ),
     }
     psis, es, ground_state_basis, _rho, _ = calc_gs(

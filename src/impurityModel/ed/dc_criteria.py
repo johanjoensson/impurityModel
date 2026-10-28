@@ -819,7 +819,14 @@ def _prepare_sector_context(
         # Bath-only restriction (the reference "valence filled, conduction empty" occupation never
         # references N0), so the identical restriction list is valid for every sector -- the same
         # restrictions find_ground_state_sector applies to its own occupation-scan trials.
-        weighted_restrictions=build_weighted_restrictions(bath_states, basis.excitation_budget),
+        weighted_restrictions=build_weighted_restrictions(
+            bath_states,
+            basis.excitation_budget,
+            cost_budget=basis.cost_budget,
+            h_op=sb.h,
+            impurity_orbitals=impurity_orbitals,
+            slater_weight_min=basis.slater_weight_min,
+        ),
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
@@ -1985,7 +1992,14 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
-        weighted_restrictions=build_weighted_restrictions(bath_states, excitation_budget),
+        weighted_restrictions=build_weighted_restrictions(
+            bath_states,
+            excitation_budget,
+            cost_budget=basis.cost_budget,
+            h_op=h_op_i,
+            impurity_orbitals=impurity_orbitals,
+            slater_weight_min=slaterWeightMin,
+        ),
         impurity_indices=impurity_indices,
         energy_cut=boltzmann_energy_cut(tau),
         identity=np.identity(n_imp),
