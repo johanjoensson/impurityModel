@@ -632,3 +632,26 @@ def test_the_settle_retry_key_reaches_the_solver_options(written):
         assert build(load_input(written(text))).solver.gf_settle_retry is want
     with pytest.raises(InputError, match="contradicts gf_settle off"):
         build(load_input(written(SELFENERGY + '\n[solver]\ngf_settle = "off"\ngf_settle_retry = "on"\n')))
+
+
+def test_the_prune_keys_reach_the_solver_options(written):
+    solver = build(load_input(written(SELFENERGY))).solver
+    assert solver.gf_prune_tol is None and solver.gf_first_shell_tol is None
+    text = SELFENERGY + "\n[solver]\ngf_prune_tol = 1e-4\ngf_first_shell_tol = 1e-6\n"
+    solver = build(load_input(written(text))).solver
+    assert (solver.gf_prune_tol, solver.gf_first_shell_tol) == (1e-4, 1e-6)
+
+
+@pytest.mark.parametrize(
+    "body,match",
+    [
+        ("gf_first_shell_tol = 1e-3\n", "needs gf_prune_tol"),
+        ('gf_prune_tol = 1e-3\ngf_settle = "on"\n', "exclusive with the support settle"),
+        ("gf_prune_tol = 1e-3\ngf_settle_ratio = 2\n", "exclusive with the support settle"),
+        ("gf_prune_tol = 0\n", "gf_prune_tol"),
+        ('gf_method = "bicgstab"\ngf_prune_tol = 1e-3\n', "applies only to gf_method='lanczos'"),
+    ],
+)
+def test_the_prune_keys_refuse_a_contradiction_by_name(written, body, match):
+    with pytest.raises(InputError, match=match):
+        build(load_input(written(SELFENERGY + "\n[solver]\n" + body)))

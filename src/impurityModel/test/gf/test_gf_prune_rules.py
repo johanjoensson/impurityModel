@@ -131,3 +131,22 @@ def test_the_k_over_p_ratio_is_reported_under_pruning_only(monkeypatch, comm):
     info = {}
     block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=info)
     assert np.isnan(info["k_over_p"])
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_option_beats_the_knob_and_pruning_switches_the_settle_off(monkeypatch, comm):
+    """``prune_tol=0.3`` prunes although the knob says 1e-9; without it the knob decides; with the settle asked for
+    it still does not settle (the recurrence prunes instead)."""
+    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "1e-9")
+    basis = _seed_basis(cap=np.inf, comm=comm)
+    full = _seeds()
+    seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, matrix_mode="discovered")
+    knob, opt = {}, {}
+    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=knob)
+    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=opt, prune_tol=0.3, support_settle=True)
+    assert knob["proxy"].depth_histogram()[:4] == [5, 6, 3, 1]
+    assert opt["proxy"].depth_histogram()[:4] != [5, 6, 3, 1]
+    assert not opt["support_frozen"]

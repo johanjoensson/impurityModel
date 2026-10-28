@@ -614,6 +614,8 @@ def _gf_solve_units(
     subset=None,
     gf_settle=None,
     gf_settle_ratio=None,
+    gf_prune_tol=None,
+    gf_first_shell_tol=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
     the root rank, ``None`` elsewhere. ``subset`` (global unit indices, replicated) runs only those units;
@@ -663,6 +665,8 @@ def _gf_solve_units(
         eval_meshes_for=eval_meshes_for,
         support_settle=gf_settle is not False,
         settle_ratio=gf_settle_ratio,
+        prune_tol=gf_prune_tol,
+        first_shell_tol=gf_first_shell_tol,
         unit_ids=None if subset is None else list(subset),
     )
 
@@ -900,6 +904,8 @@ def get_Greens_function(
     ensemble_es=None,
     gf_settle: Optional[bool] = None,
     gf_settle_ratio: Optional[float] = None,
+    gf_prune_tol: Optional[float] = None,
+    gf_first_shell_tol: Optional[float] = None,
     run_out: Optional[dict] = None,
 ):
     """
@@ -932,6 +938,11 @@ def get_Greens_function(
     (``None``: on, and the ``GF_SETTLE_RATIO`` knob; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
     error.
 
+    ``gf_prune_tol`` / ``gf_first_shell_tol`` turn on importance-pruned growth of the sparse units (``None``: the
+    ``GF_LANCZOS_ADMIT_TOL`` / ``GF_ADMIT_FIRST_SHELL_TOL`` knobs; see :class:`SolverOptions`). Pruning replaces the
+    support settle, so ``gf_settle=True`` or a ``gf_settle_ratio`` with it is an error; with ``"bicgstab"`` they are
+    an error too.
+
     ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
     only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
     judges the eigensolver's output, not the subset. ``None``: ``es``.
@@ -951,6 +962,10 @@ def get_Greens_function(
     """
     if gf_method != "lanczos" and (gf_settle is not None or gf_settle_ratio is not None):
         raise ValueError("gf_settle/gf_settle_ratio apply only to gf_method='lanczos'; remove them or switch gf_method")
+    if gf_method != "lanczos" and (gf_prune_tol is not None or gf_first_shell_tol is not None):
+        raise ValueError("gf_prune_tol/gf_first_shell_tol apply only to gf_method='lanczos'; remove them or switch")
+    if gf_prune_tol is not None and (gf_settle is True or gf_settle_ratio is not None):
+        raise ValueError("gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio)")
     plan = _gf_lanczos_plan(
         psis,
         es,
@@ -1014,6 +1029,8 @@ def get_Greens_function(
         verbose_extra,
         gf_settle=gf_settle,
         gf_settle_ratio=gf_settle_ratio,
+        gf_prune_tol=gf_prune_tol,
+        gf_first_shell_tol=gf_first_shell_tol,
     )
     if run_out is not None:
         run_out["run"] = GFRun(
@@ -1034,6 +1051,8 @@ def get_Greens_function(
                 subset=subset,
                 gf_settle=gf_settle,
                 gf_settle_ratio=ratio,
+                gf_prune_tol=gf_prune_tol,
+                gf_first_shell_tol=gf_first_shell_tol,
             ),
             lambda res: _gf_assemble(
                 plan,

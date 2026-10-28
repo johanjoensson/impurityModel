@@ -173,6 +173,25 @@ def add_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--gf-prune-tol",
+        type=float,
+        default=None,
+        help=(
+            "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant only if "
+            "its largest amplitude on the normalised step block exceeds this. Deferred determinants are not banned. "
+            "Replaces the support settle (default: off, or the GF_LANCZOS_ADMIT_TOL knob, or the archive's)."
+        ),
+    )
+    parser.add_argument(
+        "--gf-first-shell-tol",
+        type=float,
+        default=None,
+        help=(
+            "With --gf-prune-tol: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
+            "the self-energy tail stays exact only then)."
+        ),
+    )
+    parser.add_argument(
         "--gf-settle-retry",
         choices=("on", "off"),
         default=None,
@@ -298,6 +317,8 @@ def apply_solver_overrides(solver, args):
             ("gf_settle", None if args.gf_settle is None else args.gf_settle == "on"),
             ("gf_settle_ratio", args.gf_settle_ratio),
             ("gf_settle_retry", None if args.gf_settle_retry is None else args.gf_settle_retry == "on"),
+            ("gf_prune_tol", args.gf_prune_tol),
+            ("gf_first_shell_tol", args.gf_first_shell_tol),
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
             ("gf_min_weight", args.gf_min_weight),
@@ -309,6 +330,16 @@ def apply_solver_overrides(solver, args):
     leaves_lanczos = overrides.get("gf_method", solver.gf_method) != "lanczos"
     if overrides.get("gf_settle") is False or leaves_lanczos:
         for name in ("gf_settle_ratio", "gf_settle_retry") + (("gf_settle",) if leaves_lanczos else ()):
+            overrides.setdefault(name, None)
+    # Pruned growth replaces the settle: the recorded settle fields the command line did not set are cleared.
+    if overrides.get("gf_prune_tol") is not None:
+        for name in ("gf_settle_ratio", "gf_settle_retry"):
+            overrides.setdefault(name, None)
+        if solver.gf_settle is True:
+            overrides.setdefault("gf_settle", None)
+    # ...and so does leaving the block-Lanczos kernel for the pruning fields.
+    if leaves_lanczos:
+        for name in ("gf_prune_tol", "gf_first_shell_tol"):
             overrides.setdefault(name, None)
     return replace(solver, **overrides) if overrides else solver
 
@@ -390,6 +421,8 @@ def run(args):
             gf_settle=None if args.gf_settle is None else args.gf_settle == "on",
             gf_settle_ratio=args.gf_settle_ratio,
             gf_settle_retry=None if args.gf_settle_retry is None else args.gf_settle_retry == "on",
+            gf_prune_tol=args.gf_prune_tol,
+            gf_first_shell_tol=args.gf_first_shell_tol,
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
             gf_min_weight=args.gf_min_weight,

@@ -93,3 +93,21 @@ def test_the_kernel_the_archive_recorded_is_the_one_replayed(tmp_path):
     assert build_options(recorded)[3].gf_method == "bicgstab"
     assert build_options(recorded, gf_method="lanczos")[3].gf_method == "lanczos", "an explicit choice still wins"
     assert build_options(load_workload(_archive(tmp_path / "u.h5")))[3].gf_method == "lanczos", "unrecorded: Lanczos"
+
+
+def test_the_archived_prune_options_reach_the_solver_and_an_explicit_argument_beats_them(tmp_path):
+    archive = _archive(tmp_path / "p.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
+    workload = load_workload(archive)
+    assert workload["ignored_attrs"] == []
+    solver = build_options(workload)[3]
+    assert (solver.gf_prune_tol, solver.gf_first_shell_tol) == (1e-4, 1e-6)
+    solver = build_options(workload, gf_prune_tol=3e-3, gf_first_shell_tol=0.0)[3]
+    assert (solver.gf_prune_tol, solver.gf_first_shell_tol) == (3e-3, 0.0)
+
+
+def test_an_explicit_prune_tolerance_replaces_the_archived_settle(tmp_path):
+    archive = _archive(tmp_path / "s.h5", gf_method="lanczos", gf_settle=True, gf_settle_ratio=3.0)
+    workload = load_workload(archive)
+    assert build_options(workload)[3].gf_settle_ratio == 3.0
+    solver = build_options(workload, gf_prune_tol=1e-3)[3]
+    assert solver.gf_prune_tol == 1e-3 and (solver.gf_settle, solver.gf_settle_ratio) == (None, None)

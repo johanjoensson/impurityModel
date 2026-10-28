@@ -1266,6 +1266,9 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "gf_settle": _optional_bool(_archive_attr(attrs, "gf_settle")),
         "gf_settle_ratio": _optional_float(_archive_attr(attrs, "gf_settle_ratio")),
         "gf_settle_retry": _optional_bool(_archive_attr(attrs, "gf_settle_retry")),
+        # Absent from archives written before pruned growth was an option: those runs did not prune.
+        "gf_prune_tol": _optional_float(_archive_attr(attrs, "gf_prune_tol")),
+        "gf_first_shell_tol": _optional_float(_archive_attr(attrs, "gf_first_shell_tol")),
     }
 
 
@@ -1328,6 +1331,8 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_settle=raw["gf_settle"],
         gf_settle_ratio=raw["gf_settle_ratio"],
         gf_settle_retry=raw["gf_settle_retry"],
+        gf_prune_tol=raw["gf_prune_tol"],
+        gf_first_shell_tol=raw["gf_first_shell_tol"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1498,6 +1503,18 @@ class SolverOptions:
         ``G``. The attribution is printed either way; the retry never falls back to "settle off". ``None`` (default)
         is **off**: the closure-only re-solve can take as long as an unsettled Green's function (hours on a large
         unit). Needs the settle on; ``gf_method="lanczos"`` only.
+    gf_prune_tol : float or None
+        Importance-pruned growth of the sparse block-Lanczos Green's function: a step admits a new determinant only
+        if its largest amplitude on the normalised step block exceeds this (``GF_PRUNE_RULE=mass`` reads it as a
+        fraction of the step's frontier weight instead), so a capped unit reaches a greater H-depth where the
+        amplitude is. A deferred determinant is not banned: it re-enters when a stronger path reaches it. ``None``
+        (default): the ``GF_LANCZOS_ADMIT_TOL`` knob, itself off. Positive. Exclusive with the support settle: it
+        switches the settle off, and ``gf_settle=True``, ``gf_settle_ratio`` and ``gf_settle_retry`` are refused with
+        it. ``gf_method="lanczos"`` only.
+    gf_first_shell_tol : float or None
+        With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
+        moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``: the
+        ``GF_ADMIT_FIRST_SHELL_TOL`` knob. Needs ``gf_prune_tol``.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1516,6 +1533,8 @@ class SolverOptions:
     gf_settle: Optional[bool] = None
     gf_settle_ratio: Optional[float] = None
     gf_settle_retry: Optional[bool] = None
+    gf_prune_tol: Optional[float] = None
+    gf_first_shell_tol: Optional[float] = None
 
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
@@ -1568,6 +1587,26 @@ class SolverOptions:
             raise ValueError(
                 f"gf_settle_ratio must be >= 0 (got {self.gf_settle_ratio!r}); 0 is closure only, "
                 "omit it for the default"
+            )
+        for name in ("gf_prune_tol", "gf_first_shell_tol"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if self.gf_method != "lanczos":
+                raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
+            if not (math.isfinite(value) and (value > 0.0 if name == "gf_prune_tol" else value >= 0.0)):
+                raise ValueError(
+                    f"{name} must be {'positive' if name == 'gf_prune_tol' else 'non-negative'} and finite "
+                    f"(got {value!r}); omit it for the default"
+                )
+        if self.gf_first_shell_tol is not None and self.gf_prune_tol is None:
+            raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; it needs gf_prune_tol")
+        if self.gf_prune_tol is not None and (
+            self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry
+        ):
+            raise ValueError(
+                "gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio, gf_settle_retry): "
+                "pruned growth switches the settle off; remove the settle options"
             )
         if self.gf_settle_retry and self.gf_settle is False:
             raise ValueError(

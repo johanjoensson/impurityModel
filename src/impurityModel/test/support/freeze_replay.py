@@ -164,12 +164,20 @@ def run(
     matrix_mode="auto",
     cap="archive",
     units=None,
+    prune_tol=None,
+    first_shell_tol=None,
+    prune_rule=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
     ``cap`` pins ``truncation_threshold`` (an integer; the log's ``determinant cap`` line then says "set by you");
     ``"archive"`` keeps the recorded setting. ``units`` (a list of global unit indices, or ``"heaviest"``) solves
-    only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each."""
+    only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
+
+    ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing the settle)
+    and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on every rank."""
+    if prune_rule is not None:
+        os.environ["GF_PRUNE_RULE"] = prune_rule
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
     from impurityModel.test.support import real_workload as rw
 
@@ -198,6 +206,8 @@ def run(
             gf_real_tol="archive",
             gf_settle=gf_settle,
             gf_settle_ratio=gf_settle_ratio,
+            gf_prune_tol=prune_tol,
+            gf_first_shell_tol=first_shell_tol,
         )
     except _UnitsDone:
         return None
@@ -236,6 +246,9 @@ def main(argv=None):
     r.add_argument("--matrix-mode", default="auto", choices=["auto", "discovered", "retained", "none"])
     r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
     r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
+    r.add_argument("--prune-tol", type=float, default=None, help="gf_prune_tol: pruned growth (replaces the settle)")
+    r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
+    r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="GF_PRUNE_RULE for the sweep")
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
     g = sub.add_parser("grade")
@@ -264,6 +277,9 @@ def main(argv=None):
         a.matrix_mode,
         cap,
         units,
+        a.prune_tol,
+        a.first_shell_tol,
+        a.prune_rule,
     )
     return 0
 

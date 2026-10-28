@@ -42,6 +42,8 @@ def _block_green_group(
     support_settle=True,
     settle_ratio=None,
     unit_probe=None,
+    prune_tol=None,
+    first_shell_tol=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -140,6 +142,8 @@ def _block_green_group(
             support_settle=support_settle,
             settle_ratio=settle_ratio,
             needs_matrix=unit_probe is not None,
+            prune_tol=prune_tol,
+            first_shell_tol=first_shell_tol,
         )
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
         # discovers whether or not a cap is set), never `len(excited_basis)`: that is the clone of the seed support
@@ -274,6 +278,8 @@ def lanczos_unit_kernel(
     settle_ratio=None,
     unit_ids=None,
     unit_probe=None,
+    prune_tol=None,
+    first_shell_tol=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
 
@@ -311,6 +317,8 @@ def lanczos_unit_kernel(
         trace note; ``None``: the position.
     unit_probe : callable, optional
         The importance probe of a capped unit (:func:`_block_green_group`); ``None``: none.
+    prune_tol, first_shell_tol : float, optional
+        Importance-pruned growth (:func:`gf_solvers.block_Green_sparse`); ``None``: the knobs.
     """
 
     def kernel(split_basis, u, seeds):
@@ -336,6 +344,8 @@ def lanczos_unit_kernel(
             support_settle=support_settle,
             settle_ratio=settle_ratio,
             unit_probe=unit_probe,
+            prune_tol=prune_tol,
+            first_shell_tol=first_shell_tol,
         )
         if print_size and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")

@@ -209,3 +209,25 @@ def test_the_settle_options_reach_the_kernel_and_bicgstab_refuses_them(monkeypat
     assert set(seen) == {(True, 4.0)}
     with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
         _run_driver("bicgstab", None, extra={"gf_settle": True})
+
+
+def test_the_prune_options_reach_the_kernel_beat_the_knob_and_bicgstab_refuses_them(monkeypatch):
+    from impurityModel.ed import gf_engine
+
+    seen = []
+    real = gf_engine.block_Green_sparse
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs.get("prune_tol"), kwargs.get("first_shell_tol"), kwargs.get("support_settle")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
+    _run_driver("lanczos", None)
+    assert set(seen) == {(None, None, True)}
+    seen.clear()
+    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_first_shell_tol": 1e-5})
+    assert set(seen) == {(1e-3, 1e-5, True)}, "the settle flag stays on; the kernel disables it under pruning"
+    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
+        _run_driver("bicgstab", None, extra={"gf_prune_tol": 1e-3})
+    with pytest.raises(ValueError, match="exclusive with the support settle"):
+        _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_settle": True})

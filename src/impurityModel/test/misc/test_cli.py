@@ -343,3 +343,20 @@ def test_switching_the_settle_off_or_leaving_lanczos_clears_the_archived_settle_
         selfenergy.apply_solver_overrides(
             recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off", "--gf-settle-ratio", "2"])
         )
+
+
+def test_the_prune_flags_override_the_archive_record_and_replace_the_recorded_settle():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-prune-tol", "1e-4", "--gf-first-shell-tol", "1e-6"])
+    assert (args.gf_prune_tol, args.gf_first_shell_tol) == (1e-4, 1e-6)
+    recorded = SolverOptions(gf_settle=True, gf_settle_ratio=3.0, gf_settle_retry=True)
+    pruned = selfenergy.apply_solver_overrides(recorded, args)
+    assert pruned.gf_prune_tol == 1e-4 and pruned.gf_first_shell_tol == 1e-6
+    assert (pruned.gf_settle, pruned.gf_settle_ratio, pruned.gf_settle_retry) == (None, None, None)
+    untouched = selfenergy.apply_solver_overrides(pruned, _parse(selfenergy.add_arguments, ["h0.pickle"]))
+    assert untouched == pruned
+    bicg = selfenergy.apply_solver_overrides(
+        pruned, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
+    )
+    assert bicg.gf_method == "bicgstab" and (bicg.gf_prune_tol, bicg.gf_first_shell_tol) == (None, None)

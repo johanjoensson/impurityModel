@@ -59,6 +59,8 @@ _CONSUMED_ATTRS = frozenset(
         "gf_settle",
         "gf_settle_ratio",
         "gf_settle_retry",
+        "gf_prune_tol",
+        "gf_first_shell_tol",
         "gf_min_weight",
         "excitation_budget",
         "e_pt2_tol",
@@ -172,6 +174,8 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "gf_settle": _optional_bool(_attr(attrs, "gf_settle")),
         "gf_settle_ratio": _optional(attrs, "gf_settle_ratio", float),
         "gf_settle_retry": _optional_bool(_attr(attrs, "gf_settle_retry")),
+        "gf_prune_tol": _optional(attrs, "gf_prune_tol", float),
+        "gf_first_shell_tol": _optional(attrs, "gf_first_shell_tol", float),
         "gf_min_weight": _optional(attrs, "gf_min_weight", float),
         "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
@@ -219,6 +223,8 @@ def build_options(
     gf_real_tol=None,
     gf_settle=None,
     gf_settle_ratio=None,
+    gf_prune_tol=None,
+    gf_first_shell_tol=None,
 ):
     """The ``(model, meshes, basis_options, solver_options)`` a replay of ``workload`` hands to ``calc_selfenergy``.
 
@@ -272,7 +278,15 @@ def build_options(
         gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
         gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
     )
-    for key in ("gf_admission", "gf_admit_tol", "gf_settle", "gf_settle_ratio", "gf_settle_retry"):
+    for key in (
+        "gf_admission",
+        "gf_admit_tol",
+        "gf_settle",
+        "gf_settle_ratio",
+        "gf_settle_retry",
+        "gf_prune_tol",
+        "gf_first_shell_tol",
+    ):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
     # An explicit argument beats the archive's record (the freeze-replay rig sweeps these); switching the settle off
@@ -284,6 +298,17 @@ def build_options(
             solver_kwargs.pop("gf_settle_retry", None)
     if gf_settle_ratio is not None:
         solver_kwargs["gf_settle_ratio"] = gf_settle_ratio
+    # Pruned growth replaces the settle: an explicit tolerance drops the archive's settle fields (the sweep's
+    # option beats the record), unless the caller set them too.
+    if gf_prune_tol is not None:
+        solver_kwargs["gf_prune_tol"] = gf_prune_tol
+        for key in ("gf_settle_ratio", "gf_settle_retry"):
+            if (key == "gf_settle_ratio" and gf_settle_ratio is None) or key == "gf_settle_retry":
+                solver_kwargs.pop(key, None)
+        if solver_kwargs.get("gf_settle") is True and gf_settle is None:
+            solver_kwargs.pop("gf_settle")
+    if gf_first_shell_tol is not None:
+        solver_kwargs["gf_first_shell_tol"] = gf_first_shell_tol
     return model, meshes, basis, SolverOptions(**solver_kwargs)
 
 
@@ -301,6 +326,8 @@ def run_selfenergy(
     gf_real_tol=None,
     gf_settle=None,
     gf_settle_ratio=None,
+    gf_prune_tol=None,
+    gf_first_shell_tol=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -351,6 +378,8 @@ def run_selfenergy(
         gf_real_tol=gf_real_tol,
         gf_settle=gf_settle,
         gf_settle_ratio=gf_settle_ratio,
+        gf_prune_tol=gf_prune_tol,
+        gf_first_shell_tol=gf_first_shell_tol,
     )
     return calc_selfenergy(
         model,

@@ -333,13 +333,12 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     default=0.0,
     minimum=0.0,
     group="bicgstab",
-    doc="""Importance pruning of the block-Lanczos recurrence's growth -- the comparator for
-    ``GF_BICGSTAB_ADMISSION=outer``. A step's new determinants are admitted only if their largest
-    amplitude exceeds this; every other row the step reached is banned for good -- including the rows
-    the ``slaterWeightMin`` cut dropped -- so no rejected row ever enters the retained set. At
-    ``slaterWeightMin=0`` that keeps the recurrence the exact Lanczos of the final retained set under
-    every reorthogonalization mode; at ``slaterWeightMin>0`` the cuts inside the support still perturb it,
-    as in every capped run. The decision is taken once, on the step's summed output, so it works with
+    doc="""Importance pruning of the block-Lanczos recurrence's growth (the ``gf_prune_tol`` solver option beats it).
+    A step's new determinants are admitted only if their largest amplitude on the normalised step block exceeds
+    this; a row the cut defers is not banned -- it stays in the discovered frontier and enters a later step when a
+    stronger path reaches it -- and after the growth the recurrence restarts from the seeds on the final support,
+    so the result is the exact Lanczos of what was kept. ``GF_PRUNE_RULE=mass`` reads it as a fraction of the
+    step's frontier weight instead. The decision is taken once, on the step's summed output, so it works with
     ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support settle (which is off while it is set). 0 (default) is off.""",
 )
 
@@ -362,7 +361,8 @@ GF_ADMIT_FIRST_SHELL_TOL = Knob(
     default=0.0,
     minimum=0.0,
     group="bicgstab",
-    doc="""Importance-pruned admission (``GF_BICGSTAB_ADMISSION=outer``, ``GF_LANCZOS_ADMIT_TOL``) keeps
+    doc="""Importance-pruned admission (``GF_BICGSTAB_ADMISSION=outer``, ``GF_LANCZOS_ADMIT_TOL``; the
+    ``gf_first_shell_tol`` solver option beats it) keeps
     the seeds' first H-shell whole by default (0): that is what keeps the moments of G through
     ``H^2``, hence the ``Sigma`` tail, exact. A determinant reached from the seeds by a coupling
     ``V`` still enters that shell, however small ``V`` is, so a bath level hybridized at 1e-5 puts

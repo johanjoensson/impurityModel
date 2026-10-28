@@ -551,3 +551,42 @@ def test_a_settle_ratio_below_one_warns_that_it_is_a_multiple():
         SolverOptions(gf_settle_ratio=1e-4)
     with pytest.raises(ValueError):
         SolverOptions(gf_settle_ratio=float("inf"))
+
+
+def test_archive_records_and_replays_the_pruned_growth(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
+    solver = load_selfenergy_archive(str(archive))[3]
+    assert solver.gf_prune_tol == pytest.approx(1e-4) and solver.gf_first_shell_tol == pytest.approx(1e-6)
+    archive = tmp_path / "old.h5"
+    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    solver = load_selfenergy_archive(str(archive))[3]
+    assert solver.gf_prune_tol is None and solver.gf_first_shell_tol is None
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (dict(gf_prune_tol=0.0), "must be positive"),
+        (dict(gf_prune_tol=-1e-3), "must be positive"),
+        (dict(gf_first_shell_tol=1e-3), "needs gf_prune_tol"),
+        (dict(gf_prune_tol=1e-3, gf_first_shell_tol=-1.0), "non-negative"),
+        (dict(gf_prune_tol=1e-3, gf_settle=True), "exclusive with the support settle"),
+        (dict(gf_prune_tol=1e-3, gf_settle_ratio=2.0), "exclusive with the support settle"),
+        (dict(gf_prune_tol=1e-3, gf_settle_retry=True), "exclusive with the support settle"),
+        (dict(gf_method="bicgstab", gf_prune_tol=1e-3), "applies only to gf_method='lanczos'"),
+    ],
+)
+def test_the_prune_options_refuse_what_would_be_silently_ignored(kwargs, match):
+    from impurityModel.ed.model import SolverOptions
+
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_prune_options_accept_the_defaults_a_relaxed_shell_and_an_explicit_settle_off():
+    from impurityModel.ed.model import SolverOptions
+
+    assert SolverOptions().gf_prune_tol is None and SolverOptions().gf_first_shell_tol is None
+    assert SolverOptions(gf_prune_tol=1e-4, gf_first_shell_tol=0.0).gf_first_shell_tol == 0.0
+    assert SolverOptions(gf_prune_tol=1e-4, gf_settle=False).gf_settle is False

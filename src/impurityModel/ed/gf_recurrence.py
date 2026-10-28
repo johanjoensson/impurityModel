@@ -923,6 +923,8 @@ def block_Green_discovered(
     settle_ratio=None,
     matrix_mode="auto",
     needs_matrix=False,
+    prune_tol=None,
+    first_shell_tol=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
@@ -934,7 +936,8 @@ def block_Green_discovered(
     ``"discovered"`` mode for: without one it takes the cheaper ``"retained"`` mode (the frozen phase then runs on
     the array kernel over ``P H P``). ``matrix_mode`` picks the matvec: the discovered-key matrix, the operator
     applied each step with the ``P H P`` matrix built at the freeze (``"retained"``), or the operator applied
-    every block (``"none"``). The determinant cap is
+    every block (``"none"``). ``prune_tol`` / ``first_shell_tol`` (``None``: the knobs) are the pruned growth's
+    cut and its first-shell cut. The determinant cap is
     ``basis.truncation_threshold``; ``GF_LANCZOS_ADMIT_TOL > 0`` turns on importance pruning.
     """
     comm = basis.comm
@@ -971,7 +974,10 @@ def block_Green_discovered(
     converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
     cap = getattr(basis, "truncation_threshold", np.inf)
     cap = cap if np.isfinite(cap) else 2**62
-    prune_tol = config.GF_LANCZOS_ADMIT_TOL.get()
+    # An explicit option beats the knob (an explicit 0 would be refused by the options, so ``None`` is unspecified).
+    prune_tol = config.GF_LANCZOS_ADMIT_TOL.get() if prune_tol is None else float(prune_tol)
+    if first_shell_tol is None:
+        first_shell_tol = config.GF_ADMIT_FIRST_SHELL_TOL.get()
     if memory_budget is None:
         memory_budget = getattr(basis, "gf_memory_budget", None)
         memory_policy = getattr(basis, "gf_memory_policy", None) or "tighten"
@@ -998,7 +1004,7 @@ def block_Green_discovered(
         memory_policy=memory_policy,
         eta=prune_tol if prune_tol > 0.0 else None,
         rule=config.GF_PRUNE_RULE.get(),
-        first_shell_tol=config.GF_ADMIT_FIRST_SHELL_TOL.get() if prune_tol > 0.0 else 0.0,
+        first_shell_tol=first_shell_tol if prune_tol > 0.0 else 0.0,
         mode=matrix_mode,
     )
     if support_settle and not resolved_reort and not support.prunes:

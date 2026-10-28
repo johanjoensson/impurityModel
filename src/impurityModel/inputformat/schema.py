@@ -1071,6 +1071,27 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_prune_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant "
+                "only if its largest amplitude on the normalised step block exceeds this, so a capped unit reaches "
+                "a greater H-depth where the amplitude is. A deferred determinant is not banned: it re-enters when "
+                "a stronger path reaches it. Replaces the support settle (gf_settle = 'on', gf_settle_ratio and "
+                "gf_settle_retry are refused with it). Absent takes the GF_LANCZOS_ADMIT_TOL knob, itself off. "
+                "Positive. Only valid with gf_method = 'lanczos'.",
+                minimum=0.0,
+            ),
+            Key(
+                "gf_first_shell_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "With gf_prune_tol: the same cut for the first H-shell of the seeds, which is kept whole by "
+                "default (the moments of G through H^2, hence the self-energy tail, stay exact). Absent takes the "
+                "GF_ADMIT_FIRST_SHELL_TOL knob. Needs gf_prune_tol.",
+                minimum=0.0,
+            ),
+            Key(
                 "gf_settle_retry",
                 Kind.AUTO_ENUM,
                 "auto",
