@@ -683,3 +683,39 @@ def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(mo
     assert cap - 20 <= sizes[-1] <= cap
     found, expected = capped.solver.manifold_check["found"], capped.solver.manifold_check["expected"]
     assert 0 < found < expected == 8
+
+
+@pytest.mark.parametrize("tail, rerun", [(0.010, False), (0.020, True)])
+def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energy(monkeypatch, tail, rerun):
+    """A ranked class at ``E`` may still fall by ``tail`` to ``lower = E - tail``; pass 2 continues it
+    only if that bound reaches the lowest energy found, within the class's own error bar.
+
+    The class sits 0.015 above a converged winner with no expansion residual. With ``tail = 0.010``
+    its bound stays 0.005 above the winner: it cannot win and must not be continued. With
+    ``tail = 0.020`` the bound reaches 0.005 below the winner, and it must be. The ranking ``tail`` is
+    already in ``lower``; ``ClassVerdict.residual_pt2`` carries it too, so counting that residual as
+    the error bar as well widens the reach to ``2 * tail``."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed import sector_solver
+    from impurityModel.ed.sector_solver import CertificationJob, CertificationPlan, ClassVerdict
+
+    e_win, e_ranked = -1.0, -1.0 + 0.015
+    jobs = [CertificationJob(None, (0,), None, 1), CertificationJob(None, (1,), None, 1)]
+    plan = CertificationPlan(jobs, {}, [], False, {})
+    calls = []
+
+    def fake_expand_job(h_op, basis, plan, job, finished, *args, rank=False, keys=None):
+        k = jobs.index(job)
+        calls.append((k, rank))
+        if k == 0 or not rank:
+            verdict = ClassVerdict(job, e_win if k == 0 else e_ranked, 1, 0.0, False, False)
+        else:
+            verdict = ClassVerdict(job, e_ranked, 1, tail, False, False, ranked=True, lower=e_ranked - tail)
+        return verdict, np.array([verdict.energy]), None, SimpleNamespace(_keys={}, weighted_restrictions=None), None
+
+    monkeypatch.setattr(sector_solver, "_expand_job", fake_expand_job)
+    basis = SimpleNamespace(is_distributed=False, comm=None, weighted_restrictions=None)
+    h_op = SimpleNamespace(set_weighted_restrictions=lambda w: None)
+    certify_sector(h_op, basis, plan, expand_kwargs={}, dense_cutoff=1000, slater_weight_min=0)
+    assert ((1, False) in calls) == rerun, calls

@@ -519,7 +519,7 @@ def certify_sector(
         # Drop the keys of every class that can no longer reach the lowest energy (plus the window):
         # the lowest energy only falls, so a class dropped here stays out.
         floor = e_min()
-        for q in [q for q in keys if _bound(verdict_of[q]) - floor > reach + _energy_error(verdict_of[q])]:
+        for q in [q for q in keys if _bound(verdict_of[q]) - floor > reach + _bound_error(verdict_of[q])]:
             del keys[q]
         if verbose and rank == 0:
             label = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))}"
@@ -538,7 +538,7 @@ def certify_sector(
     for k in sorted(
         (k for k, v in verdict_of.items() if v.ranked and not v.stopped_early), key=lambda k: verdict_of[k].lower
     ):
-        if k in keys and verdict_of[k].lower - e_min() <= reach + _energy_error(verdict_of[k]):
+        if k in keys and verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k]):
             start = keys.pop(k)
             run(k, ranking=False, start=start)
     # A mirror's problem is its representative's under a verified symmetry: same verdict, its own job.
@@ -740,6 +740,16 @@ def _image_keys(keys, sp, n_orb, n_bytes):
 def _bound(verdict):
     """The lowest a class's energy may still reach: its ranked bound, else its energy."""
     return verdict.lower if verdict.ranked else verdict.energy
+
+
+def _bound_error(verdict):
+    """The error bar of :func:`_bound`: :func:`_energy_error` less the ranking tail ``_bound`` already took.
+
+    A ranked class's ``residual_pt2`` includes that tail (``energy - lower``), so counting it again
+    against ``lower`` let pass 2 continue every class within twice its tail of the lowest energy.
+    """
+    tail = verdict.energy - verdict.lower if verdict.ranked else 0.0
+    return _energy_error(verdict) - tail
 
 
 def _spin_partner_keys(keys, pairs, max_two_sz, n_orb):
