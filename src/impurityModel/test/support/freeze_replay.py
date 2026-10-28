@@ -168,6 +168,9 @@ def run(
     first_shell_tol=None,
     prune_rule=None,
     cost_budget=None,
+    refine_rounds=None,
+    refine_tol=None,
+    refine_swap=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
@@ -176,7 +179,9 @@ def run(
     only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
 
     ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
-    the settle) and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on every rank."""
+    the settle) and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on
+    every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze.
+    """
     if prune_rule is not None:
         os.environ["GF_PRUNE_RULE"] = prune_rule
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
@@ -210,6 +215,9 @@ def run(
             gf_prune_tol=prune_tol,
             gf_first_shell_tol=first_shell_tol,
             cost_budget=cost_budget,
+            gf_refine_rounds=refine_rounds,
+            gf_refine_tol=refine_tol,
+            gf_refine_swap=refine_swap,
         )
     except _UnitsDone:
         return None
@@ -249,6 +257,9 @@ def main(argv=None):
     r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
     r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
     r.add_argument("--prune-tol", type=float, default=None, help="gf_prune_tol: pruned growth (replaces the settle)")
+    r.add_argument("--refine-rounds", type=int, default=None, help="gf_refine_rounds: swap refinement of capped units")
+    r.add_argument("--refine-tol", type=float, default=None, help="gf_refine_tol (needs --refine-rounds)")
+    r.add_argument("--refine-swap", type=float, default=None, help="gf_refine_swap (needs --refine-rounds)")
     r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
     r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="GF_PRUNE_RULE for the sweep")
@@ -284,6 +295,9 @@ def main(argv=None):
         a.first_shell_tol,
         a.prune_rule,
         a.cost_budget,
+        a.refine_rounds,
+        a.refine_tol,
+        a.refine_swap,
     )
     return 0
 

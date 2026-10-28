@@ -231,3 +231,25 @@ def test_the_prune_options_reach_the_kernel_beat_the_knob_and_bicgstab_refuses_t
         _run_driver("bicgstab", None, extra={"gf_prune_tol": 1e-3})
     with pytest.raises(ValueError, match="exclusive with the support settle"):
         _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_settle": True})
+
+
+def test_the_refine_spec_reaches_the_kernel_and_bicgstab_refuses_it(monkeypatch):
+    from impurityModel.ed import gf_engine
+    from impurityModel.ed.gf_refinement import RefineSpec
+
+    seen = []
+    real = gf_engine.block_Green_sparse
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs.get("refine"), kwargs.get("needs_matrix")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
+    _run_driver("lanczos", None)
+    assert set(seen) == {(None, False)}
+    seen.clear()
+    spec = RefineSpec(rounds=2, tol=1e-4, swap=0.2)
+    _run_driver("lanczos", None, extra={"gf_refine": spec})
+    assert set(seen) == {(spec, True)}, "a refinement asks for the discovered matrix"
+    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'|only to gf_method='lanczos'"):
+        _run_driver("bicgstab", None, extra={"gf_refine": spec})

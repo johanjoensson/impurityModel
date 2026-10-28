@@ -661,3 +661,13 @@ def test_the_cost_budget_reaches_the_basis_options(written):
     assert build(load_input(written(SELFENERGY))).basis.cost_budget is None
     text = SELFENERGY + "\n[many_body_basis]\ncost_budget = 1.5\n"
     assert build(load_input(written(text))).basis.cost_budget == 1.5
+
+
+def test_the_refine_keys_reach_the_solver_options(written):
+    solver = build(load_input(written(SELFENERGY))).solver
+    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (None, None, None)
+    text = SELFENERGY + "\n[solver]\ngf_refine_rounds = 3\ngf_refine_tol = 1e-4\ngf_refine_swap = 0.2\n"
+    solver = build(load_input(written(text))).solver
+    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, 1e-4, 0.2)
+    with pytest.raises(InputError, match="need gf_refine_rounds"):
+        build(load_input(written(SELFENERGY + "\n[solver]\ngf_refine_swap = 0.2\n")))

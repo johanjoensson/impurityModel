@@ -621,6 +621,7 @@ def _gf_solve_units(
     gf_settle_ratio=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
+    gf_refine=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
     the root rank, ``None`` elsewhere. ``subset`` (global unit indices, replicated) runs only those units;
@@ -672,6 +673,7 @@ def _gf_solve_units(
         settle_ratio=gf_settle_ratio,
         prune_tol=gf_prune_tol,
         first_shell_tol=gf_first_shell_tol,
+        refine=gf_refine,
         unit_ids=None if subset is None else list(subset),
     )
 
@@ -911,6 +913,7 @@ def get_Greens_function(
     gf_settle_ratio: Optional[float] = None,
     gf_prune_tol: Optional[float] = None,
     gf_first_shell_tol: Optional[float] = None,
+    gf_refine=None,
     run_out: Optional[dict] = None,
 ):
     """
@@ -943,6 +946,7 @@ def get_Greens_function(
     (``None``: on, and the ``GF_SETTLE_RATIO`` knob; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
     error.
 
+    ``gf_refine`` (a :class:`gf_refinement.RefineSpec`, ``None``: off) swap-refines the units the cap froze.
     ``gf_prune_tol`` / ``gf_first_shell_tol`` turn on importance-pruned growth of the sparse units (``None``: the
     ``GF_LANCZOS_ADMIT_TOL`` / ``GF_ADMIT_FIRST_SHELL_TOL`` knobs; see :class:`SolverOptions`). Pruning replaces the
     support settle, so ``gf_settle=True`` or a ``gf_settle_ratio`` with it is an error; with ``"bicgstab"`` they are
@@ -969,6 +973,8 @@ def get_Greens_function(
         raise ValueError("gf_settle/gf_settle_ratio apply only to gf_method='lanczos'; remove them or switch gf_method")
     if gf_method != "lanczos" and (gf_prune_tol is not None or gf_first_shell_tol is not None):
         raise ValueError("gf_prune_tol/gf_first_shell_tol apply only to gf_method='lanczos'; remove them or switch")
+    if gf_method != "lanczos" and gf_refine is not None and gf_refine.rounds > 0:
+        raise ValueError("gf_refine applies only to gf_method='lanczos'; remove it or switch gf_method")
     if gf_prune_tol is not None and (gf_settle is True or gf_settle_ratio is not None):
         raise ValueError("gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio)")
     plan = _gf_lanczos_plan(
@@ -1036,6 +1042,7 @@ def get_Greens_function(
         gf_settle_ratio=gf_settle_ratio,
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
+        gf_refine=gf_refine,
     )
     if run_out is not None:
         run_out["run"] = GFRun(
@@ -1058,6 +1065,7 @@ def get_Greens_function(
                 gf_settle_ratio=ratio,
                 gf_prune_tol=gf_prune_tol,
                 gf_first_shell_tol=gf_first_shell_tol,
+                gf_refine=gf_refine,
             ),
             lambda res: _gf_assemble(
                 plan,

@@ -23,6 +23,7 @@ from impurityModel.ed.dc_reference import (  # noqa: F401
 from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc  # noqa: F401
 from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
+from impurityModel.ed.gf_refinement import REFINE_SWAP, REFINE_TOL, RefineSpec
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     get_Greens_function,
@@ -526,6 +527,15 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     gf_settle_retry = solver.gf_settle_retry
     gf_prune_tol = solver.gf_prune_tol
     gf_first_shell_tol = solver.gf_first_shell_tol
+    gf_refine = (
+        RefineSpec(
+            rounds=solver.gf_refine_rounds,
+            tol=REFINE_TOL if solver.gf_refine_tol is None else solver.gf_refine_tol,
+            swap=REFINE_SWAP if solver.gf_refine_swap is None else solver.gf_refine_swap,
+        )
+        if solver.gf_refine_rounds
+        else None
+    )
     gf_tol = solver.gf_tol
     gf_real_tol = solver.gf_real_tol
     gf_min_weight = solver.gf_min_weight
@@ -655,6 +665,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         gf_settle_ratio=gf_settle_ratio,
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
+        gf_refine=gf_refine,
         gf_tol=gf_tol,
         gf_real_tol=gf_real_tol,
         ensemble_es=ensemble_es,

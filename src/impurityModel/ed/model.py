@@ -1081,6 +1081,10 @@ def _optional_float(value):
     return None if value is None else float(value)
 
 
+def _optional_int(value):
+    return None if value is None else int(value)
+
+
 _TRUE_WORDS = frozenset({"true", "on", "yes", "1"})
 _FALSE_WORDS = frozenset({"false", "off", "no", "0"})
 
@@ -1271,6 +1275,9 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # Absent from archives written before pruned growth was an option: those runs did not prune.
         "gf_prune_tol": _optional_float(_archive_attr(attrs, "gf_prune_tol")),
         "gf_first_shell_tol": _optional_float(_archive_attr(attrs, "gf_first_shell_tol")),
+        "gf_refine_rounds": _optional_int(_archive_attr(attrs, "gf_refine_rounds")),
+        "gf_refine_tol": _optional_float(_archive_attr(attrs, "gf_refine_tol")),
+        "gf_refine_swap": _optional_float(_archive_attr(attrs, "gf_refine_swap")),
     }
 
 
@@ -1336,6 +1343,9 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_settle_retry=raw["gf_settle_retry"],
         gf_prune_tol=raw["gf_prune_tol"],
         gf_first_shell_tol=raw["gf_first_shell_tol"],
+        gf_refine_rounds=raw["gf_refine_rounds"],
+        gf_refine_tol=raw["gf_refine_tol"],
+        gf_refine_swap=raw["gf_refine_swap"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1527,6 +1537,19 @@ class SolverOptions:
         With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
         moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``: the
         ``GF_ADMIT_FIRST_SHELL_TOL`` knob. Needs ``gf_prune_tol``.
+    gf_refine_rounds : int or None
+        Swap refinement of a unit the determinant cap froze: up to this many rounds of scoring the retained and the
+        discovered determinants on the discovered matrix and swapping the least important retained for the most
+        important discovered ones at a fixed cap, then one recurrence on the final support. ``None`` or ``0``: off.
+        A unit the cap does not bind, one the memory guard froze, and a complex Hamiltonian are left alone. Needs
+        the discovered matrix (more memory than the retained one) and costs minutes per capped unit.
+        ``gf_method="lanczos"`` only.
+    gf_refine_tol : float or None
+        Stop refining when the estimated remaining first-order gain (the summed Epstein-Nesbet scores of the swap
+        set) is below this fraction of the largest ``|G|`` on the scoring shifts. ``None``: 1e-3. Needs
+        ``gf_refine_rounds``.
+    gf_refine_swap : float or None
+        The largest fraction of the cap one round swaps, in (0, 0.5]. ``None``: 0.1. Needs ``gf_refine_rounds``.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1547,6 +1570,9 @@ class SolverOptions:
     gf_settle_retry: Optional[bool] = None
     gf_prune_tol: Optional[float] = None
     gf_first_shell_tol: Optional[float] = None
+    gf_refine_rounds: Optional[int] = None
+    gf_refine_tol: Optional[float] = None
+    gf_refine_swap: Optional[float] = None
 
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
@@ -1611,6 +1637,23 @@ class SolverOptions:
                     f"{name} must be {'positive' if name == 'gf_prune_tol' else 'non-negative'} and finite "
                     f"(got {value!r}); omit it for the default"
                 )
+        if self.gf_refine_rounds is not None and (
+            isinstance(self.gf_refine_rounds, bool)
+            or not isinstance(self.gf_refine_rounds, int)
+            or self.gf_refine_rounds < 0
+        ):
+            raise ValueError(f"gf_refine_rounds must be a non-negative integer (got {self.gf_refine_rounds!r})")
+        refining = bool(self.gf_refine_rounds)
+        if (self.gf_refine_tol is not None or self.gf_refine_swap is not None) and not refining:
+            raise ValueError("gf_refine_tol / gf_refine_swap need gf_refine_rounds > 0")
+        if refining and self.gf_method != "lanczos":
+            raise ValueError("gf_refine_rounds applies only to gf_method='lanczos'; remove it or switch gf_method")
+        if self.gf_refine_tol is not None and not (
+            math.isfinite(self.gf_refine_tol) and 0.0 < self.gf_refine_tol < 1.0
+        ):
+            raise ValueError(f"gf_refine_tol must be in (0, 1) (got {self.gf_refine_tol!r})")
+        if self.gf_refine_swap is not None and not (0.0 < self.gf_refine_swap <= 0.5):
+            raise ValueError(f"gf_refine_swap must be in (0, 0.5] (got {self.gf_refine_swap!r})")
         if self.gf_first_shell_tol is not None and self.gf_prune_tol is None:
             raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; it needs gf_prune_tol")
         if self.gf_prune_tol is not None and (

@@ -193,6 +193,28 @@ def add_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--gf-refine-rounds",
+        type=int,
+        default=None,
+        help=(
+            "Swap refinement of a unit the determinant cap froze: up to this many rounds of swapping the least "
+            "important retained determinants for the most important discovered ones at the same cap (default: off, "
+            "or the archive's). Needs the discovered matrix; costs minutes per capped unit."
+        ),
+    )
+    parser.add_argument(
+        "--gf-refine-tol",
+        type=float,
+        default=None,
+        help="With --gf-refine-rounds: stop when the estimated remaining gain is below this fraction of |G| (1e-3).",
+    )
+    parser.add_argument(
+        "--gf-refine-swap",
+        type=float,
+        default=None,
+        help="With --gf-refine-rounds: the largest fraction of the cap one round swaps, in (0, 0.5] (0.1).",
+    )
+    parser.add_argument(
         "--gf-first-shell-tol",
         type=float,
         default=None,
@@ -329,6 +351,9 @@ def apply_solver_overrides(solver, args):
             ("gf_settle_retry", None if args.gf_settle_retry is None else args.gf_settle_retry == "on"),
             ("gf_prune_tol", args.gf_prune_tol),
             ("gf_first_shell_tol", args.gf_first_shell_tol),
+            ("gf_refine_rounds", args.gf_refine_rounds),
+            ("gf_refine_tol", args.gf_refine_tol),
+            ("gf_refine_swap", args.gf_refine_swap),
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
             ("gf_min_weight", args.gf_min_weight),
@@ -355,9 +380,9 @@ def apply_solver_overrides(solver, args):
     ):
         for name in ("gf_prune_tol", "gf_first_shell_tol"):
             overrides.setdefault(name, None)
-    # ...and so does leaving the block-Lanczos kernel for the pruning fields.
+    # ...and so does leaving the block-Lanczos kernel for the pruning and refinement fields.
     if leaves_lanczos:
-        for name in ("gf_prune_tol", "gf_first_shell_tol"):
+        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_refine_rounds", "gf_refine_tol", "gf_refine_swap"):
             overrides.setdefault(name, None)
     return replace(solver, **overrides) if overrides else solver
 
@@ -444,6 +469,9 @@ def run(args):
             gf_settle_retry=None if args.gf_settle_retry is None else args.gf_settle_retry == "on",
             gf_prune_tol=args.gf_prune_tol,
             gf_first_shell_tol=args.gf_first_shell_tol,
+            gf_refine_rounds=args.gf_refine_rounds,
+            gf_refine_tol=args.gf_refine_tol,
+            gf_refine_swap=args.gf_refine_swap,
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
             gf_min_weight=args.gf_min_weight,

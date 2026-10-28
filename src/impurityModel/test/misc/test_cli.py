@@ -374,3 +374,21 @@ def test_a_settle_flag_replaces_a_recorded_pruning():
 def test_the_cost_budget_flag_is_parsed_by_both_clis():
     assert _parse(selfenergy.add_arguments, ["h0.pickle"]).cost_budget is None
     assert _parse(selfenergy.add_arguments, ["h0.pickle", "--cost_budget", "1.5"]).cost_budget == 1.5
+
+
+def test_the_refine_flags_override_the_archive_record_and_are_cleared_when_leaving_lanczos():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(
+        selfenergy.add_arguments,
+        ["h0.pickle", "--gf-refine-rounds", "3", "--gf-refine-tol", "1e-4", "--gf-refine-swap", "0.2"],
+    )
+    assert (args.gf_refine_rounds, args.gf_refine_tol, args.gf_refine_swap) == (3, 1e-4, 0.2)
+    refined = selfenergy.apply_solver_overrides(SolverOptions(), args)
+    assert (refined.gf_refine_rounds, refined.gf_refine_tol, refined.gf_refine_swap) == (3, 1e-4, 0.2)
+    untouched = selfenergy.apply_solver_overrides(refined, _parse(selfenergy.add_arguments, ["h0.pickle"]))
+    assert untouched == refined
+    bicg = selfenergy.apply_solver_overrides(
+        refined, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
+    )
+    assert bicg.gf_method == "bicgstab" and bicg.gf_refine_rounds is None

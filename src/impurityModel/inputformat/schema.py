@@ -1102,6 +1102,34 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_refine_rounds",
+                Kind.COUNT,
+                None,
+                "Swap refinement of a Green's-function unit the determinant cap froze: up to this many rounds of "
+                "scoring the retained and the discovered determinants and swapping the least important retained "
+                "for the most important discovered ones at the same cap, then one recurrence on the final support. "
+                "Absent or 0 is off. Needs the discovered matrix (more memory than the retained one) and costs "
+                "minutes per capped unit; a unit the cap does not bind is left alone. Only valid with gf_method = "
+                "'lanczos'.",
+                minimum=0,
+            ),
+            Key(
+                "gf_refine_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "Stop refining when the estimated remaining first-order gain is below this fraction of the largest "
+                "|G| on the scoring shifts. Absent is 1e-3. In (0, 1). Needs gf_refine_rounds.",
+                minimum=0.0,
+            ),
+            Key(
+                "gf_refine_swap",
+                Kind.DIMENSIONLESS,
+                None,
+                "The largest fraction of the cap one refinement round swaps. Absent is 0.1. In (0, 0.5]. Needs "
+                "gf_refine_rounds.",
+                minimum=0.0,
+            ),
+            Key(
                 "gf_settle_retry",
                 Kind.AUTO_ENUM,
                 "auto",

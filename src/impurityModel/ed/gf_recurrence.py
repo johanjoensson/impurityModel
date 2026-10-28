@@ -1079,9 +1079,7 @@ def block_Green_discovered(
         def rerun(q0_new):
             nonlocal converged_flag, delta_min, last_dg
             support.decisions.frozen = True
-            conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
-                delta, slaterWeightMin, eval_meshes
-            )
+            conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
             return block_lanczos_discovered(
                 matrix,
                 support,

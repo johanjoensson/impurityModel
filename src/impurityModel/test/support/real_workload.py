@@ -61,6 +61,9 @@ _CONSUMED_ATTRS = frozenset(
         "gf_settle_retry",
         "gf_prune_tol",
         "gf_first_shell_tol",
+        "gf_refine_rounds",
+        "gf_refine_tol",
+        "gf_refine_swap",
         "gf_min_weight",
         "excitation_budget",
         "e_pt2_tol",
@@ -176,6 +179,9 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "gf_settle_retry": _optional_bool(_attr(attrs, "gf_settle_retry")),
         "gf_prune_tol": _optional(attrs, "gf_prune_tol", float),
         "gf_first_shell_tol": _optional(attrs, "gf_first_shell_tol", float),
+        "gf_refine_rounds": _optional(attrs, "gf_refine_rounds", int),
+        "gf_refine_tol": _optional(attrs, "gf_refine_tol", float),
+        "gf_refine_swap": _optional(attrs, "gf_refine_swap", float),
         "gf_min_weight": _optional(attrs, "gf_min_weight", float),
         "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
@@ -226,6 +232,9 @@ def build_options(
     gf_prune_tol=None,
     gf_first_shell_tol=None,
     cost_budget=None,
+    gf_refine_rounds=None,
+    gf_refine_tol=None,
+    gf_refine_swap=None,
 ):
     """The ``(model, meshes, basis_options, solver_options)`` a replay of ``workload`` hands to ``calc_selfenergy``.
 
@@ -289,6 +298,9 @@ def build_options(
         "gf_settle_retry",
         "gf_prune_tol",
         "gf_first_shell_tol",
+        "gf_refine_rounds",
+        "gf_refine_tol",
+        "gf_refine_swap",
     ):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
@@ -316,6 +328,13 @@ def build_options(
         solver_kwargs.pop("gf_first_shell_tol", None)
     if gf_first_shell_tol is not None:
         solver_kwargs["gf_first_shell_tol"] = gf_first_shell_tol
+    for key, value in (
+        ("gf_refine_rounds", gf_refine_rounds),
+        ("gf_refine_tol", gf_refine_tol),
+        ("gf_refine_swap", gf_refine_swap),
+    ):
+        if value is not None:
+            solver_kwargs[key] = value
     return model, meshes, basis, SolverOptions(**solver_kwargs)
 
 
@@ -336,6 +355,9 @@ def run_selfenergy(
     gf_prune_tol=None,
     gf_first_shell_tol=None,
     cost_budget=None,
+    gf_refine_rounds=None,
+    gf_refine_tol=None,
+    gf_refine_swap=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -389,6 +411,9 @@ def run_selfenergy(
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
         cost_budget=cost_budget,
+        gf_refine_rounds=gf_refine_rounds,
+        gf_refine_tol=gf_refine_tol,
+        gf_refine_swap=gf_refine_swap,
     )
     return calc_selfenergy(
         model,

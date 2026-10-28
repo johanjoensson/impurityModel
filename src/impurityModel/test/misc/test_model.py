@@ -598,3 +598,40 @@ def test_the_cost_budget_must_be_positive_and_defaults_to_off():
     for bad in (0.0, -1.0):
         with pytest.raises(ValueError, match="cost_budget"):
             BasisOptions(nominal_occ={0: 8}, cost_budget=bad)
+
+
+def test_archive_records_and_replays_the_swap_refinement(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _archive_with_attrs(archive, gf_refine_rounds=3, gf_refine_tol=1e-4, gf_refine_swap=0.2)
+    solver = load_selfenergy_archive(str(archive))[3]
+    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, pytest.approx(1e-4), 0.2)
+    archive = tmp_path / "old.h5"
+    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    solver = load_selfenergy_archive(str(archive))[3]
+    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (dict(gf_refine_rounds=-1), "non-negative integer"),
+        (dict(gf_refine_rounds=1.5), "non-negative integer"),
+        (dict(gf_refine_tol=1e-3), "need gf_refine_rounds"),
+        (dict(gf_refine_swap=0.1), "need gf_refine_rounds"),
+        (dict(gf_refine_rounds=0, gf_refine_swap=0.1), "need gf_refine_rounds"),
+        (dict(gf_refine_rounds=2, gf_refine_tol=1.0), "in \\(0, 1\\)"),
+        (dict(gf_refine_rounds=2, gf_refine_swap=0.6), "in \\(0, 0.5\\]"),
+        (dict(gf_refine_rounds=2, gf_refine_swap=0.0), "in \\(0, 0.5\\]"),
+        (dict(gf_refine_rounds=2, gf_method="bicgstab"), "only to gf_method='lanczos'"),
+    ],
+)
+def test_the_refine_options_refuse_a_contradiction_by_name(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_refine_options_default_to_off_and_accept_a_valid_set():
+    assert SolverOptions().gf_refine_rounds is None
+    assert SolverOptions(gf_refine_rounds=0).gf_refine_rounds == 0
+    ok = SolverOptions(gf_refine_rounds=4, gf_refine_tol=1e-4, gf_refine_swap=0.5)
+    assert (ok.gf_refine_rounds, ok.gf_refine_tol, ok.gf_refine_swap) == (4, 1e-4, 0.5)
