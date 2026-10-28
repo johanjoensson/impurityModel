@@ -41,6 +41,7 @@ def _block_green_group(
     unit_label=None,
     support_settle=True,
     settle_ratio=None,
+    unit_probe=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -51,6 +52,11 @@ def _block_green_group(
     per eigenstate (``r[:, p*n_ops:(p+1)*n_ops]``) since ``(alphas, betas)`` are shared by the
     group. ``cap_stats`` is ``{"cap_hit", "retained_size", "cap"}`` describing whether this
     solve froze at ``truncation_threshold`` (feeds the basis_cap diagnostic).
+
+    ``unit_probe`` (optional) is called as ``unit_probe(matrix, support, seeds, hOp, excited_basis, info)`` on a unit
+    that froze at the cap with its discovered matrix intact (``cap_hit``, not ``memory_frozen``, not
+    ``support_frozen``; the decision is replicated) and its record lands in ``cap_stats["probe"]``. Asking for a
+    probe asks for the ``"discovered"`` matvec mode.
     ``retained_size`` is the global determinant count the recurrence ran on -- this unit's
     maximum basis size -- or ``None`` on the sparse path with no finite cap, where nothing
     tracks the support the matvec discovers (see the comment at the sparse branch).
@@ -115,10 +121,11 @@ def _block_green_group(
         sparse = True
     if sparse:
         cap_info = {}
+        seeds = excited_basis.redistribute_psis(*group_seed_states)
         alphas, betas, r = block_Green_sparse(
             reort=reort,
             hOp=hOp,
-            psi_arr=excited_basis.redistribute_psis(*group_seed_states),
+            psi_arr=seeds,
             basis=excited_basis,
             delta=delta,
             slaterWeightMin=slaterWeightMin,
@@ -132,6 +139,7 @@ def _block_green_group(
             memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
             support_settle=support_settle,
             settle_ratio=settle_ratio,
+            needs_matrix=unit_probe is not None,
         )
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
         # discovers whether or not a cap is set), never `len(excited_basis)`: that is the clone of the seed support
@@ -153,6 +161,14 @@ def _block_green_group(
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
         }
+        if (
+            unit_probe is not None
+            and cap_info.get("matrix") is not None
+            and cap_info["cap_hit"]
+            and not cap_info.get("memory_frozen", False)
+            and not cap_info["support_frozen"]
+        ):
+            cap_stats["probe"] = unit_probe(cap_info["matrix"], cap_info["proxy"], seeds, hOp, excited_basis, info)
     else:
         alphas, betas, r = block_Green(
             reort=reort,
@@ -257,6 +273,7 @@ def lanczos_unit_kernel(
     support_settle=True,
     settle_ratio=None,
     unit_ids=None,
+    unit_probe=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
 
@@ -292,6 +309,8 @@ def lanczos_unit_kernel(
     unit_ids : list of int, optional
         The global unit number of each entry of ``units`` (a subset re-solve), used for the unit's log label and
         trace note; ``None``: the position.
+    unit_probe : callable, optional
+        The importance probe of a capped unit (:func:`_block_green_group`); ``None``: none.
     """
 
     def kernel(split_basis, u, seeds):
@@ -316,6 +335,7 @@ def lanczos_unit_kernel(
             unit_label=u if unit_ids is None else unit_ids[u],
             support_settle=support_settle,
             settle_ratio=settle_ratio,
+            unit_probe=unit_probe,
         )
         if print_size and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")

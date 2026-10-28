@@ -517,6 +517,7 @@ def block_Green_sparse(
     memory_policy="tighten",
     support_settle=True,
     settle_ratio=None,
+    needs_matrix=False,
 ):
     """
     Calculate one block of the Greens function: the block-Lanczos recurrence on the determinants the seeds
@@ -541,6 +542,9 @@ def block_Green_sparse(
 
     The Krylov store of a reorthogonalized run is complex128; the ``krylov_dtype=complex64`` store belongs to the
     ManyBodyState block-Lanczos kernel (``BlockLanczos.block_lanczos``), which this GF no longer runs.
+
+    ``needs_matrix``: a consumer (the ``unit_probe`` of :func:`gf_engine._block_green_group`) will read the
+    discovered matrix, so ``"auto"`` keeps the ``"discovered"`` mode when it fits.
 
     ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`), which
     the convergence monitor tests ``G`` on. ``None`` leaves it on the spectral-edge fallback, which
@@ -567,6 +571,7 @@ def block_Green_sparse(
         support_settle=support_settle,
         settle_ratio=settle_ratio,
         matrix_mode=_MATRIX_MODE,
+        needs_matrix=needs_matrix,
     )
 
 

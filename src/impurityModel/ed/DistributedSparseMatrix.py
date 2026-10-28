@@ -669,11 +669,22 @@ class DistributedSparseMatrix:
 
     # -- the matvec -------------------------------------------------------------------------------
 
-    def matvec(self, X, rows="all", plan=None, out=None):
+    def matvec(self, X, rows="all", plan=None, out=None, squared=False):
+        """``Y = M X`` (see :meth:`_matvec`); ``squared=True`` applies ``|M|**2`` entrywise instead (the second
+        moment of every row's coupling, which the importance probe's first-order self-energy sums)."""
         with stage("matvec_P" if rows == "P" else "matvec_all"):
-            return self._matvec(X, rows, plan, out)
+            return self._matvec(X, rows, plan, out, squared)
 
-    def _matvec(self, X, rows, plan, out):
+    def _scatter_segments(self, squared):
+        if not squared:
+            return self._segments
+        # One segment's squared copy alive at a time: the matrix is never duplicated.
+        return (
+            (c0, indptr, packed, (data.real**2 + data.imag**2).astype(complex))
+            for c0, indptr, packed, data in self._segments
+        )
+
+    def _matvec(self, X, rows, plan, out, squared=False):
         """``Y = M X`` for a block ``X`` on the P slots, shape ``(n_p_local, p)``. Returns this rank's
         rows: ``(n_k_local, p)`` for ``rows="all"``, ``(n_p_local, p)`` for ``rows="P"``. ``plan`` is
         :meth:`exchange_plan`'s layout of a width at least ``p`` and the same ``rows``. **Collective**."""
@@ -691,7 +702,7 @@ class DistributedSparseMatrix:
         if plan.plan is None:
             out[...] = 0.0
             scatter_discovered(
-                self._segments,
+                self._scatter_segments(squared),
                 alive,
                 X,
                 0,
@@ -714,7 +725,7 @@ class DistributedSparseMatrix:
             send_view[...] = 0.0
             self_view[...] = 0.0
             scatter_discovered(
-                self._segments,
+                self._scatter_segments(squared),
                 alive,
                 X,
                 c0,
@@ -768,6 +779,15 @@ class DistributedSparseMatrix:
             np.add.at(diag, col[on], data[on])
         diag[~self.alive()] = 0.0
         return diag
+
+    def k_diagonal(self):
+        """``<D|H|D>`` of every determinant of ``K``, ``(n_k_local,)`` complex in K-slot order, from the operator
+        (a stored column holds it only for the P columns). Rank-local."""
+        self._need_keys("k_diagonal")
+        out = np.zeros(self.n_k_local, dtype=complex)
+        if self.n_k_local:
+            out[self._slot_of_pos] = self.hop.diagonal(self._kstore)
+        return out
 
     def toarray(self):
         """Dense ``(N, N)`` with this rank's columns filled and every other column zero: summed over the ranks it
