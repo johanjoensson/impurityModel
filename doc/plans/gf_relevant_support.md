@@ -272,3 +272,26 @@ Open (not changed; each is a design question, not a bug fix):
 - **M3.** `widen_weighted_restrictions` adds `max|w|` on top of the floor, so the Green's-function budget is close
   to non-binding; a second reason, beside §9's `B_GS` arithmetic, for the NiO null result.
 - **M4.** The "first shell is admitted" claim holds only for separate valence and conduction chains.
+
+## 8.2 The 12-unit validation with every Phase 3 fix (`refine12d`, 2026-10-28)
+
+Hermitian second solve for complex seeds (`39e240a8`), resolution-preserving retire ranking, LRU graph cache; breadth-first
+cap 1M, 3 rounds, rtol 1e-3, maxit 150, broaden 4. Graded against `c1m_dis` (breadth-first, acausal).
+
+| | breadth `c1m_dis` | eta 1e-3 | `refine12b` | `refine12d` |
+|---|---|---|---|---|
+| worst Im Σ_ii (real axis) | +6.887e-2 | -2.005e-4 | -2.005e-4 | **-2.005e-4** (causal) |
+| max\|dΣ_mats\| vs breadth | 0 | 2.0e-4 | | 2.165e-4 |
+| GF wall | 1368 s | 1377 s | 3729 s | **7069 s** (5.2x breadth) |
+| VmHWM | 0.98 GB | 0.81 GB | 1.56 GB | 1.51 GB |
+
+No segfault, no fallback, no decline. 6 of 12 units swapped (3 rounds on four of them, 2 on two; 100k per round); the
+other 6 settled at round 0 with nothing to swap. Worst solve residual per refined unit 8e-2 .. 1.1e-1 against
+rtol 1e-3 (maxit 150 binds, so the rankings are made from unconverged solves); held-out dG 0.03 .. 0.27.
+
+Caveats, stated plainly: (1) the worst Im Σ is the same number (-2.005e-4) as the pruned-growth leg and `refine12b`,
+so it is set by something refinement does not move; this run shows refinement *does not break* causality, not that
+refinement is what restored it (eta 1e-3 alone already does, §6). (2) The wall includes the user's RSPt run competing
+for cores (one rank at ~49 % CPU for the first hour), so 7069 s is pessimistic, but not by 5x. (3) The solves do not
+converge at the cheap tolerance; the ranking noise floor is an open item. (4) The headline question for B, whether
+refinement is needed once growth is pruned, is answered by the FCC Ni leg (acausal breadth-first, per the user).
