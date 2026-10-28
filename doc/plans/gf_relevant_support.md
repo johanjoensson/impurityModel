@@ -146,3 +146,49 @@ retained score needs a second solve at `conj(z)` (`dG_ij = -X_i(D) Y_j(D) / R_DD
 then comes from the same first-order `Sigma_D` with complex amplitudes. To do: the second solve per shift, complex
 `|M|^2` stays as is, tests against the dense complex oracle at -n 1/2/3, and drop the decline. (User, 2026-10-28:
 "we will have to implement the complex H handling at a later stage.")
+
+## 8. Swap refinement (Phase 3): measurements
+
+Code: `gf_refinement.py` (`importance_scores`, `refine_frozen_unit`), on the discovered matrix; real H only (§7).
+Rig: NiO it.1 replay, `-n 3`, swm 1e-10, `--cap 1000000`, `--matrix-mode discovered`, breadth-first round 0,
+reference `c1m_dis` (§4, acausal, worst Im Σ +6.887e-2). Scratch: `scratchpad/p2/refine2hb.*`, `u10cheap.*`,
+`refine12b.*`.
+
+**First pass (3.4, units 4/9/10 only, 2 rounds, tol 1e-3, swap 0.1, rtol 1e-6, maxit 500).** Every importance
+solve hit `maxit = 500` (the final residual was not recorded). A pass cost 745-2509 s per unit whatever the block
+width (block BiCGSTAB, `a79d586d`): ~500 matvecs per shift. Unit 10 settled (gain 14.2, 0.17, 0.008), units 4 and 9
+were still swapping the full 10 % at round 2. That run's wall (7185 s) includes a machine hibernation, so CPU time
+per rank (~5000 s) is the honest figure; later runs are under `systemd-inhibit --what=sleep:idle`.
+
+**Cheap, honest solves (3.5a, `a4acc508`).** `RefineSpec.rtol/maxit/broaden` (module constants `REFINE_*`, set by
+the rig, not user options), the real-axis scoring shifts at `Re z + i·broaden·Im z` (Matsubara shifts and the
+holdout unchanged), the worst final residual per pass in the record. Unit 10 alone at rtol 1e-3, maxit 150,
+broaden 4: passes 196 / 159 / 99 s (against 1594 / 1530 / 1862), same settle, holdout dG 0.183 (0.181 before),
+residuals 1e-2 → 1e-3; unit total 695 s.
+
+**The decisive run (3.5b): all 12 units, 3 rounds, rtol 1e-3, maxit 150, broaden 4.**
+
+| unit | swapped per round | settled | dG scoring / holdout | refinement s | unit wall s |
+|---|---|---|---|---|---|
+| 4 | 100k ×4 | yes | 2.6e-4 / 3.3e-2 | 859 | 1259 |
+| 10 | 50k ×3 | yes | 9.8e-2 / 1.8e-1 | 984 | 1371 |
+| 9 | 100k ×4 | yes | 3.8e-3 / 1.7e-1 | 1122 | 1611 |
+| 3 | 100k ×3 | yes | 4.5e-4 / 2.7e-1 | 910 | 1288 |
+| 5 | 100k ×4 | yes | 7.6e-4 / 1.6e-1 | 1050 | 1618 |
+| 11, 1, 0, 6, 7, 2, 8 | nothing (gain below tol at round 0) | yes | -- | 174-271 | 383-627 |
+
+Graded against `c1m_dis` (`freeze_replay grade`): **worst Im Σ_ii on the real axis -2.005e-4 (causal; reference
++6.887e-2)**, max|dΣ_mats| 2.2e-4, max|dΣ_real| 0.19 (the acausal feature moved), max|dG|/max|G| 7.1e-2 real /
+1.5e-3 Matsubara. GF wall 3729 s against 1368 s (2.7x), whole run 1:12:28, VmHWM 1.56 GB against 0.98 GB. The
+causal value equals the eta 1e-3 leg's (§6): both remove the same real-axis feature.
+
+Reading and caveats:
+- Refinement turns the breadth-first acausal Σ causal at the same cap, at ~2.7x the GF wall and +0.6 GB.
+  Pruning (§6) reaches the same Σ at 0.6x the wall: where pruning closes below the cap it is the cheaper route;
+  refinement is for units whose pruned closure still exceeds the cap.
+- The solves stop at residuals of 1e-3 to 1e-1 (units 5, 4: 8e-2 to 1e-1). Every unit still settles, so the ranking
+  is good enough for the estimate; the rankings are not certified.
+- Deviations from the plan: the round-0 fallback and the settle test the *estimated* gain (no full-mesh grade per
+  round); the final recurrence is run once, and the full-mesh grade is the offline `grade` above.
+- Open: one run of the 12-unit leg (`refine12`, before the fault handler was on) died with a segmentation fault in
+  `SparseScatter` on rank 0 after 41 min; the identical rerun with `PYTHONFAULTHANDLER=1` completed. Not explained.
