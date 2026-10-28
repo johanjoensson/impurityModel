@@ -860,6 +860,55 @@ def cost_budget_restriction(bath_states, budget, dist_matrix, kappa=COST_KAPPA):
     return excitation_budget_restriction(bath_states, budget, cost_fn=costs.__getitem__)
 
 
+def get_effective_weighted_bounds(basis):
+    """Observed ``(q_min, q_max)`` of every weighted restriction over the whole ground-state basis (collective).
+
+    One ``Allreduce`` of a fixed-shape ``int64`` buffer on every rank, an empty rank contributing the
+    reduction identities. Returns ``None`` when ``basis`` has no weighted restrictions (replicated, so
+    the decision is rank-invariant).
+    """
+    entries = basis.weighted_restrictions
+    if not entries:
+        return None
+    n_orb = basis.num_spin_orbitals
+    local = list(basis.local_basis)
+    lo = np.full(len(entries), np.iinfo(np.int64).max, dtype=np.int64)
+    hi = np.full(len(entries), np.iinfo(np.int64).min, dtype=np.int64)
+    if local:
+        raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in local), dtype=np.uint8).reshape(len(local), -1)
+        bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(np.int64)
+        for k, entry in enumerate(entries):
+            weights = np.zeros(n_orb, dtype=np.int64)
+            for orbital, w in entry[0].items():
+                weights[orbital] = w
+            q = bits @ weights
+            lo[k], hi[k] = q.min(), q.max()
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, lo, op=MPI.MIN)
+        basis.comm.Allreduce(MPI.IN_PLACE, hi, op=MPI.MAX)
+    return [(int(a), int(b)) for a, b in zip(lo, hi)]
+
+
+def floor_weighted_restrictions(basis):
+    """``basis.weighted_restrictions`` with each window widened to contain the whole ground-state basis.
+
+    The causality floor for a cost budget: a ground-state basis that was built looser than its
+    nominal budget (several Slater determinants above it) must stay admissible for the Green's
+    function, so the excited-sector window is ``[min(q_min, observed), max(q_max, observed)]``.
+    Collective; ``None`` or the input unchanged when there is nothing to floor.
+    """
+    observed = get_effective_weighted_bounds(basis)
+    if observed is None:
+        return basis.weighted_restrictions
+    floored = []
+    for entry, (o_lo, o_hi) in zip(basis.weighted_restrictions, observed):
+        weights, (q_min, q_max) = entry[0], entry[1]
+        if o_lo <= o_hi:  # an empty global basis observes nothing
+            q_min, q_max = min(q_min, o_lo), max(q_max, o_hi)
+        floored.append((dict(weights), (q_min, q_max)))
+    return floored
+
+
 def build_weighted_restrictions(bath_states, excitation_budget=None):
     """Assemble the ground-state weighted restrictions a driver enables via its options.
 

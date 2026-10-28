@@ -9,7 +9,12 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
-from impurityModel.ed.basis_restrictions import build_excited_restrictions, format_chain_zones, intersect_windows
+from impurityModel.ed.basis_restrictions import (
+    build_excited_restrictions,
+    floor_weighted_restrictions,
+    format_chain_zones,
+    intersect_windows,
+)
 from impurityModel.ed.basis_transcription import support_filter
 from impurityModel.ed.block_structure import BlockStructure
 
@@ -1387,7 +1392,7 @@ def _build_excited_restrictions(
     # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state bounds by one
     # orbital weight so the addition / removal sectors q_psi ± w_j are admitted while still
     # confining the basis.
-    excited_weighted_restrictions = widen_weighted_restrictions(basis.weighted_restrictions)
+    excited_weighted_restrictions = widen_weighted_restrictions(floor_weighted_restrictions(basis))
     return excited_restrictions, excited_weighted_restrictions
 
 

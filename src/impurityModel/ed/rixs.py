@@ -22,7 +22,11 @@ from mpi4py import MPI
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config, gf_solvers
 from impurityModel.ed.average import ThermalEnsemble
-from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
+from impurityModel.ed.basis_restrictions import (
+    build_excited_restrictions,
+    floor_weighted_restrictions,
+    intersect_windows,
+)
 from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -587,7 +591,7 @@ def _rixs_map_flat(
     # widen the ground-state bounds by one orbital weight so a single transition operator stays
     # in-bounds, mirroring greens_function._build_excited_restrictions. None when the GS basis
     # carries none, so the clones below then inherit split_basis.weighted_restrictions unchanged.
-    excited_weighted_restrictions = widen_weighted_restrictions(basis.weighted_restrictions)
+    excited_weighted_restrictions = widen_weighted_restrictions(floor_weighted_restrictions(basis))
 
     thermal = ThermalEnsemble(Es, tau)
     Z = thermal.Z
