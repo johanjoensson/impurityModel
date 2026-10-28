@@ -49,11 +49,10 @@ CHAIN_WINDOWS = {
 N_IMP = 10
 
 
-@pytest.fixture(scope="module")
-def nio():
+def _solver_basis():
+    """``(model, sb)``: the archived model and its ``prepare_solver_basis`` result (skips without the archive)."""
     if not ARCHIVE.exists():
         pytest.skip(f"archive {ARCHIVE} not available")
-    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
     from impurityModel.ed.solver_basis import prepare_solver_basis
     from impurityModel.test.support import real_workload as rw
 
@@ -69,6 +68,14 @@ def nio():
         model.rot_to_spherical,
         0,
     )
+    return model, sb
+
+
+@pytest.fixture(scope="module")
+def nio():
+    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+
+    _model, sb = _solver_basis()
     weights, (lo, hi) = build_weighted_restrictions(sb.bath_states, 6)[0]
     weighted = [(weights, (lo - 1, hi + 1))]
     h = sb.h
@@ -133,3 +140,39 @@ def test_nio_block_apply_speed(nio, capsys):
             sub = ManyBodyOperator({k: v for k, v in terms.items() if pred(k)})
             sub.set_restrictions(CHAIN_WINDOWS)
             print(f"[apply-nio]   {name:26s} {sub.num_flat_terms():4d} terms: {1e6 * _timed(sub, blk) / n:.2f} us/row")
+
+
+def test_nio_cost_form_per_row_cost(nio, capsys):
+    """What a second weighted form with ~100 groups costs per input row (the cost budget's form), against the
+    excitation budget's form alone. The plan coarsens the weight scale if the cost form adds 5 % or more."""
+    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+
+    h, weighted, psi = nio
+    _model, sb = _solver_basis()
+    both = build_weighted_restrictions(
+        sb.bath_states,
+        6,
+        cost_budget=0.3,
+        h_op=h,
+        impurity_orbitals=sb.impurity_orbitals,
+        slater_weight_min=1e-10,
+    )
+    assert len(both) == 2
+    cost_weights, cost_bounds = both[1]
+    # the bound is irrelevant to the timing; widen it so the form never rejects and the output work is equal
+    cost_form = (cost_weights, (-(10**6), 10**6))
+    groups = len({w for w in cost_weights.values() if w})
+    rng = np.random.default_rng(0)
+    n = len(psi)
+    blk = ManyBodyState.from_keys_and_amps(psi, rng.standard_normal((n, 1)) + 1j * rng.standard_normal((n, 1)))
+    times = {}
+    for name, forms in (("excitation form only", weighted), ("excitation + cost form", weighted + [cost_form])):
+        h.set_weighted_restrictions(forms)
+        times[name] = _timed(h, blk, reps=6)
+    h.set_weighted_restrictions(weighted)
+    ratio = times["excitation + cost form"] / times["excitation form only"]
+    with capsys.disabled():
+        for name, t in times.items():
+            print(f"[apply-nio-cost] {name:24s} {1e6 * t / n:.2f} us/row")
+        print(f"[apply-nio-cost] cost form: {groups} weight groups, ratio {ratio:.3f}")
+    assert ratio < 1.25
