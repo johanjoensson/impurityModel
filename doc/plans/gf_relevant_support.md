@@ -147,6 +147,11 @@ then comes from the same first-order `Sigma_D` with complex amplitudes. To do: t
 `|M|^2` stays as is, tests against the dense complex oracle at -n 1/2/3, and drop the decline. (User, 2026-10-28:
 "we will have to implement the complex H handling at a later stage.")
 
+**Scheduled (2026-10-28, user: fold it into the plan):** plan step 3.7, after the 12-unit NiO grade and before Phase 5.
+The scoring side is done (`39e240a8`: the second solve at `conj(z)` whenever the seeds or `H` are not real); what is
+left is removing the `"complex H"` decline in `refine_frozen_unit` and proving the loop end to end on a complex
+Hermitian chain fixture (dense complex oracle, `-n 1/2/3`, rank invariance, injected `X`-for-`Y` bug).
+
 ## 8. Swap refinement (Phase 3): measurements
 
 Code: `gf_refinement.py` (`importance_scores`, `refine_frozen_unit`), on the discovered matrix; real H only (§7).
