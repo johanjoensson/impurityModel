@@ -345,6 +345,103 @@ def _shifted_tridiag_solutions(alphas, betas, block_widths, b0, zs):
     return Y, res
 
 
+class ShiftedGalerkin:
+    r"""Galerkin solutions of ``(z - H) X = Q_1`` for many shifts, accumulated one Lanczos block at a time.
+
+    Block D-Lanczos: with the recurrence ``H v_j = v_{j-1} \beta_{j-1}^H + v_j \alpha_j + v_{j+1} \beta_j``
+    (``\beta_j`` of shape ``(w_{j+1}, w_j)``, as :func:`~impurityModel.ed.gf_recurrence.lanczos_step` returns it)
+    and the block LU of ``z - T`` without pivoting,
+
+    .. code-block:: text
+
+        d_1 = z - a_1                                   zeta_1 = I
+        d_j = z - a_j - b_{j-1} d_{j-1}^{-1} b_{j-1}^H   zeta_j = b_{j-1} d_{j-1}^{-1} zeta_{j-1}
+        p_j = (v_j + p_{j-1} b_{j-1}^H) d_j^{-1}         x_j = x_{j-1} + p_j zeta_j
+
+    ``x_j`` is ``V_j (z - T_j)^{-1} E_1`` for the seed block ``V_1 = Q_1`` (orthonormal, so the right-hand side is
+    ``Q_1`` itself), and the residual of the three-term relation is ``v_{j+1} b_j d_j^{-1} zeta_j``, i.e.
+    ``||b_j d_j^{-1} zeta_j|| = ||zeta_{j+1}||`` per column. ``Im d_j`` is definite with least eigenvalue
+    ``>= |Im z|`` (a Schur complement of ``z - T`` for Hermitian ``T``), so nothing breaks down at ``Im z != 0``.
+    Only the Hermitian structure is used (``b^H`` above the diagonal): no complex symmetry anywhere.
+
+    Rank-local and collective-free: ``v`` holds this rank's rows, ``alpha``/``beta`` are the replicated blocks.
+    The scalar residual is exact for the relation *as the recurrence ran it*. A TSQR deflation drops a part
+    ``sigma`` of ``w`` and leaves ``sigma / |Im z|`` unaccounted for: :meth:`note_deflation` accumulates that
+    into :attr:`floor`, which a stop rule must take the maximum with. The true residual of ``P H P`` (growth
+    cuts, diverged steps) is a matvec the caller makes.
+    """
+
+    def __init__(self, zs, n_rows=0):
+        self.zs = np.asarray(zs, dtype=complex).reshape(-1)
+        self.n_z = len(self.zs)
+        self.floor = np.zeros(self.n_z)
+        self.reset(n_rows)
+
+    def reset(self, n_rows=0):
+        """Forget the recurrence (a restart from the seeds); keeps the shifts."""
+        self.n_rows = int(n_rows)
+        self.floor[:] = 0.0
+        self._d_inv = [None] * self.n_z
+        self._zeta = [None] * self.n_z
+        self._p = [None] * self.n_z
+        self._x = [None] * self.n_z
+        self.n_steps = 0
+
+    def pad_rows(self, n):
+        """Grow the stored blocks to ``n`` rows (zeros: a row admitted at this step carried no earlier mass)."""
+        if n <= self.n_rows:
+            return
+        for lst in (self._p, self._x):
+            for i, a in enumerate(lst):
+                if a is not None:
+                    lst[i] = np.concatenate((a, np.zeros((n - a.shape[0], a.shape[1]), dtype=complex)))
+        self.n_rows = int(n)
+
+    def step(self, v, alpha, beta_prev=None):
+        """Fold block ``v`` (``(rows, w_j)``) with its ``alpha`` (``(w_j, w_j)``) and the previous ``beta``
+        (``(w_j, w_{j-1})``; ``None`` on the first block) into every shift's solution."""
+        v = np.asarray(v, dtype=complex)
+        self.pad_rows(v.shape[0])
+        if v.shape[0] < self.n_rows:
+            v = np.concatenate((v, np.zeros((self.n_rows - v.shape[0], v.shape[1]), dtype=complex)))
+        w = v.shape[1]
+        for i, z in enumerate(self.zs):
+            if beta_prev is None:
+                d = z * np.eye(w) - alpha
+                zeta = np.eye(w, dtype=complex)
+                p = v
+            else:
+                bd = beta_prev @ self._d_inv[i]
+                d = z * np.eye(w) - alpha - bd @ beta_prev.conj().T
+                zeta = bd @ self._zeta[i]
+                p = v + self._p[i] @ beta_prev.conj().T
+            d_inv = np.linalg.inv(d)
+            p = p @ d_inv
+            self._d_inv[i], self._zeta[i], self._p[i] = d_inv, zeta, p
+            update = p @ zeta
+            self._x[i] = update if self._x[i] is None else self._x[i] + update
+        self.n_steps += 1
+
+    def note_deflation(self, sigma_dropped):
+        """Account for a TSQR deflation that dropped singular values ``sigma_dropped`` at this step."""
+        s = float(np.sum(np.abs(np.asarray(sigma_dropped, dtype=float))))
+        self.floor += s / np.maximum(np.abs(self.zs.imag), 1e-300)
+
+    def residuals(self, beta):
+        """``(n_z, p)`` residual norms per shift and seed column after the last :meth:`step`, ``beta`` being the
+        block ``b_j`` that step's TSQR returned (``None``: the Krylov space closed, an exact solution)."""
+        p = self._zeta[0].shape[1] if self.n_z else 0
+        if beta is None:
+            return np.zeros((self.n_z, p))
+        return np.array(
+            [np.linalg.norm(beta @ self._d_inv[i] @ self._zeta[i], axis=0) for i in range(self.n_z)], dtype=float
+        )
+
+    def solutions(self):
+        """The per-shift solution blocks ``(rows, p)`` (views, not copies)."""
+        return list(self._x)
+
+
 def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwargs):
     """Convergence callback that never fires: convergence is judged by the caller instead.
 
