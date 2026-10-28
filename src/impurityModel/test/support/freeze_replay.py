@@ -167,6 +167,7 @@ def run(
     prune_tol=None,
     first_shell_tol=None,
     prune_rule=None,
+    cost_budget=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
@@ -174,8 +175,8 @@ def run(
     ``"archive"`` keeps the recorded setting. ``units`` (a list of global unit indices, or ``"heaviest"``) solves
     only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
 
-    ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing the settle)
-    and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on every rank."""
+    ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
+    the settle) and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on every rank."""
     if prune_rule is not None:
         os.environ["GF_PRUNE_RULE"] = prune_rule
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
@@ -208,6 +209,7 @@ def run(
             gf_settle_ratio=gf_settle_ratio,
             gf_prune_tol=prune_tol,
             gf_first_shell_tol=first_shell_tol,
+            cost_budget=cost_budget,
         )
     except _UnitsDone:
         return None
@@ -247,6 +249,7 @@ def main(argv=None):
     r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
     r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
     r.add_argument("--prune-tol", type=float, default=None, help="gf_prune_tol: pruned growth (replaces the settle)")
+    r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
     r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="GF_PRUNE_RULE for the sweep")
     r.add_argument("--out", required=True)
@@ -280,6 +283,7 @@ def main(argv=None):
         a.prune_tol,
         a.first_shell_tol,
         a.prune_rule,
+        a.cost_budget,
     )
     return 0
 

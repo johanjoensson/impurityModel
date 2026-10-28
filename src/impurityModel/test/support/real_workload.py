@@ -225,6 +225,7 @@ def build_options(
     gf_settle_ratio=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
+    cost_budget=None,
 ):
     """The ``(model, meshes, basis_options, solver_options)`` a replay of ``workload`` hands to ``calc_selfenergy``.
 
@@ -269,6 +270,8 @@ def build_options(
     for key in ("excitation_budget", "e_pt2_tol", "de2_min"):
         if workload.get(key) is not None:
             basis_kwargs[key] = workload[key]
+    if cost_budget is not None:
+        basis_kwargs["cost_budget"] = cost_budget
     basis = BasisOptions(**basis_kwargs)
     solver_kwargs = dict(
         dense_cutoff=workload["dense_cutoff"],
@@ -332,6 +335,7 @@ def run_selfenergy(
     gf_settle_ratio=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
+    cost_budget=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -384,6 +388,7 @@ def run_selfenergy(
         gf_settle_ratio=gf_settle_ratio,
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
+        cost_budget=cost_budget,
     )
     return calc_selfenergy(
         model,
