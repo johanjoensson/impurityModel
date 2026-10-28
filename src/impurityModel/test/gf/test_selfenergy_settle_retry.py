@@ -141,6 +141,8 @@ def test_a_retry_the_memory_budget_refused_leaves_the_first_pass_standing(fake_s
     "units,retry,expect",
     [
         ([_unit(0, 0, settled=False)], True, "no unit of this block settled"),
+        ([_unit(0, 0, settled=False, held=True)], True, "froze at the determinant cap"),
+        ([_unit(0, 0, settled=False, held=True)], True, "swap refinement (gf_refine_rounds)"),
         ([_unit(0, 0, held=True)], True, "held by the cap or the memory guard"),
         ([_unit(0, 0)], False, "gf_settle_retry is off"),
     ],

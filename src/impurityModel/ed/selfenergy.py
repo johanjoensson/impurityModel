@@ -249,10 +249,19 @@ def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_
     mine = [u for u in units if u.block == block_i and u.retained is not None]
     settled = [u for u in mine if u.settled]
     if not settled:
-        lines.append(
-            "  support settle: no unit of this block settled, so it is not the cause. "
-            "Lower slater_min, raise excitation_budget, or raise delta (doc/known_issues.md)."
-        )
+        capped = [u for u in mine if u.cap_hit]
+        if capped:
+            lines.append(
+                f"  support settle: no unit of this block settled, so it is not the cause. {len(capped)} of "
+                f"{len(mine)} units froze at the determinant cap, which bounds the accuracy here, not slater_min: "
+                "raise the cap, use importance-pruned growth (gf_prune_tol) or swap refinement (gf_refine_rounds), "
+                "or raise delta (doc/known_issues.md)."
+            )
+        else:
+            lines.append(
+                "  support settle: no unit of this block settled, so it is not the cause. "
+                "Lower slater_min, raise excitation_budget, or raise delta (doc/known_issues.md)."
+            )
         return lines, []
     lines.append(
         f"  support settle: {len(settled)} of {len(mine)} units settled (gf_settle_ratio {settled[0].ratio:g}); "
