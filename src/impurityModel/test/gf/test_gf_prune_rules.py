@@ -150,3 +150,24 @@ def test_the_option_beats_the_knob_and_pruning_switches_the_settle_off(monkeypat
     assert knob["proxy"].depth_histogram()[:4] == [5, 6, 3, 1]
     assert opt["proxy"].depth_histogram()[:4] != [5, 6, 3, 1]
     assert not opt["support_frozen"]
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("rule,tol", [("eta", 0.225), ("eta", 0.05), ("mass", 0.1), ("mass", 1e-3)])
+@pytest.mark.parametrize("cap", [np.inf, 14])
+def test_the_pruned_set_and_depths_do_not_depend_on_the_rank_count(monkeypatch, rule, tol, cap):
+    """The cut and the cap overflow are decided on allreduced scores: the kept set, the depth histogram and G are
+    the serial run's at every rank count (computed in-test), and a second run at this rank count is bit-identical."""
+    from mpi4py import MPI
+
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    comm = MPI.COMM_WORLD
+    set_gf_switches(monkeypatch, matrix_mode="discovered")
+    G0, serial = _run(monkeypatch, tol, rule, cap=cap)
+    G1, dist = _run(monkeypatch, tol, rule, cap=cap, comm=comm)
+    G2, _again = _run(monkeypatch, tol, rule, cap=cap, comm=comm)
+    assert _retained(dist, comm) == _retained(serial)
+    assert dist["proxy"].depth_histogram() == serial["proxy"].depth_histogram()
+    np.testing.assert_allclose(G1, G0, atol=1e-9)
+    assert np.array_equal(G1, G2)
