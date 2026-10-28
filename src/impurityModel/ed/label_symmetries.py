@@ -24,7 +24,7 @@ import numpy as np
 
 from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.symmetries import impurity_two_body_tensor
+from impurityModel.ed.symmetries import impurity_two_body_tensor, weighted_parts
 
 #: Largest coefficient of ``P H P^-1 - H``, relative to the largest coefficient of ``H``, for which
 #: ``P`` counts as a symmetry. Exact operator algebra: a symmetry cancels to roundoff, a broken one at
@@ -84,10 +84,13 @@ def preserves_restrictions(sp, restrictions, weighted_restrictions):
             if own.get(frozenset(sp.perm[i] for i in indices)) != limits:
                 return False
     if weighted_restrictions:
-        own = [(dict(weights), tuple(limits)) for weights, limits in weighted_restrictions]
-        for weights, limits in own:
+        own = []
+        for entry in weighted_restrictions:
+            weights, limits, tail = weighted_parts(entry)
+            own.append((dict(weights), tuple(limits), tail))
+        for weights, limits, tail in own:
             image = {sp.perm[i]: w for i, w in weights.items()}
-            if (image, limits) not in own:
+            if (image, limits, tail) not in own:
                 return False
     return True
 

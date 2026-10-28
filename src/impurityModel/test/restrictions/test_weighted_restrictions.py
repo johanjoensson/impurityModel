@@ -262,3 +262,39 @@ def test_greens_function_weighted_restriction_unchanged():
             np.testing.assert_allclose(y0, y1, atol=1e-10)
         for z0, z1 in zip(r0, r1):
             np.testing.assert_allclose(z0, z1, atol=1e-10)
+
+
+def test_weighted_parts_is_the_one_unpacker_of_an_entry():
+    import pytest
+
+    from impurityModel.ed.symmetries import weighted_parts
+
+    assert weighted_parts((_SZ2_WEIGHTS, (0, 1))) == (_SZ2_WEIGHTS, (0, 1), None)
+    assert weighted_parts((_SZ2_WEIGHTS, (0, 1), "tail")) == (_SZ2_WEIGHTS, (0, 1), "tail")
+    for bad in ((_SZ2_WEIGHTS,), (_SZ2_WEIGHTS, (0, 1), "tail", 4)):
+        with pytest.raises(ValueError):
+            weighted_parts(bad)
+
+
+def test_an_admission_tail_survives_widening_and_the_symmetry_check_and_is_refused_by_the_operator():
+    """The tail rides along every Python site that rebuilds an entry; the operator refuses it rather than
+    silently dropping it (it is not implemented there)."""
+    from types import SimpleNamespace
+
+    import pytest
+
+    from impurityModel.ed.label_symmetries import preserves_restrictions
+    from impurityModel.ed.symmetries import widen_weighted_restrictions
+
+    identity = SimpleNamespace(perm=[0, 1, 2, 3])
+    swap = SimpleNamespace(perm=[1, 0, 3, 2])  # swaps the two spin species of site 0 and 1
+
+    entry = (dict(_SZ2_WEIGHTS), (0, 0), ("T", 7))
+    widened = widen_weighted_restrictions([entry])
+    assert widened == [(_SZ2_WEIGHTS, (-1, 1), ("T", 7))]
+    assert widen_weighted_restrictions([(dict(_SZ2_WEIGHTS), (0, 0))]) == [(_SZ2_WEIGHTS, (-1, 1))]
+    assert preserves_restrictions(identity, None, [entry])
+    assert not preserves_restrictions(swap, None, [entry]), "weights flip sign under the swap: not preserved"
+    n_total = ManyBodyOperator({((0, "c"), (0, "a")): 1.0})
+    with pytest.raises(ValueError, match="admission tail"):
+        n_total.set_weighted_restrictions([entry])

@@ -22,7 +22,7 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.density_matrices import occupations
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.symmetries import coupling_edge_weights
+from impurityModel.ed.symmetries import coupling_edge_weights, weighted_parts
 
 # Tunable restriction knobs, gathered here as named constants (rather than literals scattered
 # through the builders) so a measurement sweep or a driver can override them. Every default
@@ -879,7 +879,7 @@ def get_effective_weighted_bounds(basis):
         bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(np.int64)
         for k, entry in enumerate(entries):
             weights = np.zeros(n_orb, dtype=np.int64)
-            for orbital, w in entry[0].items():
+            for orbital, w in weighted_parts(entry)[0].items():
                 weights[orbital] = w
             q = bits @ weights
             lo[k], hi[k] = q.min(), q.max()
@@ -902,10 +902,10 @@ def floor_weighted_restrictions(basis):
         return basis.weighted_restrictions
     floored = []
     for entry, (o_lo, o_hi) in zip(basis.weighted_restrictions, observed):
-        weights, (q_min, q_max) = entry[0], entry[1]
+        weights, (q_min, q_max), tail = weighted_parts(entry)
         if o_lo <= o_hi:  # an empty global basis observes nothing
             q_min, q_max = min(q_min, o_lo), max(q_max, o_hi)
-        floored.append((dict(weights), (q_min, q_max)))
+        floored.append((dict(weights), (q_min, q_max)) + (() if tail is None else (tail,)))
     return floored
 
 

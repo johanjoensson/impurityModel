@@ -325,7 +325,8 @@ cdef class ManyBodyOperator:
         Configure weighted-sum occupation constraints, e.g. S_z = sum +-1 n_i or
         L_z = sum m_l n_i (after scaling weights to integers).
 
-        Each element of ``restrictions`` is ``(weights, (q_min, q_max))`` where
+        Each element of ``restrictions`` is ``(weights, (q_min, q_max))`` (a third, tail element is refused: it is
+        not implemented) where
         ``weights`` maps an orbital index to its (integer) weight; a Slater
         determinant passes iff ``q_min <= sum_i weights[i] * n_i <= q_max``.
         """
@@ -336,7 +337,10 @@ cdef class ManyBodyOperator:
         if restrictions is None:
             restrictions = []
         rest.reserve(len(restrictions))
-        for weights, bounds in restrictions:
+        for entry in restrictions:
+            if len(entry) != 2:
+                raise ValueError("a weighted restriction with an admission tail is not supported by the operator yet")
+            weights, bounds = entry[0], entry[1]
             by_weight = {}
             for orb, weight in weights.items():
                 by_weight.setdefault(int(weight), []).append(int(orb))

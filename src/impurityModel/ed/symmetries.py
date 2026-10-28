@@ -732,6 +732,19 @@ def weighted_restriction(weights, target, slack=0):
     return (dict(weights), (int(target) - slack, int(target) + slack))
 
 
+def weighted_parts(entry):
+    """``(weights, bounds, tail)`` of one weighted-restriction entry, the only place an entry is unpacked.
+
+    An entry is ``(weights, (q_min, q_max))`` or, with an admission tail, ``(weights, (q_min, q_max), tail)``;
+    ``tail`` is ``None`` for the first form. The tail is not consumed anywhere yet.
+    """
+    if len(entry) == 2:
+        return entry[0], entry[1], None
+    if len(entry) == 3:
+        return entry[0], entry[1], entry[2]
+    raise ValueError(f"a weighted restriction has 2 or 3 parts, got {len(entry)}")
+
+
 def widen_weighted_restrictions(weighted_restrictions, extra=None):
     r"""Widen weighted-restriction bounds so a single addition/removal stays in-bounds.
 
@@ -756,9 +769,10 @@ def widen_weighted_restrictions(weighted_restrictions, extra=None):
     if not weighted_restrictions:
         return weighted_restrictions
     widened = []
-    for weights, (q_min, q_max) in weighted_restrictions:
+    for entry in weighted_restrictions:
+        weights, (q_min, q_max), tail = weighted_parts(entry)
         by = extra if extra is not None else max((abs(w) for w in weights.values()), default=0)
-        widened.append((dict(weights), (q_min - by, q_max + by)))
+        widened.append((dict(weights), (q_min - by, q_max + by)) + (() if tail is None else (tail,)))
     return widened
 
 

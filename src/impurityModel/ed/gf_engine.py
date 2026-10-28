@@ -23,6 +23,7 @@ from mpi4py import MPI
 from impurityModel.ed.gf_solvers import block_Green, block_Green_sparse
 from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes, reset_peak_rss
 from impurityModel.ed.solver_trace import note as _trace_note
+from impurityModel.ed.symmetries import weighted_parts
 
 
 def _block_green_group(
@@ -251,7 +252,8 @@ def print_excited_windows(window, weighted_window):
             print(f"{sorted(indices)}: {occ_rest}")
     if weighted_window is not None:
         print("weight restrictions:")
-        for weights, sum_rest in weighted_window:
+        for entry in weighted_window:
+            weights, sum_rest, _tail = weighted_parts(entry)
             print(f"{weights}: {sum_rest}")
     sys.stdout.flush()
 

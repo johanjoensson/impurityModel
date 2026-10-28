@@ -33,6 +33,8 @@ does not collect them (an opt-in pytest entry here was unreachable and has been 
 
 import numpy as np
 
+from impurityModel.ed.symmetries import weighted_parts
+
 # Loadable ``impurityModel_data.h5`` workloads (metal / insulator / off-diagonal / cheap
 # exact-reference). AFM_NiO has no archive with an ``H solver`` group, so SMO stands in for
 # the off-diagonal tier; NiO-verify (nso=20) is the cheap synthetic-style exact reference.
@@ -223,7 +225,8 @@ def _window_slack(gs):
             }
         )
     weighted_rows = []
-    for weights, (q_lo, q_hi) in basis.weighted_restrictions or []:
+    for entry in basis.weighted_restrictions or []:
+        weights, (q_lo, q_hi), _tail = weighted_parts(entry)
         o_lo, o_hi = _observed_weighted_range(basis, weights)
         weighted_rows.append(
             {
