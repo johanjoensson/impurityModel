@@ -161,7 +161,7 @@ def _chain_siam():
     return ManyBodyOperator(terms), {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[4, 5]]}), bs
 
 
-def _gs_basis(cost_budget, swm=1e-12):
+def _gs_basis(cost_budget, swm=1e-12, comm=None):
     from impurityModel.ed.groundstate import calc_gs
 
     op, imp, bath, bs = _chain_siam()
@@ -175,7 +175,7 @@ def _gs_basis(cost_budget, swm=1e-12):
         mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
-        comm=None,
+        comm=comm,
         truncation_threshold=100000,
         weighted_restrictions=weighted,
     )
@@ -194,3 +194,37 @@ def test_a_cost_budget_bounds_every_ground_state_determinant_and_a_large_one_cha
     _w, e_big, basis_big = _gs_basis(50.0)
     np.testing.assert_allclose(e_big, e_free, atol=1e-10)
     assert basis_big.size == basis_free.size
+
+
+def _basis_keys(basis):
+    local = {bytes(d.to_bytearray()[:1]) for d in basis.local_basis}
+    comm = basis.comm if basis.is_distributed else None
+    return set().union(*(comm.allgather(local) if comm is not None else [local]))
+
+
+@pytest.mark.mpi
+def test_a_cost_restricted_ground_state_basis_is_the_same_set_on_every_rank_count():
+    """The cost window is a pure function of the key: serial and distributed expansions end on one set."""
+    _w, e_serial, serial = _gs_basis(0.05)
+    _w, e_dist, dist = _gs_basis(0.05, comm=MPI.COMM_WORLD)
+    assert _basis_keys(dist) == _basis_keys(serial)
+    np.testing.assert_allclose(e_dist, e_serial, atol=1e-10)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("floor", [True, False])
+def test_the_floored_window_admits_every_single_transition_of_a_ground_state_determinant(floor):
+    """The causality floor: a basis that exceeds its nominal window (a 3-electron bath determinant against a
+    budget of 1) must still admit c^+_j|D> and c_j|D> for every determinant ``D`` it holds. Without the floor
+    the widened window excludes the 4-electron image of the large determinant."""
+    from impurityModel.ed.symmetries import widen_weighted_restrictions
+
+    basis = _floor_basis([_det([0, 2, 3, 4]), _det([0, 2])], [_ENTRY], MPI.COMM_WORLD)
+    window = widen_weighted_restrictions(floor_weighted_restrictions(basis) if floor else basis.weighted_restrictions)
+    weights, (lo, hi) = window[0][0], window[0][1]
+    qs = [sum(weights[o] for o in weights if (d.to_bytearray()[0] >> (7 - o)) & 1) for d in basis.local_basis]
+    comm = MPI.COMM_WORLD
+    qs = [q for part in comm.allgather(qs) for q in part]
+    images = [q + w for q in qs for w in (1, -1)]
+    outside = [q for q in images if not lo <= q <= hi]
+    assert (not outside) if floor else outside
