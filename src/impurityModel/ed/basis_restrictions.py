@@ -809,6 +809,57 @@ def excitation_budget_restriction(bath_states, budget, cost_fn=None, extra_orbit
     return (weights, (-filled_cost, int(budget) - filled_cost))
 
 
+COST_KAPPA = 8
+
+
+def hopping_cost_weights(dist_matrix, bath_orbitals, kappa=COST_KAPPA):
+    r"""Integer excitation cost per bath orbital from the coupling distance: ``round(kappa * (c - c_min))``.
+
+    ``c(o) = min_k dist_matrix[k, o]`` is the :func:`_impurity_coupling_distance` of ``o`` from its
+    nearest impurity orbital, i.e. :math:`-\log` of the best-path product of hoppings, so the cost of
+    exciting ``o`` grows with how weakly it is reached. ``c_min`` is the minimum over ``bath_orbitals``:
+    the best-coupled site is free, a graded star still costs. Unreachable orbitals (infinite
+    distance) cost as much as the most expensive reachable one. The distance metric is unchanged,
+    so every cost is >= 0 (the edge weights are non-negative only against the global ``h_max``).
+
+    Parameters
+    ----------
+    dist_matrix : ndarray
+        ``(tot_orb, tot_orb)``, row ``k`` the distance from impurity orbital ``k`` (``inf`` rows for others).
+    bath_orbitals : iterable of int
+    kappa : float
+        Cost resolution; costs are integers because the weighted restriction sums are.
+
+    Returns
+    -------
+    dict
+        ``{orbital: int cost >= 0}``.
+    """
+    orbitals = sorted(bath_orbitals)
+    if not orbitals:
+        return {}
+    c = {o: float(np.min(dist_matrix[:, o])) for o in orbitals}
+    finite = [v for v in c.values() if np.isfinite(v)]
+    if not finite:
+        return dict.fromkeys(orbitals, 0)
+    c_min, c_max = min(finite), max(finite)
+    return {o: round(kappa * ((v if np.isfinite(v) else c_max) - c_min)) for o, v in c.items()}
+
+
+def cost_budget_restriction(bath_states, budget, dist_matrix, kappa=COST_KAPPA):
+    """Weighted restriction bounding the hopping-cost-weighted excitation sum by ``budget``.
+
+    :func:`excitation_budget_restriction` with the costs of :func:`hopping_cost_weights`. Orbitals of
+    cost 0 carry no weight; returns ``None`` when every cost is 0.
+    """
+    valence_baths, conduction_baths = bath_states
+    bath = [
+        o for baths in (valence_baths, conduction_baths) for blocks in baths.values() for blk in blocks for o in blk
+    ]
+    costs = hopping_cost_weights(dist_matrix, bath, kappa)
+    return excitation_budget_restriction(bath_states, budget, cost_fn=costs.__getitem__)
+
+
 def build_weighted_restrictions(bath_states, excitation_budget=None):
     """Assemble the ground-state weighted restrictions a driver enables via its options.
 
