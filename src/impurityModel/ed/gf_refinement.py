@@ -97,6 +97,76 @@ def solve_shifted(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
     return x, it, float(rel)
 
 
+def _cdots(comm, a, b):
+    """Column-wise ``a_j^H b_j`` summed over the ranks: one fixed-shape ``Allreduce`` of ``m`` numbers."""
+    value = np.einsum("ij,ij->j", a.conj(), b)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, value, op=MPI.SUM)
+    return value
+
+
+#: Columns solved together: the work blocks are ``8 m`` dense columns.
+SOLVE_BLOCK_COLUMNS = 6
+
+
+def solve_shifted_block(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
+    """BiCGSTAB for ``(z - A) X = B`` with the columns of ``B`` solved together: one width-``m`` ``apply`` per
+    half-step (a wide matvec costs little more than a width-1 one) and per-column scalars, so a column that has
+    converged or broken down stops updating while the others go on. ``apply(V)`` gives ``A V`` for this rank's rows
+    (``V`` of shape ``(n, m)``). Returns ``(X, iterations, relative residuals per column)``. Every rank leaves on the
+    same iteration (the scalars are allreduced). **Collective.**"""
+    b = np.asarray(b, dtype=complex)
+    m = b.shape[1]
+
+    def op(v):
+        return z * v - apply(v)
+
+    bnorm = np.sqrt(_cdots(comm, b, b).real)
+    done = bnorm == 0.0
+    safe = np.where(done, 1.0, bnorm)
+    x = np.zeros_like(b) if x0 is None else np.array(x0, dtype=complex)
+    r = b - op(x) if x0 is not None else b.copy()
+    r_hat = r.copy()
+    rho = np.ones(m, dtype=complex)
+    alpha = np.ones(m, dtype=complex)
+    omega = np.ones(m, dtype=complex)
+    v = np.zeros_like(b)
+    p = np.zeros_like(b)
+    rel = np.sqrt(_cdots(comm, r, r).real) / safe
+    rel[done] = 0.0
+    x[:, done] = 0.0
+    active = ~done & (rel > rtol)
+    it = 0
+    while active.any() and it < maxit:
+        rho_new = _cdots(comm, r_hat, r)
+        active &= ~((np.abs(rho_new) < 1e-300) | (np.abs(omega) < 1e-300))
+        if not active.any():
+            break
+        beta = (rho_new / rho) * (alpha / omega)
+        p = r + beta * (p - omega * v)
+        v = op(p)
+        denom = _cdots(comm, r_hat, v)
+        active &= ~(np.abs(denom) < 1e-300)
+        alpha = rho_new / np.where(np.abs(denom) < 1e-300, 1.0, denom)
+        s = r - alpha * v
+        half = active & (np.sqrt(_cdots(comm, s, s).real) / safe <= rtol)
+        t = op(s)
+        tt = _cdots(comm, t, t)
+        broke = np.abs(tt) < 1e-300
+        omega_new = _cdots(comm, t, s) / np.where(broke, 1.0, tt)
+        full = active & ~half & ~broke
+        x = np.where(half, x + alpha * p, np.where(full, x + alpha * p + omega_new * s, x))
+        r = np.where(half, s, np.where(full, s - omega_new * t, r))
+        rho = np.where(full, rho_new, rho)
+        omega = np.where(full, omega_new, omega)
+        active &= ~broke
+        it += 1
+        rel = np.sqrt(_cdots(comm, r, r).real) / safe
+        rel[done] = 0.0
+        active &= rel > rtol
+    return x, it, rel
+
+
 def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_order=True):
     r"""``s_ret`` and ``s_cand`` (see the module docstring) of ``matrix`` for the seed block ``seeds``
     (``(n_p_local, m)`` on the P slots) at the shifts ``zs``, maximised over the shifts and the columns.
@@ -116,7 +186,11 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
     in_p = np.zeros(n_k, dtype=bool)
     in_p[p_kslot[alive]] = True
     comm = matrix.comm
-    plan_p = matrix.exchange_plan(1, "importance", rows="P")
+    block = min(max(seeds.shape[1], 1), SOLVE_BLOCK_COLUMNS)
+    plan_p = matrix.exchange_plan(block, "importance", rows="P")
+    plan_p_tail = (
+        matrix.exchange_plan(seeds.shape[1] % block, "importance", rows="P") if seeds.shape[1] % block else None
+    )
     plan_all = matrix.exchange_plan(1, "importance", rows="all")
     plan_all_m = matrix.exchange_plan(max(seeds.shape[1], 1), "importance", rows="all")
     s_ret = np.full(n_p, -np.inf)
@@ -135,19 +209,20 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
         denom = np.maximum(denom, 1e-300)
         X = np.zeros_like(seeds)
         worst, iters = 0.0, 0
-        for j in range(seeds.shape[1]):
-            x0 = None if x0s is None else x0s[iz][:, j]
-            x, it, rel = solve_shifted(
-                lambda v: matrix.matvec(v[:, None], rows="P", plan=plan_p)[:, 0],
+        for j0 in range(0, seeds.shape[1], block):
+            cols = slice(j0, min(j0 + block, seeds.shape[1]))
+            plan = plan_p if cols.stop - cols.start == block else plan_p_tail
+            x, it, rel = solve_shifted_block(
+                lambda v, plan=plan: matrix.matvec(np.ascontiguousarray(v), rows="P", plan=plan),
                 z,
-                np.where(alive, seeds[:, j], 0.0),
+                np.where(alive[:, None], seeds[:, cols], 0.0),
                 comm,
-                x0=x0,
+                x0=None if x0s is None else x0s[iz][:, cols],
                 rtol=rtol,
                 maxit=maxit,
             )
-            X[:, j] = np.where(alive, x, 0.0)
-            worst, iters = max(worst, rel), max(iters, it)
+            X[:, cols] = np.where(alive[:, None], x, 0.0)
+            worst, iters = max(worst, float(rel.max())), max(iters, it)
         flow = matrix.matvec(X, rows="all", plan=plan_all_m)
         s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, (np.abs(flow) ** 2).max(axis=1) / denom))
         ret = (np.abs(X) ** 2).max(axis=1) * denom[p_kslot]
@@ -400,11 +475,14 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
     warm, extra, first_gain = None, [], None
     swapped_total = 0
     for round_ in range(spec.rounds + 1):
+        t_round = time.perf_counter()
         seeds = seed_block(matrix, seed_keys, seed_q0)
         scores = importance_scores(matrix, seeds, zs, rtol=rtol, x0s=warm)
         exempt = _exempt_pslots(matrix, seed_keys, seeds, extra)
         retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
         record["gain"].append(gain)
+        record.setdefault("pass_seconds", []).append(time.perf_counter() - t_round)
+        record.setdefault("iterations", []).append(max(scores.iterations) if scores.iterations else 0)
         if first_gain is None:
             first_gain = gain
         n_swap = int(_allreduce(comm, float(len(retire)), MPI.SUM))

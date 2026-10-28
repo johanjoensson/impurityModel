@@ -146,6 +146,8 @@ def _solve_only(units, comm):
                     f"engine {cap_stats.get('engine')} converged {conv_stats.get('converged')}",
                     flush=True,
                 )
+                if cap_stats.get("refine") is not None:
+                    print(f"UNIT {u} refine: {cap_stats['refine']}", flush=True)
             print(f"UNITS {list(chosen)} solved in {wall:.1f} s", flush=True)
         raise _UnitsDone
 

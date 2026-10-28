@@ -309,3 +309,41 @@ def test_the_exempt_rows_are_the_seeds_the_heavy_first_shell_and_last_rounds_adm
     union = set().union(*comm.allgather(mine))
     assert union == set().union(*comm.allgather(want))
     assert any(e for e in got) or comm.size > 1
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("x0", [False, True])
+def test_the_block_solver_equals_a_direct_solve_per_column_and_leaves_together_on_every_rank(x0):
+    from impurityModel.ed.gf_refinement import solve_shifted_block
+
+    comm = MPI.COMM_WORLD
+    rng = np.random.default_rng(4)
+    n = 45
+    a = rng.normal(size=(n, n))
+    a = (a + a.T) / 2
+    b = rng.normal(size=(n, 4)) + 0j
+    b[:, 2] = 0.0  # a zero column stays zero and does not stall the others
+    comm.Bcast(a, root=0)
+    comm.Bcast(b, root=0)
+    lo, hi = comm.rank * n // comm.size, (comm.rank + 1) * n // comm.size
+    z = 0.2 + 0.5j
+    guess = (rng.normal(size=(n, 4)) * 0.1 + 0j) if x0 else None
+    if x0:
+        comm.Bcast(guess, root=0)
+
+    def apply(v):
+        full = np.zeros((n, v.shape[1]), dtype=complex)
+        full[lo:hi] = v
+        if comm.size > 1:
+            comm.Allreduce(MPI.IN_PLACE, full, op=MPI.SUM)
+        return a[lo:hi] @ full
+
+    x, it, rel = solve_shifted_block(apply, z, b[lo:hi], comm, x0=None if guess is None else guess[lo:hi], rtol=1e-12)
+    want = np.linalg.solve(z * np.eye(n) - a, b)
+    got = np.zeros_like(want)
+    got[lo:hi] = x
+    if comm.size > 1:
+        comm.Allreduce(MPI.IN_PLACE, got, op=MPI.SUM)
+    np.testing.assert_allclose(got, want, atol=1e-9)
+    assert rel.max() < 1e-10 and rel[2] == 0.0
+    assert comm.allreduce(it, op=MPI.MAX) == comm.allreduce(it, op=MPI.MIN)
