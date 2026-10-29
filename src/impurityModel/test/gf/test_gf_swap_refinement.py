@@ -236,3 +236,47 @@ def test_the_unit_shifts_are_signed_for_the_side_offset_by_the_thermal_energies_
     assert unit_refine_spec(spec, 0, 1, [0.0]).shifts[0][0] == pytest.approx(real)  # the monitor's own frame
     assert len(unit_refine_spec(spec, 0, 0, [1.0, 1.0]).shifts) == len(table)  # degenerate energies: no repeats
     assert unit_refine_spec(spec, 5, 0, [0.0]).shifts == ()  # no table for the block
+
+
+_REAL_SIAM_6 = _siam_6
+
+
+def _complex_siam_6():
+    """The fixture's SIAM with complex Hermitian hopping (phases on every impurity-bath term)."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    terms = dict(_REAL_SIAM_6().items())
+    for (a, b), phase in zip(((0, 2), (1, 3), (0, 4), (1, 5)), (0.7, -0.4, 1.9, 0.3)):
+        v = terms[((a, "c"), (b, "a"))]
+        terms[((a, "c"), (b, "a"))] = v * np.exp(1j * phase)
+        terms[((b, "c"), (a, "a"))] = v * np.exp(-1j * phase)
+    return ManyBodyOperator(terms)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_complex_hermitian_hamiltonian_is_refined_with_the_conjugate_shifts(monkeypatch, comm):
+    """Step 3.7: nothing assumes a real ``H`` or complex-symmetric solutions. The scores take ``Y = R(z*) s`` from the
+    conjugate shifts the accumulator carries, the unit keeps its cap, swaps, and beats breadth-first growth against the
+    dense resolvent of the same complex operator."""
+    import sys
+
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "_siam_6", _complex_siam_6)
+    truth, _ = _run(np.inf, comm=comm)
+    g_breadth, _ = _run(10, comm=comm)
+    seen = []
+    from impurityModel.ed import gf_refinement
+
+    real = gf_refinement.importance_scores
+
+    def spy(matrix, seeds, zs, xs, ys=None, **kw):
+        seen.append(ys is not None)
+        return real(matrix, seeds, zs, xs, ys, **kw)
+
+    monkeypatch.setattr(gf_refinement, "importance_scores", spy)
+    g_ref, info = _run(10, RefineSpec(rounds=6, tol=1e-12, swap=0.4), comm=comm)
+    rec = info["refine"]
+    assert rec["declined"] is None and sum(rec["swapped"]) >= 1, rec
+    assert seen and all(seen), "a complex H needs the conjugate-shift solutions"
+    assert info["retained_size"] == 10
+    assert np.abs(g_ref - truth).max() < 0.8 * np.abs(g_breadth - truth).max()

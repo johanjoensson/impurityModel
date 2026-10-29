@@ -390,7 +390,9 @@ Two changes followed (idle machine, same command): the first run carries the acc
 alone (status `scored`), with one final recurrence to Green's-function convergence on the final P. GF wall **58 s =
 2.5x breadth-first** (4x below the BiCGSTAB arm), same swaps (32, 21, 16), same Σ. A `ShiftedGalerkin.step` costs 4.8 ms
 for 10 shifts on 21,700 rows, so the accumulator is not the remaining cost; what is left is the extra recurrences of the
-swapping units. Not done: the true residual `q0 - zX + (M X)_P` in the record, complex-H fixture tests (the conjugate
-shifts are in the accumulator and the complex-seed test passes; a complex Hermitian `H` end to end is untested), the
-fused Cython update (not needed at this share), the NiO measurement. The weight `|G0^-1|^2` is implemented
+swapping units. Not done: the true residual `q0 - zX + (M X)_P` in the record, the fused Cython update (not needed at this share), the NiO measurement. The weight `|G0^-1|^2` is implemented
 (`--refine-weighted`) and off until measured.
+
+Complex Hermitian `H` runs end to end (step 3.7): the accumulator carries the conjugate shifts, the scores take
+`Y = R(z*) s` from them, and on the 6-orbital SIAM with complex hopping a refined unit beats breadth-first growth against
+the dense resolvent at `-n 1` and `-n 3` (`test_a_complex_hermitian_hamiltonian_is_refined_with_the_conjugate_shifts`).
