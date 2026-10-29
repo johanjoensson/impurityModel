@@ -340,8 +340,8 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     so the result is the exact Lanczos of what was kept. ``GF_PRUNE_RULE=mass`` reads it as a fraction of the
     step's frontier weight instead. The decision is taken once, on the step's summed output, so it works with
     ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support settle (which is off while it is set). 0 (default) is off.
-    Only the low-level Green's-function calls read this knob: a ``SolverOptions`` run resolves ``gf_prune_tol`` itself (1e-3
-    unless set, 0 off), so for it the knob has no effect.""",
+    Only the low-level Green's-function calls read this knob: a ``SolverOptions`` run resolves
+    ``gf_prune_tol`` itself (1e-3 unless set, 0 off), so for it the knob has no effect.""",
 )
 
 GF_PRUNE_RULE = Knob(
