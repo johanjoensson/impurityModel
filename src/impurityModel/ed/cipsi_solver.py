@@ -1068,6 +1068,7 @@ class CIPSISolver:
                 e0=e0,
                 n=int(self.basis.size),
                 residual_pt2=(self.last_selection or {}).get("residual_pt2"),
+                cap_cycles=cap_cycles,
             )
             if cap_cycles > 0 and refiner.observe(self.basis, e0, psi_refs, e_ref, cap_cycles):
                 break

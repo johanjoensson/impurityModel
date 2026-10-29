@@ -32,6 +32,7 @@ the cost near a single expansion's is that a class whose state has left its seed
 re-converged on an energy another class already found stops early (:data:`LEAK_ENERGY_TOL`).
 """
 
+import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -523,14 +524,18 @@ def certify_sector(
     def e_min():
         return min(v.energy for v in verdict_of.values())
 
+    timings = {}
+
     def run(k, ranking, start=None):
         nonlocal best
         job = plan.jobs[k]
+        t_class = time.perf_counter()
         verdict, es, psis, class_basis, solver = _expand_job(
             h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm,
             rank=ranking, keys=start,
         )  # fmt: skip
         verdict_of[k] = verdict
+        timings.setdefault(k, []).append(time.perf_counter() - t_class)
         finished.setdefault((job.two_sz, job.parity), []).append(verdict.energy)
         if verdict.ranked or within is not None:
             keys[k] = class_basis._keys.copy()
@@ -543,7 +548,12 @@ def certify_sector(
             label = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))}"
             cls = "" if job.seed_class is None else f" class {job.seed_class}"
             note = " (leaked)" if verdict.stopped_early else (" (ranked)" if verdict.ranked else "")
-            print(f"  {label}{cls}: E = {verdict.energy:.8f} ({verdict.n_dets:,} determinants){note}", flush=True)
+            bound = ", memory-bound" if verdict.memory_bound else (", cap-bound" if verdict.cap_bound else "")
+            print(
+                f"  [pass {1 if ranking else 2}] {label}{cls}: E = {verdict.energy:.8f} ({verdict.n_dets:,} "
+                f"determinants{bound}, PT2 {verdict.residual_pt2:.1e}, {timings[k][-1]:.0f} s){note}",
+                flush=True,
+            )
         if best is None or verdict.energy < best[0]:
             best = (verdict.energy, k, es, psis, class_basis, solver)
 
@@ -553,9 +563,19 @@ def certify_sector(
         if plan.jobs[k].image_of is None and (wanted is None or k in wanted):
             run(k, ranking=True)
     # Pass 2, most promising first. The lowest energy only falls, so re-test before each.
-    for k in sorted(
+    candidates = sorted(
         (k for k, v in verdict_of.items() if v.ranked and not v.stopped_early), key=lambda k: verdict_of[k].lower
-    ):
+    )
+    if verbose and rank == 0 and candidates:
+        n_in = sum(
+            1 for k in candidates if k in keys and verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k])
+        )
+        print(
+            f"  pass 2: {n_in} of {len(candidates)} ranked class(es) reach E_min + {reach:.4g} (+ their error bars); "
+            f"{len(candidates) - n_in} cut",
+            flush=True,
+        )
+    for k in candidates:
         if k in keys and verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k]):
             start = keys.pop(k)
             run(k, ranking=False, start=start)
@@ -564,6 +584,19 @@ def certify_sector(
     for k, source in mirrored.items():
         verdict_of[k] = replace(verdict_of[source], job=plan.jobs[k])
     verdicts = [verdict_of[k] for k in sorted(verdict_of)]
+    if verbose and rank == 0 and verdicts:
+        floor_e = min(v.energy for v in verdicts)
+        print("  class table: label, class, E, E-E_min [mRy], dets, PT2, bound, passes, seconds", flush=True)
+        for k in sorted(verdict_of):
+            v, job = verdict_of[k], plan.jobs[k]
+            tag = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))} class {job.seed_class}"
+            bound = "memory" if v.memory_bound else ("cap" if v.cap_bound else "-")
+            spent = timings.get(job.image_of if k not in timings else k, [])
+            print(
+                f"    {tag}: {v.energy:.8f}  {1e3 * (v.energy - floor_e):9.3f}  {v.n_dets:>10,}  {v.residual_pt2:.1e}  "
+                f"{bound}  {len(spent)}  {sum(spent):.0f}",
+                flush=True,
+            )
     kept = None
     if within is not None:
         floor = e_min()

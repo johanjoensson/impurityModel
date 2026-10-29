@@ -719,3 +719,16 @@ def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energ
     h_op = SimpleNamespace(set_weighted_restrictions=lambda w: None)
     certify_sector(h_op, basis, plan, expand_kwargs={}, dense_cutoff=1000, slater_weight_min=0)
     assert ((1, False) in calls) == rerun, calls
+
+
+def test_a_verbose_certification_reports_each_class_by_pass_and_ends_with_a_table(capsys):
+    h_op = _hamiltonian()
+    basis = _seed(h_op, None)
+    plan = certification_plan(h_op, basis)
+    certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0, verbose=True)
+    out = capsys.readouterr().out
+    n_expanded = sum(1 for job in plan.jobs if job.image_of is None)
+    assert out.count("[pass 1]") == n_expanded
+    assert "PT2" in out and " s)" in out
+    table = out.split("class table:")[1]
+    assert table.count("\n    2Sz=") == len(plan.jobs)  # every job, mirrors included
