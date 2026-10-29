@@ -131,3 +131,8 @@ us per input row, release, idle machine), baseline `oracle_base2` (bitwise refer
 * Rejected patches are kept out of the tree; the apply is now ~1.08 us/row, ~4% under part 2. No further
   apply-internal lever above ~5% is known. The remaining several-fold lever for growing supports is E (an
   incremental matrix during the growth phase), which changes the Lanczos step rather than the apply.
+
+**Update (2026-10-29): lever E is closed.** The incrementally built discovered-key matrix landed (Phase 1,
+`gf_recurrence.py`) and carries the Lanczos Green's function in all three matvec modes; the apply work of a growth
+phase is one apply per determinant ever admitted. On NiO it_1 at a pinned cap the new loop matched the old path's
+Green's function and cost no more wall or memory in the matching mode (`gf_relevant_support.md` sections 1-4).

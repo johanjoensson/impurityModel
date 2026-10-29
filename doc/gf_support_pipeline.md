@@ -20,18 +20,16 @@ memory-guard check). Nothing that depends on the *total* amplitude of a row is d
 1. **Measure and cut.** Take `new = keys_new_above(mask, 0)`, then `prune_rows(slaterWeightMin)` on the summed
    rows. The weight the cut drops is recorded here.
 2. **Frozen:** `keep_rows(mask)`.
-3. **Ban filter** (importance pruning only).
-4. **Admission rule.** Pruning: new rows above `eta` are candidates; the first shell is judged by
-   `first_shell_tol`; below-eta rows, and sub-`slaterWeightMin` new rows, are banned.
-5. **Cap:** top-K by maximum column `|amp|^2`, then freeze.
-6. **Support settle:** not in `decide` itself but in the same step, one call later: the Lanczos step hands the policy the
+3. **Admission rule.** New rows are admitted while the cap allows.
+4. **Cap:** top-K by maximum column `|amp|^2`, then freeze.
+5. **Support settle:** not in `decide` itself but in the same step, one call later: the Lanczos step hands the policy the
    normalised next block before its cut (`SupportPolicy.note_next_block`), which completes the step's record and
    takes the `FreezeRule` verdict (below). A verdict settles the unit from the *next* step.
-7. **Project** onto the mask.
+6. **Project** onto the mask.
 
-Steps 3–6 are skipped once the support is frozen or settled.
+Steps 3–5 are skipped once the support is frozen or settled.
 
-Plain bases (no cap, no pruning) get a null policy that only does step 1.
+Plain bases (no cap) get a null policy that only does step 1.
 
 ### The settle rule (`gf_primitives.FreezeRule`)
 
@@ -80,20 +78,22 @@ sum agree.
 
 ## Mutual exclusions
 
-Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support settle cannot both be on: pruning bans every new row
-below `eta` for good, so the rows the settle rule measures (new rows in the next block) are already decided by another
-rule, and settling on them would stack two different admission criteria. Under pruning the settle stays off.
+Importance pruning (`gf_prune_tol`, below) and the support settle cannot both be on: the rows the settle rule
+measures (new rows in the next block) are already decided by the pruning rule, and settling on them would stack two
+admission criteria. Under pruning the settle stays off; a settle option the run asks for explicitly (`gf_settle`
+on, `gf_settle_ratio`, `gf_settle_retry`) turns the default pruning off instead.
 
 ## Where it lives
 
 `gf_primitives.SupportPolicy` (the old `_CappedBasisProxy` name is an alias) holds the three entry points; the one
 recurrence matvec is `apply_and_redistribute` (`src/cython/_block_ops.pxi`), which the block-Lanczos step, the
 BiCGSTAB/GMRES matvec all call. A plain basis is the null policy: redistribute, then cut.
-The policy advertises `tracks_support` and `prunes` for callers to read; nothing tests its class.
+The policy advertises `tracks_support` for callers to read; nothing tests its class. (The Green's-function
+recurrence's own policy, below, also advertises `prunes`.)
 
 | site | category | when | notes |
 |---|---|---|---|
-| `apply_and_redistribute` -> `SupportPolicy.decide` | S | every recurrence matvec | cut, ban filter, admission, cap |
+| `apply_and_redistribute` -> `SupportPolicy.decide` | S | every recurrence matvec | cut, admission, cap |
 | `SupportPolicy.note_next_block` | S | every recurrence step (settle on) | next-block frontier record, settle verdict |
 | `SupportPolicy.admit_seed` | S | seed block | no cut, not a window step |
 | `SupportPolicy.transport` | S (memory only) | per chunk | frozen projection, RSS guard |
@@ -104,5 +104,46 @@ The policy advertises `tracks_support` and `prunes` for callers to read; nothing
 | `residual_blocks`, `boundary_residual`, `_next_shell` | probes on the raw basis | | read, never register |
 | `gf_shift_recycling._expand_to_closure` | direct `apply_block` | serial only | cut before and after the sum agree |
 
-Importance pruning (`GF_LANCZOS_ADMIT_TOL`) decides inside `decide` like the cap does, from the new rows taken
-*before* the `slaterWeightMin` cut, so the cut rows are banned too and row chunking cannot move the decision.
+## The Green's-function recurrence on the discovered-key matrix
+
+The block-Lanczos Green's function (`gf_method = "lanczos"`) does not use the policy above for its sparse units. It
+runs `gf_recurrence.block_Green_discovered`: one recurrence step (`lanczos_step`) over a matrix `M` that holds, per
+admitted determinant `D` (the retained set `P`), the **complete** restricted image `H|D>` over every determinant any
+admitted one has reached (`K ⊇ P`). `M V` for `V` on `P` is exactly `H V`; the rows in `F = K \ P` are the step's
+frontier amplitudes on which admission decides. Admitting `D` costs one apply of `H` to `|D>`, so the apply work of a
+unit is one apply per determinant ever admitted, not one per step per retained determinant.
+
+The matvec mode is decided once per unit, collectively, from the priced memory (`choose_matrix_mode`, printed with
+`-v`): **discovered** (the matrix above; needed by swap refinement), **retained** (the `P H P` matrix built at the
+freeze), or **none** (the operator is applied every block). Admission, the cut semantics, TSQR and the convergence
+monitor are the same code in all three.
+
+### Pruned growth (`gf_prune_tol`, default 1e-3)
+
+A step admits a new determinant only if its largest amplitude on the normalised step block exceeds `gf_prune_tol`
+(`GF_PRUNE_RULE=mass` reads it as a fraction of the frontier weight instead). The seeds' first H-shell is kept whole
+(`gf_first_shell_tol` relaxes it), which keeps the moments of `G` through `H^2`, hence the self-energy tail, exact.
+A deferred row is **not banned**: it stays in `F` with its matrix entries and enters a later step when a stronger path
+reaches it. After the growth the recurrence restarts from the seeds on the final support, so the result is the exact
+block Lanczos of `P H P`. Pruning is exclusive with the settle. `0` switches it off.
+
+It changes the retained set only where the cap leaves a choice: when the cap overflows in the first growth step (the
+seeds plus part of the first shell fill it), the cap's own top-K selection is already amplitude-ordered and pruning
+selects the same set. The synthetic metal of `doc/plans/gf_relevant_support.md` section 10 shows this at every cap
+where breadth-first fails there.
+
+### Swap refinement (`gf_refine_rounds`, default 3)
+
+For a unit the cap froze, up to `gf_refine_rounds` rounds of scoring the retained determinants (what their removal
+costs `G`) and the discovered ones (what admitting them gains, Epstein-Nesbet) on the matrix, swapping the least
+important retained for the most important discovered at the fixed cap, then one recurrence on the final support. A
+round stops when the estimated remaining gain falls below `gf_refine_tol` of `max|G|`. A unit the cap does not bind, a
+unit the memory guard froze, and a unit that is not in discovered mode are left alone (and the log says which). Cost:
+the scoring solves are the expense (about 2.7x the breadth-first Green's-function phase on the capped NiO units).
+`0` switches it off.
+
+### Defaults
+
+`SolverOptions` leaves both options unset, and an unset option is on for `gf_method = "lanczos"`
+(`model.DEFAULT_GF_PRUNE_TOL`, `DEFAULT_GF_REFINE_ROUNDS`); `0` is the explicit off. An archive written before the
+options existed reads as off, so a replay of an old run reproduces it.

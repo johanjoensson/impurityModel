@@ -1,5 +1,7 @@
 # restrictions_redux: more restrictions, tighter cutoffs — measured verdict
 
+> **Note (2026-10-29):** the GF-side verdict below predates importance-pruned growth and swap refinement, which are now on by default (`doc/gf_support_pipeline.md`, `doc/plans/gf_relevant_support.md`); the cost-budget restriction is opt-in and was measured to do nothing on NiO it.1 (section 9 there).
+
 
 > **Note (2026-09-23):** `restriction_sweep.py` was deleted once its verdict was recorded here; it is recoverable from git history (`git log --diff-filter=D -- src/impurityModel/test/support/restriction_sweep.py`).
 
