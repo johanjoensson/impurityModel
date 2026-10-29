@@ -47,8 +47,8 @@ def importance_scores(matrix, seeds, zs, xs, ys=None, first_order=True, weights=
     ``G_ij = s_i^H R s_j`` by ``-conj(Y_i(D)) X_j(D) / R_DD`` (``R(z)^H = R(z*)`` for Hermitian ``H``), the scores read
     ``max_i |Y_i| max_j |X_j|``, and without ``ys`` ``Y = X`` is taken. ``first_order=False`` drops ``Sigma_D``
     (the bare ``|z - H_DD|``), kept only so a test can show the self-energy matters.
-    ``weights`` (one per shift, replicated) multiply each shift's two scores before the maximum: the self-energy moves by ``G^-1 dG G^-1``, so a shift where
-    ``G^-1`` is large counts for more. **Collective.**"""
+    ``weights`` (one per shift, replicated) multiply each shift's two scores before the maximum: the self-energy
+    moves by ``G^-1 dG G^-1``, so a shift where ``G^-1`` is large counts for more. **Collective.**"""
     seeds = np.ascontiguousarray(seeds, dtype=complex)
     n_p, n_k = matrix.n_p_local, matrix.n_k_local
     if seeds.shape[0] != n_p:
