@@ -434,6 +434,51 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2, broaden=1.0):
     return list(dict.fromkeys(z_pick)), list(dict.fromkeys(z for z in z_hold if z not in z_pick))
 
 
+REFINE_MAX_SHIFTS = 8
+
+
+def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=REFINE_MAX_SHIFTS, n_matsubara=2):
+    r"""The scoring shifts of one Green's-function block, chosen before its recurrence runs, with their weights.
+
+    ``g0_inv_of(zs)`` gives ``G_0^-1(z) = z - h_corr - Delta(z)`` of shape ``(len(zs), n, n)``. A change ``dG`` moves
+    the self-energy by ``G^-1 dG G^-1``, which is largest where ``G^-1`` is: on the real mesh (at ``omega + i delta``)
+    the local maxima of ``||G_0^-1||_2`` (the zeros of ``G_0``, i.e. the bath poles the self-energy is fragile at; at
+    most ``max_shifts - 1 - n_matsubara`` of them, heaviest first), the point nearest ``omega = 0`` (the
+    quasi-particle point of a metal), and the ``n_matsubara`` Matsubara points nearest the real axis (the floor for
+    weight-carrying rows away from every pole). Replicated if ``g0_inv_of`` and the meshes are.
+
+    Returns ``(zs, weights)``: unsigned complex shifts (``omega + i delta``, ``i omega_n``) and
+    ``w(z) = ||G_0^-1(z)||^2``, normalised to a maximum of 1. The caller signs them and adds each thermal energy
+    (the frame :func:`~impurityModel.ed.gf_convergence._gf_signed_axes` fixes)."""
+    zs, norms = [], []
+
+    def norm_at(points):
+        g = np.asarray(g0_inv_of(np.asarray(points, dtype=complex)))
+        return np.array([np.linalg.norm(m, 2) for m in g])
+
+    if matsubara_mesh is not None and len(matsubara_mesh):
+        pts = 1j * np.asarray(matsubara_mesh, dtype=float)
+        order = np.argsort(np.abs(pts.imag), kind="stable")[:n_matsubara]
+        zs += [complex(pts[i]) for i in order]
+        norms += list(norm_at(pts[order]))
+    if omega_mesh is not None and len(omega_mesh):
+        w = np.asarray(omega_mesh, dtype=float)
+        order = np.argsort(w, kind="stable")
+        pts = w[order] + 1j * delta
+        nrm = norm_at(pts)
+        peaks = [i for i in range(1, len(pts) - 1) if nrm[i] >= nrm[i - 1] and nrm[i] > nrm[i + 1]]
+        peaks = sorted(peaks, key=lambda i: -nrm[i])[: max(max_shifts - len(zs) - 1, 0)]
+        centre = int(np.argmin(np.abs(pts.real)))
+        for i in dict.fromkeys(peaks + [centre]):
+            zs.append(complex(pts[i]))
+            norms.append(float(nrm[i]))
+    if not zs:
+        return [], []
+    weight = np.asarray(norms) ** 2
+    weight = weight / max(float(weight.max()), 1e-300)
+    return zs, [float(x) for x in weight]
+
+
 def _exempt_pslots(matrix, seed_keys, seed_block, extra_keys):
     """Boolean over the P slots: the seeds, the heaviest first-shell rows (covering all but
     :data:`FIRST_SHELL_EXEMPT_TAIL` of ``|H s|^2``) and ``extra_keys`` (last round's admissions). **Collective.**"""
