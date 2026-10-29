@@ -51,7 +51,7 @@ from impurityModel.ed import spectra
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
-from impurityModel.ed.spin_pairs import resolve_spin_pairs
+from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.utils import report_banner
 
 DEGENERACY_TOL = 1e-6
@@ -92,24 +92,29 @@ def _group_manifolds(es, degeneracy_tol):
     return [manifold_of[i] for i in range(len(es))]
 
 
-def build_susceptibility_operators(hOp, basis, rot_to_spherical):
+def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=None):
     """Impurity susceptibility operators ``name -> (A_plus, A_minus)``.
 
     ``charge`` (:math:`N_\\mathrm{imp}`) always works. ``spin_z`` / ``orb_z`` use the
     many-body :math:`S_z` / :math:`L_z` from the Casimir build (same aggregate-and-retry
-    degrade path as ``calc_gs``); ``spin_z`` falls back to the validated spin pairing
-    when the shell is not spin-doubled. ``transverse`` (:math:`S_+, S_-`) needs the
-    validated *impurity* pairing (exact also for a collinear spin-polarized bath, where
-    only the bath pairing is a modelling choice).
+    degrade path as ``calc_gs``); ``spin_z`` falls back to the spin layout's pairing
+    when the shell is not spin-doubled. ``transverse`` (:math:`S_+, S_-`) is built from the
+    layout's impurity pairs, which are exact for a collinear spin-polarized bath (only the bath
+    pairing is a modelling choice, and ``S_+`` here is impurity-only).
+
+    ``spin_layout`` is the run's :class:`~impurityModel.ed.spin_pairs.SpinLayout`; ``None`` resolves
+    it from ``hOp`` (collective on ``basis.comm`` when it is distributed).
 
     Returns
     -------
-    (ops, skipped) : (dict, dict)
-        ``ops[name] = (A_plus, A_minus)`` and ``skipped[name] = reason`` for the rest.
+    (ops, skipped, notes) : (dict, dict, dict)
+        ``ops[name] = (A_plus, A_minus)``, ``skipped[name] = reason`` for the rest, and
+        ``notes[name]`` a caveat on an operator that was built.
     """
     impurity_indices = sorted(orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block)
     ops = {}
     skipped = {}
+    notes = {}
     n_op = ManyBodyOperator({((int(i), "c"), (int(i), "a")): 1.0 for i in impurity_indices})
     ops["charge"] = (n_op, n_op)
 
@@ -123,25 +128,45 @@ def build_susceptibility_operators(hOp, basis, rot_to_spherical):
             except ValueError:
                 l_ops = None
 
-    resolved = resolve_spin_pairs(
-        hOp, basis.impurity_orbitals, basis.bath_states, rot_to_spherical, basis.num_spin_orbitals
-    )
+    layout = spin_layout
+    if layout is None:
+        layout = resolve_spin_layout(
+            hOp,
+            basis.impurity_orbitals,
+            basis.bath_states,
+            rot_to_spherical,
+            basis.num_spin_orbitals,
+            comm=basis.comm if basis.is_distributed else None,
+        )
     if l_ops is not None:
         ops["spin_z"] = (s_ops[2], s_ops[2])
         ops["orb_z"] = (l_ops[2], l_ops[2])
     else:
         skipped["orb_z"] = "impurity is not a spin-doubled l-shell (L operator unavailable)"
-        if resolved is not None:
-            pair_sz = make_spin_operators(resolved[0])[2]
+        if layout.labelled:
+            pair_sz = make_spin_operators(layout.imp_pairs)[2]
             ops["spin_z"] = (pair_sz, pair_sz)
         else:
-            skipped["spin_z"] = "no l-shell rotation and no validated spin pairing"
-    if resolved is not None:
-        s_plus, s_minus, _ = make_spin_operators(resolved[0])
+            skipped["spin_z"] = "no l-shell rotation and no (dn, up) pairing that conserves S_z"
+    if layout.labelled:
+        s_plus, s_minus, _ = make_spin_operators(layout.imp_pairs)
         ops["transverse"] = (s_plus, s_minus)
+        if layout.grade == "sz_only":
+            notes["transverse"] = (
+                "S_+/S_- built from the impurity dn/up pairing by "
+                f"{layout.imp_source}, not verified: "
+                "the impurity block is not spin-symmetric (S_z only)"
+            )
+        elif layout.grade == "collinear":
+            notes["transverse"] = (
+                "local spin-flip response in a spin-polarized bath ([H, S_+] != 0): gapped, Curie weight "
+                "only from a degenerate manifold; weight at w < 0 for a majority-up impurity"
+            )
     else:
-        skipped["transverse"] = "no trustworthy (dn, up) spin labelling (see resolve_spin_pairs)"
-    return ops, skipped
+        skipped["transverse"] = "no (dn, up) pairing of the impurity and bath conserves S_z; " + "; ".join(
+            layout.rejected
+        )
+    return ops, skipped, notes
 
 
 def calc_susceptibility(
@@ -159,6 +184,7 @@ def calc_susceptibility(
     slaterWeightMin=0.0,
     verbose=False,
     degeneracy_tol=DEGENERACY_TOL,
+    spin_layout=None,
 ):
     r"""Compute the dynamical impurity susceptibilities ``chi(w + i delta)`` (+ Matsubara).
 
@@ -204,9 +230,9 @@ def calc_susceptibility(
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
-    skipped = {}
+    skipped, notes = {}, {}
     if operators is None:
-        operators, skipped = build_susceptibility_operators(hOp, basis, rot_to_spherical)
+        operators, skipped, notes = build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout)
 
     es = np.asarray(es, dtype=float)
     boltzmann = ThermalEnsemble(es, tau).probabilities
@@ -279,6 +305,7 @@ def calc_susceptibility(
             "matsubara": None if matsubara_mesh is None else np.asarray(matsubara_mesh),
             "operators": {},
             "skipped": skipped,
+            "notes": notes,
             "tau": float(tau),
             "delta": float(delta),
         }
@@ -331,6 +358,8 @@ def save_susceptibility(result, filename):
             grp.attrs["expectation"] = entry["expectation"]
         for name, reason in result["skipped"].items():
             chi_group.attrs[f"skipped_{name}"] = reason
+        for name, note in result.get("notes", {}).items():
+            chi_group.attrs[f"note_{name}"] = note
 
 
 def print_susceptibility_summary(result):
@@ -346,13 +375,18 @@ def print_susceptibility_summary(result):
         if entry["matsubara"] is not None and result["matsubara"] is not None and result["matsubara"][0] == 0.0:
             van_vleck = float(np.real(entry["matsubara"][0]))
         chi0 = curie / tau + (van_vleck or 0.0)
-        # Dominant inelastic response on the positive real axis: the screening scale.
-        pos = w > 0
+        # Dominant inelastic response on the positive real axis: the screening scale. The spin-flip
+        # response of a spin-polarized impurity sits at either sign of w, so it is searched on |w|.
+        spectral = -np.imag(entry["realaxis"])
+        if name == "transverse":
+            spectral = np.abs(spectral)
+            peak_at = np.abs(w)
+        else:
+            peak_at = np.where(w > 0, w, np.nan)
+            spectral = np.where(w > 0, spectral, -np.inf)
         w_peak = None
-        if np.any(pos):
-            spectral = -np.imag(entry["realaxis"][pos])
-            if np.max(np.abs(spectral)) > 0:
-                w_peak = float(w[pos][int(np.argmax(spectral))])
+        if np.any(np.isfinite(peak_at)) and np.max(np.abs(spectral[np.isfinite(spectral)])) > 0:
+            w_peak = float(peak_at[int(np.argmax(spectral))])
         rows.append((name, curie, van_vleck, chi0, w_peak))
     print(f"  {'operator':>10s} {'Curie':>12s} {'VanVleck':>12s} {'chi(0)':>12s} {'peak(-Im chi)':>14s}")
     for name, curie, vv, chi0, w_peak in rows:
@@ -370,6 +404,8 @@ def print_susceptibility_summary(result):
             )
     for name, reason in result["skipped"].items():
         print(f"  {name}: skipped ({reason})")
+    for name, note in result.get("notes", {}).items():
+        print(f"  {name}: {note}")
 
 
 def calc_susceptibility_workflow(
@@ -485,6 +521,7 @@ def calc_susceptibility_workflow(
         occ_cutoff=occ_cutoff,
         slaterWeightMin=slaterWeightMin,
         verbose=verbosity >= 1,
+        spin_layout=sb.spin_layout,
     )
     if rank == 0 and result is not None:
         print_susceptibility_summary(result)

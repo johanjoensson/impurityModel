@@ -1180,4 +1180,5 @@ def calc_gs(
         stats_path,
         gs_truncation_report,
         gs_convergence_report,
+        spin_layout=layout,
     )

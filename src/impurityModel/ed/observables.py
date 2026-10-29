@@ -1434,7 +1434,7 @@ def print_screening_diagnostics(scr, file=None):
     corr_label = "Sz_imp.Sz_b" if scr["z_only"] else "S_imp.S_b"
     print("Screening channels (thermal):", file=file)
     if scr["z_only"]:
-        print("  (spin-polarized bath: longitudinal z-parts only, exact under the label check)", file=file)
+        print("  (spin-polarized bath: longitudinal z-parts only, exact: only S_z is needed)", file=file)
     for label, value in scr["channels"]:
         name = f"<Sz_imp({label}).Sz_bath>" if scr["z_only"] else f"<S_imp({label}).S_bath>"
         print(f"  {name} = {value: .6f}", file=file)
@@ -1874,7 +1874,8 @@ def print_thermal_expectation_values(
     sisb_thermal=None,
     sisb_z_thermal=None,
     sisb_z_connected=None,
-    sisb_pairing_approx=False,
+    sisb_pairing_note=None,
+    spin_pairing=None,
     extra_groups=None,
     impurity_orbitals=None,
     shell_casimir=None,
@@ -1897,8 +1898,10 @@ def print_thermal_expectation_values(
     For a collinear spin-polarized bath the longitudinal correlation and its connected
     (covariance) form can be passed as ``sisb_z_thermal`` / ``sisb_z_connected`` — they
     print as ``<Sz_imp.Sz_bath>`` / ``cov(Sz_imp,Sz_bath)`` — and
-    ``sisb_pairing_approx=True`` marks the full ``<S_imp.S_bath>`` line as depending on
-    the (index-convention) bath down↔up pairing.
+    ``sisb_pairing_note`` (a string, from :meth:`SpinLayout.sisb_note`) marks the full
+    ``<S_imp.S_bath>`` line as depending on a dn/up pairing that ``H`` does not verify;
+    ``spin_pairing`` (:meth:`SpinLayout.pairs_source`) is printed as a ``spin pairing`` row when the
+    pairs do not come from the plain index convention.
 
     ``impurity_orbitals`` (``Basis.impurity_orbitals``, optional) makes the charge/
     magnetism rows shell-aware via :func:`compute_shell_observables` -- see
@@ -1959,8 +1962,10 @@ def print_thermal_expectation_values(
             magnetism_rows.append(("mu_eff", mu_eff, "(g_J sqrt(<J^2>), in mu_B)"))
         magnetism_rows.append(("mu_spin_only", mu_spin, "(2 sqrt(<S^2>), in mu_B)"))
     correlation_rows = []
+    if spin_pairing:
+        correlation_rows.append(("spin pairing", None, spin_pairing))
     if sisb_thermal is not None:
-        suffix = "(transverse part depends on the bath dn/up pairing)" if sisb_pairing_approx else ""
+        suffix = sisb_pairing_note or ""
         correlation_rows.append(("<S_imp.S_bath>", np.real(sisb_thermal), suffix))
     if sisb_z_thermal is not None:
         correlation_rows.append(("<Sz_imp.Sz_bath>", np.real(sisb_z_thermal), ""))

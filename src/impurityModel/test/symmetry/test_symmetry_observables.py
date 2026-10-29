@@ -2056,3 +2056,24 @@ def test_report_diagnostics_through_the_support_filter_change_nothing_distribute
     filtered = _diagnostics(psis, comm_support_filter([psis], comm), comm, basis.redistribute_block)
     np.testing.assert_allclose(unfiltered, serial, atol=1e-14)
     np.testing.assert_array_equal(filtered, unfiltered)
+
+
+def test_thermal_report_shows_the_pairing_note_and_the_pairing_source(capsys):
+    from impurityModel.ed.observables import print_thermal_expectation_values
+
+    rho_one = np.zeros((10, 10), dtype=complex)
+    rho_one[9, 9] = 1.0
+    print_thermal_expectation_values(
+        rho_one,
+        0.0,
+        np.eye(10),
+        _d_shell_block_structure(),
+        sisb_thermal=-0.25,
+        sisb_pairing_note="(transverse part depends on the bath dn/up pairing, by chain position)",
+        spin_pairing="impurity pairs: rotation, bath pairs: chain position",
+    )
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.lstrip().startswith("<S_imp.S_bath>"))
+    assert "pairing" in line and line.count("=") == 1
+    assert float(line.split("=")[1].split()[0]) == -0.25
+    assert "spin pairing" in out and "impurity pairs: rotation" in out

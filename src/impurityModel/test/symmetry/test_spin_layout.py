@@ -162,3 +162,31 @@ def test_the_resolve_spin_pairs_shim_follows_the_layout():
     imp, bath, approx = resolve_spin_pairs(op, GROUPS, _bath_states(GROUPS), np.eye(N_IMP), N_ORB)
     assert tuple(imp) == PAIRS and approx
     assert bath
+
+
+def _basis(groups):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        impurity_orbitals=groups,
+        bath_states=_bath_states(groups),
+        num_spin_orbitals=N_ORB,
+        is_distributed=False,
+        comm=None,
+    )
+
+
+def test_the_susceptibility_operators_follow_the_layout():
+    from impurityModel.ed.susceptibility import build_susceptibility_operators
+
+    op = _model(bath_shift=(0.0, 0.05), level_shift=(0.0, 5e-5))
+    ops, skipped, notes = build_susceptibility_operators(op, _basis(GROUPS), np.eye(N_IMP, dtype=complex))
+    assert "transverse" in ops and "transverse" not in skipped
+    assert "spin-flip response" in notes["transverse"]  # collinear: physics note, not a warning
+
+    soc = np.zeros((N_ORB, N_ORB), dtype=complex)
+    soc[0, 5] = soc[5, 0] = 0.05
+    ops, skipped, notes = build_susceptibility_operators(
+        _model() + tensors_to_operator(soc), _basis(WHOLE), np.eye(N_IMP, dtype=complex)
+    )
+    assert "transverse" in skipped and "transverse" not in ops

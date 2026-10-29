@@ -345,7 +345,7 @@ def test_build_operators_and_auto_path():
     psis, es = _retained(E, V, dets)
     basis = _basis(dets)
 
-    ops, skipped = susceptibility.build_susceptibility_operators(hOp, basis, np.eye(2, dtype=complex))
+    ops, skipped, _notes = susceptibility.build_susceptibility_operators(hOp, basis, np.eye(2, dtype=complex))
     assert set(ops) == {"charge", "spin_z", "orb_z", "transverse"}
     assert skipped == {}
 
@@ -384,7 +384,7 @@ def test_polarized_bath_transverse_matches_dense_lehmann():
     weights /= weights.sum()
     basis = _basis(dets)
 
-    ops, skipped = susceptibility.build_susceptibility_operators(hOp, basis, np.eye(2, dtype=complex))
+    ops, skipped, _notes = susceptibility.build_susceptibility_operators(hOp, basis, np.eye(2, dtype=complex))
     assert "transverse" in ops and "transverse" not in skipped
 
     w = np.linspace(-4.0, 4.0, 33)

@@ -6,6 +6,8 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 :mod:`impurityModel.ed.groundstate`, which only decides *which* state is the ground state.
 """
 
+from dataclasses import asdict
+
 import numpy as np
 
 from impurityModel.ed.average import thermal_average_scale_indep
@@ -45,7 +47,7 @@ from impurityModel.ed.observables import (
     static_susceptibility_rows,
     thermal_observable_value,
 )
-from impurityModel.ed.spin_pairs import resolve_spin_pairs
+from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.utils import (
     V_DETAIL,
@@ -71,12 +73,16 @@ def report_ground_state(
     stats_path,
     gs_truncation_report,
     gs_convergence_report,
+    spin_layout=None,
 ):
     """Observables of the thermal ground manifold ``(es, psis)``, and the report that prints them.
 
     Collective on ``ground_state_basis.comm``. Returns ``(psis, es, ground_state_basis, thermal_rho,
     gs_info)`` -- the tuple ``calc_gs`` returns, with ``psis`` redistributed onto the basis and
     materialized as a list.
+
+    ``spin_layout`` is the :class:`~impurityModel.ed.spin_pairs.SpinLayout` of the solver basis
+    (``calc_gs`` passes the one it solved with); ``None`` resolves it here from ``Hop``.
     """
     # Redistribute onto the basis as it stands; do not first collapse it onto the support of
     # `psis`. The basis is also the seed space for the excited/Green's-function expansion
@@ -251,40 +257,42 @@ def report_ground_state(
             s2_thermal = l2_thermal = j2_thermal = None
             j_sharp = True
             shell_casimir = {}
-    # Kondo impurity-bath spin correlation <S_imp . S_bath>. The bath spin pairing
-    # follows the down-then-up convention, but is only trusted if the induced global
-    # spin operators commute with the one-body Hamiltonian (so the spin assignment
-    # is consistent with the model's spin symmetry); otherwise (SOC, non-standard
-    # ordering) it is skipped rather than reported wrong.
+    # Kondo impurity-bath spin correlation <S_imp . S_bath>. The (dn, up) pairing is the run's
+    # spin layout (spin_pairs.spin_layout): impurity pairs from the rotated S_+ or the index
+    # convention, bath pairs from the index convention, equal-energy matching or chain position,
+    # whichever makes H conserve S_z. When only S_z is verified (collinear / S_z-only grade) the
+    # transverse (S_+-) parts are flagged and the exact longitudinal correlation is reported
+    # alongside; with no pairing (SOC) it is skipped rather than reported wrong.
     sisb_values = None
     sisb_thermal = None
     sisb_z_values = None
     sisb_z_thermal = None
     sisb_z_connected = None
     sisb_pairing_approx = False
+    sisb_pairing_note = None
+    layout = spin_layout
     sisb_skip_reason = None
     spin_pairs = None
     try:
         n_orb = ground_state_basis.num_spin_orbitals
-        # Validation cascade (down-then-up convention / symmetry-derived / collinear
-        # spin-polarized bath) shared with the susceptibility driver. For the collinear
-        # case (pairing_approx=True) the transverse (S_±) parts are flagged and the exact
-        # longitudinal correlation is reported alongside.
-        resolved = resolve_spin_pairs(
-            Hop, ground_state_basis.impurity_orbitals, ground_state_basis.bath_states, rot_to_spherical, n_orb
-        )
-        if resolved is not None:
-            imp_pairs, bath_pairs, sisb_pairing_approx = resolved
-            spin_pairs = (imp_pairs, bath_pairs)
+        layout = spin_layout
+        if layout is None:
+            layout = resolve_spin_layout(
+                Hop,
+                ground_state_basis.impurity_orbitals,
+                ground_state_basis.bath_states,
+                rot_to_spherical,
+                n_orb,
+                comm=mov_comm,
+            )
+        sisb_pairing_approx = not layout.su2
+        sisb_pairing_note = layout.sisb_note()
+        if layout.labelled:
+            spin_pairs = (list(layout.imp_pairs), list(layout.bath_pairs))
         if spin_pairs is None:
             sisb_skip_reason = (
-                "could not determine a trustworthy (down,up) spin labelling. The down-then-up "
-                "index convention only holds in the spherical-harmonics representation -- a "
-                "symmetry-adapted-basis rotation of the correlated shell (rot_to_spherical set "
-                "to a symmetry-adapted, not spherical, unitary) breaks it -- and the "
-                "symmetry-derived fallback did not yield a consistent pairing, and the collinear "
-                "spin-polarized-bath check also failed (spin-orbit coupling, or a bath "
-                "connectivity/order the derivation cannot resolve, are other possible causes)."
+                "no (dn, up) pairing of the impurity and bath makes H conserve S_z "
+                "(spin-orbit coupling, or a bath connectivity the pairing cannot follow); " + "; ".join(layout.rejected)
             )
         else:
             imp_pairs, bath_pairs = spin_pairs
@@ -452,6 +460,8 @@ def report_ground_state(
                 "z_thermal": sisb_z_thermal,
                 "z_connected": sisb_z_connected,
                 "pairing_approx": sisb_pairing_approx,
+                "skip_reason": sisb_skip_reason,
+                "spin_layout": None if layout is None else asdict(layout),
             },
             "correlation": corr_diagnostics,
             "screening": screening_diagnostics,
@@ -519,7 +529,8 @@ def report_ground_state(
                 sisb_thermal=sisb_thermal,
                 sisb_z_thermal=sisb_z_thermal,
                 sisb_z_connected=sisb_z_connected,
-                sisb_pairing_approx=sisb_pairing_approx,
+                sisb_pairing_note=sisb_pairing_note,
+                spin_pairing=None if layout is None else layout.pairs_source(),
                 extra_groups=extra_groups or None,
                 impurity_orbitals=ground_state_basis.impurity_orbitals,
                 shell_casimir=shell_casimir,
