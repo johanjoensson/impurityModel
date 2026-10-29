@@ -396,3 +396,24 @@ swapping units. Not done: the true residual `q0 - zX + (M X)_P` in the record, t
 Complex Hermitian `H` runs end to end (step 3.7): the accumulator carries the conjugate shifts, the scores take
 `Y = R(z*) s` from them, and on the 6-orbital SIAM with complex hopping a refined unit beats breadth-first growth against
 the dense resolvent at `-n 1` and `-n 3` (`test_a_complex_hermitian_hamiltonian_is_refined_with_the_conjugate_shifts`).
+
+## 11. SMO 2-bath archive: pruning and refinement against an uncapped reference (2026-10-29)
+
+Workload: `SMO/cubic/impmod/2-baths` (ground state 431k, not cap-bound; heaviest GF unit 186k determinants, so an
+uncapped reference exists, 791 s). 3 ranks, `--matrix-mode discovered`, graded with `freeze_replay grade`.
+
+| cap | arm | wall s | max dΣ_mats | worst dΣ/headroom | worst Im Σ (ref -1.15e-3) |
+|---|---|---|---|---|---|
+| 80k | breadth | 261 | 5.3e-5 | 0.177 | -1.15e-3 |
+| 80k | pruned | 352 | 2.5e-5 | 0.101 | -1.15e-3 |
+| 80k | refined | 373 | 1.4e-6 | 0.084 | -1.15e-3 |
+| 80k | pruned + refined | 434 | 3.9e-6 | 0.084 | -1.15e-3 |
+| 40k | breadth | 230 | 1.2e-3 | 16.8 | +6.8e-2 |
+| 40k | pruned | 287 | 1.2e-3 | 16.8 | +6.8e-2 |
+| 40k | refined | 294 | 5.6e-4 | 16.6 | +6.7e-2 |
+| 40k | pruned + refined | 358 | 5.6e-4 | 16.6 | +6.7e-2 |
+
+Verdict (user): pruning keeps the basis small; refinement helps when the cap binds anyway. At 40k the cap lies
+inside the first shell, so pruning is bit-identical to breadth-first (the overflow top-K is the same selection) and
+no arm is causal; refinement halves the error but swaps almost nothing on the worst unit (first-shell rows exempt).
+Cost of the default arm (pruned + refined): 1.7x breadth-first wall at 80k, 1.6x at 40k.
