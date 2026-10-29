@@ -171,13 +171,6 @@ def test_a_nonzero_slater_weight_min_runs_and_does_not_depend_on_the_chunking(mo
     np.testing.assert_allclose(G, G1, atol=1e-12)
 
 
-def test_pruning_and_the_support_freeze_are_exclusive():
-    from impurityModel.ed.gf_primitives import SupportPolicy
-
-    with pytest.raises(ValueError, match="exclusive"):
-        SupportPolicy(_seed_basis(), 10**9, eta=0.1).enable_support_freeze(16, 1.0, 1e-4)
-
-
 @pytest.mark.mpi
 @pytest.mark.parametrize("eta", [0.05, 0.225, 0.5])
 def test_distributed_pruned_recurrence_is_the_exact_PHP_resolvent(monkeypatch, eta):
@@ -195,12 +188,11 @@ def test_distributed_vanishing_threshold_reaches_the_serial_closure(monkeypatch)
 
 
 def test_a_tripped_memory_guard_is_checked_once_per_admission_and_freezes(monkeypatch):
-    """The guard is collective and warns: the pruned proxy must ask it once per call, not once itself and once
-    again through the base class (which warned twice, and could fall through to plain cap admission with no ban
-    if the second answer differed)."""
+    """The guard is collective and warns: the proxy must ask it once per admission, not twice (which warned
+    twice, and could fall through to plain cap admission if the second answer differed)."""
     from impurityModel.ed.gf_primitives import SupportPolicy
 
-    proxy = SupportPolicy(_seed_basis(), 10**9, eta=0.2)
+    proxy = SupportPolicy(_seed_basis(), 10**9)
     calls = []
 
     def tripped(self=proxy):
