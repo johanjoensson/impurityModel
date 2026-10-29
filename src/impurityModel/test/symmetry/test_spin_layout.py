@@ -56,7 +56,8 @@ def _model(bath_shift=(0.0, 0.0), level_shift=(0.0, 0.0), density_density=False,
     return op
 
 
-def _layout(op, groups=GROUPS, rot=np.eye(N_IMP)):
+def _layout(op, groups=GROUPS, rot=None):
+    rot = np.eye(N_IMP) if rot is None else rot
     return spin_layout(op, groups, _bath_states(groups), rot, N_ORB)
 
 
