@@ -173,3 +173,18 @@ def test_the_pruned_set_and_depths_do_not_depend_on_the_rank_count(monkeypatch, 
     assert dist["proxy"].depth_histogram() == serial["proxy"].depth_histogram()
     np.testing.assert_allclose(G1, G0, atol=1e-9)
     assert np.array_equal(G1, G2)
+
+
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+def test_every_matrix_mode_reports_its_pruned_growth(monkeypatch, capfd, mode):
+    """The retained and matrix-free modes prune like the discovered one; a replay that prunes in them must say so
+    (a log with no pruned-growth line read as 'the flag was dropped')."""
+    from impurityModel.ed import gf_solvers
+
+    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "1e-3")
+    monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", mode)
+    basis = _seed_basis(cap=np.inf, comm=None)
+    full = _seeds()
+    seeds = _redistribute_as_width1(basis, full, len(full))
+    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=True, cap_info={})
+    assert "GF pruned growth" in capfd.readouterr().out

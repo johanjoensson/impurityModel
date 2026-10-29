@@ -1135,6 +1135,13 @@ def block_Green_discovered(
     if (support.cap_hit or support.support_frozen) and verbose and rank == 0:
         print(support.freeze_message(), flush=True)
     k_over_p = float("nan")
+    # The retained and matrix-free modes prune too (the cut is in the policy), but they hold no K store to size.
+    if support.prunes and matrix_mode != "discovered" and verbose and rank == 0:
+        print(
+            f"GF pruned growth ({support.rule}): |P| = {support.retained_size:,}, matrix mode {matrix_mode}, "
+            f"admitted per depth {support.depth_histogram()}",
+            flush=True,
+        )
     if matrix_mode == "discovered" and support.prunes:
         # A deferred row stays in K, so under pruning |K|/|P| is unbounded in principle: report it. The sums are
         # collective and the branch is replicated (mode and pruning are), never gated on the verbose rank.
