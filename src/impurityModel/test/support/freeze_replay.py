@@ -85,6 +85,38 @@ def grade(ref, new, tol=1e-3):
     return out
 
 
+def grade_zero(new, tol=1e-5):
+    """Grade a ``U = 0`` result against its exact self-energy, which is identically zero.
+
+    There is no reference run: ``Sigma = G0^-1 - G^-1`` vanishes for a non-interacting model at the
+    particle-hole symmetric point, so every nonzero value is truncation (or the solver's own noise floor, ~5e-6
+    on a model that is not truncated at all -- compare against the uncapped run, not against zero).
+    Returns ``mats_abs`` / ``real_abs`` (max |Sigma|), ``worst_im`` (max Im Sigma_ii on the real mesh, with
+    ``(mesh point, orbital)`` in ``worst_im_at``) and ``positive_points``, the number of (point, orbital) pairs
+    with Im Sigma_ii above ``tol`` (an acausal point).
+    """
+    im = np.imag(np.diagonal(np.asarray(new["sigma_real"]), axis1=1, axis2=2))
+    i = np.unravel_index(int(np.argmax(im)), im.shape)
+    return {
+        "mats_abs": float(np.max(np.abs(new["sigma"]))),
+        "real_abs": float(np.max(np.abs(new["sigma_real"]))),
+        "worst_im": float(im[i]),
+        "worst_im_at": (int(i[0]), int(i[1])),
+        "positive_points": int(np.sum(im > tol)),
+    }
+
+
+def format_grade_zero(g):
+    """One block of text for :func:`grade_zero`'s result."""
+    return "\n".join(
+        [
+            f"U = 0 (exact Sigma = 0)    max|Sigma_mats| {g['mats_abs']:.3e}   max|Sigma_real| {g['real_abs']:.3e}",
+            f"    max Im Sigma_ii real   {g['worst_im']:+.3e} at mesh point {g['worst_im_at'][0]}, "
+            f"orbital {g['worst_im_at'][1]}   (points above tolerance: {g['positive_points']})",
+        ]
+    )
+
+
 def format_grade(g):
     """One block of text for :func:`grade`'s result."""
     lines = [
@@ -154,6 +186,79 @@ def _solve_only(units, comm):
     gfm._gf_solve_units = solve
 
 
+def cap_policy(cap, gs_cap=None, gf_cap=None):
+    """The ``truncation_threshold`` a replay hands the driver: ``cap`` unless a separate GS / GF cap is named.
+
+    ``gs_cap`` / ``gf_cap`` give a :class:`~impurityModel.ed.memory_estimate.CapPolicy`, an unset side being
+    ``inf``. This is how a Green's-function cap that binds is pinned on a model whose ground state converges below
+    it, with the ground state left alone -- ``cap`` alone pins both, which on a cap-bound ground state truncates
+    it too. With both sides finite the caps are final (``from_memory=False``, the measured-RSS guards do not move
+    them); with one side unlimited the policy keeps ``from_memory=True``, because ``CapPolicy`` has no
+    "final but unlimited" state (``CapPolicy.coerce`` never makes one and the log line cannot describe it).
+    """
+    if gs_cap is None and gf_cap is None:
+        return cap
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    inf = float("inf")
+    return CapPolicy(
+        gs=inf if gs_cap is None else gs_cap,
+        gf=inf if gf_cap is None else gf_cap,
+        from_memory=gs_cap is None or gf_cap is None,
+    )
+
+
+def _solver_overrides(gf_settle, gf_settle_ratio, prune_tol, first_shell_tol, refine_rounds, refine_tol, refine_swap):
+    """``SolverOptions`` fields a TOML replay overrides: :func:`real_workload.build_options`'s rule, on built options.
+
+    An explicit ``prune_tol`` replaces the settle (the sweep's option beats the input's record), so the settle
+    fields are then not touched.
+    """
+    out = {}
+    if prune_tol is None:
+        if gf_settle is not None:
+            out["gf_settle"] = gf_settle
+        if gf_settle_ratio is not None:
+            out["gf_settle_ratio"] = gf_settle_ratio
+    else:
+        out["gf_prune_tol"] = prune_tol
+    for key, value in (
+        ("gf_first_shell_tol", first_shell_tol),
+        ("gf_refine_rounds", refine_rounds),
+        ("gf_refine_tol", refine_tol),
+        ("gf_refine_swap", refine_swap),
+    ):
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _toml_inputs(path, comm, verbosity, *, swm, cap, cost_budget, solver_overrides):
+    """``(model, basis, solver, meshes, cluster_label)`` of a TOML input, with the replay's overrides applied.
+
+    The input goes through the same ``load_input`` / ``build`` as ``impurityModel run``, so a synthetic model
+    (:mod:`metal_models`) is solved exactly as a user's would be. ``cap`` replaces the input's
+    ``truncation_threshold`` unless it is ``"archive"`` (the input's own value). Collective (``build`` is).
+    """
+    from dataclasses import replace
+
+    from impurityModel.inputformat.build import build
+    from impurityModel.inputformat.reader import load_input
+
+    built = build(load_input(str(path), comm=comm), comm=comm, verbosity=verbosity)
+    if built.meshes is None:
+        raise SystemExit(f"{path}: not a self-energy input (no frequency meshes)")
+    basis = built.basis
+    if cap != "archive":
+        basis = replace(basis, truncation_threshold=cap)
+    if swm is not None:
+        basis = replace(basis, slater_weight_min=float(swm))
+    if cost_budget is not None:
+        basis = replace(basis, cost_budget=cost_budget)
+    solver = replace(built.solver, **solver_overrides) if solver_overrides else built.solver
+    return built.model, basis, solver, built.meshes, built.extra.get("cluster_label", "cluster")
+
+
 def run(
     h5_path,
     out,
@@ -176,11 +281,17 @@ def run(
     refine_rtol=None,
     refine_maxit=None,
     refine_broaden=None,
+    gs_cap=None,
+    gf_cap=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
     ``cap`` pins ``truncation_threshold`` (an integer; the log's ``determinant cap`` line then says "set by you");
-    ``"archive"`` keeps the recorded setting. ``units`` (a list of global unit indices, or ``"heaviest"``) solves
+    ``"archive"`` keeps the recorded setting. ``gs_cap`` / ``gf_cap`` pin the ground-state and the Green's-function
+    determinant caps *separately* (an unset side is uncapped, see :func:`cap_policy`) and override ``cap``: a model
+    whose ground state needs the cap cannot otherwise be given a Green's-function cap that binds. ``h5_path`` may be
+    a TOML input instead of an archive (:func:`_toml_inputs`); ``iteration`` and ``cluster`` are then ignored.
+    ``units`` (a list of global unit indices, or ``"heaviest"``) solves
     only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
 
     ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
@@ -208,34 +319,64 @@ def run(
     ):
         if value is not None:
             setattr(gf_refinement, name, value)
-    wl = rw.load_workload(h5_path, cluster=cluster, iteration=iteration)
-    if wl["ignored_attrs"]:
-        # warm_start / warm_tol describe the bath fit that produced H solver, not the solver call.
-        extra = set(wl["ignored_attrs"]) - _BATH_FIT_OR_RETIRED
-        if extra:
-            raise SystemExit(f"archive records options this replay does not consume: {sorted(extra)}")
-    if swm is not None:
-        wl["slaterWeightMin"] = float(swm)
+    cap = cap_policy(cap, gs_cap, gf_cap)
+    if (gs_cap is not None or gf_cap is not None) and (comm is None or comm.rank == 0):
+        # The driver's own `determinant cap:` lines call a pinned side "auto" when the other side is unlimited
+        # (CapPolicy has no "final but unlimited"), so say here what was pinned.
+        print(
+            f"REPLAY CAPS: GS {gs_cap or 'unlimited'}, GF {gf_cap or 'unlimited'} (pinned by --gs-cap/--gf-cap)",
+            flush=True,
+        )
+    toml = str(h5_path).endswith(".toml")
+    if toml:
+        inputs = _toml_inputs(
+            h5_path,
+            comm,
+            verbosity,
+            swm=swm,
+            cap=cap,
+            cost_budget=cost_budget,
+            solver_overrides=_solver_overrides(
+                gf_settle, gf_settle_ratio, prune_tol, first_shell_tol, refine_rounds, refine_tol, refine_swap
+            ),
+        )
+        w_mesh, swm_used = inputs[3].w, inputs[1].slater_weight_min
+    else:
+        wl = rw.load_workload(h5_path, cluster=cluster, iteration=iteration)
+        if wl["ignored_attrs"]:
+            # warm_start / warm_tol describe the bath fit that produced H solver, not the solver call.
+            extra = set(wl["ignored_attrs"]) - _BATH_FIT_OR_RETIRED
+            if extra:
+                raise SystemExit(f"archive records options this replay does not consume: {sorted(extra)}")
+        if swm is not None:
+            wl["slaterWeightMin"] = float(swm)
+        w_mesh, swm_used = wl["w_mesh"], wl["slaterWeightMin"]
     if units is not None:
         _solve_only(units, comm)
     t0 = time.perf_counter()
     try:
-        res = rw.run_selfenergy(
-            wl,
-            comm=comm,
-            verbosity=verbosity,
-            truncation_threshold=cap,
-            gf_tol="archive",
-            gf_real_tol="archive",
-            gf_settle=gf_settle,
-            gf_settle_ratio=gf_settle_ratio,
-            gf_prune_tol=prune_tol,
-            gf_first_shell_tol=first_shell_tol,
-            cost_budget=cost_budget,
-            gf_refine_rounds=refine_rounds,
-            gf_refine_tol=refine_tol,
-            gf_refine_swap=refine_swap,
-        )
+        if toml:
+            from impurityModel.ed.selfenergy import calc_selfenergy
+
+            model, basis, solver, meshes, label = inputs
+            res = calc_selfenergy(model, meshes, basis, solver, comm=comm, verbosity=verbosity, cluster_label=label)
+        else:
+            res = rw.run_selfenergy(
+                wl,
+                comm=comm,
+                verbosity=verbosity,
+                truncation_threshold=cap,
+                gf_tol="archive",
+                gf_real_tol="archive",
+                gf_settle=gf_settle,
+                gf_settle_ratio=gf_settle_ratio,
+                gf_prune_tol=prune_tol,
+                gf_first_shell_tol=first_shell_tol,
+                cost_budget=cost_budget,
+                gf_refine_rounds=refine_rounds,
+                gf_refine_tol=refine_tol,
+                gf_refine_swap=refine_swap,
+            )
     except _UnitsDone:
         return None
     wall = time.perf_counter() - t0
@@ -251,13 +392,13 @@ def run(
             arrays[key] = arr
     np.savez(
         out + ".npz",
-        w=wl["w_mesh"],
+        w=w_mesh,
         freeze=np.array(mode),
-        swm=np.array(wl["slaterWeightMin"]),
+        swm=np.array(swm_used),
         wall=np.array(wall),
         **arrays,
     )
-    print(f"RESULT {out}: swm {wl['slaterWeightMin']:g} freeze {mode} wall {wall:.1f} s", flush=True)
+    print(f"RESULT {out}: swm {swm_used:g} freeze {mode} wall {wall:.1f} s", flush=True)
     return arrays
 
 
@@ -265,13 +406,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("archive")
+    r.add_argument("archive", help="an impurityModel_data.h5 archive, or a self-energy TOML input")
     r.add_argument("--iteration", type=int, default=1)
     r.add_argument("--cluster", default=None)
     r.add_argument("--swm", type=float, default=None)
     r.add_argument("--freeze", default="on")
     r.add_argument("--matrix-mode", default="auto", choices=["auto", "discovered", "retained", "none"])
     r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
+    r.add_argument("--gs-cap", default=None, type=int, help="ground-state determinant cap (separate from --gf-cap)")
+    r.add_argument("--gf-cap", default=None, type=int, help="Green's-function unit cap (separate from --gs-cap)")
     r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
     r.add_argument("--prune-tol", type=float, default=None, help="gf_prune_tol: pruned growth (replaces the settle)")
     r.add_argument("--refine-rounds", type=int, default=None, help="gf_refine_rounds: swap refinement of capped units")
@@ -288,11 +431,14 @@ def main(argv=None):
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
     g = sub.add_parser("grade")
-    g.add_argument("ref")
+    g.add_argument("ref", help="a reference .npz, or 'zero' for a U = 0 run whose exact Sigma is 0")
     g.add_argument("new")
     g.add_argument("--tol", type=float, default=1e-3)
     a = ap.parse_args(argv)
     if a.cmd == "grade":
+        if a.ref == "zero":
+            print(format_grade_zero(grade_zero(load_result(a.new))))
+            return 0
         print(format_grade(grade(load_result(a.ref), load_result(a.new), a.tol)))
         return 0
     from mpi4py import MPI
@@ -323,6 +469,8 @@ def main(argv=None):
         a.refine_rtol,
         a.refine_maxit,
         a.refine_broaden,
+        a.gs_cap,
+        a.gf_cap,
     )
     return 0
 
