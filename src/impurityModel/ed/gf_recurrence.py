@@ -196,7 +196,11 @@ def _sample_fanout(basis, hop):
     return elements / sampled if sampled else 0.0
 
 
-def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_discovered=True):
+#: The routing hash is deliberately skewed: the worst rank holds this multiple of the mean share of ``P``.
+REFINE_SKEW = 1.25
+
+
+def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_discovered=True, refine_shifts=0):
     """The matvec mode of a unit, decided once and collectively before its first step.
 
     ``"discovered"`` when ``want_discovered`` (a consumer of the frontier rows: the importance probe, swap
@@ -205,7 +209,10 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     (``gf_solvers._frozen_matrix_need``), else ``"none"`` (the operator is applied to every block). No memory
     budget (the guard is off) always fits. ``P`` is priced at ``cap`` determinants spread over the ranks (the
     seed basis when the cap is unbounded), ``K`` at :data:`K_OVER_P_ESTIMATE` times that. ``report`` (a dict)
-    receives the numbers the decision used. **Collective.**
+    receives the numbers the decision used. ``refine_shifts`` (the number of scoring shifts a refinement will
+    accumulate, conjugates included) adds the accumulator's ``2 * shifts * |P_local| * width`` complex entries, times
+    :data:`REFINE_SKEW` for the routing hash's imbalance, to the price of the discovered mode: a unit whose matrix
+    fits but matrix plus accumulator does not runs the retained mode, without a refinement. **Collective.**
     """
     from impurityModel.ed.gf_solvers import _frozen_matrix_need
     from impurityModel.ed.memory_estimate import current_rss_bytes
@@ -219,6 +226,8 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     n_p = max(n_basis_local, int(min(cap, 2**40) / n_ranks)) if np.isfinite(cap) and cap < 2**40 else n_basis_local
     n_k = int(K_OVER_P_ESTIMATE * n_p)
     need_e = matrix_need_bytes(n_p, n_k, fanout, n_k * n_ranks, n_ranks, width)
+    need_acc = int(REFINE_SKEW * 2 * refine_shifts * n_p * width * 16)
+    need_e += need_acc
     need_csr = _frozen_matrix_need(n_p, fanout, n_p * n_ranks, n_ranks, width)
     csr_budget = getattr(basis, "gf_csr_memory_budget", None)
     csr_budget = memory_budget if csr_budget is None else max(memory_budget, csr_budget)
@@ -233,6 +242,7 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
             n_k_local=n_k,
             fanout=fanout,
             need_discovered=need_e,
+            need_accumulator=need_acc,
             need_retained=need_csr,
             rss=rss,
             budget_discovered=e_budget,
@@ -962,7 +972,6 @@ def block_Green_discovered(
     support_settle=True,
     settle_ratio=None,
     matrix_mode="auto",
-    needs_matrix=False,
     prune_tol=None,
     first_shell_tol=None,
     refine=None,
@@ -972,8 +981,8 @@ def block_Green_discovered(
     The counterpart of ``gf_solvers.block_Green_sparse`` with the same arguments and return value
     ``(alphas, betas, r)``; ``cap_info`` additionally gets ``engine`` (the matvec mode that ran:
     ``"discovered"``, ``"retained"`` or ``"none"``) and ``matrix`` (the :class:`DistributedSparseMatrix` in the
-    ``"discovered"`` mode, else ``None``; never put it in ``cap_stats``). ``needs_matrix`` says a consumer will
-    read the discovered frontier (the importance probe, swap refinement), which is what ``"auto"`` needs the
+    ``"discovered"`` mode, else ``None``; never put it in ``cap_stats``). A swap
+    refinement (``refine``) reads the discovered frontier, which is what ``"auto"`` needs the
     ``"discovered"`` mode for: without one it takes the cheaper ``"retained"`` mode (the frozen phase then runs on
     the array kernel over ``P H P``). ``matrix_mode`` picks the matvec: the discovered-key matrix, the operator
     applied each step with the ``P H P`` matrix built at the freeze (``"retained"``), or the operator applied
@@ -1029,7 +1038,16 @@ def block_Green_discovered(
         raise ValueError(f"matrix_mode must be 'auto', 'discovered', 'retained' or 'none', got {matrix_mode!r}")
     if matrix_mode == "auto":
         report: dict = {}
-        matrix_mode = choose_matrix_mode(basis, hOp, cap, len(psi_arr), memory_budget, report, needs_matrix)
+        matrix_mode = choose_matrix_mode(
+            basis,
+            hOp,
+            cap,
+            len(psi_arr),
+            memory_budget,
+            report,
+            refine is not None and refine.rounds > 0,
+            2 * len(refine.shifts) if refine is not None and refine.rounds > 0 else 0,
+        )
         if verbose and rank == 0 and report:
             print(
                 f"GF matvec mode {matrix_mode}: {report['n_p_local']:,} local determinants x fan-out "
@@ -1078,6 +1096,26 @@ def block_Green_discovered(
         engine=engine,
     )
     plan, acc = None, None
+    if (
+        refine is not None
+        and refine.rounds > 0
+        and support.cap_hit
+        and not (refining and not support.memory_frozen and not support.support_frozen)
+    ):
+        why = (
+            f"matrix mode {matrix_mode} (the discovered matrix and the scoring accumulator did not fit, or the mode "
+            "was forced)"
+            if matrix_mode != "discovered"
+            else (
+                "the memory guard froze the unit below the cap"
+                if support.memory_frozen
+                else "the support settled below the cap"
+            )
+        )
+        if cap_info is not None:
+            cap_info["refine"] = {"declined": f"not attempted: {why}", "rounds": 0, "swapped": [], "gain": []}
+        if verbose and rank == 0:
+            print(f"GF refinement not attempted: {why}", flush=True)
     if refining and support.cap_hit and not support.memory_frozen and not support.support_frozen:
         from impurityModel.ed.gf_refinement import scoring_plan
         from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin

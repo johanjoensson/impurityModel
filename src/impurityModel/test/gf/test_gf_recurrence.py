@@ -177,6 +177,27 @@ def test_the_mode_follows_the_memory_budget(comm):
 
 
 @pytest.mark.parametrize("comm", COMMS)
+def test_the_scoring_accumulator_is_priced_and_a_unit_that_cannot_hold_it_runs_retained(comm):
+    from impurityModel.ed.gf_recurrence import MATRIX_MEMORY_SAFETY, REFINE_SKEW, choose_matrix_mode
+    from impurityModel.test.basis.test_sparse_matrix_build import _basis
+    from impurityModel.test.support.gf_chain_fixtures import N_ORB, chain_operator, chain_seeds
+
+    basis = _basis(sorted({d for s in chain_seeds() for d in s}), comm, n_orb=N_ORB)
+    op = chain_operator()
+    plain, priced = {}, {}
+    choose_matrix_mode(basis, op, 3000, 2, 10**12, plain)
+    choose_matrix_mode(basis, op, 3000, 2, 10**12, priced, True, 16)
+    assert plain["need_accumulator"] == 0
+    assert priced["need_accumulator"] == int(REFINE_SKEW * 2 * 16 * plain["n_p_local"] * 2 * 16)  # x and p, complex
+    assert priced["need_discovered"] == plain["need_discovered"] + priced["need_accumulator"]
+    # A budget that holds the matrix but not the matrix plus the accumulator: retained, with the accumulator priced.
+    scale = MATRIX_MEMORY_SAFETY / config.GF_CSR_MEMORY_SAFETY.get()
+    budget = (plain["rss"] + plain["need_discovered"] + priced["need_accumulator"] / 2) / scale
+    assert choose_matrix_mode(basis, op, 3000, 2, budget) == "discovered"
+    assert choose_matrix_mode(basis, op, 3000, 2, budget, None, True, 16) == "retained"
+
+
+@pytest.mark.parametrize("comm", COMMS)
 def test_the_retained_mode_stores_p_rows_only(comm, monkeypatch):
     """``"retained"`` is priced at ``need_CSR`` because its matrix has no frontier rows; one that kept them would
     overrun the budget it was chosen for and still give the same G, so only the matrix itself can show it."""

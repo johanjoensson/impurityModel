@@ -42,7 +42,6 @@ def _block_green_group(
     unit_label=None,
     support_settle=True,
     settle_ratio=None,
-    unit_probe=None,
     prune_tol=None,
     first_shell_tol=None,
     refine=None,
@@ -57,10 +56,6 @@ def _block_green_group(
     group. ``cap_stats`` is ``{"cap_hit", "retained_size", "cap"}`` describing whether this
     solve froze at ``truncation_threshold`` (feeds the basis_cap diagnostic).
 
-    ``unit_probe`` (optional) is called as ``unit_probe(matrix, support, seeds, hOp, excited_basis, info)`` on a unit
-    that froze at the cap with its discovered matrix intact (``cap_hit``, not ``memory_frozen``, not
-    ``support_frozen``; the decision is replicated) and its record lands in ``cap_stats["probe"]``. Asking for a
-    probe asks for the ``"discovered"`` matvec mode.
     ``retained_size`` is the global determinant count the recurrence ran on -- this unit's
     maximum basis size -- or ``None`` on the sparse path with no finite cap, where nothing
     tracks the support the matvec discovers (see the comment at the sparse branch).
@@ -143,7 +138,6 @@ def _block_green_group(
             memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
             support_settle=support_settle,
             settle_ratio=settle_ratio,
-            needs_matrix=unit_probe is not None or (refine is not None and refine.rounds > 0),
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
             refine=refine,
@@ -170,14 +164,6 @@ def _block_green_group(
         }
         if cap_info.get("refine") is not None:
             cap_stats["refine"] = cap_info["refine"]
-        if (
-            unit_probe is not None
-            and cap_info.get("matrix") is not None
-            and cap_info["cap_hit"]
-            and not cap_info.get("memory_frozen", False)
-            and not cap_info["support_frozen"]
-        ):
-            cap_stats["probe"] = unit_probe(cap_info["matrix"], cap_info["proxy"], seeds, hOp, excited_basis, info)
     else:
         alphas, betas, r = block_Green(
             reort=reort,
@@ -284,7 +270,6 @@ def lanczos_unit_kernel(
     support_settle=True,
     settle_ratio=None,
     unit_ids=None,
-    unit_probe=None,
     prune_tol=None,
     first_shell_tol=None,
     refine=None,
@@ -326,8 +311,6 @@ def lanczos_unit_kernel(
     unit_ids : list of int, optional
         The global unit number of each entry of ``units`` (a subset re-solve), used for the unit's log label and
         trace note; ``None``: the position.
-    unit_probe : callable, optional
-        The importance probe of a capped unit (:func:`_block_green_group`); ``None``: none.
     prune_tol, first_shell_tol : float, optional
         Importance-pruned growth (:func:`gf_solvers.block_Green_sparse`); ``None``: the knobs.
     """
@@ -354,7 +337,6 @@ def lanczos_unit_kernel(
             unit_label=u if unit_ids is None else unit_ids[u],
             support_settle=support_settle,
             settle_ratio=settle_ratio,
-            unit_probe=unit_probe,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
             refine=refine_for(unit) if refine_for is not None else refine,

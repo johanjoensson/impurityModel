@@ -278,9 +278,9 @@ def run(
     refine_rounds=None,
     refine_tol=None,
     refine_swap=None,
-    refine_rtol=None,
-    refine_maxit=None,
-    refine_broaden=None,
+    refine_stop_rtol=None,
+    refine_max_shifts=None,
+    refine_weighted=None,
     gs_cap=None,
     gf_cap=None,
 ):
@@ -297,9 +297,10 @@ def run(
     ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
     the settle) and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on
     every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze;
-    ``refine_rtol`` / ``refine_maxit`` / ``refine_broaden`` set ``gf_refinement.REFINE_RTOL`` / ``REFINE_MAXIT`` /
-    ``REFINE_BROADEN`` (the importance solves' stopping rule and the broadening factor of the real-axis scoring
-    shifts), identically on every rank.
+    ``refine_stop_rtol`` / ``refine_max_shifts`` / ``refine_weighted`` set ``gf_refinement.REFINE_STOP_RTOL`` /
+    ``REFINE_MAX_SHIFTS`` / ``REFINE_WEIGHTED`` (the residual the recurrence-fed scoring solutions must reach, the
+    number of scoring shifts per block, and whether each shift's scores are weighted by ``|G0^-1|^2``), identically
+    on every rank.
     """
     if prune_rule is not None:
         os.environ["GF_PRUNE_RULE"] = prune_rule
@@ -313,9 +314,9 @@ def run(
     from impurityModel.ed import gf_refinement
 
     for name, value in (
-        ("REFINE_RTOL", refine_rtol),
-        ("REFINE_MAXIT", refine_maxit),
-        ("REFINE_BROADEN", refine_broaden),
+        ("REFINE_STOP_RTOL", refine_stop_rtol),
+        ("REFINE_MAX_SHIFTS", refine_max_shifts),
+        ("REFINE_WEIGHTED", refine_weighted),
     ):
         if value is not None:
             setattr(gf_refinement, name, value)
@@ -420,10 +421,15 @@ def main(argv=None):
     r.add_argument("--refine-rounds", type=int, default=None, help="gf_refine_rounds: swap refinement of capped units")
     r.add_argument("--refine-tol", type=float, default=None, help="gf_refine_tol (needs --refine-rounds)")
     r.add_argument("--refine-swap", type=float, default=None, help="gf_refine_swap (needs --refine-rounds)")
-    r.add_argument("--refine-rtol", type=float, default=None, help="importance-solve rtol (REFINE_RTOL, default 1e-6)")
-    r.add_argument("--refine-maxit", type=int, default=None, help="importance-solve maxit (REFINE_MAXIT, default 500)")
     r.add_argument(
-        "--refine-broaden", type=float, default=None, help="factor on the real-axis scoring shifts' Im z (default 1)"
+        "--refine-stop-rtol", type=float, default=None, help="residual the scoring solutions must reach (default 1e-4)"
+    )
+    r.add_argument("--refine-max-shifts", type=int, default=None, help="scoring shifts per block (default 8)")
+    r.add_argument(
+        "--refine-weighted",
+        action="store_true",
+        default=None,
+        help="weight each scoring shift's scores by |G0^-1|^2 (default off)",
     )
     r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
@@ -466,9 +472,9 @@ def main(argv=None):
         a.refine_rounds,
         a.refine_tol,
         a.refine_swap,
-        a.refine_rtol,
-        a.refine_maxit,
-        a.refine_broaden,
+        a.refine_stop_rtol,
+        a.refine_max_shifts,
+        a.refine_weighted,
         a.gs_cap,
         a.gf_cap,
     )

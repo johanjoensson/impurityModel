@@ -12,7 +12,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.gf_refinement import importance_scores, solve_shifted
+from impurityModel.ed.gf_refinement import importance_scores
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp
 from impurityModel.test.basis.test_sparse_matrix_build import N_ORB, _all_dets, _basis
 
@@ -115,6 +115,21 @@ def _global_seeds(matrix, block, index, comm):
     return full
 
 
+def _dense_solutions(matrix, h, in_p, index, block, zs, conj=False):
+    """``X_z = (z - H_PP)^-1 s`` per shift from the dense operator, on this rank's P slots (``conj``: at ``z*``)."""
+    comm = matrix.comm if matrix.comm is not None else MPI.COMM_WORLD
+    p = np.flatnonzero(in_p)
+    seeds_g = _global_seeds(matrix, block, index, comm)
+    pos = {int(g): i for i, g in enumerate(p)}
+    rows = [pos.get(index[_key(k)], 0) for k in matrix.p_keys()]  # a dead slot reads row 0: zeroed by `alive`
+    out = []
+    for z in zs:
+        zz = np.conj(z) if conj else z
+        x = np.linalg.solve(zz * np.eye(len(p)) - h[np.ix_(p, p)], seeds_g[p])
+        out.append(x[rows])
+    return out
+
+
 @pytest.mark.mpi
 def test_abs2_matvec_is_the_entrywise_square():
     comm = MPI.COMM_WORLD
@@ -144,7 +159,8 @@ def test_the_scores_equal_the_dense_definitions(first_order, drop):
     comm = MPI.COMM_WORLD
     dets, _op, _b, matrix, h, index, in_p = _setup(comm, drop)
     block = _seeds(matrix, index, dets)
-    got = importance_scores(matrix, block, ZS, rtol=1e-11, first_order=first_order)
+    xs = _dense_solutions(matrix, h, in_p, index, block, ZS)
+    got = importance_scores(matrix, block, ZS, xs, first_order=first_order)
     s_ret, s_cand = _dense_scores(h, in_p, _global_seeds(matrix, block, index, comm), ZS, first_order)
     pkeys = matrix.p_keys()
     kkeys = matrix.keys_of(np.arange(matrix.n_k_local))
@@ -152,7 +168,6 @@ def test_the_scores_equal_the_dense_definitions(first_order, drop):
     want_cand = s_cand[[index[_key(k)] for k in kkeys]]
     np.testing.assert_allclose(got.s_ret, want_ret, rtol=1e-6, atol=1e-12)
     np.testing.assert_allclose(got.s_cand, want_cand, rtol=1e-6, atol=1e-12)
-    assert max(got.residuals) < 1e-10
     # The premise: there are discovered rows with a score, and the self-energy changes the ranking's values.
     n_cand = comm.allreduce(int(np.isfinite(got.s_cand).sum()))
     assert n_cand > 0
@@ -161,10 +176,11 @@ def test_the_scores_equal_the_dense_definitions(first_order, drop):
 @pytest.mark.mpi
 def test_the_self_energy_term_matters():
     comm = MPI.COMM_WORLD
-    dets, _op, _b, matrix, _h, index, _in_p = _setup(comm)
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm)
     block = _seeds(matrix, index, dets)
-    a = importance_scores(matrix, block, ZS, rtol=1e-11)
-    b = importance_scores(matrix, block, ZS, rtol=1e-11, first_order=False)
+    xs = _dense_solutions(matrix, h, in_p, index, block, ZS)
+    a = importance_scores(matrix, block, ZS, xs)
+    b = importance_scores(matrix, block, ZS, xs, first_order=False)
     finite = np.isfinite(a.s_ret)
     differs = comm.allreduce(int(not np.allclose(a.s_ret[finite], b.s_ret[finite], rtol=1e-3)), op=MPI.SUM)
     assert differs > 0
@@ -186,98 +202,6 @@ def test_the_removal_identity_is_exact_for_a_real_hamiltonian():
         r2 = np.linalg.inv(z * np.eye(n - 1) - h[np.ix_(keep, keep)])
         g2 = s[keep].T @ r2 @ s[keep]
         np.testing.assert_allclose(g2 - g, -np.outer(x[d], x[d]) / r[d, d], atol=1e-12)
-
-
-@pytest.mark.mpi
-def test_the_solver_agrees_with_a_direct_solve_and_leaves_on_one_iteration_on_every_rank():
-    comm = MPI.COMM_WORLD
-    rng = np.random.default_rng(3)
-    n = 40
-    a = rng.normal(size=(n, n))
-    a = (a + a.T) / 2
-    comm.Bcast(a, root=0)
-    lo, hi = comm.rank * n // comm.size, (comm.rank + 1) * n // comm.size
-    z = 0.2 + 0.5j
-    b = np.arange(n, dtype=complex) + 1
-
-    def apply(v):
-        full = np.concatenate(comm.allgather(v))
-        return a[lo:hi] @ full
-
-    x, it, rel = solve_shifted(apply, z, b[lo:hi], comm, rtol=1e-12)
-    want = np.linalg.solve(z * np.eye(n) - a, b)
-    np.testing.assert_allclose(x, want[lo:hi], atol=1e-9)
-    assert len(set(comm.allgather(it))) == 1 and rel < 1e-11
-
-
-# -- the seam: gf_engine._block_green_group calls the probe on a capped unit that kept its matrix ---------------
-
-
-def _unit(comm, cap, probe):
-    from impurityModel.ed.gf_engine import _block_green_group
-    from impurityModel.test.gf.test_gf_truncation import _redistribute_as_width1
-    from impurityModel.test.support.gf_chain_fixtures import DELTA, chain_operator, chain_seeds
-    from impurityModel.test.support.gf_chain_fixtures import N_ORB as N14
-
-    basis = _basis(sorted({d for s in chain_seeds() for d in s}), comm, n_orb=N14)
-    basis.truncation_threshold = cap
-    full = chain_seeds()
-    seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
-    return _block_green_group(
-        basis,
-        chain_operator(),
-        seeds,
-        False,
-        DELTA,
-        0.0,
-        True,
-        False,
-        None,
-        None,
-        support_settle=False,
-        unit_probe=probe,
-    )
-
-
-@pytest.mark.mpi
-def test_the_probe_runs_on_a_capped_unit_with_its_matrix():
-    comm = MPI.COMM_WORLD
-    calls = []
-
-    def probe(matrix, support, seeds, hop, basis, info):
-        calls.append((matrix, support, seeds, basis))
-        return {"called": True, "n_p": int(matrix.n_p_local)}
-
-    *_, cap_stats = _unit(comm, 900, probe)
-    assert cap_stats["cap_hit"] and len(calls) == 1
-    assert isinstance(calls[0][0], DistributedSparseMatrix) and cap_stats["probe"]["called"]
-    assert calls[0][1].retained_size == cap_stats["retained_size"]
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize("cap", [10**9])
-def test_the_probe_is_not_called_on_an_uncapped_unit_or_without_one(cap):
-    comm = MPI.COMM_WORLD
-    calls = []
-    *_, uncapped = _unit(comm, cap, lambda *a: calls.append(a))
-    assert not uncapped["cap_hit"] and not calls and "probe" not in uncapped
-    *_, none = _unit(comm, 900, None)
-    assert "probe" not in none
-
-
-@pytest.mark.mpi
-def test_probe_unit_scores_a_real_capped_unit():
-    comm = MPI.COMM_WORLD
-    *_, cap_stats = _unit(comm, 900, _probe_with_zs)
-    record = cap_stats["probe"]
-    assert record["residual"] < 1e-5
-    assert record["top_s_cand"] > 0 and np.isfinite(record["low_s_ret"])
-
-
-def _probe_with_zs(matrix, support, seeds, hop, basis, info):
-    from impurityModel.ed.gf_refinement import probe_unit
-
-    return probe_unit(matrix, support, seeds, hop, basis, info, zs=(0.5 + 0.1j, -1.0 + 0.1j))
 
 
 @pytest.mark.mpi
@@ -309,44 +233,6 @@ def test_the_exempt_rows_are_the_seeds_the_heavy_first_shell_and_last_rounds_adm
     union = set().union(*comm.allgather(mine))
     assert union == set().union(*comm.allgather(want))
     assert any(e for e in got) or comm.size > 1
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize("x0", [False, True])
-def test_the_block_solver_equals_a_direct_solve_per_column_and_leaves_together_on_every_rank(x0):
-    from impurityModel.ed.gf_refinement import solve_shifted_block
-
-    comm = MPI.COMM_WORLD
-    rng = np.random.default_rng(4)
-    n = 45
-    a = rng.normal(size=(n, n))
-    a = (a + a.T) / 2
-    b = rng.normal(size=(n, 4)) + 0j
-    b[:, 2] = 0.0  # a zero column stays zero and does not stall the others
-    comm.Bcast(a, root=0)
-    comm.Bcast(b, root=0)
-    lo, hi = comm.rank * n // comm.size, (comm.rank + 1) * n // comm.size
-    z = 0.2 + 0.5j
-    guess = (rng.normal(size=(n, 4)) * 0.1 + 0j) if x0 else None
-    if x0:
-        comm.Bcast(guess, root=0)
-
-    def apply(v):
-        full = np.zeros((n, v.shape[1]), dtype=complex)
-        full[lo:hi] = v
-        if comm.size > 1:
-            comm.Allreduce(MPI.IN_PLACE, full, op=MPI.SUM)
-        return a[lo:hi] @ full
-
-    x, it, rel = solve_shifted_block(apply, z, b[lo:hi], comm, x0=None if guess is None else guess[lo:hi], rtol=1e-12)
-    want = np.linalg.solve(z * np.eye(n) - a, b)
-    got = np.zeros_like(want)
-    got[lo:hi] = x
-    if comm.size > 1:
-        comm.Allreduce(MPI.IN_PLACE, got, op=MPI.SUM)
-    np.testing.assert_allclose(got, want, atol=1e-9)
-    assert rel.max() < 1e-10 and rel[2] == 0.0
-    assert comm.allreduce(it, op=MPI.MAX) == comm.allreduce(it, op=MPI.MIN)
 
 
 @pytest.mark.mpi
@@ -431,33 +317,30 @@ def test_complex_seeds_are_scored_with_the_conjugate_shift_solve():
     pkeys = matrix.p_keys()
     block = block * np.array([phases[index[_key(k)]] for k in pkeys])[:, None]
     block[:, 1] += 0.3 * block[:, 0]  # a genuinely mixed second column
-    got = importance_scores(matrix, block, ZS, rtol=1e-11)
-    assert got.solutions_y, "complex seeds need the second solve"
+    xs = _dense_solutions(matrix, h, in_p, index, block, ZS)
+    ys = _dense_solutions(matrix, h, in_p, index, block, ZS, conj=True)
+    got = importance_scores(matrix, block, ZS, xs, ys)
     s_ret, s_cand = _dense_scores_hermitian(h, in_p, _global_seeds(matrix, block, index, comm), ZS)
     kkeys = matrix.keys_of(np.arange(matrix.n_k_local))
     np.testing.assert_allclose(got.s_ret, s_ret[[index[_key(k)] for k in pkeys]], rtol=1e-6, atol=1e-12)
     np.testing.assert_allclose(got.s_cand, s_cand[[index[_key(k)] for k in kkeys]], rtol=1e-6, atol=1e-12)
-    assert max(got.residuals) < 1e-10
-    real = importance_scores(matrix, _seeds(matrix, index, dets), ZS, rtol=1e-11)
-    assert not real.solutions_y, "real seeds and a real H need one solve"
+    # Without the conjugate solutions the complex seeds' scores are the real-seed form, which is not the same.
+    wrong = importance_scores(matrix, block, ZS, xs)
+    finite = np.isfinite(got.s_ret)
+    assert comm.allreduce(int(not np.allclose(wrong.s_ret[finite], got.s_ret[finite], rtol=1e-3)), op=MPI.SUM) > 0
 
 
 @pytest.mark.mpi
-def test_scores_from_handed_over_solutions_equal_the_solved_ones_and_the_weights_scale_them():
+def test_the_weights_scale_the_scores_and_pick_the_shift_that_counts():
     comm = MPI.COMM_WORLD
-    dets, _op, _b, matrix, _h, index, _in_p = _setup(comm)
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm)
     block = _seeds(matrix, index, dets)
-    solved = importance_scores(matrix, block, ZS, rtol=1e-11)
-    handed = importance_scores(matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None)
-    np.testing.assert_allclose(handed.s_ret, solved.s_ret, rtol=1e-12, atol=1e-300)
-    np.testing.assert_allclose(handed.s_cand, solved.s_cand, rtol=1e-12, atol=1e-300)
-    assert handed.iterations == [0, 0]  # nothing was solved
-    half = importance_scores(matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None, weights=[0.5, 0.5])
-    finite = np.isfinite(solved.s_ret)
-    np.testing.assert_allclose(half.s_ret[finite], 0.5 * solved.s_ret[finite], rtol=1e-12)
+    xs = _dense_solutions(matrix, h, in_p, index, block, ZS)
+    plain = importance_scores(matrix, block, ZS, xs)
+    finite = np.isfinite(plain.s_ret)
+    half = importance_scores(matrix, block, ZS, xs, weights=[0.5, 0.5])
+    np.testing.assert_allclose(half.s_ret[finite], 0.5 * plain.s_ret[finite], rtol=1e-12)
     # A weight picks the shift that counts: zero on the second leaves the first shift's scores alone.
-    first_only = importance_scores(matrix, block, ZS[:1], rtol=1e-11)
-    masked = importance_scores(
-        matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None, weights=[1.0, 0.0]
-    )
-    np.testing.assert_allclose(masked.s_ret[finite], first_only.s_ret[finite], rtol=1e-6)
+    first_only = importance_scores(matrix, block, ZS[:1], xs[:1])
+    masked = importance_scores(matrix, block, ZS, xs, weights=[1.0, 0.0])
+    np.testing.assert_allclose(masked.s_ret[finite], first_only.s_ret[finite], rtol=1e-12)

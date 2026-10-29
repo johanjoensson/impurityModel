@@ -517,7 +517,6 @@ def block_Green_sparse(
     memory_policy="tighten",
     support_settle=True,
     settle_ratio=None,
-    needs_matrix=False,
     prune_tol=None,
     first_shell_tol=None,
     refine=None,
@@ -545,9 +544,6 @@ def block_Green_sparse(
 
     The Krylov store of a reorthogonalized run is complex128; the ``krylov_dtype=complex64`` store belongs to the
     ManyBodyState block-Lanczos kernel (``BlockLanczos.block_lanczos``), which this GF no longer runs.
-
-    ``needs_matrix``: a consumer (the ``unit_probe`` of :func:`gf_engine._block_green_group`) will read the
-    discovered matrix, so ``"auto"`` keeps the ``"discovered"`` mode when it fits.
 
     ``prune_tol`` / ``first_shell_tol``: importance-pruned growth (see :func:`gf_recurrence.block_Green_discovered`);
     ``None``: the ``GF_LANCZOS_ADMIT_TOL`` / ``GF_ADMIT_FIRST_SHELL_TOL`` knobs.
@@ -580,7 +576,6 @@ def block_Green_sparse(
         support_settle=support_settle,
         settle_ratio=settle_ratio,
         matrix_mode=_MATRIX_MODE,
-        needs_matrix=needs_matrix or (refine is not None and refine.rounds > 0),
         prune_tol=prune_tol,
         first_shell_tol=first_shell_tol,
         refine=refine,

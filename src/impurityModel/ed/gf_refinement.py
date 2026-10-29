@@ -2,10 +2,12 @@ r"""The importance probe of a cap-limited Green's-function unit: which retained 
 discovered ones would carry the most.
 
 Layer 5: reads a :class:`DistributedSparseMatrix` (``P`` admitted, ``F = K \ P`` discovered), never grows it. For a
-shift ``z`` solve ``(z - M_P) X = s`` on ``P`` and score, in units of the Green's function ``G = s^H X``:
+shift ``z`` take ``X = (z - M_P)^-1 s`` on ``P`` (the unit's own block-Lanczos recurrence accumulates it:
+:class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) and score, in units of the Green's function
+``G = s^H X``:
 
 * a retained determinant ``D``: removing it changes ``G_ij`` by exactly ``-X_i(D) X_j(D) / R_DD`` with
-  ``R = (z - H_P)^-1`` (every cross term cancels; real ``H``, complex-symmetric ``R``), so
+  ``R = (z - H_P)^-1`` (every cross term cancels; Hermitian ``H``), so
   ``s_ret(D) = max_j |X_j(D)|^2 |z - H_DD - Sigma_D|`` with ``R_DD ~ 1 / (z - H_DD - Sigma_D)``;
 * a discovered determinant (``X_D = 0``): the Epstein-Nesbet first-order gain
   ``s_cand(D) = max_j |(M_F X)_j(D)|^2 / |z - H_DD - Sigma_D|``.
@@ -13,188 +15,40 @@ shift ``z`` solve ``(z - M_P) X = s`` on ``P`` and score, in units of the Green'
 ``Sigma_D = sum_{D' in P, D' != D} |M_DD'|^2 / (z - H_D'D')`` is one entrywise-``|M|^2`` matvec against
 ``1 / (z - H_D'D')`` over the ``P`` columns, so the two scores share one denominator and are commensurable.
 The maximum over the shifts is kept. The removal identity is ``-conj(Y_i(D)) X_j(D) / R_DD`` with ``X = R(z) s``
-and ``Y = R(z*) s``: when ``H`` is real and the seed columns real up to a phase ``|Y| = |X|`` and one solve per shift
-serves; otherwise a second solve at ``z*`` is made. (A complex ``H`` is still declined by ``refine_frozen_unit``:
-its tests against a dense complex oracle are open, see the doc.)
+and ``Y = R(z*) s``: when ``H`` is real and the seed columns real up to a phase ``|Y| = |X|`` and one set of solutions
+serves; otherwise the conjugate shifts ride along in the same recurrence. Only the Hermitian structure of ``H`` is
+used, so complex ``H`` (spin-orbit) is scored like real.
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.work_queue import queue_progress
-
 
 @dataclass
 class ImportanceScores:
     """Per-rank scores. ``s_ret`` is indexed by P slot (``-inf`` on a dead slot), ``s_cand`` by K slot (``-inf``
-    on a determinant that is in ``P``). ``solutions`` are the converged ``X`` per shift (a warm start for the next
-    round); ``residuals`` the worst relative residual over the columns of each shift."""
+    on a determinant that is in ``P``)."""
 
     s_ret: np.ndarray
     s_cand: np.ndarray
-    solutions: list = field(default_factory=list)
-    solutions_y: list = field(default_factory=list)
-    residuals: list = field(default_factory=list)
-    iterations: list = field(default_factory=list)
 
 
-def _dot(comm, a, b):
-    """``a^H b`` summed over the ranks (a fixed-shape ``Allreduce``, never the lowercase one on an array)."""
-    value = np.array([np.vdot(a, b)], dtype=complex)
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, value, op=MPI.SUM)
-    return value[0]
-
-
-def solve_shifted(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
-    """BiCGSTAB for ``(z - A) x = b``, ``apply(v)`` giving ``A v`` for this rank's rows (``v`` of shape ``(n,)``).
-
-    Returns ``(x, iterations, relative residual)``. The loop count and the breakdown test are decided on
-    allreduced scalars, so every rank leaves on the same iteration. **Collective** on a distributed ``b``.
-    """
-
-    def op(v):
-        return z * v - apply(v)
-
-    b = np.asarray(b, dtype=complex)
-    bnorm = np.sqrt(_dot(comm, b, b).real)
-    x = np.zeros_like(b) if x0 is None else np.array(x0, dtype=complex)
-    if bnorm == 0.0:
-        return np.zeros_like(b), 0, 0.0
-    r = b - op(x) if x0 is not None else b.copy()
-    r_hat = r.copy()
-    rho = alpha = omega = 1.0 + 0j
-    v = np.zeros_like(b)
-    p = np.zeros_like(b)
-    rel = np.sqrt(_dot(comm, r, r).real) / bnorm
-    it = 0
-    while rel > rtol and it < maxit:
-        queue_progress()  # see work_queue: a solve can take minutes on the rank hosting the unit queue
-        rho_new = _dot(comm, r_hat, r)
-        if abs(rho_new) < 1e-300 or abs(omega) < 1e-300:
-            break
-        beta = (rho_new / rho) * (alpha / omega)
-        p = r + beta * (p - omega * v)
-        v = op(p)
-        denom = _dot(comm, r_hat, v)
-        if abs(denom) < 1e-300:
-            break
-        alpha = rho_new / denom
-        s = r - alpha * v
-        if np.sqrt(_dot(comm, s, s).real) / bnorm <= rtol:
-            x = x + alpha * p
-            r = s
-            rel = np.sqrt(_dot(comm, r, r).real) / bnorm
-            it += 1
-            break
-        t = op(s)
-        tt = _dot(comm, t, t)
-        if abs(tt) < 1e-300:
-            break
-        omega = _dot(comm, t, s) / tt
-        x = x + alpha * p + omega * s
-        r = s - omega * t
-        rho = rho_new
-        rel = np.sqrt(_dot(comm, r, r).real) / bnorm
-        it += 1
-    return x, it, float(rel)
-
-
-def _cdots(comm, a, b):
-    """Column-wise ``a_j^H b_j`` summed over the ranks: one fixed-shape ``Allreduce`` of ``m`` numbers."""
-    value = np.einsum("ij,ij->j", a.conj(), b)
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, value, op=MPI.SUM)
-    return value
-
-
-#: Columns solved together: the work blocks are ``8 m`` dense columns.
-SOLVE_BLOCK_COLUMNS = 6
-
-
-def solve_shifted_block(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
-    """BiCGSTAB for ``(z - A) X = B`` with the columns of ``B`` solved together: one width-``m`` ``apply`` per
-    half-step (a wide matvec costs little more than a width-1 one) and per-column scalars, so a column that has
-    converged or broken down stops updating while the others go on. ``apply(V)`` gives ``A V`` for this rank's rows
-    (``V`` of shape ``(n, m)``). Returns ``(X, iterations, relative residuals per column)``. Every rank leaves on the
-    same iteration (the scalars are allreduced). **Collective.**"""
-    b = np.asarray(b, dtype=complex)
-    m = b.shape[1]
-
-    def op(v):
-        return z * v - apply(v)
-
-    bnorm = np.sqrt(_cdots(comm, b, b).real)
-    done = bnorm == 0.0
-    safe = np.where(done, 1.0, bnorm)
-    x = np.zeros_like(b) if x0 is None else np.array(x0, dtype=complex)
-    r = b - op(x) if x0 is not None else b.copy()
-    r_hat = r.copy()
-    rho = np.ones(m, dtype=complex)
-    alpha = np.ones(m, dtype=complex)
-    omega = np.ones(m, dtype=complex)
-    v = np.zeros_like(b)
-    p = np.zeros_like(b)
-    rel = np.sqrt(_cdots(comm, r, r).real) / safe
-    rel[done] = 0.0
-    x[:, done] = 0.0
-    active = ~done & (rel > rtol)
-    it = 0
-    while active.any() and it < maxit:
-        queue_progress()
-        rho_new = _cdots(comm, r_hat, r)
-        active &= ~((np.abs(rho_new) < 1e-300) | (np.abs(omega) < 1e-300))
-        if not active.any():
-            break
-        beta = (rho_new / rho) * (alpha / omega)
-        p = r + beta * (p - omega * v)
-        v = op(p)
-        denom = _cdots(comm, r_hat, v)
-        active &= ~(np.abs(denom) < 1e-300)
-        alpha = rho_new / np.where(np.abs(denom) < 1e-300, 1.0, denom)
-        s = r - alpha * v
-        half = active & (np.sqrt(_cdots(comm, s, s).real) / safe <= rtol)
-        t = op(s)
-        tt = _cdots(comm, t, t)
-        broke = np.abs(tt) < 1e-300
-        omega_new = _cdots(comm, t, s) / np.where(broke, 1.0, tt)
-        full = active & ~half & ~broke
-        x = np.where(half, x + alpha * p, np.where(full, x + alpha * p + omega_new * s, x))
-        r = np.where(half, s, np.where(full, s - omega_new * t, r))
-        rho = np.where(full, rho_new, rho)
-        omega = np.where(full, omega_new, omega)
-        active &= ~broke
-        it += 1
-        rel = np.sqrt(_cdots(comm, r, r).real) / safe
-        rel[done] = 0.0
-        active &= rel > rtol
-    return x, it, rel
-
-
-def importance_scores(
-    matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_order=True, y0s=None, xs=None, ys=None, weights=None
-):
+def importance_scores(matrix, seeds, zs, xs, ys=None, first_order=True, weights=None):
     r"""``s_ret`` and ``s_cand`` (see the module docstring) of ``matrix`` for the seed block ``seeds``
     (``(n_p_local, m)`` on the P slots) at the shifts ``zs``, maximised over the shifts and the columns.
 
-    Removing ``D`` changes ``G_ij = s_i^H R s_j`` by ``-conj(Y_i(D)) X_j(D) / R_DD`` with ``X = R(z) s`` and
-    ``Y = R(z*) s`` (``R(z)^H = R(z*)`` for Hermitian ``H``). When every seed column is real up to a phase and ``H``
-    is real, ``|Y_i| = |X_i|`` and the second solve is skipped; otherwise it is made (``out.solutions_y``), and the
-    scores read ``max_i |Y_i| max_j |X_j|``.
-
-    ``x0s`` / ``y0s`` (optional, one ``(n_p_local, m)`` block per shift) warm-start the solves. ``first_order=False``
-    drops ``Sigma_D`` (the bare ``|z - H_DD|``), kept only so a test can show the self-energy matters.
-
-    ``xs`` (and ``ys``, the solutions at ``z*``, needed exactly when the second solve would be) hand over solutions the
-    caller already has -- the recurrence's own (:class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) -- and
-    no solve is made. ``weights`` (one per shift, replicated) multiply each shift's two scores before the maximum:
-    the self-energy moves by ``G^-1 dG G^-1``, so a shift where ``G^-1`` is large counts for more.
-    **Collective.**
-    """
+    ``xs[i]`` is ``X = R(z_i) s`` on the P slots (the unit's own recurrence accumulates it:
+    :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`), ``ys[i]`` is ``Y = R(z_i^*) s`` and is needed
+    exactly when ``H`` is complex or a seed column is not real up to a phase: removing ``D`` changes
+    ``G_ij = s_i^H R s_j`` by ``-conj(Y_i(D)) X_j(D) / R_DD`` (``R(z)^H = R(z*)`` for Hermitian ``H``), the scores read
+    ``max_i |Y_i| max_j |X_j|``, and without ``ys`` ``Y = X`` is taken. ``first_order=False`` drops ``Sigma_D``
+    (the bare ``|z - H_DD|``), kept only so a test can show the self-energy matters.
+    ``weights`` (one per shift, replicated) multiply each shift's two scores before the maximum: the self-energy moves by ``G^-1 dG G^-1``, so a shift where
+    ``G^-1`` is large counts for more. **Collective.**"""
     seeds = np.ascontiguousarray(seeds, dtype=complex)
     n_p, n_k = matrix.n_p_local, matrix.n_k_local
     if seeds.shape[0] != n_p:
@@ -205,33 +59,8 @@ def importance_scores(
     diag_k = matrix.k_diagonal()
     in_p = np.zeros(n_k, dtype=bool)
     in_p[p_kslot[alive]] = True
-    comm = matrix.comm
-    if xs is not None:
-        need_y = ys is not None  # the caller decided, from the operator, before its recurrence ran
-    else:
-        need_y = not seeds_real_up_to_a_phase(matrix, seeds) or not matrix_is_real(matrix)
-    block = min(max(seeds.shape[1], 1), SOLVE_BLOCK_COLUMNS)
     # A plan holds a cached dist-graph communicator that a later `exchange_plan` may evict (and free): build each
     # one right before the matvecs that use it, never ahead of other plans' construction.
-
-    def solve(z_solve, x0):
-        X = np.zeros_like(seeds)
-        worst, iters = 0.0, 0
-        for j0 in range(0, seeds.shape[1], block):
-            cols = slice(j0, min(j0 + block, seeds.shape[1]))
-            plan = matrix.exchange_plan(cols.stop - cols.start, "importance", rows="P")
-            x, it, rel = solve_shifted_block(
-                lambda v, plan=plan: matrix.matvec(np.ascontiguousarray(v), rows="P", plan=plan),
-                z_solve,
-                np.where(alive[:, None], seeds[:, cols], 0.0),
-                comm,
-                x0=None if x0 is None else x0[:, cols],
-                rtol=rtol,
-                maxit=maxit,
-            )
-            X[:, cols] = np.where(alive[:, None], x, 0.0)
-            worst, iters = max(worst, float(rel.max())), max(iters, it)
-        return X, worst, iters
 
     def flow_of(V):
         plan_all_m = matrix.exchange_plan(max(seeds.shape[1], 1), "importance", rows="all")
@@ -252,26 +81,15 @@ def importance_scores(
             sigma = np.zeros(n_k, dtype=complex)
         denom = np.abs(z - diag_k - sigma)
         denom = np.maximum(denom, 1e-300)
-        if xs is not None:
-            X, worst, iters = np.where(alive[:, None], xs[iz], 0.0), 0.0, 0
-        else:
-            X, worst, iters = solve(z, None if x0s is None else x0s[iz])
+        X = np.where(alive[:, None], xs[iz], 0.0)
         ax, flow_x = np.abs(X).max(axis=1), flow_of(X)
         ay, flow_y = ax, flow_x
-        if need_y:
-            if ys is not None:
-                Y, worst_y, iters_y = np.where(alive[:, None], ys[iz], 0.0), 0.0, 0
-            else:
-                Y, worst_y, iters_y = solve(z.conjugate(), None if y0s is None else y0s[iz])
+        if ys is not None:
+            Y = np.where(alive[:, None], ys[iz], 0.0)
             ay, flow_y = np.abs(Y).max(axis=1), flow_of(Y)
-            worst, iters = max(worst, worst_y), max(iters, iters_y)
-            out.solutions_y.append(Y)
         wz = 1.0 if weights is None else float(weights[iz])
         s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, wz * flow_x * flow_y / denom))
         s_ret = np.maximum(s_ret, np.where(alive, wz * ax * ay * denom[p_kslot], -np.inf))
-        out.solutions.append(X)
-        out.residuals.append(worst)
-        out.iterations.append(iters)
     out.s_ret, out.s_cand = s_ret, s_cand
     return out
 
@@ -297,28 +115,6 @@ def seed_block_on_p_slots(matrix, states):
             raise ValueError("a seed determinant is not in the matrix's P")
         block[pslots, j] = np.asarray(state)[:, 0]
     return block
-
-
-def probe_unit(matrix, support, seeds, hop, basis, info, zs=(), rtol=1e-6):
-    """The ``unit_probe`` of the GF engine: one importance pass on a capped unit's discovered matrix.
-
-    Returns a small replicated record (nothing proportional to ``|K|``): the shifts, the iteration counts, the
-    worst residual and the top of each ranking. **Collective.**
-    """
-    comm = matrix.comm
-    scores = importance_scores(matrix, seed_block_on_p_slots(matrix, seeds), zs, rtol=rtol)
-    top_cand = float(scores.s_cand.max()) if scores.s_cand.size else -np.inf
-    low_ret = float(scores.s_ret[np.isfinite(scores.s_ret)].min()) if np.isfinite(scores.s_ret).any() else np.inf
-    if comm is not None:
-        top_cand = comm.allreduce(top_cand, op=MPI.MAX)
-        low_ret = comm.allreduce(low_ret, op=MPI.MIN)
-    return {
-        "zs": [complex(z) for z in zs],
-        "iterations": list(scores.iterations),
-        "residual": max(scores.residuals) if scores.residuals else 0.0,
-        "top_s_cand": top_cand,
-        "low_s_ret": low_ret,
-    }
 
 
 # --- swap refinement of a capped unit ------------------------------------------------------------------------
@@ -396,16 +192,6 @@ class _LazyKeys:
         return self._matrix.keys_of([self._kslots[i]])[0]
 
 
-def _on_new_slots(blocks, old_k, new_p_k, n_k):
-    """Warm starts on the old P slots, re-indexed onto the new ones (a row of an admitted key starts at 0)."""
-    out = []
-    for x in blocks:
-        xk = np.zeros((n_k, x.shape[1]), dtype=complex)
-        xk[old_k] = x
-        out.append(xk[new_p_k])
-    return out
-
-
 def _allreduce(comm, value, op):
     value = np.array([value], dtype=float)
     if comm is not None:
@@ -470,7 +256,7 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
 REFINE_MAX_SHIFTS = 8
 
 
-def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=REFINE_MAX_SHIFTS, n_matsubara=2):
+def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=None, n_matsubara=2):
     r"""The scoring shifts of one Green's-function block, chosen before its recurrence runs, with their weights.
 
     ``g0_inv_of(zs)`` gives ``G_0^-1(z) = z - h_corr - Delta(z)`` of shape ``(len(zs), n, n)``. A change ``dG`` moves
@@ -484,6 +270,7 @@ def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=REFI
     the ``i omega_n``) and
     ``w(z) = ||G_0^-1(z)||^2``, normalised to a maximum of 1. The caller signs them and adds each thermal energy
     (the frame :func:`~impurityModel.ed.gf_convergence._gf_signed_axes` fixes)."""
+    max_shifts = REFINE_MAX_SHIFTS if max_shifts is None else max_shifts
     zs, norms = [], []
 
     def norm_at(points):
