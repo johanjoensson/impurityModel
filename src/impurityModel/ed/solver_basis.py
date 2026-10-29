@@ -6,6 +6,7 @@ from typing import cast
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,
     discover_one_body_symmetries,
@@ -48,6 +49,9 @@ class SolverBasis:
     rot_to_spherical: "np.ndarray"
     total_impurity_orbitals: dict
     sum_bath_states: dict
+    #: The (dn, up) pairing of the solver-basis impurity and bath, resolved once per run; see
+    #: :func:`~impurityModel.ed.spin_pairs.spin_layout`.
+    spin_layout: object = None
 
     @functools.cached_property
     def h_int(self) -> ManyBodyOperator:
@@ -131,7 +135,9 @@ def _per_group_scalar(value, impurity_orbitals, default=0):
     return dict.fromkeys(keys, abs(int(value)))
 
 
-def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=0):
+def prepare_solver_basis(
+    h0, dc, u, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=0, *, comm=None
+):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
     Assembles the interacting Hamiltonian ``H = h0 - DC + U(u4)`` in the caller's input basis, then
@@ -141,8 +147,10 @@ def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valenc
     per-group impurity/bath orbital grouping and occupation windows -- all in whichever basis is
     solved in. Returns a :class:`SolverBasis`.
 
-    ``rank`` gates the report only. This function performs no MPI communication and every rank
-    computes the identical layout, so without the gate the legend prints once per rank.
+    ``rank`` gates the report only: every rank computes the identical layout, so without the gate the
+    legend prints once per rank. The one collective is the broadcast of the resolved
+    :attr:`SolverBasis.spin_layout`, made when ``comm`` is given (unconditionally, on every rank of
+    it); without a ``comm`` the layout is resolved rank-locally.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
@@ -266,6 +274,7 @@ def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valenc
                 f"  {i:>5}  {format_index_ranges(orbs):<20} {len(orbs):>4} {n_val:>4} {n_con:>4}"
                 f" {nominal_occ[i]:>7} {'+/-' + str(mixed_valence[i]):>7}"
             )
+    spin_layout = resolve_spin_layout(h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm)
     return SolverBasis(
         h=h,
         h0_solve=h0_solve,
@@ -280,6 +289,7 @@ def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valenc
         rot_to_spherical=rot_to_spherical,
         total_impurity_orbitals=total_impurity_orbitals,
         sum_bath_states=sum_bath_states,
+        spin_layout=spin_layout,
     )
 
 

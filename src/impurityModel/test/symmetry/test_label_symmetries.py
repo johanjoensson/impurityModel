@@ -19,7 +19,7 @@ from impurityModel.ed.groundstate import build_basis_and_solver, solve_sector
 from impurityModel.ed.interaction_models import kanamori_u4
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
-from impurityModel.ed.sector_solver import certification_plan, certify_sector
+from impurityModel.ed.sector_solver import certification_plan, certify_sector, describe_plan
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.symmetry.test_seed_sectors import BATH_STATES, IMPURITY_ORBITALS, N_IMP, N_ORB
@@ -35,14 +35,18 @@ def _certifier_defaults(monkeypatch):
         monkeypatch.delenv(knob, raising=False)
 
 
-def _hamiltonian(bath_split=0.0):
-    """Two equivalent orbitals; ``bath_split`` moves orbital 1's bath level and breaks the swap."""
+def _hamiltonian(bath_split=0.0, up_shift=0.0):
+    """Two equivalent orbitals; ``bath_split`` moves orbital 1's bath level and breaks the swap.
+
+    ``up_shift`` moves every spin-up bath level: a spin-polarized bath, which breaks the spin flip and
+    total spin but not ``S_z`` and not the swap.
+    """
     h = np.zeros((N_ORB, N_ORB), dtype=complex)
     for spin in range(2):
         for orbital in range(2):
             i = orbital + 2 * spin
             h[i, i] = -0.5
-            h[i + N_IMP, i + N_IMP] = -1.0 + (bath_split if orbital == 1 else 0.0)
+            h[i + N_IMP, i + N_IMP] = -1.0 + (bath_split if orbital == 1 else 0.0) + (up_shift if spin else 0.0)
             h[i, i + N_IMP] = h[i + N_IMP, i] = 0.7
     u_op = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(kanamori_u4(2, 4.0, 0.8)))
     return tensors_to_operator(h) + u_op
@@ -200,3 +204,35 @@ def test_the_thermal_union_carries_the_winners_image():
         set(_image_keys(kept[0], plan.images[k], basis.num_spin_orbitals, basis.n_bytes).keys()) for k in plan.images
     ]
     assert len(kept) == 2 and set(kept[1].keys()) in images and set(kept[1].keys()) != set(kept[0].keys())
+
+
+def test_a_spin_polarized_bath_certifies_by_s_z_and_still_mirrors(monkeypatch):
+    """A polarized bath leaves S_z (the grade is collinear, not SU(2)): the plan labels by 2 S_z,
+    needs every S_z row, and the swap still maps one expansion onto another. The certified energy is
+    the exact one, and the same as without the mirror."""
+    h_op = _hamiltonian(up_shift=0.15)
+    exact = float(_spectrum(h_op)[0])
+    basis = _seed(h_op, None)
+    plan = certification_plan(h_op, basis)
+    assert plan.layout.grade == "collinear" and not plan.su2
+    assert any(job.two_sz is not None for job in plan.jobs)
+    mirrors = [job for job in plan.jobs if job.image_of is not None]
+    assert mirrors
+    assert "spin: S_z" in describe_plan(plan)
+    es, *_ = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
+    assert float(np.min(np.real(es))) == pytest.approx(exact, abs=1e-8)
+    monkeypatch.setenv("GS_CERTIFY_LABEL_SYMMETRY", "0")
+    plan_all = certification_plan(h_op, _seed(h_op, None))
+    assert len(plan_all.jobs) == len(plan.jobs) and all(job.image_of is None for job in plan_all.jobs)
+    print(f"jobs: {len(plan.jobs)}, expanded: {len(plan.jobs) - len(mirrors)}")
+
+
+def test_a_layout_that_does_not_conserve_s_z_is_not_trusted():
+    """The layout is the caller's; the plan re-runs the gate on its own operator, so a stale layout
+    cannot label a sector it does not hold."""
+    from impurityModel.ed.spin_pairs import SpinLayout
+
+    h_op = _hamiltonian(up_shift=0.15)
+    wrong = SpinLayout(((0, 2), (1, 3)), ((6, 4), (7, 5)), "su2", "rotation", "chain_position", 0.0, ())
+    plan = certification_plan(h_op, _seed(h_op, None), spin_layout=wrong)
+    assert not plan.su2 and all(job.two_sz is None for job in plan.jobs)

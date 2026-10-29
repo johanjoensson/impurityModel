@@ -30,6 +30,7 @@ from impurityModel.ed.sector_solver import (
     solve_certified,
     window_overtake,
 )
+from impurityModel.ed.spin_pairs import spin_layout
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
@@ -210,6 +211,7 @@ def solve_sector(
     e_pt2_tol=GS_E_PT2_TOL,
     plan_store=None,
     shift=0.0,
+    spin_layout=None,
 ):
     """One charge sector, solved for the requested ``manifold``: :class:`SectorSolve`.
 
@@ -300,7 +302,7 @@ def solve_sector(
             if certification is None:
                 with solver_trace.timed("certify_plan"):
                     max_seed = config.GS_CERTIFY_MAX_SEED.get()
-                    certification = certification_plan(h_op, basis, max_seed=max_seed)
+                    certification = certification_plan(h_op, basis, max_seed=max_seed, spin_layout=spin_layout)
                 if certification is None:
                     # `len(basis)` is replicated, so is this branch. Said, because the single
                     # expansion that follows can stop in an excited symmetry class.
@@ -411,6 +413,8 @@ def calc_energy(
     e_pt2_tol=GS_E_PT2_TOL,
     plan_store=None,
     shift=0.0,
+    *,
+    spin_layout=None,
 ):
     """The ground-state energy of one charge sector: ``(e0, truncation_report)``.
 
@@ -446,6 +450,7 @@ def calc_energy(
         e_pt2_tol=e_pt2_tol,
         plan_store=plan_store,
         shift=shift,
+        spin_layout=spin_layout,
     )
     e0 = float(np.min(es))
     e0 = e0 if comm is None else comm.bcast(e0, root=0)
@@ -544,6 +549,8 @@ def find_ground_state_sector(
     sector_energy=None,
     plan_store=None,
     shift=0.0,
+    *,
+    spin_layout=None,
 ):
     """
     Find the charge sector with the lowest energy, compare N0 - 1, N0 and N0 + 1: :class:`SectorSearch`.
@@ -698,6 +705,7 @@ def find_ground_state_sector(
                 e_pt2_tol=e_pt2_tol,
                 plan_store=plan_store,
                 shift=shift,
+                spin_layout=spin_layout,
             )
         energy_cache[key] = (e_trial, report)
         if best_cached_key is None or e_trial < energy_cache[best_cached_key][0]:
@@ -933,6 +941,7 @@ def solve_ground_state(
     e_pt2_tol=GS_E_PT2_TOL,
     plan_store=None,
     shift=0.0,
+    spin_layout=None,
 ):
     """Find the thermal ground state: a sector walk, then one complete solve of the winning sector.
 
@@ -988,6 +997,7 @@ def solve_ground_state(
         e_pt2_tol=e_pt2_tol,
         plan_store=plan_store,
         shift=shift,
+        spin_layout=spin_layout,
     )
     es, psis, basis, solver = solve_sector(
         h_op,
@@ -1010,6 +1020,7 @@ def solve_ground_state(
         e_pt2_tol=e_pt2_tol,
         plan_store=plan_store,
         shift=shift,
+        spin_layout=spin_layout,
     )
     # The sector this search settled on. It cannot be recovered from the basis: the CIPSI expansion
     # widened the impurity occupation window (build_excited_restrictions is called with
@@ -1120,6 +1131,27 @@ def calc_gs(
         basis_setup["N0"] = basis_setup.pop("nominal_impurity_occ")
 
     tau = basis_setup["tau"]
+    layout = basis_setup.get("spin_layout")
+    if layout is None:
+        # Not resolved by a driver (get_spectra): resolve here, once, from the full operator.
+        blocks = [b for part in basis_setup["impurity_orbitals"].values() for b in part]
+        bath = [b for baths in basis_setup["bath_states"] for part in baths.values() for b in part]
+        n_orb = 1 + max(
+            max((o for term in Hop.keys() for o, _ in term), default=-1),
+            max((o for block in blocks + bath for o in block), default=-1),
+        )
+        layout = spin_layout(
+            Hop,
+            basis_setup["impurity_orbitals"],
+            basis_setup["bath_states"],
+            rot_to_spherical,
+            n_orb,
+            comm=basis_setup.get("comm"),
+        )
+        basis_setup["spin_layout"] = layout
+    note = layout.provenance_note()
+    if note is not None and verbose >= V_SUMMARY and basis_setup.get("rank", 0) == 0:
+        print(note, flush=True)
     # One definition of "the ground state of this model", shared with the double-counting
     # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through

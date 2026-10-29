@@ -51,6 +51,7 @@ from impurityModel.ed.observables import (
     manifold_observable_values,
 )
 from impurityModel.ed.spin_pairs import _spin_symmetric, bath_spin_pairs, impurity_spin_pairs
+from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import (
     PARITY_TERM_TOL,
     conserved_parities,
@@ -163,6 +164,8 @@ class CertificationPlan:
     #: Mirror job index -> the :class:`label_symmetries.SignedPermutation` taking the problem of the
     #: job it is the image of onto its own (maps that job's determinants onto this label's).
     images: dict = field(default_factory=dict)
+    #: The :class:`~impurityModel.ed.spin_pairs.SpinLayout` the spin labels were judged under.
+    layout: object = None
 
 
 def _bits(dets, n_orb):
@@ -171,6 +174,17 @@ def _bits(dets, n_orb):
         return np.zeros((0, n_orb), dtype=np.uint8)
     raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in dets), dtype=np.uint8).reshape(len(dets), -1)
     return np.unpackbits(raw, axis=1)[:, :n_orb]
+
+
+def _respects_sz(sp, sign):
+    """Whether the permutation maps the ``2 S_z`` sign vector onto itself (or, for a spin flip, its negative).
+
+    The label of an image determinant is the mirrored label only if the permutation carries ``2 S_z``
+    along; a generator built from other pairs than the ones that label would map the wrong labels.
+    """
+    image = np.zeros_like(sign)
+    image[list(sp.perm)] = sign
+    return bool(np.array_equal(image, -sign if sp.flips_spin else sign))
 
 
 def _label_window(basis, pairs, two_sz):
@@ -185,7 +199,7 @@ def _label_keys(labels, label, basis):
     return [d for d in basis.local_basis if labels.get(tuple(int(c) for c in d)) == label]
 
 
-def certification_plan(h_op, basis, *, max_seed=1000):
+def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
     """The class expansions a sector solve on the seed ``basis`` needs (collective), or ``None``.
 
     Rank 0 gathers the seed, detects the hard labels and decides which are needed; then every needed
@@ -193,6 +207,11 @@ def certification_plan(h_op, basis, *, max_seed=1000):
     restrictions are left set to ``basis``'s on every rank. ``None`` when the seed is empty or larger
     than ``max_seed`` (the plan is built from dense seed matrices): the caller then runs a single,
     uncertified expansion.
+
+    ``spin_layout`` is the :class:`~impurityModel.ed.spin_pairs.SpinLayout` the caller resolved from the
+    solver basis (``SolverBasis.spin_layout``). ``None``: resolved here, on rank 0, from the index
+    convention and the full ``H``, which is right for a dn-then-up layout and misses the pairing of a
+    per-spin grouped impurity.
     """
     comm = basis.comm if basis.is_distributed else None
     rank = comm.rank if comm is not None else 0
@@ -206,9 +225,18 @@ def certification_plan(h_op, basis, *, max_seed=1000):
     head = None
     if rank == 0:
         n_orb = max(basis.num_spin_orbitals, max((o for term in h_op.keys() for o, _ in term), default=-1) + 1)
-        pairs = impurity_spin_pairs(basis.impurity_orbitals) + bath_spin_pairs(basis.bath_states)
-        sz_ok = bool(pairs) and conserves_sz(h_op, pairs, PARITY_TERM_TOL)
-        su2 = sz_ok and _spin_symmetric(h_op, pairs)
+        index_imp = impurity_spin_pairs(basis.impurity_orbitals)
+        index_bath = bath_spin_pairs(basis.bath_states)
+        layout = spin_layout
+        if layout is None:
+            layout = resolve_spin_layout(h_op, basis.impurity_orbitals, basis.bath_states, None, n_orb)
+        # The layout was judged on the solver basis' H; `h_op` here may differ (a chemical-potential
+        # shift, say), so the two spin gates are re-run on it -- cheap, exact, and on rank 0 only.
+        sz_ok = layout.labelled and conserves_sz(h_op, layout.pairs, PARITY_TERM_TOL)
+        su2 = sz_ok and layout.su2 and _spin_symmetric(h_op, layout.pairs)
+        # Only pairs that make H conserve S_z may label; at grade "none" the index pairs remain as the
+        # spatial-orbital candidates of the label symmetries, which is_symmetry then verifies.
+        pairs = list(layout.pairs) if sz_ok else index_imp + index_bath
         parities = conserved_parities(h_op)
         bits = _bits([SlaterDeterminant(d) for d in seed], n_orb).astype(np.int64)
         par = parity_labels(bits, parities) if parities else np.zeros((len(seed), 0), dtype=np.int64)
@@ -228,19 +256,21 @@ def certification_plan(h_op, basis, *, max_seed=1000):
         if config.GS_CERTIFY_LABEL_SYMMETRY.get() and len(needed) > 1:
             generators = label_symmetries.symmetry_generators(
                 h_op,
-                impurity_spin_pairs(basis.impurity_orbitals),
-                bath_spin_pairs(basis.bath_states),
+                list(layout.imp_pairs) if sz_ok else index_imp,
+                list(layout.bath_pairs) if sz_ok else index_bath,
                 n_orb,
                 restrictions=basis.restrictions,
                 weighted_restrictions=basis.weighted_restrictions,
             )
+            if sz_ok:
+                generators = [sp for sp in generators if _respects_sz(sp, sign)]
             if generators:
                 orbit_of = label_symmetries.label_orbits(needed, generators, parities)
-        head = (labels, needed, pairs, su2, orbit_of)
+        head = (labels, needed, pairs, su2, orbit_of, layout)
     if comm is not None:
         head = comm.bcast(head, root=0)
     # Decided on rank 0 and broadcast: which labels are expanded must be identical on every rank.
-    labels, needed, pairs, su2, orbit_of = head
+    labels, needed, pairs, su2, orbit_of, layout = head
     mirrors = [lab for lab in needed if lab in orbit_of and orbit_of[lab][0] != lab]
     class_plans, jobs = {}, []
     for lab in needed:
@@ -273,7 +303,7 @@ def certification_plan(h_op, basis, *, max_seed=1000):
             jobs.append(CertificationJob(lab[0], lab[1], job.seed_class, job.n_seed, image_of=k))
     h_op.set_restrictions(basis.restrictions)
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
-    return CertificationPlan(jobs, labels, pairs, su2, class_plans, images)
+    return CertificationPlan(jobs, labels, pairs, su2, class_plans, images, layout)
 
 
 def describe_plan(plan):
@@ -295,6 +325,8 @@ def describe_plan(plan):
                 gap = cls.energy - e_min
                 edge = gap if edge is None else min(edge, gap)
     spin = "SU(2)" if plan.su2 else ("S_z" if any(job.two_sz is not None for job in plan.jobs) else "none")
+    if plan.layout is not None and plan.layout.labelled and plan.layout.pairs_source():
+        spin += ", " + plan.layout.pairs_source()
     expanded = [j for j in plan.jobs if j.image_of is None]
     text = (
         f"certifying: {len({(j.two_sz, j.parity) for j in plan.jobs})} hard labels (spin: {spin}), "

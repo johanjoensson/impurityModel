@@ -448,6 +448,9 @@ class _SectorContext:
     #: Each sector's certification (:class:`sector_solver.SectorPlanStore`): certified once per
     #: search, then only the classes that can still be lowest are expanded at a new shift.
     plan_store: object = None
+    #: The (dn, up) pairing of the solver basis (:attr:`solver_basis.SolverBasis.spin_layout`): the
+    #: ``-mu`` shift commutes with ``S_z`` and ``S_+``, so one layout serves every shift.
+    spin_layout: object = None
 
     def __post_init__(self):
         if self.de2_min is None:
@@ -511,6 +514,7 @@ class _SectorContext:
             # The walk's trials are this search's own cached sector solves: the N +- 1 solves at this
             # shift are the same solves, at the same accuracy, and are never repeated.
             sector_energy=lambda trial: (self._walk_energy(h_op, mu, trial), None),
+            spin_layout=self.spin_layout,
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
         # eigenvector support of an expansion whose impurity occupation window was widened
@@ -597,6 +601,7 @@ class _SectorContext:
             e_pt2_tol=self.e_pt2_tol,
             plan_store=self.plan_store,
             shift=mu,
+            spin_layout=self.spin_layout,
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
@@ -760,6 +765,7 @@ def _prepare_sector_context(
         model.rot_to_spherical,
         verbosity,
         rank=rank,
+        comm=comm if comm is not None else MPI.COMM_WORLD,
     )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
@@ -830,6 +836,7 @@ def _prepare_sector_context(
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
+        spin_layout=sb.spin_layout,
         tau=basis.tau,
         slater_weight_min=basis.slater_weight_min,
         chain_restrict=basis.chain_restrict,
@@ -1885,6 +1892,8 @@ class _OccupationContext:
     #: Each sector's certification, shared by every ground state this search solves
     #: (:class:`sector_solver.SectorPlanStore`).
     plan_store: object = None
+    #: The (dn, up) pairing of the solver basis, as on :class:`_SectorContext`.
+    spin_layout: object = None
 
     def __post_init__(self):
         if self.cap_bound_at is None:
@@ -1931,6 +1940,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         model.rot_to_spherical,
         verbosity,
         rank=comm.rank if comm is not None else 0,
+        comm=comm if comm is not None else MPI.COMM_WORLD,
     )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
@@ -1992,6 +2002,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
+        spin_layout=sb.spin_layout,
         weighted_restrictions=build_weighted_restrictions(
             bath_states,
             excitation_budget,
@@ -2057,6 +2068,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             de2_min=ctx.de2_min,
             plan_store=ctx.plan_store,
             shift=mu,
+            spin_layout=ctx.spin_layout,
         )
     mb_basis, mb_solver, es, psis = ground_state[:4]
 

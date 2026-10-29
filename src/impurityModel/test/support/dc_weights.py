@@ -173,6 +173,7 @@ def _sector_states(ctx, h_op, n_trial, num_states, max_energy):
         slaterWeightMin=ctx.slater_weight_min,
         weighted_restrictions=ctx.weighted_restrictions,
         frozen_occupations=ctx.frozen_occupations,
+        spin_layout=ctx.spin_layout,
     )
     if not np.all(np.isfinite(es)):
         return None, None, None

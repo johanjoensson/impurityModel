@@ -565,11 +565,12 @@ def _bath_pairs_positional(h, imp_pairs, impurity, n_orb, cut):
     return sorted(up_of.items()), None
 
 
-def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6):
+def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None):
     r"""Resolve the ``(dn, up)`` pairing of impurity and bath and grade how much of it ``H`` verifies.
 
-    Total: always returns a :class:`SpinLayout`. Rank-local and deterministic; a caller that runs on
-    several ranks resolves once and broadcasts.
+    Total: always returns a :class:`SpinLayout`. With a ``comm`` the layout is resolved on rank 0
+    and broadcast (one collective, unconditional), so every rank holds the same copy whatever
+    roundoff its own ``H`` carries; without one it is rank-local and deterministic.
 
     The impurity pairs come from the rotated spherical ``S_+`` (``rot_to_spherical``) whenever it
     yields a clean pairing, and from the dn-then-up index convention otherwise: a pairing read off
@@ -593,11 +594,22 @@ def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, t
         Total number of spin-orbitals.
     tol : float, optional
         Tolerance of the structural matching and of the impurity commutation test.
+    comm : MPI communicator, optional
+        Resolve on its rank 0 and broadcast.
 
     Returns
     -------
     SpinLayout
     """
+    layout = (
+        _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol)
+        if comm is None or comm.rank == 0
+        else None
+    )
+    return layout if comm is None else comm.bcast(layout, root=0)
+
+
+def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol):
     if not hasattr(h_op, "commutator"):
         h_op = ManyBodyOperator(dict(h_op))
     h = extract_tensors(h_op, n_orb=n_orb, two_body=False)[0]

@@ -555,7 +555,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     report = Reporter(verbosity, rank)
 
     sb = prepare_solver_basis(
-        h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank
+        h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank, comm=comm
     )
     h = sb.h
     h0_solve = sb.h0_solve
@@ -595,6 +595,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "dense_cutoff": dense_cutoff,
         "rank": rank,
         "comm": comm,
+        "spin_layout": sb.spin_layout,
         "truncation_threshold": cap_policy,
         # Optional excitation-budget weighted restriction on the ground-state basis; the GF
         # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
