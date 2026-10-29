@@ -423,9 +423,11 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     (:func:`importance_scores`), then swaps the least important retained against the most important discovered ones
     (:meth:`DistributedSparseMatrix.set_p_keys`: the cap is unchanged) and runs the recurrence again on the new P. It
     stops when the remaining estimated gain is below ``spec.tol`` times the largest ``|G|`` on the shifts, when no swap
-    gains, or after ``spec.rounds`` swaps; the last recurrence is the unit's result. A refinement whose final estimated
-    gain is larger than round 0's falls back to round 0's P and result. The record's ``dG_*`` are
-    ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on held-out ones."""
+    gains, or after ``spec.rounds`` swaps. Rounds after the first run only until the scoring residual is met
+    (``"scored"``); the unit's result is then one more recurrence, to Green's-function convergence, on the final P.
+    A refinement whose final estimated gain is larger than round 0's falls back to round 0's P and result. The
+    record's ``dG_*`` are ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on
+    held-out ones."""
     from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
 
     comm = matrix.comm
@@ -470,7 +472,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         swapped_total += n_swap
         record["rounds"] = round_ + 1
         acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-        result = rerun(seed_block(matrix, seed_keys, seed_q0), acc, plan.stop_rtol)
+        result = rerun(seed_block(matrix, seed_keys, seed_q0), acc, plan.stop_rtol, True)
     record["settled"] = bool(gain <= spec.tol * scale)
     if swapped_total == 0:
         record["seconds"] = time.perf_counter() - t0
@@ -480,6 +482,9 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         record["fell_back"] = True
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
+    if result[3] == "scored":
+        # The last run stopped on the scoring residual: G needs its own recurrence on the final P.
+        result = rerun(seed_block(matrix, seed_keys, seed_q0), None, None, False)
     dg = np.abs(g_cf(result, zs) - g0).max() / scale if scale > 0 else 0.0
     record["dG_scoring"] = float(dg)
     if g0_hold is not None:
