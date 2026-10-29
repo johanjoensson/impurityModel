@@ -326,12 +326,11 @@ def probe_unit(matrix, support, seeds, hop, basis, info, zs=(), rtol=1e-6):
 #: Defaults of the refinement (beside ``GF_METHODS``: not environment knobs).
 REFINE_TOL = 1e-3
 REFINE_SWAP = 0.10
-#: The importance solves' stopping rule and the factor the real-axis scoring shifts' broadening is multiplied by.
+#: The residual the recurrence-fed scoring solutions must reach, and whether the shifts are weighted by ``|G_0^-1|^2``.
 #: Harness switches (``freeze_replay`` sets them identically on every rank), not user options, until measured: a
 #: ``RefineSpec`` field left ``None`` reads the constant when the unit is refined.
-REFINE_RTOL = 1e-6
-REFINE_MAXIT = 500
-REFINE_BROADEN = 1.0
+REFINE_STOP_RTOL = 1e-4
+REFINE_WEIGHTED = False
 
 
 #: The mass of the first H-shell that may be left swappable: the heaviest rows covering ``1 - this`` of ``|H s|^2``
@@ -343,16 +342,36 @@ FIRST_SHELL_EXEMPT_TAIL = 1e-6
 class RefineSpec:
     """``rounds`` swap rounds at most; stop when the estimated remaining first-order gain (the summed ``s_cand`` of the
     ``swap`` fraction of the cap that would be swapped in) is below ``tol`` times the largest ``|G|`` on the shifts;
-    each round swaps at most ``swap`` of the retained determinants. ``rtol`` / ``maxit`` stop the importance solves and
-    ``broaden`` multiplies the imaginary part of the real-axis shifts the scores are taken at (``None``: the module
-    constants ``REFINE_RTOL`` / ``REFINE_MAXIT`` / ``REFINE_BROADEN``)."""
+    each round swaps at most ``swap`` of the retained determinants. The scoring solutions come out of the unit's own
+    recurrence at ``shifts`` (``((z, weight), ...)`` in the frame the recurrence's coefficients live in; filled per
+    unit from :func:`g0_zero_shifts`) and the recurrence runs until their residual is below ``stop_rtol`` (``None``:
+    ``REFINE_STOP_RTOL``). ``weighted`` multiplies each shift's scores by its weight (``None``:
+    ``REFINE_WEIGHTED``). ``tables`` holds one
+    :func:`g0_zero_shifts` result per Green's-function block, ``((z, weight), ...)`` in the unsigned frame the caller
+    evaluates ``G`` in; :func:`unit_refine_spec` turns it into the ``shifts`` of one unit."""
 
     rounds: int = 0
     tol: float = REFINE_TOL
     swap: float = REFINE_SWAP
-    rtol: Optional[float] = None
-    maxit: Optional[int] = None
-    broaden: Optional[float] = None
+    stop_rtol: Optional[float] = None
+    weighted: Optional[bool] = None
+    shifts: tuple = ()
+    tables: tuple = ()
+
+
+def unit_refine_spec(spec, block_i, side_i, es):
+    """``spec`` with ``shifts`` the unit's: block ``block_i``'s table signed for the spectral side (``side_i`` 0:
+    addition, else removal: the sign multiplies the real part *and* the broadening, as
+    :func:`~impurityModel.ed.gf_convergence._gf_signed_axes` has it) and offset by each thermal energy the unit
+    stacks, the frame the recurrence's coefficients are in. A spec without a table for the block keeps no shifts
+    (the unit declines with its reason)."""
+    from dataclasses import replace
+
+    if not spec.tables or block_i >= len(spec.tables):
+        return replace(spec, shifts=())
+    sign = 1.0 if side_i == 0 else -1.0
+    shifts = tuple((sign * z + e, w) for e in es for z, w in spec.tables[block_i])
+    return replace(spec, shifts=shifts)
 
 
 @dataclass
@@ -412,7 +431,7 @@ def seeds_real_up_to_a_phase(matrix, block, tol=1e-10):
     return bool(np.all(np.abs(gram[0]) >= (1.0 - tol) * gram[1].real))
 
 
-def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2, broaden=1.0):
+def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
     """``(Z, Z_holdout)``: the shifts the scores are maximised over and a disjoint set the change is judged on.
 
     ``g_of(zs)`` gives the round-0 continued-fraction ``G`` of shape ``(len(zs), n, n)``. A mesh whose imaginary part
@@ -420,10 +439,7 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2, broaden=1.0):
     axis: the floor for weight-carrying rows away from a pole); on a real axis ``Z`` takes the ``n_peaks`` largest
     local maxima of ``sum_i |Im G_ii|`` and the point of steepest change, the holdout the next peaks. Replicated: a
     function of replicated data only.
-
-    The scoring shifts ``Z`` of a real axis are taken at ``Re z + i broaden Im z`` (``(z - H_P)`` is better
-    conditioned the further the shift is from the real axis, and the Matsubara points already are): the peaks are
-    found, and the holdout judged, on the mesh itself."""
+    """
     z_pick, z_hold = [], []
     for axis in eval_meshes or ():
         mesh = np.asarray(axis, dtype=complex)
@@ -446,7 +462,7 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2, broaden=1.0):
         steep = int(np.argmax(np.abs(np.gradient(weight)))) if len(zs) > 1 else 0
         chosen = list(dict.fromkeys(ranked[:n_peaks] + [steep]))
         rest = [i for i in ranked[n_peaks:] + sorted(range(len(zs)), key=lambda i: -weight[i]) if i not in chosen]
-        z_pick += [complex(zs[i].real, broaden * zs[i].imag) for i in chosen]
+        z_pick += [complex(zs[i]) for i in chosen]
         z_hold += [complex(zs[i]) for i in list(dict.fromkeys(rest))[:n_peaks]]
     return list(dict.fromkeys(z_pick)), list(dict.fromkeys(z for z in z_hold if z not in z_pick))
 
@@ -464,7 +480,8 @@ def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=REFI
     quasi-particle point of a metal), and the ``n_matsubara`` Matsubara points nearest the real axis (the floor for
     weight-carrying rows away from every pole). Replicated if ``g0_inv_of`` and the meshes are.
 
-    Returns ``(zs, weights)``: unsigned complex shifts (``omega + i delta``, ``i omega_n``) and
+    Returns ``(zs, weights)``: unsigned complex shifts (``omega + i delta``, ``i omega_n``; ``matsubara_mesh`` holds
+    the ``i omega_n``) and
     ``w(z) = ||G_0^-1(z)||^2``, normalised to a maximum of 1. The caller signs them and adds each thermal energy
     (the frame :func:`~impurityModel.ed.gf_convergence._gf_signed_axes` fixes)."""
     zs, norms = [], []
@@ -474,7 +491,7 @@ def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=REFI
         return np.array([np.linalg.norm(m, 2) for m in g])
 
     if matsubara_mesh is not None and len(matsubara_mesh):
-        pts = 1j * np.asarray(matsubara_mesh, dtype=float)
+        pts = np.asarray(matsubara_mesh, dtype=complex)  # the mesh is the imaginary frequencies i omega_n themselves
         order = np.argsort(np.abs(pts.imag), kind="stable")[:n_matsubara]
         zs += [complex(pts[i]) for i in order]
         norms += list(norm_at(pts[order]))
@@ -572,75 +589,101 @@ def _g_of_solutions(comm, seeds, solutions):
     return out
 
 
-def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eval_meshes, seed_block):
+@dataclass(frozen=True)
+class ScoringPlan:
+    """What the recurrence must accumulate for the scores, decided before it runs (replicated): the scoring shifts
+    and their weights, the shifts the accumulator is given (the conjugates appended when ``need_y``) and the
+    residual the run stops at."""
+
+    zs: tuple
+    weights: tuple
+    need_y: bool
+    stop_rtol: float
+
+    @property
+    def accumulator_shifts(self):
+        return list(self.zs) + ([complex(z).conjugate() for z in self.zs] if self.need_y else [])
+
+    def split(self, solutions):
+        """``(xs, ys)`` from the accumulator's solution list."""
+        n = len(self.zs)
+        return list(solutions[:n]), (list(solutions[n:]) if self.need_y else None)
+
+
+def scoring_plan(matrix, spec, seed_block):
+    """The :class:`ScoringPlan` of a refining unit, or ``(None, reason)`` when it cannot be scored. ``seed_block`` is
+    the seed block on the P slots. **Collective** (``H`` real and the seeds real up to a phase are global tests)."""
+    if not spec.shifts:
+        return None, "no scoring shifts"
+    need_y = not matrix_is_real(matrix) or not seeds_real_up_to_a_phase(matrix, seed_block)
+    weighted = REFINE_WEIGHTED if spec.weighted is None else spec.weighted
+    zs = tuple(complex(z) for z, _w in spec.shifts)
+    weights = tuple(float(w) if weighted else 1.0 for _z, w in spec.shifts)
+    rtol = REFINE_STOP_RTOL if spec.stop_rtol is None else spec.stop_rtol
+    return ScoringPlan(zs, weights, need_y, rtol), None
+
+
+def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc, rerun, g_cf, eval_meshes, seed_block):
     """Swap refinement of a unit the cap froze, on its discovered matrix. **Collective** (every rank, same arguments).
 
-    ``first`` is round 0's ``(alphas, betas, widths, status, q_last)``; ``rerun(q0)`` the frozen recurrence from a
-    seed block on the matrix's current P slots; ``g_cf(alphas_widths_result, zs)`` the continued-fraction ``G`` of a
-    result on the shifts ``zs``; ``seed_block(matrix, seed_keys, q0)`` the seed block on the current P slots.
+    ``first`` is round 0's ``(alphas, betas, widths, status, q_last)`` and ``first_acc`` the
+    :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin` that run stepped (a recurrence on the final P,
+    ``plan.accumulator_shifts``); ``rerun(q0, shifted, shifted_rtol)`` is the frozen recurrence from a seed block on
+    the matrix's current P slots, stepping the accumulator it is given; ``g_cf(result, zs)`` the continued-fraction
+    ``G`` of a result on the shifts ``zs``; ``seed_block(matrix, seed_keys, q0)`` the seed block on the current P slots.
 
-    Round ``n`` scores the retained and discovered determinants (:func:`importance_scores`, warm-started from the
-    previous round's solutions), then swaps the least important retained against the most important discovered ones
-    (:meth:`DistributedSparseMatrix.set_p_keys`: the cap is unchanged). It stops when the remaining estimated gain is
-    below ``spec.tol`` times the largest ``|G|`` on the shifts, when no swap gains, or after ``spec.rounds`` swaps; the
-    recurrence is then run once on the final P. A refinement whose final estimated gain is larger than round 0's falls
-    back to round 0's P and result. The record's ``dG_*`` are ``max|G_final - G_0| / max|G_0|`` of the continued
-    fractions on the scoring shifts and on the held-out ones."""
+    Round ``n`` scores the retained and discovered determinants from the accumulator's solutions
+    (:func:`importance_scores`), then swaps the least important retained against the most important discovered ones
+    (:meth:`DistributedSparseMatrix.set_p_keys`: the cap is unchanged) and runs the recurrence again on the new P. It
+    stops when the remaining estimated gain is below ``spec.tol`` times the largest ``|G|`` on the shifts, when no swap
+    gains, or after ``spec.rounds`` swaps; the last recurrence is the unit's result. A refinement whose final estimated
+    gain is larger than round 0's falls back to round 0's P and result. The record's ``dG_*`` are
+    ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on held-out ones."""
+    from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
+
     comm = matrix.comm
     t0 = time.perf_counter()
     record = {"declined": None, "rounds": 0, "swapped": [], "gain": [], "tol": spec.tol, "swap": spec.swap}
-    if not matrix_is_real(matrix):
-        record["declined"] = "complex H"
-        return RefineOutcome(None, record)
-    rtol = REFINE_RTOL if spec.rtol is None else spec.rtol
-    maxit = REFINE_MAXIT if spec.maxit is None else spec.maxit
-    broaden = REFINE_BROADEN if spec.broaden is None else spec.broaden
-    zs, z_hold = pick_shifts(lambda z: g_cf(first, z), eval_meshes, broaden=broaden)
-    if not zs:
-        record["declined"] = "no evaluation mesh"
-        return RefineOutcome(None, record)
+    zs = list(plan.zs)
+    _unused, z_hold = pick_shifts(lambda z: g_cf(first, z), eval_meshes)
+    z_hold = [z for z in z_hold if z not in zs]
     g0 = g_cf(first, zs)
     scale = float(np.abs(g0).max())
     g0_hold = g_cf(first, z_hold) if z_hold else None
     keys0 = [key for key, a in zip(matrix.p_keys(), matrix.alive()) if a]
     n_alive = int(_allreduce(comm, float(matrix.n_alive_local), MPI.SUM))
     k_max = max(1, int(spec.swap * n_alive))
-    warm, warm_y, extra, first_gain = None, None, [], None
+    extra, first_gain = [], None
     swapped_total = 0
+    result, acc = first, first_acc
     for round_ in range(spec.rounds + 1):
         t_round = time.perf_counter()
         seeds = seed_block(matrix, seed_keys, seed_q0)
-        scores = importance_scores(matrix, seeds, zs, rtol=rtol, maxit=maxit, x0s=warm, y0s=warm_y)
+        xs, ys = plan.split(acc.solutions())
+        scores = importance_scores(matrix, seeds, zs, xs=xs, ys=ys, weights=plan.weights)
         exempt = _exempt_pslots(matrix, seed_keys, seeds, extra)
         retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
         record["gain"].append(gain)
         record.setdefault("pass_seconds", []).append(time.perf_counter() - t_round)
-        record.setdefault("iterations", []).append(max(scores.iterations) if scores.iterations else 0)
-        record.setdefault("residual", []).append(max(scores.residuals) if scores.residuals else 0.0)
+        record.setdefault("blocks", []).append(len(result[2]))
+        record.setdefault("floor", []).append(float(acc.floor.max(initial=0.0)))
         if first_gain is None:
             first_gain = gain
         n_swap = int(_allreduce(comm, float(len(retire)), MPI.SUM))
         if gain <= spec.tol * scale or n_swap == 0 or round_ == spec.rounds:
             break
         record["swapped"].append(n_swap)  # the swaps made, not the one the last pass would have made
-        alive = matrix.alive().astype(bool)
-        old_k = matrix.p_to_k_slot()[alive]
-        old_x = scores.solutions if alive.all() else [x[alive] for x in scores.solutions]
-        old_y = scores.solutions_y if alive.all() else [y[alive] for y in scores.solutions_y]
-        del scores, seeds  # one copy of the solutions through the (memory-hungry) set_p_keys
-        warm = warm_y = None
+        del scores, seeds, xs, ys, acc  # the solutions and the accumulator go before the (memory-hungry) set_p_keys
         keep = np.ones(matrix.n_p_local, dtype=bool)
         keep[retire] = False
         keep &= matrix.alive().astype(bool)
         keys = [key for key, k_ in zip(matrix.p_keys(), keep) if k_] + list(admit)
         matrix.set_p_keys(keys)
-        new_p_k = matrix.p_to_k_slot()
-
-        warm = _on_new_slots(old_x, old_k, new_p_k, matrix.n_k_local)
-        warm_y = _on_new_slots(old_y, old_k, new_p_k, matrix.n_k_local) if old_y else None
         extra = list(admit)
         swapped_total += n_swap
         record["rounds"] = round_ + 1
+        acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
+        result = rerun(seed_block(matrix, seed_keys, seed_q0), acc, plan.stop_rtol)
     record["settled"] = bool(gain <= spec.tol * scale)
     if swapped_total == 0:
         record["seconds"] = time.perf_counter() - t0
@@ -650,7 +693,6 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
         record["fell_back"] = True
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
-    result = rerun(seed_block(matrix, seed_keys, seed_q0))
     dg = np.abs(g_cf(result, zs) - g0).max() / scale if scale > 0 else 0.0
     record["dG_scoring"] = float(dg)
     if g0_hold is not None:

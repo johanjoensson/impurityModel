@@ -50,6 +50,7 @@ from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for b
     calc_G,
     calc_thermally_averaged_G,
 )
+from impurityModel.ed.gf_refinement import unit_refine_spec
 from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported for backward compat
     KrylovShiftedResolvent,
     SectorResolventCache,
@@ -657,6 +658,12 @@ def _gf_solve_units(
             axis_tols=axis_tols,
         )
 
+    def refine_for(unit):
+        if gf_refine is None or not gf_refine.rounds:
+            return gf_refine
+        block_i, side_i = group_meta[unit.group_i]
+        return unit_refine_spec(gf_refine, block_i, side_i, [es[ei] for ei in unit.chunk])
+
     kernel = lanczos_unit_kernel(
         units,
         hOp,
@@ -669,6 +676,7 @@ def _gf_solve_units(
         print_windows=verbose_extra,
         print_size=verbose_extra,
         eval_meshes_for=eval_meshes_for,
+        refine_for=refine_for,
         support_settle=gf_settle is not False,
         settle_ratio=gf_settle_ratio,
         prune_tol=gf_prune_tol,

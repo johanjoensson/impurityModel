@@ -457,5 +457,7 @@ def test_scores_from_handed_over_solutions_equal_the_solved_ones_and_the_weights
     np.testing.assert_allclose(half.s_ret[finite], 0.5 * solved.s_ret[finite], rtol=1e-12)
     # A weight picks the shift that counts: zero on the second leaves the first shift's scores alone.
     first_only = importance_scores(matrix, block, ZS[:1], rtol=1e-11)
-    masked = importance_scores(matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None, weights=[1.0, 0.0])
+    masked = importance_scores(
+        matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None, weights=[1.0, 0.0]
+    )
     np.testing.assert_allclose(masked.s_ret[finite], first_only.s_ret[finite], rtol=1e-6)

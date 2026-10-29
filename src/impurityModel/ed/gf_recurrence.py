@@ -689,6 +689,7 @@ def block_lanczos_discovered(
     max_blocks=10**7,
     reort=False,
     shifted=None,
+    shifted_rtol=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -699,7 +700,9 @@ def block_lanczos_discovered(
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
     ``shifted`` (a :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) is stepped with every block the
     recurrence accepts (a diverged step is not folded in; an invariant subspace is, as an exact solution) and told
-    of every deflation; its blocks grow with the support.
+    of every deflation; its blocks grow with the support. With ``shifted_rtol`` the recurrence also runs until
+    every shift's residual (the Galerkin residual or the deflation floor, whichever is larger) is below it, so
+    "converged" then means the Green's function *and* the scoring solutions are.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -779,6 +782,10 @@ def block_lanczos_discovered(
         done = converged(alphas[: it + 1], betas[: it + 1], verbose=verbose, block_widths=widths + [n_curr])
         if comm is not None:
             done = comm.bcast(bool(done), root=0)
+        if done and shifted is not None and shifted_rtol is not None:
+            # Replicated: the residual is a function of the replicated coefficients and the replicated floor.
+            worst = max(float(shifted.residuals(beta).max(initial=0.0)), float(shifted.floor.max(initial=0.0)))
+            done = worst <= shifted_rtol
         if done:
             status = "converged"
             widths.append(n_curr)
@@ -1070,12 +1077,26 @@ def block_Green_discovered(
         reort=resolved_reort,
         engine=engine,
     )
-    if _needs_restart(support, n_seed):
+    plan, acc = None, None
+    if refining and support.cap_hit and not support.memory_frozen and not support.support_frozen:
+        from impurityModel.ed.gf_refinement import scoring_plan
+        from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
+
+        plan, why = scoring_plan(matrix, refine, _seed_block_on_final_slots(matrix, *seeds_initial))
+        if plan is None:
+            if cap_info is not None:
+                cap_info["refine"] = {"declined": why, "rounds": 0, "swapped": [], "gain": []}
+            if verbose and rank == 0:
+                print(f"GF refinement declined: {why}", flush=True)
+        else:
+            acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
+    if _needs_restart(support, n_seed) or acc is not None:
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
         # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P
-        # slots renumbered in key order for the handoff, so the seed block follows its keys.
-        q0 = _seed_block_on_final_slots(matrix, seed_keys, q0)
+        # slots renumbered in key order for the handoff, so the seed block follows its keys. A refining unit
+        # restarts too: the scoring solutions are accumulated on that run, which is on the final P.
+        q0 = _seed_block_on_final_slots(matrix, *(seeds_initial if seeds_initial else (seed_keys, q0)))
         support.decisions.frozen = True
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
@@ -1089,11 +1110,13 @@ def block_Green_discovered(
             deflate_tol=DEFLATE_TOL_SEEDS,
             reort=resolved_reort,
             engine=engine,
+            shifted=acc,
+            shifted_rtol=None if plan is None else plan.stop_rtol,
         )
-    if refining and support.cap_hit and not support.memory_frozen and not support.support_frozen:
+    if acc is not None:
         from impurityModel.ed.gf_refinement import refine_frozen_unit
 
-        def rerun(q0_new):
+        def rerun(q0_new, shifted, shifted_rtol):
             nonlocal converged_flag, delta_min, last_dg
             support.decisions.frozen = True
             conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
@@ -1106,6 +1129,8 @@ def block_Green_discovered(
                 deflate_tol=DEFLATE_TOL_SEEDS,
                 reort=resolved_reort,
                 engine=engine,
+                shifted=shifted,
+                shifted_rtol=shifted_rtol,
             )
 
         def g_cf(result, zs):
@@ -1115,9 +1140,11 @@ def block_Green_discovered(
         outcome = refine_frozen_unit(
             matrix,
             refine,
+            plan,
             seeds_initial[0],
             seeds_initial[1],
             (alphas, betas, widths, status, _q_last),
+            acc,
             rerun,
             g_cf,
             eval_meshes,

@@ -4,7 +4,7 @@ resolvent of the whole reachable space."""
 import numpy as np
 import pytest
 
-from impurityModel.ed.gf_refinement import RefineSpec
+from impurityModel.ed.gf_refinement import RefineSpec as _RefineSpec
 from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.test.gf.test_gf_truncation import _redistribute_as_width1
@@ -21,6 +21,15 @@ def _knobs(monkeypatch):
 
 def _mesh():
     return [OMEGA + 1j * DELTA, 1j * np.linspace(0.05, 2.0, 6)]
+
+
+#: The scoring shifts a block's table would give this unit (addition side, no thermal energy: the mesh's own frame).
+SHIFTS = tuple((complex(z), 1.0) for z in list(OMEGA + 1j * DELTA) + list(1j * np.linspace(0.05, 2.0, 6)))
+
+
+def RefineSpec(**kw):
+    kw.setdefault("shifts", SHIFTS)
+    return _RefineSpec(**kw)
 
 
 def _run(cap, refine=None, comm=None):
@@ -94,61 +103,39 @@ def _spy_scores(monkeypatch, residuals=None):
     return calls
 
 
-def test_the_real_axis_scoring_shifts_are_broadened_and_the_matsubara_ones_are_not():
-    from impurityModel.ed.gf_refinement import pick_shifts
-
-    real = np.linspace(-1.1, 1.1, 9) + 1j * DELTA
-    matsubara = 1j * np.linspace(0.05, 2.0, 6)
-
-    def g_of(zs):  # one sharp peak on the real axis
-        return np.array([[[1.0 / (z - 0.3 + 1e-3j)]] for z in np.asarray(zs)])
-
-    plain, hold = pick_shifts(g_of, [real, matsubara])
-    wide, hold_wide = pick_shifts(g_of, [real, matsubara], broaden=4.0)
-    assert len(plain) == len(wide)
-    on_matsubara = set(1j * np.linspace(0.05, 2.0, 6))
-    for p, w in zip(plain, wide):
-        assert w.real == p.real
-        assert w.imag == pytest.approx(p.imag if p in on_matsubara else 4.0 * p.imag)
-    assert any(w.imag == pytest.approx(4 * DELTA) for w in wide), "a real-axis shift must be broadened"
-    assert hold == hold_wide, "the holdout is judged on the mesh"
-    assert {w for w in wide if w in on_matsubara} == {p for p in plain if p in on_matsubara}
-
-
 @pytest.mark.parametrize("comm", COMMS)
-def test_the_refinement_scores_at_the_spec_broadening_and_the_spec_tolerances(monkeypatch, comm):
+def test_the_scores_are_taken_at_the_spec_shifts_with_their_weights_and_nothing_is_solved(monkeypatch, comm):
     calls = _spy_scores(monkeypatch)
-    _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4, rtol=1e-3, maxit=7, broaden=4.0), comm=comm)
+    weighted = tuple((z, 0.25 * (i + 1)) for i, (z, _w) in enumerate(SHIFTS))
+    _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4, shifts=weighted, weighted=True), comm=comm)
     zs, kw = calls[0]
-    assert (kw["rtol"], kw["maxit"]) == (1e-3, 7)
-    matsubara = set(_mesh()[1])
-    real_axis = [z for z in zs if z not in matsubara]
-    assert real_axis and all(z.imag == pytest.approx(4 * DELTA) for z in real_axis)
-    assert [z for z in zs if z in matsubara], "premise: the Matsubara points are scored too, unbroadened"
+    assert zs == [z for z, _w in weighted]
+    assert list(kw["weights"]) == [w for _z, w in weighted]
+    assert kw["xs"] is not None and "rtol" not in kw  # the recurrence's solutions, no BiCGSTAB
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_a_spec_that_says_nothing_reads_the_module_constants(monkeypatch, comm):
-    from impurityModel.ed import gf_refinement
-
-    monkeypatch.setattr(gf_refinement, "REFINE_RTOL", 1e-4)
-    monkeypatch.setattr(gf_refinement, "REFINE_MAXIT", 11)
-    monkeypatch.setattr(gf_refinement, "REFINE_BROADEN", 3.0)
+def test_an_unweighted_spec_scores_every_shift_at_weight_one(monkeypatch, comm):
     calls = _spy_scores(monkeypatch)
-    _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4), comm=comm)
-    zs, kw = calls[0]
-    assert (kw["rtol"], kw["maxit"]) == (1e-4, 11)
-    assert any(z.imag == pytest.approx(3 * DELTA) for z in zs)
-    assert not any(z.imag == pytest.approx(3 * DELTA) for z in zs if z in set(_mesh()[1]))
+    weighted = tuple((z, 0.3) for z, _w in SHIFTS)
+    _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4, shifts=weighted), comm=comm)
+    assert set(calls[0][1]["weights"]) == {1.0}
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_the_record_keeps_the_worst_residual_of_every_pass(monkeypatch, comm):
-    """The worst over the shifts (not the first, not the last) of each pass, one entry per pass."""
-    _spy_scores(monkeypatch, residuals=[1e-9, 3e-2, 1e-4])
-    _g, info = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
-    rec = info["refine"]
-    assert rec["residual"] == [3e-2] * len(rec["gain"])
+def test_a_spec_without_shifts_is_declined_with_the_reason(comm):
+    _g, info = _run(10, _RefineSpec(rounds=2), comm=comm)
+    assert info["refine"]["declined"] == "no scoring shifts" and info["refine"]["swapped"] == []
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_recurrence_runs_until_the_scoring_residual_is_met(monkeypatch, comm):
+    """The stop tolerance is the recurrence's: a tight one costs blocks, a loose one stops with the Green's function."""
+    blocks = {}
+    for tol in (1e-1, 1e-12):
+        _g, info = _run(10, RefineSpec(rounds=1, tol=1e9, swap=0.4, stop_rtol=tol), comm=comm)
+        blocks[tol] = info["refine"]["blocks"][0]
+    assert blocks[1e-12] >= blocks[1e-1]
 
 
 @pytest.mark.parametrize("comm", COMMS)

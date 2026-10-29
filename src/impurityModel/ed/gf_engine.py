@@ -280,6 +280,7 @@ def lanczos_unit_kernel(
     print_windows=False,
     print_size=False,
     eval_meshes_for=None,
+    refine_for=None,
     support_settle=True,
     settle_ratio=None,
     unit_ids=None,
@@ -313,6 +314,9 @@ def lanczos_unit_kernel(
         Print the unit's windows before solving (the self-energy driver at ``-v``).
     print_size : bool
         Print the unit's excited basis size after solving.
+    refine_for : callable, optional
+        ``refine_for(unit)`` gives the unit's :class:`~impurityModel.ed.gf_refinement.RefineSpec` (its scoring shifts in
+        the unit's frame); overrides ``refine``.
     eval_meshes_for : callable, optional
         ``eval_meshes_for(unit)`` gives the frequencies the convergence monitor tests (see
         :func:`gf_convergence._gf_eval_meshes`); ``None`` leaves it on the Ritz-band fallback.
@@ -353,7 +357,7 @@ def lanczos_unit_kernel(
             unit_probe=unit_probe,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
-            refine=refine,
+            refine=refine_for(unit) if refine_for is not None else refine,
         )
         if print_size and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")
