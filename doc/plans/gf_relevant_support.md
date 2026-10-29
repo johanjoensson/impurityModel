@@ -383,9 +383,14 @@ M1, 12 baths, cap 65,000, breadth-first start, 3 rounds, 3 ranks, discovered mod
 
 The swap sequence and the Σ agree with the BiCGSTAB arm (the cap is inside the first shell, where most rows are
 exempt, so this workload cannot show a gain; the point is that the new scores select the same swaps). The GF wall is
-2.8x lower than the BiCGSTAB arm and 3.5x the breadth-first arm. Not yet done, and the reason it is above the 2x
-target: round 0 is a *second* recurrence on units that settle at once (the first run carries no accumulator; replaying
-the growth blocks into one at the freeze removes it), intermediate rounds run to full GF convergence instead of the
-scoring residual alone (needs the resume tail), the stored record has the accumulator's deflation floor but not the true
-residual `q0 - zX + (M X)_P`, and the per-unit report lines of plan R8.1 are not written. The weight `|G0^-1|^2` is
-implemented (`--refine-weighted`) and off until measured.
+2.8x lower than the BiCGSTAB arm and 3.5x the breadth-first arm.
+
+Two changes followed (idle machine, same command): the first run carries the accumulator when no pruning restarts it
+(a unit that settles at round 0 needs no second recurrence), and rounds after the first stop on the scoring residual
+alone (status `scored`), with one final recurrence to Green's-function convergence on the final P. GF wall **58 s =
+2.5x breadth-first** (4x below the BiCGSTAB arm), same swaps (32, 21, 16), same Σ. A `ShiftedGalerkin.step` costs 4.8 ms
+for 10 shifts on 21,700 rows, so the accumulator is not the remaining cost; what is left is the extra recurrences of the
+swapping units. Not done: the true residual `q0 - zX + (M X)_P` in the record, complex-H fixture tests (the conjugate
+shifts are in the accumulator and the complex-seed test passes; a complex Hermitian `H` end to end is untested), the
+fused Cython update (not needed at this share), the NiO measurement. The weight `|G0^-1|^2` is implemented
+(`--refine-weighted`) and off until measured.
