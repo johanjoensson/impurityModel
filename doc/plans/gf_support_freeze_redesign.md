@@ -1,7 +1,7 @@
 # GF support settle: investigation and redesign
 
-**Status (2026-10-25): shipped on branch `gf-support-settle`; the failing 1e-8 run that started it could not be
-reproduced.** The live description is `doc/gf_support_pipeline.md` (step 6); this file is the measurement record.
+**Status (2026-10-25): shipped on branch `gf-support-settle` (merged to master e858ef8d); the failing 1e-8 run that
+started it was reproduced the same evening and is the determinant cap, not the settle or the windows (section 6).** The live description is `doc/gf_support_pipeline.md` (step 6); this file is the measurement record.
 
 ## Problem
 
@@ -9,7 +9,8 @@ A NiO 10-bath linked-chain run (`impmod_tests/NiO/impmod/10_BathStates_linked_ch
 printed, for the eg block, `GF unit support frozen at 1,014 determinants (support freeze)` while the largest eg unit
 reached 22,559. At `slater_min 1e-10` the run was fine; at `1e-8` the user saw acausal self-energies (that run is
 overwritten) and suspected the eg basis froze too early. Asked: a thorough look at the freeze condition and the
-window logic, and better criteria.
+window logic, and better criteria. The rerun at the default cutoff (section 6) went acausal in iteration 1 of the
+first charge-self-consistency round, which is a different model from the archive sections 1-5 replay.
 
 ## What was measured (and what was not)
 
@@ -45,7 +46,9 @@ Iteration 1 reproduces production (E0 -65.767282, 470 ground-state determinants,
   relative to `max |Im Sigma_ii|`: five orders above the freeze error, two above the cutoff effect. Iterations 2, 5,
   10 and 28 replayed at 1e-8 reuse the 1e-10 run's bath fit and are causal (|dSigma_real| <= 5.4e-5, max Im Sigma
   equal to the archive's). A real 1e-8 loop has its own fit trajectory. `debug/gf_freeze/README_0a_rerun_1e-8.md`
-  tells what to rerun; until that run exists the attribution path has no true positive.
+  tells what to rerun; until that run exists the attribution path has no true positive. **Superseded by section 6:**
+  the archive replayed in sections 1-5 is the final charge-SCF round of the pyRSPthon driver (E0 -65.77, 470-det ground
+  state); the run that fails is the first round (E0 -53.33, 624k-det ground state, every GF unit at the cap).
 
 ### 2. A bug in the window logic: chain interiors went to the wrong group
 
@@ -171,6 +174,69 @@ matrix has `max |rho_dn - rho_up| = 1.8e-9` over the impurity block (eg 0.554362
 states of the manifold are degenerate to below 1e-9 and equally weighted, at both cutoffs. **An eg-up Green's
 function was not solved**; the number above is the density-matrix mirror, not a comparison of G.
 
+### 6. The failing run (0a): the eg removal spectrum is cap-limited, and the bath pole amplifies it
+
+**The run.** The user reran the loop at the default cutoff (`slater_min = sqrt(eps) = 1.49e-8`, `8 10 6 linked_chain none
+fit_unocc`, 3 ranks, fresh start). Iteration 1 raised `UnphysicalGreensFunctionError`: eg orbital 0, `Im Sigma = +4.096e-2`
+at `w = -0.304` Ry (relative 1.49e-2 against the 1e-3 guard), 0.2 broadenings from the eg bath level `-0.3021`
+(`|V|^2/delta = 0.72`), `Im G0^-1 = 1.081` against `Im G^-1 = 1.041`. The attribution line said what section 4 built it to say:
+no unit of the block settled, so the settle is not the cause. Every one of the 12 units was `frozen at the cap`
+(2,090,044 determinants, auto-sized from 3.7 GiB/rank); the ground state has 624,574 determinants (E0 -53.329964, three
+degenerate states, `<N> = 8.105`, four eg chain-end sites at +0.0139 Ry classed as conduction and 6.4 % occupied).
+
+**The 1e-10 reference is the same model.** The saved 1e-10 run's first-round iteration 1
+(`...bak/outdir-2026-10-24/outdir-1/solver-it-1/`) has bit-identical `hyb-fit` files and the same bath Hamiltonian,
+624,576 determinants, the same E0, and every unit at its cap (2,161,012). It too violated at the same pole
+(`+2.899e-4` at -0.300, inside the guard). The two production runs differ in the cutoff, in the code (old grouping 80+4/12
+and its t2g windows against the fixed 44+4/48), and by 3 % in the cap.
+
+**Replays** (iteration 1 of the new archive, 3 ranks, cap pinned at 2,090,044 unless stated, `SIGMA_CAUSALITY_TOL=1e9`,
+`debug/gf_freeze/nio_it1/R*.npz|log`; a driver around `real_workload.run_selfenergy` that can also patch
+`basis_restrictions.CHAIN_FREEZE_WEIGHT_EXPONENT` to force one cutoff's deep boundary onto another cutoff). Worst
+`Im Sigma_eg`, its value at -0.304, how many sparse blocks the removal units ran before the cap, and the wall:
+
+| run | worst Im Sigma_eg | Im Sigma_eg(-0.304) | removal units capped after | GF wall |
+|---|---|---|---|---|
+| production 1e-8 (new code) | +4.1e-2 | +0.041 | 7-11 blocks | 5624 s |
+| production 1e-10 (old code, cap 2.16M) | +2.9e-4 | -0.077 | — | 2979 s |
+| 1e-8, deep boundary forced to the 1e-10 layout (4 deep sites instead of 18) | +3.6e-2 | +0.036 | 7-11 | 4706 s |
+| 1e-10, current code | +5.1e-3 | -0.068 | 3-4 | 2204 s |
+| 1e-7 | +7.7e-2 | +0.077 | 15-19 | 6090 s |
+| 1e-6 (ground state 587,257 determinants) | causal, -2.8e-3 | -0.080 | 35-40 | 7573 s |
+| 1e-10, cap 1,000,000 | +6.6e-2 | +0.066 | 2-3 | 922 s |
+| 1e-8, cap 1,000,000 | +6.2e-2 | +0.062 | 4 | 1033 s |
+
+Pairwise `max |dSigma_eg|` over the real mesh (and the change of `Im Sigma_eg` inside `[-0.32, -0.28]`): the window layout
+moves Sigma by 1.2e-2 (1.0e-2 at the pole); the code and cap difference between the two 1e-10 runs by 4.6e-2 (9e-3); the
+cutoff 1e-10 -> 1e-8 by 1.3e-1 (1.3e-1); the cap 2.09M -> 1M at fixed cutoff by 1.6e-1 (1.6e-1 at 1e-10) and 7.3e-2
+(5.2e-2 at 1e-8). The t2g block moves as much as the eg block in every pair (up to 2.6e-1) without ever violating: its
+spectrum has no sharp feature on a strongly coupled bath pole.
+
+**Reading.** The pole value is erratic in the cutoff (-0.068, +0.036, +0.077, -0.080 for 1e-10, 1e-8, 1e-7, 1e-6) and in the
+cap; it converges from neither end. What moves is a sharp feature of the eg removal spectrum between -0.34 and -0.29 Ry:
+`Im G_eg` there differs by up to 0.3 between runs (a shift of about half a broadening), while below -0.27 all runs agree to
+1e-3 and the integrated removal weight is identical to four digits (0.5108). On the G0 pole, `Sigma = G0^-1 - G^-1` is
+the difference of two numbers near 1.1, so a half-broadening shift of that feature produces the +/-0.1 dispersive wiggle
+in `Im Sigma` and its sign at -0.304 is whichever way the capped support happened to place it. The removal units never
+settle: their seeds are ~100k rows each and the support reaches the cap after a handful of applications of H with the
+frontier amplitude still of order 1; the addition units (seeds of 10-120 determinants) settle on their own at 1e-7 and
+1e-6 (1.6-1.9M determinants, blocks 180-270) and never below.
+
+**Verdict.** The acausal Sigma is the determinant cap: the eg removal Green's function of a 624k-determinant ground
+state is not converged in a 2.1M-determinant support, and the cutoff, the windows and the code revision only decide
+which 2.1M determinants are kept. The settle is exonerated (it never fired on the units that matter). The chain windows
+are exonerated (1.2e-2 against 1.3e-1). The user's hypothesis that a looser cutoff lets the cap bite later and keep more
+of the important determinants is half true: 1e-6 is causal and its removal units run ten times deeper before the cap, but
+1e-7 is the worst point of the sweep, so it is not a cure. The levers are the cap (memory per rank, or ranks: the matrix of a
+2.09M-determinant unit is 0.95 GiB on top of 0.9 GiB resident at 3 ranks) or a smaller excited sector; or accepting the
+violation as the known-issues artefact that it is on this pole (`SIGMA_CAUSALITY_TOL`).
+
+**Not shown.** No run with a cap above 2.09M was possible on this machine (15 GiB); the direction "more cap -> converged" is
+inferred from the two downward steps, not measured. 1e-9 was not run. The ground state at 1e-6 is 6 % smaller, so that row
+mixes a ground-state change into the cutoff change. The `Chain windows:` one-liner printed "nearest windowed site 0.1x
+above it" on these runs: the deep sites are below the boundary by construction, so the margin should be taken over the
+intermediate sites; a wording defect, not a window defect.
+
 ## What changed (commits on `gf-support-settle`)
 
 harness and window diff; frontier amplitude in the trace; end-of-unit frontier probe; `get_Greens_function` as plan /
@@ -184,7 +250,8 @@ claim; impurity groups that one bath component reaches merged (none on NiO-10); 
 windows.
 
 Deviations from the plan, and why: the retry's magnitude gate is ineffective (section 4b); `chain_deep_cutoff` and the occupation-gated deep zone were **not** done (the deep
-zone is empty on NiO-10 at every iteration and the 1e-8 case that would motivate them is unavailable); the retry gate
+zone is empty on the final-round NiO-10 archive, and on the first-round iteration that fails the windows move Sigma by
+1.2e-2 against the cap's 1.3e-1, section 6); the retry gate
 has no "excluded rows are of excitation order <= 1" test and no frozen-matrix pre-check (the probe does not enumerate
 excluded rows; the re-solve is accepted only if uncapped, unguarded and converged); the unit record has no (N, Sz)
 sector label (the state index and E-E0 identify the unit; the sector reading above is from the ground-state report);
@@ -194,10 +261,8 @@ so the merge is left to its owner. Its test suite has 53 failures with or withou
 
 ## What this does not show
 
-- That the freeze is not the cause of the user's acausal Sigma at 1e-8: only that it moves Sigma by 1e-9 on every
-  replayed iteration and that the 1e-8 replays are causal. The failing run is the missing evidence.
-- That the chain windows are not the cause: they are identical at the two cutoffs on every archived iteration, but
-  a 1e-8 run has a different fit trajectory.
+- (Resolved by section 6.) The freeze/settle and the chain windows are not the cause of the acausal Sigma at 1e-8; the
+  cap is. What section 6 does not show is a converged value: no cap above 2.09M fits this machine.
 - The ratio sweep covers NiO iteration 1, SMO iteration 1 and the metal SIAM. CrI3 and the heavy production units
   (10M determinants) were not run; the retry's cost and its memory gate are untested at that scale.
 - Whether the trend term of the rule refused any window in these runs (it was not logged separately): it is a

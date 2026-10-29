@@ -364,3 +364,28 @@ these results (`SolverOptions` leaves them unset = on; `0` is the explicit off; 
 off). The cost on a capped unit is the BiCGSTAB scoring of the refinement (section 8.2); the recurrence-fed scoring
 of plan revision 8 is the planned reduction. A metal that exercises pruning's regime (M2, or a longer bath) is not yet
 measured.
+
+## 10.5 Recurrence-fed scoring (R8.1, 2026-10-29): first measurement
+
+The scoring solutions now come out of the unit's own block-Lanczos recurrence (`ShiftedGalerkin`, shifts from
+`g0_zero_shifts`, `|G0^-1|` maxima + omega = 0 + the two lowest Matsubara points, computed on rank 0 and broadcast);
+`importance_scores` takes them as arguments and the BiCGSTAB scoring solvers, `probe_unit` and the `unit_probe` seam are
+deleted. Each round is one recurrence on the current P that runs until the Green's function *and* the scoring
+residual (`REFINE_STOP_RTOL`, 1e-4) have converged; the last round's recurrence is the unit's result.
+
+M1, 12 baths, cap 65,000, breadth-first start, 3 rounds, 3 ranks, discovered mode:
+
+| arm | GF wall | whole run | swaps (units 1, 2) | Σ against the uncapped run |
+|---|---|---|---|---|
+| breadth-first | 23 s | 237 s | none | worst Im Σ +0.536 (acausal, the cap is inside the first shell) |
+| BiCGSTAB scoring (`r65k`) | 230 s | 434 s | 32, 21, 16 | +0.564 |
+| recurrence-fed scoring (`n65k`) | 81 s | 178 s | 32, 21, 16 | +0.564 |
+
+The swap sequence and the Σ agree with the BiCGSTAB arm (the cap is inside the first shell, where most rows are
+exempt, so this workload cannot show a gain; the point is that the new scores select the same swaps). The GF wall is
+2.8x lower than the BiCGSTAB arm and 3.5x the breadth-first arm. Not yet done, and the reason it is above the 2x
+target: round 0 is a *second* recurrence on units that settle at once (the first run carries no accumulator; replaying
+the growth blocks into one at the freeze removes it), intermediate rounds run to full GF convergence instead of the
+scoring residual alone (needs the resume tail), the stored record has the accumulator's deflation floor but not the true
+residual `q0 - zX + (M X)_P`, and the per-unit report lines of plan R8.1 are not written. The weight `|G0^-1|^2` is
+implemented (`--refine-weighted`) and off until measured.
