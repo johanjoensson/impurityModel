@@ -1562,3 +1562,29 @@ def conserves_sz(op, spin_pairs, tol=PARITY_TERM_TOL):
         if change:
             return False
     return True
+
+
+def bath_chains(h1, impurity, n_orb, cut=0.0):
+    """Each impurity spin-orbital's bath orbitals in breadth-first order through bath-only hopping.
+
+    Ties within one depth are ordered by on-site energy, then by index, so equivalent chains list
+    their sites in corresponding order. Hopping at or below ``cut`` is no edge: the same cut
+    :func:`conserves_sz` applies, so a bath orbital counts as reached exactly when ``H`` couples it.
+    Orbitals no chain reaches are absent from every list. A mis-ordered pairing is never trusted:
+    the full-operator checks of the callers reject it.
+    """
+    imp = set(impurity)
+    adjacency = [np.flatnonzero(np.abs(h1[i]) > cut) for i in range(n_orb)]
+    chains = {}
+    for i in impurity:
+        seen, frontier, order = {i}, [i], []
+        while frontier:
+            depth = sorted(
+                {int(j) for o in frontier for j in adjacency[o] if j not in seen and j not in imp},
+                key=lambda j: (round(float(np.real(h1[j, j])), 9), j),
+            )
+            seen.update(depth)
+            order.extend(depth)
+            frontier = depth
+        chains[i] = order
+    return chains

@@ -24,7 +24,7 @@ import numpy as np
 
 from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.symmetries import impurity_two_body_tensor, weighted_parts
+from impurityModel.ed.symmetries import PARITY_TERM_TOL, bath_chains, impurity_two_body_tensor, weighted_parts
 
 #: Largest coefficient of ``P H P^-1 - H``, relative to the largest coefficient of ``H``, for which
 #: ``P`` counts as a symmetry. Exact operator algebra: a symmetry cancels to roundoff, a broken one at
@@ -95,30 +95,6 @@ def preserves_restrictions(sp, restrictions, weighted_restrictions):
     return True
 
 
-def _bath_chains(h1, impurity, n_orb):
-    """Each impurity spin-orbital's bath orbitals in breadth-first order through bath-only hopping.
-
-    Ties within one depth are ordered by on-site energy, then by index, so equivalent chains list
-    their sites in corresponding order. A mis-ordered pairing is never trusted: the full-operator
-    check rejects it.
-    """
-    imp = set(impurity)
-    adjacency = [np.flatnonzero(np.abs(h1[i]) > 0) for i in range(n_orb)]
-    chains = {}
-    for i in impurity:
-        seen, frontier, order = {i}, [i], []
-        while frontier:
-            depth = sorted(
-                {int(j) for o in frontier for j in adjacency[o] if j not in seen and j not in imp},
-                key=lambda j: (round(float(np.real(h1[j, j])), 9), j),
-            )
-            seen.update(depth)
-            order.extend(depth)
-            frontier = depth
-        chains[i] = order
-    return chains
-
-
 def _transposition(n_orb, impurity_pairs, chains, a, b):
     """The orbital permutation swapping impurity spatial orbitals ``a`` and ``b`` with their chains."""
     perm = list(range(n_orb))
@@ -162,7 +138,8 @@ def symmetry_generators(op, impurity_pairs, bath_pairs, n_orb, restrictions=None
     h1 = extract_tensors(op, n_orb=n_orb, two_body=False)[0]
     tensor = impurity_two_body_tensor(op, impurity)
     h_imp = h1[np.ix_(impurity, impurity)]
-    chains = _bath_chains(h1, impurity, n_orb)
+    scale = max((abs(amp) for _term, amp in op.items()), default=0.0)
+    chains = bath_chains(h1, impurity, n_orb, PARITY_TERM_TOL * scale)
     unit = (1,) * n_orb
     found = []
 

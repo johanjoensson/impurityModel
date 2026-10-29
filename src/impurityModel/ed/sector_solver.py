@@ -50,7 +50,7 @@ from impurityModel.ed.observables import (
     make_spin_operators,
     manifold_observable_values,
 )
-from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
+from impurityModel.ed.spin_pairs import _spin_symmetric, bath_spin_pairs, impurity_spin_pairs
 from impurityModel.ed.symmetries import (
     PARITY_TERM_TOL,
     conserved_parities,
@@ -58,11 +58,6 @@ from impurityModel.ed.symmetries import (
     parity_labels,
     sz_weighted_restriction,
 )
-
-#: Largest ``max |[H, S_+]|`` coefficient, relative to the largest coefficient of ``H``, for which
-#: total spin counts as a symmetry of ``H``. The commutator is exact operator algebra, so a symmetry
-#: cancels to roundoff and a broken one at the size of the breaking term.
-SPIN_SYMMETRY_TOL = 1e-10
 
 #: A class expansion whose state has left its seed span (seed weight below
 #: :data:`seed_sectors.DRIFT_TOL`) stops once its energy has settled (:data:`LEAK_PLATEAU_TOL`) this
@@ -176,15 +171,6 @@ def _bits(dets, n_orb):
         return np.zeros((0, n_orb), dtype=np.uint8)
     raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in dets), dtype=np.uint8).reshape(len(dets), -1)
     return np.unpackbits(raw, axis=1)[:, :n_orb]
-
-
-def _spin_symmetric(h_op, pairs):
-    if not pairs:
-        return False
-    s_plus, _s_minus, _s_z = make_spin_operators(pairs)
-    scale = max((abs(v) for v in h_op.values()), default=0.0)
-    comm = h_op.commutator(s_plus)
-    return max((abs(v) for v in comm.values()), default=0.0) <= SPIN_SYMMETRY_TOL * max(scale, 1.0)
 
 
 def _label_window(basis, pairs, two_sz):

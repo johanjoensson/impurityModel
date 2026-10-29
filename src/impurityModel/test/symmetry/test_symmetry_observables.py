@@ -985,7 +985,7 @@ def test_collinear_check_rejects_mislabels_and_polarized_impurity():
 
 def test_resolve_spin_pairs_cascade():
     """resolve_spin_pairs: SU(2) case -> exact pairing; polarized bath -> pairing_approx;
-    spin-polarized impurity -> None."""
+    spin-diagonal impurity split -> pairing_approx too (collinear)."""
     from impurityModel.ed.spin_pairs import resolve_spin_pairs
 
     impurity_orbitals = {0: [[0, 1]]}
@@ -1012,12 +1012,13 @@ def test_resolve_spin_pairs_cascade():
     assert resolved is not None
     assert resolved[2] is True
 
-    # Spin-polarized impurity: nothing to trust.
+    # A spin-diagonal impurity level shift keeps the impurity pairing physical: collinear.
     Hop_imp_pol = _hop(
         [(0, -0.2), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
     )
-    assert resolve_spin_pairs(Hop_imp_pol, impurity_orbitals, bath_states, rot, 6) is None
+    resolved = resolve_spin_pairs(Hop_imp_pol, impurity_orbitals, bath_states, rot, 6)
+    assert resolved is not None and resolved[2] is True
 
 
 def _thermal_sisb(out):

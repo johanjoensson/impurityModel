@@ -4,12 +4,19 @@ pairings) consistent with a given one-body Hamiltonian.
 """
 
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 
 # Local imports
-from impurityModel.ed.observables import _single_particle_lsj_matrices
-from impurityModel.ed.symmetries import extract_tensors
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.observables import _single_particle_lsj_matrices, make_spin_operators
+from impurityModel.ed.symmetries import PARITY_TERM_TOL, bath_chains, conserves_sz, extract_tensors
+
+#: Largest ``max |[H, S_+]|`` coefficient, relative to the largest coefficient of ``H``, for which
+#: total spin counts as a symmetry of ``H``. The commutator is exact operator algebra, so a symmetry
+#: cancels to roundoff and a broken one at the size of the breaking term.
+SPIN_SYMMETRY_TOL = 1e-10
 
 
 def impurity_spin_pairs(impurity_orbitals):
@@ -214,6 +221,8 @@ def _pairs_from_rotated_splus(orbs, rot, tol=1e-6):
     rotated ``S_+`` is not a clean spin-diagonal permutation (e.g. spin-orbit coupling mixes the
     spins) -- so the caller can fall back or skip rather than report a wrong pairing.
     """
+    if rot is None:
+        return None
     n_so = len(orbs)
     shell_l = (n_so // 2 - 1) // 2
     if 2 * (2 * shell_l + 1) != n_so:
@@ -248,7 +257,7 @@ def _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol=1e-6)
     imp_pairs = []
     for partition, blocks in impurity_orbitals.items():
         orbs = [orb for block in blocks for orb in block]
-        rot = rot_to_spherical[partition] if isinstance(rot_to_spherical, dict) else rot_to_spherical
+        rot = rot_to_spherical.get(partition) if isinstance(rot_to_spherical, dict) else rot_to_spherical
         pairs = _pairs_from_rotated_splus(orbs, rot, tol)
         if pairs is None:
             return None
@@ -270,6 +279,52 @@ def _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol=1e-6):
         return None
     orbs = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
     return _pairs_from_rotated_splus(orbs, rot_to_spherical, tol)
+
+
+def _bath_pairs_structural(h, imp_pairs, impurity_orbs, n_orb, tol=1e-6):
+    r"""Bath ``(dn, up)`` pairs matched by equal hopping and on-site energy, or ``None``.
+
+    Propagated outward along the hopping graph of the one-body ``h`` by a simultaneous breadth-first
+    search from each impurity ``(dn, up)`` pair: a spin-down bath orbital is matched with the unique
+    spin-up bath orbital of the same hopping magnitude and on-site energy. ``None`` when a match is
+    missing or ambiguous (a spin-polarized bath has no equal-energy partner) or a bath orbital is
+    disconnected from the impurity.
+    """
+    h_abs = np.abs(h)
+    matched = {}
+    for dn, up in imp_pairs:
+        matched[dn] = up
+        matched[up] = dn
+
+    def bath_neighbors(x):
+        return [y for y in range(n_orb) if y != x and y not in impurity_orbs and h_abs[x, y] > tol]
+
+    bath_pairs = []
+    queue = deque(imp_pairs)
+    while queue:
+        dn, up = queue.popleft()
+        up_candidates = [y for y in bath_neighbors(up) if y not in matched]
+        for ndn in bath_neighbors(dn):
+            if ndn in matched:
+                continue
+            cands = [
+                nup
+                for nup in up_candidates
+                if nup not in matched
+                and abs(h_abs[dn, ndn] - h_abs[up, nup]) <= tol
+                and abs(h[ndn, ndn] - h[nup, nup]) <= tol
+            ]
+            if len(cands) != 1:
+                return None  # no match or ambiguous
+            nup = cands[0]
+            matched[ndn] = nup
+            matched[nup] = ndn
+            bath_pairs.append((ndn, nup))
+            queue.append((ndn, nup))
+
+    if any(orb not in matched for orb in set(range(n_orb)) - impurity_orbs):
+        return None  # some bath orbital disconnected from the impurity
+    return bath_pairs
 
 
 def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6):
@@ -338,89 +393,271 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     if imp_pairs is None:
         return None
 
-    # --- bath pairs by simultaneous BFS over the hopping graph, seeded by imp_pairs ---
-    h_abs = np.abs(h)
-    matched = {}
-    for dn, up in imp_pairs:
-        matched[dn] = up
-        matched[up] = dn
-
-    def bath_neighbors(x):
-        return [y for y in range(n_orb) if y != x and y not in impurity_orbs and h_abs[x, y] > tol]
-
-    bath_pairs = []
-    queue = deque(imp_pairs)
-    while queue:
-        dn, up = queue.popleft()
-        up_candidates = [y for y in bath_neighbors(up) if y not in matched]
-        for ndn in bath_neighbors(dn):
-            if ndn in matched:
-                continue
-            cands = [
-                nup
-                for nup in up_candidates
-                if nup not in matched
-                and abs(h_abs[dn, ndn] - h_abs[up, nup]) <= tol
-                and abs(h[ndn, ndn] - h[nup, nup]) <= tol
-            ]
-            if len(cands) != 1:
-                return None  # no match or ambiguous
-            nup = cands[0]
-            matched[ndn] = nup
-            matched[nup] = ndn
-            bath_pairs.append((ndn, nup))
-            queue.append((ndn, nup))
-
-    bath_orbs = set(range(n_orb)) - impurity_orbs
-    if any(orb not in matched for orb in bath_orbs):
-        return None  # some bath orbital disconnected from the impurity
+    bath_pairs = _bath_pairs_structural(h, imp_pairs, impurity_orbs, n_orb, tol)
+    if bath_pairs is None:
+        return None
     return imp_pairs, bath_pairs
 
 
-def resolve_spin_pairs(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6):
-    """Decide a trustworthy ``(dn, up)`` spin pairing for the impurity and bath.
+def _spin_symmetric(h_op, pairs):
+    """Whether ``[h_op, S_+] = 0`` for the spin ladder operator built from ``pairs``."""
+    if not pairs:
+        return False
+    s_plus, _s_minus, _s_z = make_spin_operators(pairs)
+    scale = max((abs(v) for v in h_op.values()), default=0.0)
+    comm = h_op.commutator(s_plus)
+    return max((abs(v) for v in comm.values()), default=0.0) <= SPIN_SYMMETRY_TOL * max(scale, 1.0)
 
-    The validation cascade shared by ``calc_gs``'s spin-correlation block and the
-    susceptibility driver:
 
-    1. the down-then-up index convention (valid in the spherical/``c2i`` layout),
-       accepted when the induced global spin operators commute with the one-body
-       Hamiltonian (``[h, S_z] = [h, S_+] = 0``);
-    2. the pairing derived from the Hamiltonian's spin symmetry
-       (:func:`derive_spin_pairs` — geometry-agnostic), confirmed by the same check;
-    3. the collinear spin-polarized bath check
-       (:func:`collinear_spin_pairs_consistent_with_h`): spin labels and the impurity
-       pairing are verified, but the spin-split bath levels have no symmetry-fixed
-       dn/up pairing — transverse (``S_±``) quantities are then pairing-dependent.
+_GRADE_TEXT = {"su2": "SU(2)", "collinear": "collinear", "sz_only": "S_z only", "none": "none"}
+_SOURCE_TEXT = {
+    "index": "index",
+    "rotation": "rotation",
+    "matched_energies": "matched energies",
+    "chain_position": "chain position",
+}
+
+
+@dataclass(frozen=True)
+class SpinLayout:
+    r"""The ``(dn, up)`` spin-orbital pairing of the impurity and the bath, and what is verified of it.
+
+    ``grade`` is judged on the full operator, from weakest to strongest:
+
+    - ``"none"``: no pairing makes ``H`` conserve ``2 S_z`` (spin-orbit coupling); the pairs are empty.
+    - ``"sz_only"``: ``2 S_z`` is conserved. Nothing else is verified.
+    - ``"collinear"``: also the impurity pairing is the physical spin up to a spin-dependent level
+      shift (the impurity block's dn and up halves have the same eigenvectors, and the impurity
+      interaction commutes with the impurity ``S_+``); ``impurity_split`` is the size of that shift.
+      The bath ``S_+`` is a modelling choice.
+    - ``"su2"``: also ``[H, S_+] = 0``.
+
+    ``imp_source`` / ``bath_source`` say where the pairs come from: ``"index"`` the dn-then-up
+    convention, ``"rotation"`` the rotated spherical ``S_+``, ``"matched_energies"`` equal-energy
+    structural matching, ``"chain_position"`` the k-th site of the dn chain with the k-th of the up
+    chain. ``rejected`` lists, verbatim, why the other candidates lost.
+    """
+
+    imp_pairs: tuple
+    bath_pairs: tuple
+    grade: str
+    imp_source: str
+    bath_source: str
+    impurity_split: float
+    rejected: tuple
+
+    def __post_init__(self):
+        for name in ("imp_pairs", "bath_pairs"):
+            object.__setattr__(self, name, tuple((int(dn), int(up)) for dn, up in getattr(self, name)))
+        object.__setattr__(self, "impurity_split", float(self.impurity_split))
+        object.__setattr__(self, "rejected", tuple(str(r) for r in self.rejected))
+
+    @property
+    def su2(self):
+        return self.grade == "su2"
+
+    @property
+    def labelled(self):
+        """Whether ``2 S_z`` is a symmetry of ``H`` under this pairing."""
+        return self.grade != "none"
+
+    @property
+    def pairs(self):
+        return self.imp_pairs + self.bath_pairs
+
+    def pairs_source(self):
+        """``"impurity pairs: rotation, bath pairs: chain position"`` -- only the halves that are not ``index``."""
+        parts = []
+        if self.imp_source != "index":
+            parts.append(f"impurity pairs: {_SOURCE_TEXT[self.imp_source]}")
+        if self.bath_source != "index":
+            parts.append(f"bath pairs: {_SOURCE_TEXT[self.bath_source]}")
+        return ", ".join(parts)
+
+    def rejected_note(self):
+        return "rejected: " + "; ".join(self.rejected) if self.rejected else None
+
+    def provenance_note(self):
+        """The ``calc_gs`` log note, or ``None`` when the layout is the plain SU(2) index one."""
+        if self.grade == "none":
+            head = (
+                "spin layout: none -- no dn/up pairing of impurity and bath conserves S_z; <S_imp.S_bath>, "
+                "screening and the transverse susceptibility are not reported"
+            )
+        elif self.grade == "su2" and self.imp_source == "index" and self.bath_source == "index":
+            return None
+        else:
+            imp = f"impurity pairs: {_SOURCE_TEXT[self.imp_source]}"
+            if self.impurity_split > 0:
+                imp += f" (impurity spin split {self.impurity_split:.4g})"
+            bath = f"bath pairs: {_SOURCE_TEXT[self.bath_source]}"
+            if self.grade != "su2" and self.bath_pairs:
+                bath += " (not verified: transverse bath quantities are flagged)"
+            exact = "SU(2) exact" if self.grade == "su2" else "S_z exact"
+            head = f"spin layout: {_GRADE_TEXT[self.grade]} -- {exact}; {imp}; {bath}"
+        rejected = self.rejected_note()
+        return head if rejected is None else head + "\n  " + rejected
+
+    def sisb_note(self):
+        """Suffix of the ``<S_imp.S_bath>`` row: which part of it depends on an unverified pairing, or ``None``."""
+        if self.grade == "collinear":
+            return f"(transverse part depends on the bath dn/up pairing, by {_SOURCE_TEXT[self.bath_source]})"
+        if self.grade == "sz_only":
+            return (
+                "(transverse part depends on the dn/up pairing: "
+                f"impurity by {_SOURCE_TEXT[self.imp_source]}, bath by {_SOURCE_TEXT[self.bath_source]})"
+            )
+        return None
+
+
+def _invalid_pairs(pairs, orbitals, cover):
+    """Why ``pairs`` is not a pairing of ``orbitals`` (``cover``: every orbital must be paired), or ``None``."""
+    seen = [o for pair in pairs for o in pair]
+    if any(dn == up for dn, up in pairs) or len(set(seen)) != len(seen):
+        return "an orbital is paired twice"
+    if not set(seen) <= orbitals:
+        return "pairs outside the orbital set"
+    if cover and set(seen) != orbitals:
+        missing = ", ".join(str(o) for o in sorted(orbitals - set(seen)))
+        return f"impurity orbitals {missing} unpaired"
+    return None
+
+
+def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol):
+    """``[(pairs, source)]`` in order of trust, and the reasons candidates were dropped."""
+    imp_orbs = {orb for blocks in impurity_orbitals.values() for block in blocks for orb in block}
+    index = impurity_spin_pairs(impurity_orbitals)
+    rotation = _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol)
+    if rotation is None:
+        rotation = _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol)
+    rejected, candidates = [], []
+    index_bad = _invalid_pairs(index, imp_orbs, True)
+    if rotation is not None:
+        rotation = sorted((int(dn), int(up)) for dn, up in rotation)
+        rot_bad = _invalid_pairs(rotation, imp_orbs, True)
+        if rot_bad is not None:
+            rejected.append(f"rotation: {rot_bad}")
+            rotation = None
+    if rotation is not None:
+        same = sorted(index) == rotation
+        if index_bad is not None:
+            rejected.append(f"index: {index_bad}")
+        elif not same:
+            rejected.append("index: contradicts the rotation pairing")
+        candidates.append((rotation, "index" if same else "rotation"))
+    if index_bad is None and (rotation is None or sorted(index) != rotation):
+        candidates.append((index, "index"))
+    elif index_bad is not None and rotation is None:
+        rejected.append(f"index: {index_bad}")
+    return candidates, rejected
+
+
+def _bath_pairs_positional(h, imp_pairs, impurity, n_orb, cut):
+    """Bath pairs from the k-th site of each dn chain with the k-th of its up chain, or ``(None, reason)``."""
+    chains = bath_chains(h, impurity, n_orb, cut)
+    up_of, dn_of = {}, {}
+    for dn, up in imp_pairs:
+        if len(chains[dn]) != len(chains[up]):
+            return None, f"chains of {dn} and {up} differ in length ({len(chains[dn])} vs {len(chains[up])})"
+        for x, y in zip(chains[dn], chains[up]):
+            if up_of.setdefault(x, y) != y or dn_of.setdefault(y, x) != x:
+                return None, f"overlapping chains pair bath orbital {x} inconsistently"
+    return sorted(up_of.items()), None
+
+
+def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6):
+    r"""Resolve the ``(dn, up)`` pairing of impurity and bath and grade how much of it ``H`` verifies.
+
+    Total: always returns a :class:`SpinLayout`. Rank-local and deterministic; a caller that runs on
+    several ranks resolves once and broadcasts.
+
+    The impurity pairs come from the rotated spherical ``S_+`` (``rot_to_spherical``) whenever it
+    yields a clean pairing, and from the dn-then-up index convention otherwise: a pairing read off
+    ``H`` cannot tell which dn orbital belongs with which up orbital once ``h`` is diagonal in the
+    solver basis and ``U`` is density-density, but the rotation can. The bath pairs, seeded by the
+    impurity pairs, are the first of the index convention, equal-energy structural matching and
+    chain position (:func:`~impurityModel.ed.symmetries.bath_chains`) under which ``H`` conserves
+    ``2 S_z``. The grade is then judged on the full operator, see :class:`SpinLayout`.
 
     Parameters
     ----------
-    h_op : ManyBodyOperator
-        The (many-body) Hamiltonian; only its one-body part is inspected.
+    h_op : ManyBodyOperator or dict
+        The Hamiltonian.
     impurity_orbitals : dict
-        ``Basis.impurity_orbitals``.
+        ``partition -> list of orbital-index blocks`` (``Basis.impurity_orbitals``).
     bath_states : tuple
-        ``Basis.bath_states`` (valence, conduction).
-    rot_to_spherical : np.ndarray or dict
-        Spherical→computational rotation (for the symmetry-derived fallback).
+        ``(valence_baths, conduction_baths)`` (``Basis.bath_states``).
+    rot_to_spherical : np.ndarray or dict or None
+        The spherical -> computational rotation; ``None`` leaves the index convention.
     n_orb : int
         Total number of spin-orbitals.
-    tol : float, default 1e-6
-        Commutator tolerance.
+    tol : float, optional
+        Tolerance of the structural matching and of the impurity commutation test.
 
     Returns
     -------
-    (imp_pairs, bath_pairs, pairing_approx) or None
-        The validated pairs and whether only the collinear (label-level) validation
-        held (``pairing_approx=True``); ``None`` when no trustworthy labelling exists.
+    SpinLayout
     """
-    imp_pairs = impurity_spin_pairs(impurity_orbitals)
-    bath_pairs = bath_spin_pairs(bath_states)
-    if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(h_op, imp_pairs + bath_pairs, n_orb, tol):
-        return imp_pairs, bath_pairs, False
-    derived = derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol)
-    if derived is not None and spin_pairs_consistent_with_h(h_op, derived[0] + derived[1], n_orb, tol):
-        return derived[0], derived[1], False
-    if imp_pairs and bath_pairs and collinear_spin_pairs_consistent_with_h(h_op, imp_pairs, bath_pairs, n_orb, tol):
-        return imp_pairs, bath_pairs, True
-    return None
+    if not hasattr(h_op, "commutator"):
+        h_op = ManyBodyOperator(dict(h_op))
+    h = extract_tensors(h_op, n_orb=n_orb, two_body=False)[0]
+    impurity_orbs = {orb for blocks in impurity_orbitals.values() for block in blocks for orb in block}
+    impurity = sorted(impurity_orbs)
+    scale = max((abs(v) for v in h_op.values()), default=0.0)
+    cut = PARITY_TERM_TOL * scale
+    candidates, rejected = _impurity_candidates(impurity_orbitals, rot_to_spherical, tol)
+    for imp_pairs, imp_source in candidates:
+        if not imp_pairs:
+            continue
+        bath_options = [("index", bath_spin_pairs(bath_states))]
+        structural = _bath_pairs_structural(h, imp_pairs, impurity_orbs, n_orb, tol)
+        if structural is None:
+            rejected.append("matched_energies: no equal-energy partner (spin-polarized bath)")
+        else:
+            bath_options.append(("matched_energies", structural))
+        for bath_source, candidate in bath_options + [("chain_position", None)]:
+            bath_pairs = candidate
+            if bath_pairs is None:
+                bath_pairs, why = _bath_pairs_positional(h, imp_pairs, impurity, n_orb, cut)
+                if bath_pairs is None:
+                    rejected.append(f"chain_position: {why}")
+                    continue
+            bad = _invalid_pairs(bath_pairs, set(range(n_orb)) - impurity_orbs, False)
+            if bad is not None:
+                rejected.append(f"{bath_source}: {bad}")
+                continue
+            if not conserves_sz(h_op, list(imp_pairs) + list(bath_pairs), PARITY_TERM_TOL):
+                rejected.append(f"{bath_source}: does not conserve S_z")
+                continue
+            grade, split = _grade(h_op, h, imp_pairs, bath_pairs, tol)
+            return SpinLayout(imp_pairs, bath_pairs, grade, imp_source, bath_source, split, rejected)
+    return SpinLayout((), (), "none", "index", "index", 0.0, rejected)
+
+
+def _grade(h_op, h, imp_pairs, bath_pairs, tol):
+    """``("su2" | "collinear" | "sz_only", impurity_split)`` of a pairing under which ``H`` conserves ``2 S_z``."""
+    dn = [d for d, _ in imp_pairs]
+    up = [u for _, u in imp_pairs]
+    h_dn, h_up = h[np.ix_(dn, dn)], h[np.ix_(up, up)]
+    if np.max(np.abs(h[np.ix_(dn, up)]), initial=0.0) > tol:
+        return "sz_only", 0.0
+    if np.max(np.abs(h_up @ h_dn - h_dn @ h_up), initial=0.0) > tol:
+        return "sz_only", 0.0
+    imp = set(dn) | set(up)
+    interaction = ManyBodyOperator({t: a for t, a in h_op.items() if len(t) == 4 and all(o in imp for o, _ in t)})
+    s_plus = make_spin_operators(imp_pairs)[0]
+    scale = max((abs(v) for v in h_op.values()), default=0.0)
+    comm = interaction.commutator(s_plus)
+    if max((abs(v) for v in comm.values()), default=0.0) > SPIN_SYMMETRY_TOL * max(scale, 1.0):
+        return "sz_only", 0.0
+    if _spin_symmetric(h_op, list(imp_pairs) + list(bath_pairs)):
+        return "su2", 0.0
+    return "collinear", float(np.max(np.abs(np.linalg.eigvalsh(h_up - h_dn)), initial=0.0))
+
+
+def resolve_spin_pairs(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6):
+    """Compatibility shim over :func:`spin_layout`: ``(imp_pairs, bath_pairs, pairing_approx)`` or ``None``."""
+    layout = spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol)
+    if not layout.labelled:
+        return None
+    return list(layout.imp_pairs), list(layout.bath_pairs), not layout.su2
