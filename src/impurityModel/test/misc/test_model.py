@@ -9,6 +9,8 @@ import pytest
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.model import (
+    DEFAULT_GF_PRUNE_TOL,
+    DEFAULT_GF_REFINE_ROUNDS,
     BasisOptions,
     ImpurityModel,
     Meshes,
@@ -561,15 +563,15 @@ def test_archive_records_and_replays_the_pruned_growth(tmp_path):
     archive = tmp_path / "old.h5"
     _write_synthetic_archive(str(archive), gf_method="lanczos")
     solver = load_selfenergy_archive(str(archive))[3]
-    assert solver.gf_prune_tol is None and solver.gf_first_shell_tol is None
+    # An archive that predates the option did not prune: absence reads as an explicit off, not the new default.
+    assert solver.gf_prune_tol == 0.0 and solver.resolved_gf_prune_tol == 0.0 and solver.gf_first_shell_tol is None
 
 
 @pytest.mark.parametrize(
     "kwargs,match",
     [
-        (dict(gf_prune_tol=0.0), "must be positive"),
-        (dict(gf_prune_tol=-1e-3), "must be positive"),
-        (dict(gf_first_shell_tol=1e-3), "needs gf_prune_tol"),
+        (dict(gf_prune_tol=-1e-3), "non-negative"),
+        (dict(gf_prune_tol=0.0, gf_first_shell_tol=1e-3), "pruning is switched off"),
         (dict(gf_prune_tol=1e-3, gf_first_shell_tol=-1.0), "non-negative"),
         (dict(gf_prune_tol=1e-3, gf_settle=True), "exclusive with the support settle"),
         (dict(gf_prune_tol=1e-3, gf_settle_ratio=2.0), "exclusive with the support settle"),
@@ -588,6 +590,7 @@ def test_the_prune_options_accept_the_defaults_a_relaxed_shell_and_an_explicit_s
     from impurityModel.ed.model import SolverOptions
 
     assert SolverOptions().gf_prune_tol is None and SolverOptions().gf_first_shell_tol is None
+    assert SolverOptions(gf_first_shell_tol=1e-6).resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
     assert SolverOptions(gf_prune_tol=1e-4, gf_first_shell_tol=0.0).gf_first_shell_tol == 0.0
     assert SolverOptions(gf_prune_tol=1e-4, gf_settle=False).gf_settle is False
 
@@ -608,7 +611,7 @@ def test_archive_records_and_replays_the_swap_refinement(tmp_path):
     archive = tmp_path / "old.h5"
     _write_synthetic_archive(str(archive), gf_method="lanczos")
     solver = load_selfenergy_archive(str(archive))[3]
-    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (None, None, None)
+    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (0, None, None)
 
 
 @pytest.mark.parametrize(
@@ -616,8 +619,7 @@ def test_archive_records_and_replays_the_swap_refinement(tmp_path):
     [
         (dict(gf_refine_rounds=-1), "non-negative integer"),
         (dict(gf_refine_rounds=1.5), "non-negative integer"),
-        (dict(gf_refine_tol=1e-3), "need gf_refine_rounds"),
-        (dict(gf_refine_swap=0.1), "need gf_refine_rounds"),
+        (dict(gf_refine_rounds=0, gf_refine_tol=1e-3), "need gf_refine_rounds"),
         (dict(gf_refine_rounds=0, gf_refine_swap=0.1), "need gf_refine_rounds"),
         (dict(gf_refine_rounds=2, gf_refine_tol=1.0), "in \\(0, 1\\)"),
         (dict(gf_refine_rounds=2, gf_refine_swap=0.6), "in \\(0, 0.5\\]"),
@@ -630,8 +632,25 @@ def test_the_refine_options_refuse_a_contradiction_by_name(kwargs, match):
         SolverOptions(**kwargs)
 
 
-def test_the_refine_options_default_to_off_and_accept_a_valid_set():
+def test_the_refine_options_default_to_on_for_lanczos_and_accept_a_valid_set():
     assert SolverOptions().gf_refine_rounds is None
+    assert SolverOptions().resolved_gf_refine_rounds == DEFAULT_GF_REFINE_ROUNDS > 0
+    assert SolverOptions(gf_method="bicgstab").resolved_gf_refine_rounds == 0
     assert SolverOptions(gf_refine_rounds=0).gf_refine_rounds == 0
     ok = SolverOptions(gf_refine_rounds=4, gf_refine_tol=1e-4, gf_refine_swap=0.5)
     assert (ok.gf_refine_rounds, ok.gf_refine_tol, ok.gf_refine_swap) == (4, 1e-4, 0.5)
+
+
+def test_an_unset_pruning_is_the_default_unless_a_settle_option_asks_for_the_settle():
+    assert SolverOptions().resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
+    assert SolverOptions(gf_prune_tol=0.0).resolved_gf_prune_tol == 0.0
+    assert SolverOptions(gf_prune_tol=2e-4).resolved_gf_prune_tol == 2e-4
+    # The settle is what pruning replaces: asking for it explicitly wins over the default.
+    for kwargs in (dict(gf_settle=True), dict(gf_settle_ratio=2.0), dict(gf_settle_retry=True)):
+        assert SolverOptions(**kwargs).resolved_gf_prune_tol == 0.0, kwargs
+    assert SolverOptions(gf_settle=False).resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
+    # Leaving the block-Lanczos kernel: nothing to prune, and the explicit 0 is still accepted.
+    assert SolverOptions(gf_method="bicgstab").resolved_gf_prune_tol is None
+    assert SolverOptions(gf_method="bicgstab", gf_prune_tol=0.0).resolved_gf_prune_tol == 0.0
+    assert SolverOptions(gf_refine_rounds=0).resolved_gf_refine_rounds == 0
+    assert SolverOptions(gf_refine_rounds=5).resolved_gf_refine_rounds == 5

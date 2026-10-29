@@ -534,15 +534,16 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     gf_settle = solver.gf_settle
     gf_settle_ratio = solver.gf_settle_ratio
     gf_settle_retry = solver.gf_settle_retry
-    gf_prune_tol = solver.gf_prune_tol
+    gf_prune_tol = solver.resolved_gf_prune_tol
     gf_first_shell_tol = solver.gf_first_shell_tol
+    gf_refine_rounds = solver.resolved_gf_refine_rounds
     gf_refine = (
         RefineSpec(
-            rounds=solver.gf_refine_rounds,
+            rounds=gf_refine_rounds,
             tol=REFINE_TOL if solver.gf_refine_tol is None else solver.gf_refine_tol,
             swap=REFINE_SWAP if solver.gf_refine_swap is None else solver.gf_refine_swap,
         )
-        if solver.gf_refine_rounds
+        if gf_refine_rounds
         else None
     )
     gf_tol = solver.gf_tol

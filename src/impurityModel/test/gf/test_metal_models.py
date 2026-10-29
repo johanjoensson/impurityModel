@@ -13,6 +13,17 @@ from impurityModel.test.support import freeze_replay as fr
 from impurityModel.test.support.metal_models import metal_h0, write_metal
 
 
+@pytest.fixture(autouse=True)
+def _restore_what_the_rig_sets(monkeypatch):
+    """``freeze_replay.run`` sets process-wide state (the causality tolerance, the prune rule, the matrix mode):
+    undo it after each test, or the self-energy tests that run later see ``SIGMA_CAUSALITY_TOL=1e9``."""
+    from impurityModel.ed import gf_solvers
+
+    monkeypatch.setenv("SIGMA_CAUSALITY_TOL", "1e9")  # the rig's own value; the undo removes it again
+    monkeypatch.setenv("GF_PRUNE_RULE", "eta")
+    monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", gf_solvers._MATRIX_MODE)
+
+
 def test_the_h0_matrix_is_a_semicircular_star_per_orbital():
     n_orb, n_b, v = 3, 6, 0.8
     h = metal_h0(n_orb, n_b, D=0.5, v=v)

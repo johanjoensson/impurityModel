@@ -645,10 +645,9 @@ def test_the_prune_keys_reach_the_solver_options(written):
 @pytest.mark.parametrize(
     "body,match",
     [
-        ("gf_first_shell_tol = 1e-3\n", "needs gf_prune_tol"),
+        ("gf_prune_tol = 0\ngf_first_shell_tol = 1e-3\n", "pruning is switched off"),
         ('gf_prune_tol = 1e-3\ngf_settle = "on"\n', "exclusive with the support settle"),
         ("gf_prune_tol = 1e-3\ngf_settle_ratio = 2\n", "exclusive with the support settle"),
-        ("gf_prune_tol = 0\n", "gf_prune_tol"),
         ('gf_method = "bicgstab"\ngf_prune_tol = 1e-3\n', "applies only to gf_method='lanczos'"),
     ],
 )
@@ -674,4 +673,4 @@ def test_the_refine_keys_reach_the_solver_options(written):
     solver = build(load_input(written(text))).solver
     assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, 1e-4, 0.2)
     with pytest.raises(InputError, match="need gf_refine_rounds"):
-        build(load_input(written(SELFENERGY + "\n[solver]\ngf_refine_swap = 0.2\n")))
+        build(load_input(written(SELFENERGY + "\n[solver]\ngf_refine_rounds = 0\ngf_refine_swap = 0.2\n")))

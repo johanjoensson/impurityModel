@@ -975,7 +975,7 @@ def get_Greens_function(
         raise ValueError("gf_prune_tol/gf_first_shell_tol apply only to gf_method='lanczos'; remove them or switch")
     if gf_method != "lanczos" and gf_refine is not None and gf_refine.rounds > 0:
         raise ValueError("gf_refine applies only to gf_method='lanczos'; remove it or switch gf_method")
-    if gf_prune_tol is not None and (gf_settle is True or gf_settle_ratio is not None):
+    if gf_prune_tol and (gf_settle is True or gf_settle_ratio is not None):
         raise ValueError("gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio)")
     plan = _gf_lanczos_plan(
         psis,

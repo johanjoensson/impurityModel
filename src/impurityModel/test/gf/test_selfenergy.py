@@ -1,3 +1,4 @@
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -656,3 +657,39 @@ def test_greens_function_moments_hubbard_atom():
     np.testing.assert_allclose(sigma_inf, (U / 2) * np.eye(2), atol=1e-10)
     np.testing.assert_allclose(sigma_1, (U**2 / 4) * np.eye(2), atol=1e-10)
     np.testing.assert_allclose(sigma_2, (U**2 / 4) * (eps + U / 2) * np.eye(2), atol=1e-10)
+
+
+@pytest.mark.parametrize(
+    "solver_kwargs,prune,rounds",
+    [
+        ({}, 1e-3, 3),  # the defaults: pruned growth and swap refinement
+        (dict(gf_prune_tol=0.0, gf_refine_rounds=0), 0.0, None),  # the explicit off
+        (dict(gf_settle=True), 0.0, 3),  # a settle request replaces the default pruning
+        (dict(gf_prune_tol=5e-4, gf_refine_rounds=1), 5e-4, 1),
+    ],
+)
+@patch("impurityModel.ed.selfenergy.save_Greens_function")
+@patch("impurityModel.ed.selfenergy.calc_gs")
+@patch("impurityModel.ed.selfenergy.get_Greens_function")
+@patch("impurityModel.ed.sigma_estimators.get_sigma")
+def test_calc_selfenergy_hands_the_default_pruning_and_refinement_to_the_green_function(
+    mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf, solver_kwargs, prune, rounds
+):
+    mock_calc_gs.return_value = (
+        [np.array([1.0])],
+        [0.0],
+        MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),
+        np.array([[1.0]]),
+        {"rhos": [np.array([[1.0]])]},
+    )
+    mock_get_gf.return_value = ([np.array([[[-1j]]])], [np.array([[[-1j]]])], None)
+    mock_get_sigma.return_value = ([np.array([[[-1j]]])], [(np.zeros((1, 1, 1), complex),) * 2])
+    args = _selfenergy_args()
+    args["solver"] = replace(args["solver"], **solver_kwargs)
+    try:
+        selfenergy.calc_selfenergy(**args, comm=None)
+    except Exception:  # the mocked estimator may stop the run; only the call below is pinned
+        pass
+    kwargs = mock_get_gf.call_args.kwargs
+    assert kwargs["gf_prune_tol"] == prune
+    assert (None if kwargs["gf_refine"] is None else kwargs["gf_refine"].rounds) == rounds

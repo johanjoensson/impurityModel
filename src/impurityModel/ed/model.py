@@ -1273,9 +1273,11 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "gf_settle_ratio": _optional_float(_archive_attr(attrs, "gf_settle_ratio")),
         "gf_settle_retry": _optional_bool(_archive_attr(attrs, "gf_settle_retry")),
         # Absent from archives written before pruned growth was an option: those runs did not prune.
-        "gf_prune_tol": _optional_float(_archive_attr(attrs, "gf_prune_tol")),
+        # Absent from archives written before pruned growth and swap refinement existed: those runs did neither, so
+        # absence is an explicit off (0), not the new default.
+        "gf_prune_tol": _optional_float(_archive_attr(attrs, "gf_prune_tol", 0.0)),
         "gf_first_shell_tol": _optional_float(_archive_attr(attrs, "gf_first_shell_tol")),
-        "gf_refine_rounds": _optional_int(_archive_attr(attrs, "gf_refine_rounds")),
+        "gf_refine_rounds": _optional_int(_archive_attr(attrs, "gf_refine_rounds", 0)),
         "gf_refine_tol": _optional_float(_archive_attr(attrs, "gf_refine_tol")),
         "gf_refine_swap": _optional_float(_archive_attr(attrs, "gf_refine_swap")),
     }
@@ -1461,6 +1463,13 @@ class BasisOptions:
             object.__setattr__(self, "excitation_budget", None)
 
 
+#: The Green's-function support options a run uses when the options leave them unset (``gf_method="lanczos"``):
+#: importance-pruned growth at this tolerance and this many swap-refinement rounds (a unit the cap does not bind is
+#: not refined). ``0`` switches either off; archives that predate the options read as ``0``.
+DEFAULT_GF_PRUNE_TOL = 1e-3
+DEFAULT_GF_REFINE_ROUNDS = 3
+
+
 @dataclass(frozen=True)
 class SolverOptions:
     """Green's-function kernel and eigensolver knobs.
@@ -1530,9 +1539,9 @@ class SolverOptions:
         if its largest amplitude on the normalised step block exceeds this (``GF_PRUNE_RULE=mass`` reads it as a
         fraction of the step's frontier weight instead), so a capped unit reaches a greater H-depth where the
         amplitude is. A deferred determinant is not banned: it re-enters when a stronger path reaches it. ``None``
-        (default): the ``GF_LANCZOS_ADMIT_TOL`` knob, itself off. Positive. Exclusive with the support settle: it
-        switches the settle off, and ``gf_settle=True``, ``gf_settle_ratio`` and ``gf_settle_retry`` are refused with
-        it. ``gf_method="lanczos"`` only.
+        (default): :data:`DEFAULT_GF_PRUNE_TOL` (1e-3) for ``gf_method="lanczos"``, or off when a settle option
+        is set; ``0``: off. Exclusive with the support settle: it switches the settle off, and ``gf_settle=True``,
+        ``gf_settle_ratio`` and ``gf_settle_retry`` are refused with an explicit value.
     gf_first_shell_tol : float or None
         With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
         moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``: the
@@ -1540,7 +1549,8 @@ class SolverOptions:
     gf_refine_rounds : int or None
         Swap refinement of a unit the determinant cap froze: up to this many rounds of scoring the retained and the
         discovered determinants on the discovered matrix and swapping the least important retained for the most
-        important discovered ones at a fixed cap, then one recurrence on the final support. ``None`` or ``0``: off.
+        important discovered ones at a fixed cap, then one recurrence on the final support. ``None`` (default):
+        :data:`DEFAULT_GF_REFINE_ROUNDS` (3) for ``gf_method="lanczos"``; ``0``: off.
         A unit the cap does not bind, one the memory guard froze, and a complex Hamiltonian are left alone. Needs
         the discovered matrix (more memory than the retained one) and costs minutes per capped unit.
         ``gf_method="lanczos"`` only.
@@ -1628,15 +1638,12 @@ class SolverOptions:
             )
         for name in ("gf_prune_tol", "gf_first_shell_tol"):
             value = getattr(self, name)
-            if value is None:
-                continue
+            if value is None or (value == 0.0 and name == "gf_prune_tol"):
+                continue  # 0 is the explicit off: it is also what an archive without the option reads as
             if self.gf_method != "lanczos":
                 raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
-            if not (math.isfinite(value) and (value > 0.0 if name == "gf_prune_tol" else value >= 0.0)):
-                raise ValueError(
-                    f"{name} must be {'positive' if name == 'gf_prune_tol' else 'non-negative'} and finite "
-                    f"(got {value!r}); omit it for the default"
-                )
+            if not (math.isfinite(value) and value >= 0.0):
+                raise ValueError(f"{name} must be non-negative and finite (got {value!r}); omit it for the default")
         if self.gf_refine_rounds is not None and (
             isinstance(self.gf_refine_rounds, bool)
             or not isinstance(self.gf_refine_rounds, int)
@@ -1644,8 +1651,8 @@ class SolverOptions:
         ):
             raise ValueError(f"gf_refine_rounds must be a non-negative integer (got {self.gf_refine_rounds!r})")
         refining = bool(self.gf_refine_rounds)
-        if (self.gf_refine_tol is not None or self.gf_refine_swap is not None) and not refining:
-            raise ValueError("gf_refine_tol / gf_refine_swap need gf_refine_rounds > 0")
+        if (self.gf_refine_tol is not None or self.gf_refine_swap is not None) and self.gf_refine_rounds == 0:
+            raise ValueError("gf_refine_tol / gf_refine_swap need gf_refine_rounds > 0 (refinement is switched off)")
         if refining and self.gf_method != "lanczos":
             raise ValueError("gf_refine_rounds applies only to gf_method='lanczos'; remove it or switch gf_method")
         if self.gf_refine_tol is not None and not (
@@ -1654,11 +1661,9 @@ class SolverOptions:
             raise ValueError(f"gf_refine_tol must be in (0, 1) (got {self.gf_refine_tol!r})")
         if self.gf_refine_swap is not None and not (0.0 < self.gf_refine_swap <= 0.5):
             raise ValueError(f"gf_refine_swap must be in (0, 0.5] (got {self.gf_refine_swap!r})")
-        if self.gf_first_shell_tol is not None and self.gf_prune_tol is None:
-            raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; it needs gf_prune_tol")
-        if self.gf_prune_tol is not None and (
-            self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry
-        ):
+        if self.gf_first_shell_tol is not None and self.gf_prune_tol == 0.0:
+            raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; pruning is switched off")
+        if self.gf_prune_tol and (self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry):
             raise ValueError(
                 "gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio, gf_settle_retry): "
                 "pruned growth switches the settle off; remove the settle options"
@@ -1672,6 +1677,29 @@ class SolverOptions:
                 "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off); "
                 "remove one of the two"
             )
+
+    @property
+    def resolved_gf_prune_tol(self):
+        """The pruned-growth tolerance a run uses; ``None`` leaves the choice to the ``GF_LANCZOS_ADMIT_TOL`` knob.
+
+        An unset ``gf_prune_tol`` is :data:`DEFAULT_GF_PRUNE_TOL` for ``gf_method="lanczos"``, except where the
+        options ask for the support settle (``gf_settle`` on, ``gf_settle_ratio``, ``gf_settle_retry``), which
+        pruning replaces: the explicit request wins and pruning is off (``0.0``).
+        """
+        if self.gf_method != "lanczos":
+            return self.gf_prune_tol
+        if self.gf_prune_tol is not None:
+            return self.gf_prune_tol
+        if self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry:
+            return 0.0
+        return DEFAULT_GF_PRUNE_TOL
+
+    @property
+    def resolved_gf_refine_rounds(self):
+        """The refinement rounds a run uses: :data:`DEFAULT_GF_REFINE_ROUNDS` when unset for ``"lanczos"``, else 0."""
+        if self.gf_refine_rounds is not None:
+            return self.gf_refine_rounds
+        return DEFAULT_GF_REFINE_ROUNDS if self.gf_method == "lanczos" else 0
 
 
 @dataclass(frozen=True)

@@ -190,7 +190,7 @@ def add_arguments(parser):
         help=(
             "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant only if "
             "its largest amplitude on the normalised step block exceeds this. Deferred determinants are not banned. "
-            "Replaces the support settle (default: off, or the GF_LANCZOS_ADMIT_TOL knob, or the archive's)."
+            "Replaces the support settle (default: 1e-3; 0 is off; an archive without the option reads as off)."
         ),
     )
     parser.add_argument(
@@ -199,8 +199,9 @@ def add_arguments(parser):
         default=None,
         help=(
             "Swap refinement of a unit the determinant cap froze: up to this many rounds of swapping the least "
-            "important retained determinants for the most important discovered ones at the same cap (default: off, "
-            "or the archive's). Needs the discovered matrix; costs minutes per capped unit."
+            "important retained determinants for the most important discovered ones at the same cap (default: 3; 0 "
+            "is off; an archive without the option reads as off). Needs the discovered matrix; costs minutes per "
+            "capped unit."
         ),
     )
     parser.add_argument(
@@ -220,7 +221,7 @@ def add_arguments(parser):
         type=float,
         default=None,
         help=(
-            "With --gf-prune-tol: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
+            "With pruning on: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
             "the self-energy tail stays exact only then)."
         ),
     )
@@ -368,7 +369,7 @@ def apply_solver_overrides(solver, args):
         for name in ("gf_settle_ratio", "gf_settle_retry") + (("gf_settle",) if leaves_lanczos else ()):
             overrides.setdefault(name, None)
     # Pruned growth replaces the settle: the recorded settle fields the command line did not set are cleared.
-    if overrides.get("gf_prune_tol") is not None:
+    if overrides.get("gf_prune_tol"):
         for name in ("gf_settle_ratio", "gf_settle_retry"):
             overrides.setdefault(name, None)
         if solver.gf_settle is True:

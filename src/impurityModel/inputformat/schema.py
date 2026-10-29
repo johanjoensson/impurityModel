@@ -1089,8 +1089,8 @@ _TABLE_LIST += [
                 "only if its largest amplitude on the normalised step block exceeds this, so a capped unit reaches "
                 "a greater H-depth where the amplitude is. A deferred determinant is not banned: it re-enters when "
                 "a stronger path reaches it. Replaces the support settle (gf_settle = 'on', gf_settle_ratio and "
-                "gf_settle_retry are refused with it). Absent takes the GF_LANCZOS_ADMIT_TOL knob, itself off. "
-                "Positive. Only valid with gf_method = 'lanczos'.",
+                "gf_settle_retry are refused with it). Absent is 1e-3 (pruning on) unless a "
+                "settle key is set; 0 switches it off. Only valid with gf_method = 'lanczos'.",
                 minimum=0.0,
             ),
             Key(
@@ -1099,7 +1099,7 @@ _TABLE_LIST += [
                 None,
                 "With gf_prune_tol: the same cut for the first H-shell of the seeds, which is kept whole by "
                 "default (the moments of G through H^2, hence the self-energy tail, stay exact). Absent takes the "
-                "GF_ADMIT_FIRST_SHELL_TOL knob. Needs gf_prune_tol.",
+                "GF_ADMIT_FIRST_SHELL_TOL knob. Not with gf_prune_tol = 0.",
                 minimum=0.0,
             ),
             Key(
@@ -1109,7 +1109,7 @@ _TABLE_LIST += [
                 "Swap refinement of a Green's-function unit the determinant cap froze: up to this many rounds of "
                 "scoring the retained and the discovered determinants and swapping the least important retained "
                 "for the most important discovered ones at the same cap, then one recurrence on the final support. "
-                "Absent or 0 is off. Needs the discovered matrix (more memory than the retained one) and costs "
+                "Absent is 3; 0 is off. Needs the discovered matrix (more memory than the retained one) and costs "
                 "minutes per capped unit; a unit the cap does not bind is left alone. Only valid with gf_method = "
                 "'lanczos'.",
                 minimum=0,
