@@ -440,3 +440,22 @@ def test_complex_seeds_are_scored_with_the_conjugate_shift_solve():
     assert max(got.residuals) < 1e-10
     real = importance_scores(matrix, _seeds(matrix, index, dets), ZS, rtol=1e-11)
     assert not real.solutions_y, "real seeds and a real H need one solve"
+
+
+@pytest.mark.mpi
+def test_scores_from_handed_over_solutions_equal_the_solved_ones_and_the_weights_scale_them():
+    comm = MPI.COMM_WORLD
+    dets, _op, _b, matrix, _h, index, _in_p = _setup(comm)
+    block = _seeds(matrix, index, dets)
+    solved = importance_scores(matrix, block, ZS, rtol=1e-11)
+    handed = importance_scores(matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None)
+    np.testing.assert_allclose(handed.s_ret, solved.s_ret, rtol=1e-12, atol=1e-300)
+    np.testing.assert_allclose(handed.s_cand, solved.s_cand, rtol=1e-12, atol=1e-300)
+    assert handed.iterations == [0, 0]  # nothing was solved
+    half = importance_scores(matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None, weights=[0.5, 0.5])
+    finite = np.isfinite(solved.s_ret)
+    np.testing.assert_allclose(half.s_ret[finite], 0.5 * solved.s_ret[finite], rtol=1e-12)
+    # A weight picks the shift that counts: zero on the second leaves the first shift's scores alone.
+    first_only = importance_scores(matrix, block, ZS[:1], rtol=1e-11)
+    masked = importance_scores(matrix, block, ZS, xs=solved.solutions, ys=solved.solutions_y or None, weights=[1.0, 0.0])
+    np.testing.assert_allclose(masked.s_ret[finite], first_only.s_ret[finite], rtol=1e-6)

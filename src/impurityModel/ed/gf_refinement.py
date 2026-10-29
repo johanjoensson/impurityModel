@@ -175,7 +175,9 @@ def solve_shifted_block(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
     return x, it, rel
 
 
-def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_order=True, y0s=None):
+def importance_scores(
+    matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_order=True, y0s=None, xs=None, ys=None, weights=None
+):
     r"""``s_ret`` and ``s_cand`` (see the module docstring) of ``matrix`` for the seed block ``seeds``
     (``(n_p_local, m)`` on the P slots) at the shifts ``zs``, maximised over the shifts and the columns.
 
@@ -186,6 +188,11 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
 
     ``x0s`` / ``y0s`` (optional, one ``(n_p_local, m)`` block per shift) warm-start the solves. ``first_order=False``
     drops ``Sigma_D`` (the bare ``|z - H_DD|``), kept only so a test can show the self-energy matters.
+
+    ``xs`` (and ``ys``, the solutions at ``z*``, needed exactly when the second solve would be) hand over solutions the
+    caller already has -- the recurrence's own (:class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) -- and
+    no solve is made. ``weights`` (one per shift, replicated) multiply each shift's two scores before the maximum:
+    the self-energy moves by ``G^-1 dG G^-1``, so a shift where ``G^-1`` is large counts for more.
     **Collective.**
     """
     seeds = np.ascontiguousarray(seeds, dtype=complex)
@@ -199,7 +206,10 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
     in_p = np.zeros(n_k, dtype=bool)
     in_p[p_kslot[alive]] = True
     comm = matrix.comm
-    need_y = not seeds_real_up_to_a_phase(matrix, seeds) or not matrix_is_real(matrix)
+    if xs is not None:
+        need_y = ys is not None  # the caller decided, from the operator, before its recurrence ran
+    else:
+        need_y = not seeds_real_up_to_a_phase(matrix, seeds) or not matrix_is_real(matrix)
     block = min(max(seeds.shape[1], 1), SOLVE_BLOCK_COLUMNS)
     # A plan holds a cached dist-graph communicator that a later `exchange_plan` may evict (and free): build each
     # one right before the matvecs that use it, never ahead of other plans' construction.
@@ -242,16 +252,23 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
             sigma = np.zeros(n_k, dtype=complex)
         denom = np.abs(z - diag_k - sigma)
         denom = np.maximum(denom, 1e-300)
-        X, worst, iters = solve(z, None if x0s is None else x0s[iz])
+        if xs is not None:
+            X, worst, iters = np.where(alive[:, None], xs[iz], 0.0), 0.0, 0
+        else:
+            X, worst, iters = solve(z, None if x0s is None else x0s[iz])
         ax, flow_x = np.abs(X).max(axis=1), flow_of(X)
         ay, flow_y = ax, flow_x
         if need_y:
-            Y, worst_y, iters_y = solve(z.conjugate(), None if y0s is None else y0s[iz])
+            if ys is not None:
+                Y, worst_y, iters_y = np.where(alive[:, None], ys[iz], 0.0), 0.0, 0
+            else:
+                Y, worst_y, iters_y = solve(z.conjugate(), None if y0s is None else y0s[iz])
             ay, flow_y = np.abs(Y).max(axis=1), flow_of(Y)
             worst, iters = max(worst, worst_y), max(iters, iters_y)
             out.solutions_y.append(Y)
-        s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, flow_x * flow_y / denom))
-        s_ret = np.maximum(s_ret, np.where(alive, ax * ay * denom[p_kslot], -np.inf))
+        wz = 1.0 if weights is None else float(weights[iz])
+        s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, wz * flow_x * flow_y / denom))
+        s_ret = np.maximum(s_ret, np.where(alive, wz * ax * ay * denom[p_kslot], -np.inf))
         out.solutions.append(X)
         out.residuals.append(worst)
         out.iterations.append(iters)
