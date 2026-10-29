@@ -1004,7 +1004,7 @@ def spin_correlation_operator(ops_a, ops_b, z_only=False):
     ``z_only`` keeps just the Ising term :math:`\hat S^A_z \hat S^B_z`. That part needs
     only the spin *labels* (up vs down), not the down↔up pairing, so it stays exact for a
     collinear spin-polarized bath where the transverse pairing is a modelling choice
-    (see :func:`spin_pairs.collinear_spin_pairs_consistent_with_h`), and A and B need not
+    (see :class:`spin_pairs.SpinLayout`, grade ``collinear``), and A and B need not
     be disjoint there — passing the same set twice yields :math:`\hat S_z^2`.
 
     Parameters

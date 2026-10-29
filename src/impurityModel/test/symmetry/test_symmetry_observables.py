@@ -530,14 +530,26 @@ def test_print_thermal_LJ_lines(capsys):
     assert "J =  2.5000" in j_line  # J(J+1)=35/4 -> J=5/2
 
 
+def _consistent(h_op, pairs):
+    """Whether the pairing makes ``H`` conserve ``S_z`` and commute with ``S_+`` (full SU(2))."""
+    from impurityModel.ed.spin_pairs import _spin_symmetric
+    from impurityModel.ed.symmetries import conserves_sz
+
+    return conserves_sz(h_op, pairs) and _spin_symmetric(h_op, pairs)
+
+
+def _derive(h_op, impurity_orbitals, rot, n_orb):
+    """``(imp_pairs, bath_pairs)`` of an SU(2) layout resolved with no index-convention bath, or ``None``."""
+    from impurityModel.ed.spin_pairs import spin_layout
+
+    layout = spin_layout(h_op, impurity_orbitals, ({}, {}), rot, n_orb)
+    return (list(layout.imp_pairs), list(layout.bath_pairs)) if layout.su2 else None
+
+
 def test_bath_spin_pairs_and_consistency():
-    """bath_spin_pairs + spin_pairs_consistent_with_h validate/skip the spin assignment."""
+    """bath_spin_pairs + the S_z / S_+ gates validate/skip the spin assignment."""
     from impurityModel.ed.observables import expect_spin_correlation, make_spin_operators
-    from impurityModel.ed.spin_pairs import (
-        bath_spin_pairs,
-        impurity_spin_pairs,
-        spin_pairs_consistent_with_h,
-    )
+    from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 
     # 4-orbital Anderson: imp 0=dn,1=up ; bath 2=dn,3=up. Spin-diagonal hopping.
     imp_orbitals = {0: [[0, 1]]}
@@ -551,13 +563,13 @@ def test_bath_spin_pairs_and_consistency():
         terms[((a, "c"), (b, "a"))] = 0.5
         terms[((b, "c"), (a, "a"))] = 0.5
     h_conserving = ManyBodyOperator(terms)
-    assert spin_pairs_consistent_with_h(h_conserving, pairs, 4)
+    assert _consistent(h_conserving, pairs)
 
     # Add a spin-flip (SOC-like) term -> spin no longer conserved -> not consistent.
     soc = dict(terms)
     soc[((0, "c"), (3, "a"))] = 0.3
     soc[((3, "c"), (0, "a"))] = 0.3
-    assert not spin_pairs_consistent_with_h(ManyBodyOperator(soc), pairs, 4)
+    assert not _consistent(ManyBodyOperator(soc), pairs)
 
     # When consistent, the Kondo correlation is well-defined: singlet -> -3/4.
     ops_imp = make_spin_operators(impurity_spin_pairs(imp_orbitals))
@@ -711,56 +723,55 @@ def _hop(diag, hops):
     return ManyBodyOperator(terms)
 
 
-def test_derive_spin_pairs_chain():
-    """derive_spin_pairs recovers the (dn,up) pairing for an interleaved-index chain."""
-    from impurityModel.ed.spin_pairs import derive_spin_pairs, spin_pairs_consistent_with_h
-
+def test_layout_pairs_chain():
+    """spin_layout recovers the (dn,up) pairing for an interleaved-index chain."""
     # 6 spin-orbitals, spins interleaved (NOT down-then-up): impurity (0 dn, 1 up);
     # spin-down chain 0-2-4, spin-up chain 1-3-5; orbs 2,3 valence (e<0), 4,5 conduction.
     Hop = _hop(
         [(0, 0.3), (1, 0.3), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
         [(0, 2, 0.5), (1, 3, 0.5), (2, 4, 0.2), (3, 5, 0.2)],
     )
-    derived = derive_spin_pairs(Hop, {0: [[0, 1]]}, np.eye(2, dtype=complex), 6)
+    derived = _derive(Hop, {0: [[0, 1]]}, np.eye(2, dtype=complex), 6)
     assert derived is not None
     imp_pairs, bath_pairs = derived
     assert imp_pairs == [(0, 1)]
     assert sorted(bath_pairs) == [(2, 3), (4, 5)]
-    assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 6)
+    assert _consistent(Hop, imp_pairs + bath_pairs)
     # The naive down-then-up pairing of the same bath orbitals is inconsistent with h.
-    assert not spin_pairs_consistent_with_h(Hop, [(0, 1), (2, 4), (3, 5)], 6)
+    assert not _consistent(Hop, [(0, 1), (2, 4), (3, 5)])
 
 
-def test_derive_spin_pairs_returns_none_when_unresolvable():
-    """derive_spin_pairs gives up on a disconnected bath orbital or spin-mixing rotation."""
-    from impurityModel.ed.spin_pairs import derive_spin_pairs
+def test_layout_pairs_returns_none_when_unresolvable():
+    """spin_layout leaves a disconnected bath orbital unpaired and ignores a spin-mixing rotation."""
+    from impurityModel.ed.spin_pairs import spin_layout
 
-    # Bath orbitals 4,5 are isolated (no hopping) -> cannot be paired to the impurity.
+    # Bath orbitals 4,5 are isolated (no hopping): H never couples them, so they stay unlabeled.
     disconnected = _hop(
         [(0, 0.0), (1, 0.0), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
         [(0, 2, 0.5), (1, 3, 0.5)],
     )
-    assert derive_spin_pairs(disconnected, {0: [[0, 1]]}, np.eye(2, dtype=complex), 6) is None
+    layout = spin_layout(disconnected, {0: [[0, 1]]}, ({}, {}), np.eye(2, dtype=complex), 6)
+    assert layout.su2 and sorted(layout.bath_pairs) == [(2, 3)]
 
-    # A rotation that mixes the two impurity spins makes the rotated S_+ non-permutation.
+    # A rotation that mixes the two impurity spins makes the rotated S_+ a non-permutation: the
+    # rotation candidate vanishes and the index convention takes over.
     theta = 0.3
     rot_mix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]], dtype=complex)
     connected = _hop(
         [(0, 0.0), (1, 0.0), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
         [(0, 2, 0.5), (1, 3, 0.5), (2, 4, 0.2), (3, 5, 0.2)],
     )
-    assert derive_spin_pairs(connected, {0: [[0, 1]]}, rot_mix, 6) is None
+    layout = spin_layout(connected, {0: [[0, 1]]}, ({}, {}), rot_mix, 6)
+    assert layout.imp_source == "index" and layout.imp_pairs == ((0, 1),)
 
 
-def test_derive_spin_pairs_block_grouped_bath():
+def test_layout_pairs_block_grouped_bath():
     """Bath grouped by impurity block with unequal sizes (not (k,k+n/2)) still resolves.
 
     Mirrors the real layout: bath orbitals are ordered [all bath coupling to impurity
     block 0, then block 1, ...] and inequivalent blocks may have different bath counts.
-    derive_spin_pairs follows H's hopping graph, so the ordering is irrelevant.
+    spin_layout follows H's hopping graph, so the ordering is irrelevant.
     """
-    from impurityModel.ed.spin_pairs import derive_spin_pairs, spin_pairs_consistent_with_h
-
     # Two l=0 impurity shells: imp0 = (0 dn, 1 up), imp1 = (2 dn, 3 up).
     # Bath block 0 (couples to imp0) has 2 sites/spin: dn 4,5 / up 6,7.
     # Bath block 1 (couples to imp1) has 1 site/spin: dn 8 / up 9.  Different sizes.
@@ -768,15 +779,15 @@ def test_derive_spin_pairs_block_grouped_bath():
         [(0, 0.2), (1, 0.2), (2, -0.1), (3, -0.1), (4, -0.3), (6, -0.3), (5, 0.6), (7, 0.6), (8, 0.4), (9, 0.4)],
         [(0, 4, 0.5), (1, 6, 0.5), (0, 5, 0.4), (1, 7, 0.4), (2, 8, 0.3), (3, 9, 0.3)],
     )
-    derived = derive_spin_pairs(Hop, {0: [[0, 1]], 1: [[2, 3]]}, np.eye(2, dtype=complex), 10)
+    derived = _derive(Hop, {0: [[0, 1]], 1: [[2, 3]]}, np.eye(2, dtype=complex), 10)
     assert derived is not None
     imp_pairs, bath_pairs = derived
     assert sorted(imp_pairs) == [(0, 1), (2, 3)]
     assert sorted(bath_pairs) == [(4, 6), (5, 7), (8, 9)]
-    assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 10)
+    assert _consistent(Hop, imp_pairs + bath_pairs)
 
 
-def test_derive_spin_pairs_crystal_field_manifolds():
+def test_layout_pairs_crystal_field_manifolds():
     """A single l-shell split into crystal-field manifolds (eg/t2g-like) resolves whole-shell.
 
     The impurity is one complete l=1 shell whose partitions are crystal-field sub-manifolds
@@ -787,8 +798,6 @@ def test_derive_spin_pairs_crystal_field_manifolds():
     from impurityModel.ed.spin_pairs import (
         _impurity_pairs_per_partition,
         _impurity_pairs_whole_shell,
-        derive_spin_pairs,
-        spin_pairs_consistent_with_h,
     )
 
     # Impurity = l=1 spherical shell, spin-down 0,1,2 / spin-up 3,4,5, split into two manifolds
@@ -809,12 +818,12 @@ def test_derive_spin_pairs_crystal_field_manifolds():
     assert _impurity_pairs_per_partition(imp_orbitals, rot) is None
     assert sorted(_impurity_pairs_whole_shell(imp_orbitals, rot)) == [(0, 3), (1, 4), (2, 5)]
 
-    derived = derive_spin_pairs(Hop, imp_orbitals, rot, 10)
+    derived = _derive(Hop, imp_orbitals, rot, 10)
     assert derived is not None
     imp_pairs, bath_pairs = derived
     assert sorted(imp_pairs) == [(0, 3), (1, 4), (2, 5)]
     assert sorted(bath_pairs) == [(6, 7), (8, 9)]
-    assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 10)
+    assert _consistent(Hop, imp_pairs + bath_pairs)
 
 
 def test_correlation_diagnostics_analytic():
@@ -938,11 +947,8 @@ def test_spin_pair_consistency_polarized_bath():
     impurity block, spin-split bath energies and hoppings). The index-convention pairing
     is a correct labelling ([h,Sz]=0) even though full SU(2) consistency fails.
     """
-    from impurityModel.ed.spin_pairs import (
-        collinear_spin_pairs_consistent_with_h,
-        spin_pair_consistency,
-        spin_pairs_consistent_with_h,
-    )
+    from impurityModel.ed.spin_pairs import spin_layout
+    from impurityModel.ed.symmetries import conserves_sz
 
     # imp (0 dn, 1 up); valence bath (2 dn, 4 up); conduction bath (3 dn, 5 up).
     # Spin-degenerate impurity; bath energies AND hoppings differ per spin.
@@ -950,43 +956,37 @@ def test_spin_pair_consistency_polarized_bath():
         [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
     )
-    imp_pairs = [(0, 1)]
-    bath_pairs = [(2, 4), (3, 5)]
-
-    sz_ok, splus_ok = spin_pair_consistency(Hop, imp_pairs + bath_pairs, 6)
-    assert sz_ok and not splus_ok
-    assert not spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 6)
-    # The collinear check accepts: labels verified globally, pairing verified on the impurity.
-    assert collinear_spin_pairs_consistent_with_h(Hop, imp_pairs, bath_pairs, 6)
+    pairs = [(0, 1), (2, 4), (3, 5)]
+    assert conserves_sz(Hop, pairs) and not _consistent(Hop, pairs)
+    layout = spin_layout(Hop, {0: [[0, 1]]}, ({0: [[2, 4]]}, {0: [[3, 5]]}), np.eye(2, dtype=complex), 6)
+    assert layout.grade == "collinear" and layout.imp_pairs == ((0, 1),)
 
 
-def test_collinear_check_rejects_mislabels_and_polarized_impurity():
-    """The collinear check still rejects what it cannot verify.
-
-    A relative bath mislabel breaks [h,Sz]=0; spin polarization on the *impurity* itself
-    breaks the impurity-block SU(2) (the transverse impurity operators would be wrong).
-    """
-    from impurityModel.ed.spin_pairs import collinear_spin_pairs_consistent_with_h
+def test_collinear_grade_rejects_mislabels_and_keeps_a_spin_diagonal_impurity_split():
+    """A relative bath mislabel breaks [h,Sz]=0; a spin-diagonal impurity level shift keeps the
+    impurity pairing physical (collinear) and reports its size."""
+    from impurityModel.ed.spin_pairs import spin_layout
+    from impurityModel.ed.symmetries import conserves_sz
 
     Hop = _hop(
         [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
     )
     # Relative mislabel: swapping one bath pair's (dn, up) makes h couple unlike labels.
-    assert not collinear_spin_pairs_consistent_with_h(Hop, [(0, 1)], [(4, 2), (3, 5)], 6)
+    assert not conserves_sz(Hop, [(0, 1), (4, 2), (3, 5)])
 
-    # Spin-split impurity on-site energies: labels fine, impurity pairing not SU(2).
     Hop_imp_pol = _hop(
         [(0, -0.2), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
     )
-    assert not collinear_spin_pairs_consistent_with_h(Hop_imp_pol, [(0, 1)], [(2, 4), (3, 5)], 6)
+    layout = spin_layout(Hop_imp_pol, {0: [[0, 1]]}, ({0: [[2, 4]]}, {0: [[3, 5]]}), np.eye(2, dtype=complex), 6)
+    assert layout.grade == "collinear" and layout.impurity_split == pytest.approx(0.1)
 
 
-def test_resolve_spin_pairs_cascade():
-    """resolve_spin_pairs: SU(2) case -> exact pairing; polarized bath -> pairing_approx;
-    spin-diagonal impurity split -> pairing_approx too (collinear)."""
-    from impurityModel.ed.spin_pairs import resolve_spin_pairs
+def test_spin_layout_grades_su2_polarized_bath_and_impurity_split():
+    """spin_layout: SU(2) case -> exact pairing; polarized bath -> pairing_approx;
+    spin-diagonal impurity split -> collinear too."""
+    from impurityModel.ed.spin_pairs import spin_layout
 
     impurity_orbitals = {0: [[0, 1]]}
     bath_states = ({0: [[2, 4]]}, {0: [[3, 5]]})
@@ -997,28 +997,23 @@ def test_resolve_spin_pairs_cascade():
         [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -1.0), (5, 0.7)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.5), (1, 5, 0.3)],
     )
-    resolved = resolve_spin_pairs(Hop_su2, impurity_orbitals, bath_states, rot, 6)
-    assert resolved is not None
-    imp_pairs, bath_pairs, approx = resolved
-    assert imp_pairs == [(0, 1)] and not approx
-    assert sorted(bath_pairs) == [(2, 4), (3, 5)]
+    layout = spin_layout(Hop_su2, impurity_orbitals, bath_states, rot, 6)
+    assert layout.su2 and layout.imp_pairs == ((0, 1),)
+    assert sorted(layout.bath_pairs) == [(2, 4), (3, 5)]
 
     # Collinear spin-polarized bath: accepted with the pairing_approx flag.
     Hop_pol = _hop(
         [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
     )
-    resolved = resolve_spin_pairs(Hop_pol, impurity_orbitals, bath_states, rot, 6)
-    assert resolved is not None
-    assert resolved[2] is True
+    assert spin_layout(Hop_pol, impurity_orbitals, bath_states, rot, 6).grade == "collinear"
 
     # A spin-diagonal impurity level shift keeps the impurity pairing physical: collinear.
     Hop_imp_pol = _hop(
         [(0, -0.2), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
         [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
     )
-    resolved = resolve_spin_pairs(Hop_imp_pol, impurity_orbitals, bath_states, rot, 6)
-    assert resolved is not None and resolved[2] is True
+    assert spin_layout(Hop_imp_pol, impurity_orbitals, bath_states, rot, 6).grade == "collinear"
 
 
 def _thermal_sisb(out):
@@ -1144,7 +1139,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
 
 
 def test_kondo_correlation_fallback_matches_fast_path(capsys):
-    """A non-down-then-up bath ordering falls back to derive_spin_pairs and agrees."""
+    """A non-down-then-up bath ordering falls back to the layout's matched pairing and agrees."""
     from impurityModel.ed.block_structure import BlockStructure
     from impurityModel.ed.groundstate import calc_gs
 
@@ -1182,7 +1177,7 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
         return _thermal_sisb(capsys.readouterr().out)
 
     fast = run([2, 3], [4, 5])  # down-then-up within each block -> fast path
-    fallback = run([3, 2], [5, 4])  # spins swapped within block -> derive_spin_pairs fallback
+    fallback = run([3, 2], [5, 4])  # spins swapped within block -> matched-energies fallback
     assert np.isclose(fast, fallback, atol=1e-9)
 
 

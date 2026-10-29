@@ -123,7 +123,7 @@ Layer 0: average, utils, config, polarization, product_state_representation, op_
 Layer 1: operator_algebra, dc_search
 Layer 2: atomic_physics, lie_algebra, symmetries, block_structure,
          transition_operators
-Layer 3: observables, spin_pairs, dc_reference
+Layer 3: observables, spin_pairs, label_symmetries, dc_reference
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split), solver_basis
 Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, gf_units, gf_solvers,
@@ -163,7 +163,7 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 
 ### Observables (Layer 3)
 - **`observables.py`** — occupations and angular-momentum expectation values from single-particle density matrices in the spherical basis, many-body spin/orbital/Casimir operator builders, and (thermally averaged) expectation-value reporting for degenerate manifolds.
-- **`spin_pairs.py`** — derivation of the `(down, up)` spin-orbital pairings of impurity and bath consistent with a given one-body Hamiltonian (used for weighted restrictions).
+- **`spin_pairs.py`** — `spin_layout`: the `(down, up)` spin-orbital pairing of impurity and bath, resolved once per run (`SolverBasis.spin_layout`) and graded `su2` / `collinear` / `sz_only` / `none` on the full Hamiltonian. Used by the sector certification (`sector_solver`, `label_symmetries`), the ground-state report, the susceptibility driver and the CIPSI closure generators.
 - **`dc_reference.py`** — the DFT reference filling every double-counting scheme measures against: the Fermi occupation (`_noninteracting_impurity_occupation`) and density matrix (`_noninteracting_impurity_rho`) of the **raw** `h0`. `model.h0` is the KS/DFT Hamiltonian of the `h0 - dc + U` contract, so its raw filling *is* the DFT occupation; filling `h0 - dc` instead sinks the impurity levels below E_F and saturates the reference at the full shell (NiO: `n0` pinned at 10 instead of ~8.6 for a ~4 Ry dc). Because the reference is a property of the *discretized* bath it saturates whenever the fit places no impurity weight across E_F, which for FLL is an O(1)-electron, several-eV error made silently -- so the saturation check lives here, with the reference, and every scheme that defaults to it routes through `_warn_if_reference_saturated`. Deterministic NumPy on the replicated `h0`, depending only on `lie_algebra` and `ManyBodyUtils`: no MPI collective, identical on every rank.
 
 ### The many-body basis (Layer 4)

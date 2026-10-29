@@ -290,21 +290,28 @@ both are evaluated distributed via `observables.manifold_observable_values`).
   diagnostic: **negative** means antiferromagnetic impurity–bath alignment (the bath
   screens the local moment; for a fully screened $S{=}\tfrac12$ singlet it approaches
   $-3/4$), **positive** means ferromagnetic alignment, and $\approx 0$ means a free
-  (unscreened) moment. It requires a consistent assignment of the bath spin-orbitals
-  into (down, up) pairs; the pairing is taken from the down-then-up index convention or
-  derived from the Hamiltonian's spin symmetry, and it is only *trusted* if the induced
-  total-spin operator commutes with the one-body Hamiltonian
-  (`spin_pairs.spin_pairs_consistent_with_h` checks $[h, S_z] = [h, S_+] = 0$).
+  (unscreened) moment. It requires a consistent assignment of the impurity and bath
+  spin-orbitals into (down, up) pairs, the run's **spin layout**
+  (`spin_pairs.spin_layout`, resolved once per run and shared with the sector
+  certification and the susceptibility driver). The impurity pairs come from the rotated
+  spherical $S_+$ (`rot_to_spherical`), or from the down-then-up index convention when no
+  rotation is available; the bath pairs come from the index convention, from matching
+  equal-energy bath sites, or, for a spin-polarized bath, from the position along the
+  hopping chain. The layout is graded on the full Hamiltonian: `SU(2)` ($[H, S_+] = 0$),
+  `collinear` ($H$ conserves $S_z$ and the impurity pairing is the physical spin up to a
+  spin-dependent level shift, whose size is printed as the *impurity spin split*), `S_z only`,
+  or `none` (spin-orbit coupling). When a source other than the index convention was
+  used, or the grade is below `SU(2)`, the run prints a `spin layout:` line before the
+  occupation search, with the pairings that were rejected and why.
 - **Collinear spin-polarized bath** (the RSPt setup where all spin polarization lives
   in the hybridization function: spin-degenerate impurity block, spin-split bath
-  energies/hoppings). Full SU(2) consistency necessarily fails there, but the weaker
-  collinear check (`spin_pairs.collinear_spin_pairs_consistent_with_h`) verifies what
-  *can* be verified — the global spin labelling ($[h, S_z] = 0$) and the impurity
-  down↔up pairing (SU(2) of the impurity-projected one-body block) — and the report
-  then prints three lines instead of one:
+  energies/hoppings, possibly a small spin-diagonal level shift on the impurity). Full
+  SU(2) consistency necessarily fails there, but the `collinear` grade verifies what
+  *can* be verified — the global spin labelling ($[H, S_z] = 0$) and the impurity
+  down↔up pairing — and the report then prints three lines instead of one:
 
   - `<S_imp.S_bath> ... (transverse part depends on the bath dn/up pairing)`: the full
-    correlation, using the index-convention (same fit slot) bath pairing. The spin-split
+    correlation, using the layout's bath pairing (by chain position for a polarized bath). The spin-split
     up/down bath levels are different spatial states, so no symmetry fixes their
     pairing and the transverse ($S_\pm$) part is a modelling choice — hence the flag.
   - `<Sz_imp.Sz_bath>`: the longitudinal (Ising) part, which needs only the verified
@@ -316,9 +323,11 @@ both are evaluated distributed via `observables.manifold_observable_values`).
     actual correlation (screening-cloud) part.
 
   The per-eigenstate table gains a matching `Szi.Szb` column in this case.
-- If not even the spin labelling can be established (spin-orbit coupling, a bath
-  connectivity/order the derivation cannot resolve), the lines are replaced by an
-  explicit `<S_imp.S_bath> not reported: ...` message rather than a wrong number.
+- If not even the spin labelling can be established (grade `none`: spin-orbit coupling, or
+  a bath connectivity the pairing cannot follow), the lines are replaced by an explicit
+  `<S_imp.S_bath> not reported: ...` message listing the rejected pairings, and the
+  `observables.sisb.skip_reason` / `observables.sisb.spin_layout` entries of the
+  statistics JSON carry the same information.
 
 The Casimir lines can also be skipped (`S^2/L^2/J^2 not reported: ...`) when the
 impurity is not a full spin-doubled $l$-shell; the density-matrix rows above still print.

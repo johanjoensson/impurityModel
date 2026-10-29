@@ -406,7 +406,9 @@ def _one_body_commutant_generators(h_op, impurity_orbitals, bath_states):
     return generators
 
 
-def get_symmetry_generators(h_op, impurity_orbitals, bath_states, n_orb=None, tol=1e-6):
+def get_symmetry_generators(
+    h_op, impurity_orbitals, bath_states, n_orb=None, tol=1e-6, rot_to_spherical=None, spin_layout=None
+):
     r"""Operators the CIPSI closure may use to complete a determinant's symmetry orbit.
 
     Returns the **total** spin ladder operators :math:`\hat S_+ = \sum_a c^\dagger_{a\uparrow}
@@ -433,11 +435,10 @@ def get_symmetry_generators(h_op, impurity_orbitals, bath_states, n_orb=None, to
     the spin multiplet, which is what makes the retained space spin-adapted and the multiplet
     degeneracy exact rather than approximate.
 
-    The pairing is validated before use (:func:`spin_pairs.spin_pairs_consistent_with_h` checks
-    ``[h, S_z] = [h, S_+] = 0``), and that check sees only the one-body ``h``; the full ``H``
-    including ``U`` and SOC is re-checked by the consumer
-    (:meth:`cipsi_solver.CIPSISolver.expand`), which is the backstop for a spin-orbit-coupled
-    model where ``S_\pm`` is genuinely not a symmetry.
+    The pairing is the run's :class:`~impurityModel.ed.spin_pairs.SpinLayout` (``spin_layout``;
+    resolved here from ``rot_to_spherical`` when ``None``), and the ladder operators are offered only
+    at grade ``"su2"``, where ``[H, S_+] = 0`` was verified on the full operator. The consumer
+    (:meth:`cipsi_solver.CIPSISolver.expand`) re-checks it all the same.
 
     The one-body commutant is still offered alongside them, via
     :func:`_one_body_commutant_generators`: it is the only source of *orbital* generators, and
@@ -451,17 +452,16 @@ def get_symmetry_generators(h_op, impurity_orbitals, bath_states, n_orb=None, to
         (plain matrices). Empty when neither source yields anything trustworthy.
     """
     from impurityModel.ed.observables import make_spin_operators
-    from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs, spin_pairs_consistent_with_h
 
     generators = []
-    pairs = impurity_spin_pairs(impurity_orbitals) + bath_spin_pairs(bath_states)
-    if pairs:
+    layout = spin_layout
+    if layout is None:
         if n_orb is None:
             n_orb = extract_tensors(h_op, two_body=False)[0].shape[0]
-        if spin_pairs_consistent_with_h(h_op, pairs, n_orb, tol):
-            s_plus, s_minus, _s_z = make_spin_operators(pairs)
-            generators += [s_plus, s_minus]
-        # Otherwise: spin-orbit coupling, a spin-polarized bath, or a non-standard orbital
-        # ordering. The down/up pairing is then not fixed by the Hamiltonian, so S_+- built from
-        # it would not be a symmetry -- better no closure than a wrong one.
+        layout = resolve_spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol)
+    if layout.su2:
+        s_plus, s_minus, _s_z = make_spin_operators(layout.pairs)
+        generators += [s_plus, s_minus]
+    # Otherwise: spin-orbit coupling or a spin-polarized bath. S_+- is then not a symmetry --
+    # better no closure than a wrong one.
     return generators + _one_body_commutant_generators(h_op, impurity_orbitals, bath_states)

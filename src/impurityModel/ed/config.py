@@ -689,8 +689,9 @@ GS_CERTIFY_LABEL_SYMMETRY = Knob(
     bath chains -- verified on the whole operator and on the basis restrictions, which map one
     label's problem unitarily onto another's. The partner labels reuse the representative's
     verdicts, and their thermal states are mapped from its determinants. On the NiO linked-chain
-    iteration 1 a t2g swap made two of four labels in two sectors bit-identical repeats. ``0``
-    expands every label.""",
+    iteration 1 a t2g swap made two of four labels in two sectors bit-identical repeats. The
+    swap is built from the run's spin layout (`spin_pairs.spin_layout`), so a spin-polarized run
+    whose impurity is grouped per spin finds it too. ``0`` expands every label.""",
 )
 
 GS_SELECTION_CHUNK = Knob(

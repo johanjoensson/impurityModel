@@ -783,7 +783,7 @@ def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
     orbital, ``-1`` on each down orbital), so ``two_sz_target = 2 * S_z`` is an integer.
     The spin pairs should come from
     ``spin_pairs.impurity_spin_pairs`` / ``spin_pairs.bath_spin_pairs`` after
-    ``spin_pairs.spin_pairs_consistent_with_h`` validates them.
+    ``spin_pairs.spin_layout`` validates them.
 
     Parameters
     ----------

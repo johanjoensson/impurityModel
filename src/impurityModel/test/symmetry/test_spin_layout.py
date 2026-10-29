@@ -13,7 +13,7 @@ from impurityModel.ed import atomic_physics
 from impurityModel.ed.interaction_models import kanamori_u4
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.spin_pairs import resolve_spin_pairs, spin_layout
+from impurityModel.ed.spin_pairs import spin_layout
 
 N_IMP = 10
 DEPTH = 2
@@ -155,13 +155,6 @@ def test_an_empty_bath_is_a_valid_layout():
     # The chains still couple to the impurity, so unpaired bath orbitals break S_z: the layout is
     # judged on the whole operator, not on the impurity alone.
     assert layout.grade in ("none", "su2")
-
-
-def test_the_resolve_spin_pairs_shim_follows_the_layout():
-    op = _model(bath_shift=(0.0, 0.05), level_shift=(0.0, 5e-5))
-    imp, bath, approx = resolve_spin_pairs(op, GROUPS, _bath_states(GROUPS), np.eye(N_IMP), N_ORB)
-    assert tuple(imp) == PAIRS and approx
-    assert bath
 
 
 def _basis(groups):

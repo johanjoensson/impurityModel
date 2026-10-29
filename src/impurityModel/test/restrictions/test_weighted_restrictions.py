@@ -84,8 +84,8 @@ def test_automatic_restrictions_Sz():
     """The auto-generated S_z restriction (from spin pairs) isolates the S_z sector."""
     from itertools import combinations
 
-    from impurityModel.ed.spin_pairs import impurity_spin_pairs, spin_pairs_consistent_with_h
-    from impurityModel.ed.symmetries import sz_weighted_restriction
+    from impurityModel.ed.spin_pairs import impurity_spin_pairs
+    from impurityModel.ed.symmetries import conserves_sz, sz_weighted_restriction
 
     # 4-orbital impurity: 0=dn0,1=up0,2=dn1,3=up1 (impurity_orbitals down-then-up).
     imp = {0: [[0, 1, 2, 3]]}
@@ -99,7 +99,7 @@ def test_automatic_restrictions_Sz():
         terms[((a, "c"), (b, "a"))] = -1.0
         terms[((b, "c"), (a, "a"))] = -1.0
     h = ManyBodyOperator(terms)
-    assert spin_pairs_consistent_with_h(h, pairs, 4)
+    assert conserves_sz(h, pairs)
 
     n_total = ManyBodyOperator({((i, "c"), (i, "a")): 1.0 for i in range(4)})
     psi = ManyBodyState({_sd(list(occ)): 1.0 for occ in combinations(range(4), 2)})
