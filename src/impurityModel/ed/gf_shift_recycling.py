@@ -375,12 +375,14 @@ class ShiftedGalerkin:
         self.zs = np.asarray(zs, dtype=complex).reshape(-1)
         self.n_z = len(self.zs)
         self.floor = np.zeros(self.n_z)
+        self.floor_exceeded = False
         self.reset(n_rows)
 
     def reset(self, n_rows=0):
         """Forget the recurrence (a restart from the seeds); keeps the shifts."""
         self.n_rows = int(n_rows)
         self.floor[:] = 0.0
+        self.floor_exceeded = False
         self._d_inv = [None] * self.n_z
         self._zeta = [None] * self.n_z
         self._p = [None] * self.n_z

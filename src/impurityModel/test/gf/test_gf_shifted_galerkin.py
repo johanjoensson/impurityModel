@@ -128,6 +128,8 @@ def test_the_hook_in_the_recurrence_tracks_a_growing_support(cap, monkeypatch):
         g = made.setdefault("g", ShiftedGalerkin(ZS, q0.shape[0]))
         g.reset(q0.shape[0])
         made["q0"] = q0.copy()
+        kw.pop("shifted", None)  # the unit passes its own (None here); the test steps its accumulator
+        kw.pop("shifted_rtol", None)
         out = real(matrix, support, q0, converged, shifted=g, **kw)
         made["last"] = g
         return out

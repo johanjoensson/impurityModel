@@ -796,9 +796,19 @@ def block_lanczos_discovered(
         if comm is not None:
             done = comm.bcast(bool(done), root=0)
         if shifted is not None and shifted_rtol is not None and (score_only or (done and support.cap_hit)):
-            # Replicated: the residual is a function of the replicated coefficients and the replicated floor.
-            worst = max(float(shifted.residuals(beta).max(initial=0.0)), float(shifted.floor.max(initial=0.0)))
-            done = worst <= shifted_rtol
+            # The residual is a function of the coefficients, which ranks may disagree on in the last bits (mixed
+            # BLAS kernels): decide on the worst rank's value, so every rank leaves on the same block. A deflation
+            # floor above the tolerance can never be met: it is reported (`floor_exceeded`) and the stop rule falls
+            # back to the Galerkin residual alone, the scores being then as good as the recurrence made them.
+            res = float(shifted.residuals(beta).max(initial=0.0))
+            floor = float(shifted.floor.max(initial=0.0))
+            if floor >= shifted_rtol:
+                shifted.floor_exceeded = True
+                floor = 0.0
+            worst = np.array([max(res, floor)])
+            if comm is not None:
+                comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
+            done = bool(worst[0] <= shifted_rtol)
         if done:
             status = "scored" if score_only else "converged"
             widths.append(n_curr)
@@ -1048,7 +1058,7 @@ def block_Green_discovered(
             len(psi_arr),
             memory_budget,
             report,
-            refine is not None and refine.rounds > 0,
+            refine is not None and refine.rounds > 0 and bool(refine.shifts),
             2 * len(refine.shifts) if refine is not None and refine.rounds > 0 else 0,
         )
         if verbose and rank == 0 and report:
@@ -1088,6 +1098,7 @@ def block_Green_discovered(
     seed_keys = matrix.p_keys() if support.prunes else None
     refining = refine is not None and refine.rounds > 0 and matrix_mode == "discovered"
     seeds_initial = (matrix.p_keys(), q0.copy()) if refining else None
+    operator_real = all(np.imag(amp) == 0 for _term, amp in hOp.items())  # replicated: every rank holds hOp
     plan, acc = None, None
     if refining and cap < 2**62 and not support.prunes and not resolved_reort:
         # Without pruning the first run is on the final P: it carries the scoring accumulator, so a unit the cap
@@ -1095,7 +1106,7 @@ def block_Green_discovered(
         from impurityModel.ed.gf_refinement import scoring_plan
         from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
 
-        plan, _why = scoring_plan(matrix, refine, q0)
+        plan, _why = scoring_plan(refine, q0, matrix, operator_real)
         if plan is not None:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
     alphas, betas, widths, status, _q_last = block_lanczos_discovered(
@@ -1139,7 +1150,7 @@ def block_Green_discovered(
         from impurityModel.ed.gf_refinement import scoring_plan
         from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
 
-        plan, why = scoring_plan(matrix, refine, _seed_block_on_final_slots(matrix, *seeds_initial))
+        plan, why = scoring_plan(refine, _seed_block_on_final_slots(matrix, *seeds_initial), matrix, operator_real)
         if plan is None:
             if cap_info is not None:
                 cap_info["refine"] = {"declined": why, "rounds": 0, "swapped": [], "gain": []}
@@ -1173,6 +1184,8 @@ def block_Green_discovered(
     if acc is not None:
         from impurityModel.ed.gf_refinement import refine_frozen_unit
 
+        n_first = len(widths)
+
         def rerun(q0_new, shifted, shifted_rtol, score_only=False):
             nonlocal converged_flag, delta_min, last_dg
             support.decisions.frozen = True
@@ -1189,12 +1202,17 @@ def block_Green_discovered(
                 shifted=shifted,
                 shifted_rtol=shifted_rtol,
                 score_only=score_only,
+                # A scoring run that cannot reach its residual must not outlive the Green's function by much.
+                max_blocks=4 * n_first + 100 if score_only else 10**7,
             )
 
         def g_cf(result, zs):
             a_t, b_t = _trim_blocks(result[0], result[1], result[2])
             return calc_G(a_t, b_t, r, np.asarray(zs, dtype=complex), 0.0, 0.0)
 
+        monitor_state = (converged_flag, delta_min, last_dg)  # round 0's, for a refinement that keeps round 0
+        holder = [acc]
+        acc = None  # the refinement owns it now (and frees it before it swaps)
         outcome = refine_frozen_unit(
             matrix,
             refine,
@@ -1202,7 +1220,7 @@ def block_Green_discovered(
             seeds_initial[0],
             seeds_initial[1],
             (alphas, betas, widths, status, _q_last),
-            acc,
+            holder,
             rerun,
             g_cf,
             eval_meshes,
@@ -1212,6 +1230,8 @@ def block_Green_discovered(
             cap_info["refine"] = outcome.record
         if outcome.result is not None:
             alphas, betas, widths, status, _q_last = outcome.result
+        else:
+            converged_flag, delta_min, last_dg = monitor_state
         if verbose and rank == 0:
             print(_refine_line(outcome.record), flush=True)
     seconds = time.perf_counter() - t0

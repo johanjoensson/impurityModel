@@ -166,7 +166,8 @@ def unit_refine_spec(spec, block_i, side_i, es):
     if not spec.tables or block_i >= len(spec.tables):
         return replace(spec, shifts=())
     sign = 1.0 if side_i == 0 else -1.0
-    shifts = tuple((sign * z + e, w) for e in es for z, w in spec.tables[block_i])
+    # Degenerate thermal energies would repeat a shift: each distinct frequency is accumulated once.
+    shifts = tuple(dict.fromkeys(((sign * z + e), w) for e in es for z, w in spec.tables[block_i]))
     return replace(spec, shifts=shifts)
 
 
@@ -397,12 +398,14 @@ class ScoringPlan:
         return list(solutions[:n]), (list(solutions[n:]) if self.need_y else None)
 
 
-def scoring_plan(matrix, spec, seed_block):
+def scoring_plan(spec, seed_block, matrix, operator_real):
     """The :class:`ScoringPlan` of a refining unit, or ``(None, reason)`` when it cannot be scored. ``seed_block`` is
-    the seed block on the P slots. **Collective** (``H`` real and the seeds real up to a phase are global tests)."""
+    the seed block on the P slots and ``operator_real`` whether every coefficient of ``H`` is real (decided from the
+    operator, replicated, before the first run: the matrix does not hold its later columns yet). **Collective** (the
+    seeds real up to a phase is a global test)."""
     if not spec.shifts:
         return None, "no scoring shifts"
-    need_y = not matrix_is_real(matrix) or not seeds_real_up_to_a_phase(matrix, seed_block)
+    need_y = not operator_real or not seeds_real_up_to_a_phase(matrix, seed_block)
     weighted = REFINE_WEIGHTED if spec.weighted is None else spec.weighted
     zs = tuple(complex(z) for z, _w in spec.shifts)
     weights = tuple(float(w) if weighted else 1.0 for _z, w in spec.shifts)
@@ -444,7 +447,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     k_max = max(1, int(spec.swap * n_alive))
     extra, first_gain = [], None
     swapped_total = 0
-    result, acc = first, first_acc
+    result, acc = first, first_acc.pop()  # the caller's holder gives up its reference: one accumulator alive
     for round_ in range(spec.rounds + 1):
         t_round = time.perf_counter()
         seeds = seed_block(matrix, seed_keys, seed_q0)
@@ -473,6 +476,13 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         record["rounds"] = round_ + 1
         acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
         result = rerun(seed_block(matrix, seed_keys, seed_q0), acc, plan.stop_rtol, True)
+        if acc.n_steps == 0 or result[3] == "diverged":
+            # The swapped support cannot be scored (a diverged first step): back to round 0's, whose result is `first`.
+            matrix.set_p_keys(keys0)
+            record["fell_back"] = True
+            record["stopped"] = "a scoring recurrence diverged"
+            record["seconds"] = time.perf_counter() - t0
+            return RefineOutcome(None, record)
     record["settled"] = bool(gain <= spec.tol * scale)
     if swapped_total == 0:
         record["seconds"] = time.perf_counter() - t0
@@ -482,6 +492,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         record["fell_back"] = True
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
+    acc = None
     if result[3] == "scored":
         # The last run stopped on the scoring residual: G needs its own recurrence on the final P.
         result = rerun(seed_block(matrix, seed_keys, seed_q0), None, None, False)

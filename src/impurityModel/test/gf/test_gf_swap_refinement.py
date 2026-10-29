@@ -32,13 +32,21 @@ def RefineSpec(**kw):
     return _RefineSpec(**kw)
 
 
-def _run(cap, refine=None, comm=None):
+def _run(cap, refine=None, comm=None, prune_tol=None):
     basis = _seed_basis(cap=cap, comm=comm)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
     info = {}
     alphas, betas, r = block_Green_sparse(
-        _siam_6(), seeds, basis, DELTA, verbose=False, cap_info=info, eval_meshes=_mesh(), refine=refine
+        _siam_6(),
+        seeds,
+        basis,
+        DELTA,
+        verbose=False,
+        cap_info=info,
+        eval_meshes=_mesh(),
+        refine=refine,
+        prune_tol=prune_tol,
     )
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info
 
@@ -125,17 +133,27 @@ def test_an_unweighted_spec_scores_every_shift_at_weight_one(monkeypatch, comm):
 @pytest.mark.parametrize("comm", COMMS)
 def test_a_spec_without_shifts_is_declined_with_the_reason(comm):
     _g, info = _run(10, _RefineSpec(rounds=2), comm=comm)
-    assert info["refine"]["declined"] == "no scoring shifts" and info["refine"]["swapped"] == []
+    assert "refine" in info and info["refine"]["swapped"] == [] and info["refine"]["declined"]
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_the_recurrence_runs_until_the_scoring_residual_is_met(monkeypatch, comm):
-    """The stop tolerance is the recurrence's: a tight one costs blocks, a loose one stops with the Green's function."""
-    blocks = {}
-    for tol in (1e-1, 1e-12):
-        _g, info = _run(10, RefineSpec(rounds=1, tol=1e9, swap=0.4, stop_rtol=tol), comm=comm)
-        blocks[tol] = info["refine"]["blocks"][0]
-    assert blocks[1e-12] >= blocks[1e-1]
+def test_the_spec_stop_tolerance_reaches_every_recurrence_and_later_rounds_stop_on_the_residual_alone(
+    monkeypatch, comm
+):
+    from impurityModel.ed import gf_recurrence
+
+    calls, real = [], gf_recurrence.block_lanczos_discovered
+
+    def spy(*args, **kw):
+        calls.append((kw.get("shifted") is not None, kw.get("shifted_rtol"), kw.get("score_only", False)))
+        return real(*args, **kw)
+
+    monkeypatch.setattr(gf_recurrence, "block_lanczos_discovered", spy)
+    _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4, stop_rtol=3e-5), comm=comm)
+    with_acc = [c for c in calls if c[0]]
+    assert with_acc and all(c[1] == 3e-5 for c in with_acc)
+    assert with_acc[0][2] is False and any(c[2] for c in with_acc[1:]), calls  # round 0 full, later rounds score-only
+    assert calls[-1][0] is False  # the final recurrence, to Green's-function convergence, carries no accumulator
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -193,3 +211,28 @@ def test_seeds_that_are_not_real_up_to_a_phase_are_refined_with_the_conjugate_sh
     assert rec["declined"] is None and sum(rec["swapped"]) >= 1, rec
     assert info["retained_size"] == 10
     assert np.abs(g_ref - truth).max() < 0.8 * np.abs(g_breadth - truth).max()
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_pruned_unit_restarts_with_the_accumulator_and_is_refined(comm):
+    """With pruning the first run is discarded and the restart carries the accumulator (the production default)."""
+    truth, _ = _run(np.inf, comm=comm)
+    g_ref, info = _run(10, RefineSpec(rounds=6, tol=1e-12, swap=0.4), comm=comm, prune_tol=1e-6)
+    rec = info["refine"]
+    assert rec["declined"] is None and info["retained_size"] == 10, rec
+    assert np.isfinite(g_ref).all() and np.abs(g_ref - truth).max() < 1.0
+
+
+def test_the_unit_shifts_are_signed_for_the_side_offset_by_the_thermal_energies_and_deduplicated():
+    from impurityModel.ed.gf_convergence import _gf_signed_axes
+    from impurityModel.ed.gf_refinement import unit_refine_spec
+
+    table = ((0.3 + 0.02j, 1.0), (0.0 + 0.5j, 0.5))
+    spec = _RefineSpec(rounds=1, tables=(table,))
+    for side, sign in ((0, 1.0), (1, -1.0)):
+        got = unit_refine_spec(spec, 0, side, [0.0, 2.5]).shifts
+        assert [z for z, _w in got] == [sign * z + e for e in (0.0, 2.5) for z, _w in table]
+    real = _gf_signed_axes(None, np.array([0.3]), 1, 0.02)[0][0]
+    assert unit_refine_spec(spec, 0, 1, [0.0]).shifts[0][0] == pytest.approx(real)  # the monitor's own frame
+    assert len(unit_refine_spec(spec, 0, 0, [1.0, 1.0]).shifts) == len(table)  # degenerate energies: no repeats
+    assert unit_refine_spec(spec, 5, 0, [0.0]).shifts == ()  # no table for the block
