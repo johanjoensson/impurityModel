@@ -186,6 +186,26 @@ def test_a_refinement_whose_estimate_grows_falls_back_to_round_zeros_support(mon
     assert _gather(info["proxy"].retained_keys(), comm) == _gather(info0["proxy"].retained_keys(), comm)
 
 
+@pytest.mark.parametrize("prune_tol", [None, 1e-6])
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_unit_with_nothing_swappable_is_declined_before_any_scoring_is_computed(monkeypatch, comm, prune_tol):
+    """Review R4: when the exemption covers every retained row, the scoring tail is skipped: no scores, no swaps,
+    breadth-first's G."""
+    from impurityModel.ed import gf_refinement
+
+    g_breadth, _ = _run(10, comm=comm, prune_tol=prune_tol)
+    calls = _spy_scores(monkeypatch)
+    monkeypatch.setattr(
+        gf_refinement,
+        "_exempt_pslots",
+        lambda matrix, seed_keys, seed_block, extra: np.ones(matrix.n_p_local, dtype=bool),
+    )
+    g_ref, info = _run(10, RefineSpec(rounds=3, tol=1e-12, swap=0.4), comm=comm, prune_tol=prune_tol)
+    assert "nothing is swappable" in info["refine"]["declined"], info["refine"]
+    assert calls == [] and info["refine"]["swapped"] == []
+    np.testing.assert_allclose(g_ref, g_breadth, atol=1e-10)
+
+
 @pytest.mark.parametrize("comm", COMMS)
 def test_a_final_recurrence_that_diverges_falls_back_to_round_zeros_support(monkeypatch, comm):
     """The Green's-function rerun on the swapped support is checked for divergence like the scoring reruns."""
@@ -302,3 +322,11 @@ def test_a_complex_hermitian_hamiltonian_is_refined_with_the_conjugate_shifts(mo
     assert seen and all(seen), "a complex H needs the conjugate-shift solutions"
     assert info["retained_size"] == 10
     assert np.abs(g_ref - truth).max() < 0.8 * np.abs(g_breadth - truth).max()
+
+
+def test_the_default_scoring_residual_is_inside_the_range_the_oracle_ranks_exactly():
+    """Review S1: ranks are exact at residual <= 2e-3, so the default must not exceed it (and 1e-4 was ~20x tighter
+    than needed at the bath poles, where the residual falls slowly)."""
+    from impurityModel.ed import gf_refinement
+
+    assert gf_refinement.REFINE_STOP_RTOL <= 2e-3

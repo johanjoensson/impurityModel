@@ -125,7 +125,8 @@ REFINE_SWAP = 0.10
 #: The residual the recurrence-fed scoring solutions must reach, and whether the shifts are weighted by ``|G_0^-1|^2``.
 #: Harness switches (``freeze_replay`` sets them identically on every rank), not user options, until measured: a
 #: ``RefineSpec`` field left ``None`` reads the constant when the unit is refined.
-REFINE_STOP_RTOL = 1e-4
+#: 1e-3: the oracle ranks exactly at residual <= 2e-3 (review S1); looser is untested.
+REFINE_STOP_RTOL = 1e-3
 REFINE_WEIGHTED = False
 
 
@@ -311,6 +312,15 @@ def _exempt_pslots(matrix, seed_keys, seed_block, extra_keys):
         cutoff = collective_mass_cutoff(weight, FIRST_SHELL_EXEMPT_TAIL * total, matrix.comm)
         exempt |= weight > cutoff
     return exempt
+
+
+def anything_swappable(matrix, seed_keys, seed_block):
+    """Whether any retained determinant is outside :func:`_exempt_pslots` (round 0, no admissions yet): if not, no
+    score can change the support and the scoring solutions need not be computed. Decided from the frozen P alone,
+    before the scoring tail of the recurrence. **Collective.**"""
+    exempt = _exempt_pslots(matrix, seed_keys, seed_block, [])
+    n_swappable = int((matrix.alive().astype(bool) & ~exempt).sum())
+    return _allreduce(matrix.comm, float(n_swappable), MPI.SUM) > 0
 
 
 def _select_swap(matrix, scores, exempt, k_max):

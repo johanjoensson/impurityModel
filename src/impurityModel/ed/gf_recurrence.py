@@ -701,6 +701,7 @@ def block_lanczos_discovered(
     shifted=None,
     shifted_rtol=None,
     score_only=False,
+    score_gate=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -715,7 +716,9 @@ def block_lanczos_discovered(
     every shift's residual (the Galerkin residual or the deflation floor, whichever is larger) is below it, so
     "converged" then means the Green's function *and* the scoring solutions are. ``score_only`` stops on that residual
     alone (the Green's-function monitor is still called every block) and reports ``"scored"``: the coefficients are
-    then good for the scores, not for ``G``.
+    then good for the scores, not for ``G``. ``score_gate()`` (collective) is asked once, when the Green's function
+    has converged on a frozen P: if it says no row is worth scoring, ``shifted`` is dropped (``shifted.skipped``) and
+    the run ends there.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -795,6 +798,12 @@ def block_lanczos_discovered(
         done = converged(alphas[: it + 1], betas[: it + 1], verbose=verbose, block_widths=widths + [n_curr])
         if comm is not None:
             done = comm.bcast(bool(done), root=0)
+        if done and support.cap_hit and score_gate is not None and shifted is not None and not score_only:
+            # The Green's function converged on the frozen P: if no row can be swapped the scoring tail is wasted.
+            score_gate, gate = None, score_gate
+            if not gate():
+                shifted.skipped = True
+                shifted = None
         if shifted is not None and shifted_rtol is not None and (score_only or (done and support.cap_hit)):
             # The residual is a function of the coefficients, which ranks may disagree on in the last bits (mixed
             # BLAS kernels): decide on the worst rank's value, so every rank leaves on the same block. A deflation
@@ -1100,6 +1109,20 @@ def block_Green_discovered(
     seeds_initial = (matrix.p_keys(), q0.copy()) if refining else None
     operator_real = all(np.imag(amp) == 0 for _term, amp in hOp.items())  # replicated: every rank holds hOp
     plan, acc = None, None
+
+    def _swappable_gate():
+        from impurityModel.ed.gf_refinement import anything_swappable
+
+        return anything_swappable(matrix, seeds_initial[0], _seed_block_on_final_slots(matrix, *seeds_initial))
+
+    def _decline_nothing_swappable():
+        # Every retained row is a seed or a heavy first-shell row: no score can change P (the frozen cap is final).
+        why = "nothing is swappable: the seeds and the first shell fill the cap"
+        if cap_info is not None:
+            cap_info["refine"] = {"declined": why, "rounds": 0, "swapped": [], "gain": []}
+        if verbose and rank == 0:
+            print(f"GF refinement declined: {why}", flush=True)
+
     if refining and cap < 2**62 and not support.prunes and not resolved_reort:
         # Without pruning the first run is on the final P: it carries the scoring accumulator, so a unit the cap
         # freezes needs no second recurrence for round 0. (A unit that never hits the cap drops it unused.)
@@ -1120,7 +1143,11 @@ def block_Green_discovered(
         engine=engine,
         shifted=acc,
         shifted_rtol=None if plan is None else plan.stop_rtol,
+        score_gate=None if plan is None else _swappable_gate,
     )
+    if acc is not None and getattr(acc, "skipped", False):
+        plan, acc = None, None
+        _decline_nothing_swappable()
     carried = acc is not None and support.cap_hit and not support.memory_frozen and not support.support_frozen
     if carried:
         acc.pad_rows(matrix.n_p_local)
@@ -1156,6 +1183,9 @@ def block_Green_discovered(
                 cap_info["refine"] = {"declined": why, "rounds": 0, "swapped": [], "gain": []}
             if verbose and rank == 0:
                 print(f"GF refinement declined: {why}", flush=True)
+        elif not _swappable_gate():
+            plan = None
+            _decline_nothing_swappable()
         else:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
     if _needs_restart(support, n_seed) or (acc is not None and not carried):
