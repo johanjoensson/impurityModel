@@ -154,6 +154,9 @@ class RefineSpec:
     weighted: Optional[bool] = None
     shifts: tuple = ()
     tables: tuple = ()
+    #: Reject a round whose frontier error at held-out shifts grew (:func:`frontier_error`); ``False`` keeps the rule
+    #: that compares the estimated gain only.
+    verify: bool = True
     #: Why :func:`unit_refine_spec` left ``shifts`` empty, when it is not that the block has no table.
     note: str = ""
 
@@ -264,6 +267,11 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
 REFINE_MAX_SHIFTS = 8
 #: Thermal energies closer than this share one frame (a repeated shift is accumulated once).
 DEGENERATE_ENERGY = 1e-9
+#: At most this many held-out shifts (each costs one more accumulator shift) for the acceptance test, and the factor by
+#: which the frontier error, summed over the held-out shifts (the hard, poorly resolved ones dominate it), may grow in a
+#: round before the round is rejected (review F4/R1).
+REFINE_MAX_HOLD = 4
+REFINE_ACCEPT_SLACK = 0.05
 
 
 def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=None, n_matsubara=2):
@@ -388,22 +396,56 @@ def _select_swap(matrix, scores, exempt, k_max):
 @dataclass(frozen=True)
 class ScoringPlan:
     """What the recurrence must accumulate for the scores, decided before it runs (replicated): the scoring shifts
-    and their weights, the shifts the accumulator is given (the conjugates appended when ``need_y``) and the
-    residual the run stops at."""
+    and their weights, the shifts the accumulator is given (the conjugates appended when ``need_y``, then the
+    held-out shifts the acceptance test measures the error at) and the residual the run stops at."""
 
     zs: tuple
     weights: tuple
     need_y: bool
     stop_rtol: float
+    hold: tuple = ()
 
     @property
     def accumulator_shifts(self):
-        return list(self.zs) + ([complex(z).conjugate() for z in self.zs] if self.need_y else [])
+        return list(self.zs) + ([complex(z).conjugate() for z in self.zs] if self.need_y else []) + list(self.hold)
 
     def split(self, solutions):
         """``(xs, ys)`` from the accumulator's solution list."""
         n = len(self.zs)
-        return list(solutions[:n]), (list(solutions[n:]) if self.need_y else None)
+        return list(solutions[:n]), (list(solutions[n : 2 * n]) if self.need_y else None)
+
+    def hold_solutions(self, solutions):
+        """The solutions at the held-out shifts."""
+        return list(solutions[len(solutions) - len(self.hold) :]) if self.hold else []
+
+
+def held_out_shifts(zs, n_max=REFINE_MAX_HOLD):
+    """Shifts the scores never see, for the acceptance test: each scoring shift with its broadening doubled (a
+    different, better conditioned resolvent on the same axis), the ``n_max`` with the smallest ``|Im z|`` (the real-axis
+    points the self-energy is most fragile at), none equal to a scoring shift."""
+    cand = {complex(z.real, 2.0 * z.imag) for z in zs if z.imag != 0.0} - set(zs)
+    return tuple(sorted(cand, key=lambda z: (abs(z.imag), z.real))[:n_max])
+
+
+def frontier_error(matrix, zs, xs):
+    """Per shift, the second-order estimate of what the frontier still contributes to ``G``,
+    ``sum_{f in F} |(H X)_f|^2 / |z - H_ff|^2`` summed over the seed columns, ``X`` the solution of ``(z - PHP) X = s`` on
+    P: the squared norm of the true residual's frontier part, each row divided by how far its energy is from ``z``.
+    It falls as ``P`` captures what couples to the seeds at ``z`` and, unlike the change in ``G`` between two supports,
+    is a property of one support. **Collective.**"""
+    alive = matrix.alive().astype(bool)
+    p_kslot = matrix.p_to_k_slot()
+    in_p = np.zeros(matrix.n_k_local, dtype=bool)
+    in_p[p_kslot[alive]] = True
+    diag_k = matrix.k_diagonal()
+    out = np.zeros(len(zs))
+    for i, (z, x) in enumerate(zip(zs, xs)):
+        x = np.ascontiguousarray(np.where(alive[:, None], x, 0.0), dtype=complex)
+        plan_all = matrix.exchange_plan(max(x.shape[1], 1), "importance", rows="all")
+        flow = matrix.matvec(x, rows="all", plan=plan_all)
+        denom = np.maximum(np.abs(complex(z) - diag_k) ** 2, 1e-300)
+        out[i] = float(((np.abs(flow) ** 2).sum(axis=1) / denom)[~in_p].sum())
+    return np.array([_allreduce(matrix.comm, e, MPI.SUM) for e in out])
 
 
 def scoring_plan(spec, seed_block, matrix, operator_real):
@@ -418,7 +460,7 @@ def scoring_plan(spec, seed_block, matrix, operator_real):
     zs = tuple(complex(z) for z, _w in spec.shifts)
     weights = tuple(float(w) if weighted else 1.0 for _z, w in spec.shifts)
     rtol = REFINE_STOP_RTOL if spec.stop_rtol is None else spec.stop_rtol
-    return ScoringPlan(zs, weights, need_y, rtol), None
+    return ScoringPlan(zs, weights, need_y, rtol, held_out_shifts(zs) if spec.verify else ()), None
 
 
 def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc, rerun, g_cf, eval_meshes, seed_block):
@@ -438,7 +480,9 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     gains, or after ``spec.rounds`` swaps. Rounds after the first run only until the scoring residual is met
     (``"scored"``); the unit's result is then one more recurrence, to Green's-function convergence, on the final P,
     unless the last permitted round's run already did both.
-    A refinement whose final estimated gain is larger than round 0's falls back to round 0's P and result. The
+    A round after which the frontier error at the held-out shifts (:func:`frontier_error`) has grown is undone and
+    ends the refinement (``record["rejected"]``). A refinement whose final estimated gain is larger than round 0's
+    falls back to round 0's P and result. The
     record's ``dG_*`` are ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on
     held-out ones."""
     from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
@@ -461,12 +505,26 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     k_max = max(1, int(spec.swap * n_alive))
     extra, first_gain = [], None
     swapped_total = 0
+    err_prev, keys_prev, rejected = None, keys0, False
     result, acc = first, first_acc.pop()  # the caller's holder gives up its reference: one accumulator alive
     for round_ in range(spec.rounds + 1):
         t_round = time.perf_counter()
         seeds = seed_block(matrix, seed_keys, seed_q0)
         xs, ys = plan.split(acc.solutions())
         scores = importance_scores(matrix, seeds, zs, xs=xs, ys=ys, weights=plan.weights)
+        if plan.hold:
+            err = frontier_error(matrix, plan.hold, plan.hold_solutions(acc.solutions()))
+            record.setdefault("frontier_error", []).append([float(e) for e in err])
+            if err_prev is not None and err.sum() > err_prev.sum() * (1.0 + REFINE_ACCEPT_SLACK):
+                # The last swap made the support worse where it is measured: undo it and stop (review F4/R1).
+                record["rejected"] = round_
+                matrix.set_p_keys(keys_prev)
+                swapped_total -= record["swapped"].pop()
+                record["gain"].pop()
+                record["rounds"] = round_ - 1
+                rejected = True
+                break
+            err_prev = err
         exempt = _exempt_pslots(matrix, seed_keys, seeds, extra)
         retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
         record["gain"].append(gain)
@@ -483,6 +541,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         keep = np.ones(matrix.n_p_local, dtype=bool)
         keep[retire] = False
         keep &= matrix.alive().astype(bool)
+        keys_prev = [key for key, a in zip(matrix.p_keys(), matrix.alive()) if a]
         keys = [key for key, k_ in zip(matrix.p_keys(), keep) if k_] + list(admit)
         matrix.set_p_keys(keys)
         extra = list(admit)
@@ -499,7 +558,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
             record["stopped"] = "a scoring recurrence diverged"
             record["seconds"] = time.perf_counter() - t0
             return RefineOutcome(None, record)
-    record["settled"] = bool(gain <= spec.tol * scale_gain)
+    record["settled"] = bool(gain <= spec.tol * scale_gain) and not rejected
     if swapped_total == 0:
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
@@ -509,8 +568,9 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
     acc = xs = ys = scores = seeds = None  # the views keep the whole accumulator alive through the final run
-    if result[3] == "scored":
-        # The last run stopped on the scoring residual: G needs its own recurrence on the final P.
+    if result[3] == "scored" or rejected:
+        # The last run stopped on the scoring residual (or ran on a support that was rejected): G needs its own
+        # recurrence on the final P.
         result = rerun(seed_block(matrix, seed_keys, seed_q0), None, None, False)
         if result[3] == "diverged":
             # As for a diverged scoring run: round 0's support and result, which the caller keeps.
