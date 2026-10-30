@@ -27,8 +27,14 @@ def _mesh():
 SHIFTS = tuple((complex(z), 1.0) for z in list(OMEGA + 1j * DELTA) + list(1j * np.linspace(0.05, 2.0, 6)))
 
 
+#: The acceptance test's check shifts (``(z, weight, axis)``, the same frame): every other real-mesh point and two
+#: Matsubara points, unit weights.
+CHECKS = tuple((complex(z), 1.0, 0) for z in OMEGA[::2] + 1j * DELTA) + ((0.05j, 1.0, 1), (0.44j, 1.0, 1))
+
+
 def RefineSpec(**kw):
     kw.setdefault("shifts", SHIFTS)
+    kw.setdefault("checks", CHECKS)
     return _RefineSpec(**kw)
 
 
@@ -284,6 +290,12 @@ def test_the_unit_shifts_are_signed_for_the_side_offset_by_the_thermal_energies_
 
     assert "stacked thermal states" in scoring_plan(stacked, None, None, True)[1]
     assert unit_refine_spec(spec, 5, 0, [0.0]).shifts == ()  # no table for the block
+    checks = ((0.3 + 0.02j, 4.0, 0), (0.5j, 2.0, 1))
+    spec = _RefineSpec(rounds=1, tables=(table,), check_tables=(checks,))
+    for side, sign in ((0, 1.0), (1, -1.0)):
+        got = unit_refine_spec(spec, 0, side, [2.5]).checks
+        assert got == tuple((sign * z + 2.5, w, a) for z, w, a in checks)  # the scoring shifts' frame
+    assert unit_refine_spec(spec, 0, 0, [0.0, 2.5]).checks == ()  # declined units carry none
 
 
 _REAL_SIAM_6 = _siam_6
@@ -401,8 +413,8 @@ def _worst_swaps(monkeypatch, from_call):
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_a_round_that_raises_the_frontier_error_is_undone_and_ends_the_refinement(monkeypatch, comm):
-    """Review F4/R1. A first swap that worsens the held-out frontier error returns round 0's G; a later one returns
+def test_a_round_that_raises_the_estimated_sigma_error_is_undone_and_ends_the_refinement(monkeypatch, comm):
+    """Review F4/R1. A first swap that worsens the estimated self-energy error returns round 0's G; a later one returns
     the previous round's (same as stopping there)."""
     g_breadth, info0 = _run(10, comm=comm)
     _worst_swaps(monkeypatch, from_call=1)

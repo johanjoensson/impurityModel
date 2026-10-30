@@ -24,7 +24,7 @@ from impurityModel.ed.dc_reference import (  # noqa: F401
 from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc  # noqa: F401
 from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
-from impurityModel.ed.gf_refinement import REFINE_SWAP, REFINE_TOL, RefineSpec, g0_zero_shifts
+from impurityModel.ed.gf_refinement import REFINE_SWAP, REFINE_TOL, RefineSpec, g0_check_shifts, g0_zero_shifts
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     get_Greens_function,
@@ -199,11 +199,13 @@ def _bath_poles(sb):
 
 
 def _refine_tables(sb, blocks, w, iw, delta, comm):
-    """The scoring shifts of every Green's-function block (:func:`gf_refinement.g0_zero_shifts` on its
-    ``G0^-1 = z - h_corr - Delta(z)``), computed on rank 0 and broadcast: the table's length decides the size of
-    collective buffers downstream, so it must not depend on a rank-local ``eigh``."""
+    """``(tables, check_tables)``: the scoring shifts (:func:`gf_refinement.g0_zero_shifts`) and the acceptance
+    test's check shifts (:func:`gf_refinement.g0_check_shifts`) of every Green's-function block, on its
+    ``G0^-1 = z - h_corr - Delta(z)``, computed on rank 0 and broadcast: the tables' lengths decide the size of
+    collective buffers downstream, so they must not depend on a rank-local ``eigh``."""
     tables = None
     if comm is None or comm.rank == 0:
+        checks = []
         hcorr, v_full, _vd, h_bath = get_hcorr_v_hbath(sb.h0_solve, sb.total_impurity_orbitals, sb.sum_bath_states)
         bath_eig = np.linalg.eigh(h_bath)
         tables = []
@@ -217,7 +219,8 @@ def _refine_tables(sb, blocks, w, iw, delta, comm):
 
             zs, weights = g0_zero_shifts(g0_inv, w, iw, delta)
             tables.append(tuple(zip(zs, weights)))
-        tables = tuple(tables)
+            checks.append(g0_check_shifts(g0_inv, w, iw, delta))
+        tables = (tuple(tables), tuple(checks))
     if comm is not None and comm.size > 1:
         tables = comm.bcast(tables, root=0)
     return tables
@@ -675,17 +678,15 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     report("Calculating interacting Green's function ...", flush=True)
 
     if gf_refine is not None:
-        gf_refine = replace(
-            gf_refine,
-            tables=_refine_tables(
-                sb,
-                [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
-                w,
-                iw,
-                delta,
-                comm,
-            ),
+        tables, check_tables = _refine_tables(
+            sb,
+            [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
+            w,
+            iw,
+            delta,
+            comm,
         )
+        gf_refine = replace(gf_refine, tables=tables, check_tables=check_tables)
     t_phase = time.perf_counter()
     # The retry is off unless asked for: it can cost as much as an unsettled Green's function.
     settle_retry = gf_settle_retry is True and gf_settle is not False

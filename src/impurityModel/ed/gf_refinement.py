@@ -159,9 +159,13 @@ class RefineSpec:
     weighted: Optional[bool] = None
     shifts: tuple = ()
     tables: tuple = ()
-    #: Reject a round whose frontier error at held-out shifts grew (:func:`frontier_error`); ``False`` keeps the rule
-    #: that compares the estimated gain only.
+    #: Reject a round whose estimated self-energy error (:func:`sigma_error`) grew on the check shifts; ``False`` keeps
+    #: the rule that compares the estimated gain only.
     verify: bool = True
+    #: The unit's check shifts ``((z, weight, axis), ...)`` in the recurrence's frame (``axis`` 0: real, 1: Matsubara),
+    #: filled per unit from ``check_tables``: one :func:`g0_check_shifts` result per block, unsigned.
+    checks: tuple = ()
+    check_tables: tuple = ()
     #: Why :func:`unit_refine_spec` left ``shifts`` empty, when it is not that the block has no table.
     note: str = ""
 
@@ -175,7 +179,7 @@ def unit_refine_spec(spec, block_i, side_i, es):
     from dataclasses import replace
 
     if not spec.tables or block_i >= len(spec.tables):
-        return replace(spec, shifts=())
+        return replace(spec, shifts=(), checks=())
     sign = 1.0 if side_i == 0 else -1.0
     # Thermal energies equal to within `DEGENERATE_ENERGY` are one frame; each distinct frequency is accumulated once.
     distinct = []
@@ -189,10 +193,14 @@ def unit_refine_spec(spec, block_i, side_i, es):
         return replace(
             spec,
             shifts=(),
+            checks=(),
             note="stacked thermal states with distinct energies (columns would be scored in the wrong frame)",
         )
     shifts = tuple(dict.fromkeys(((sign * z + distinct[0]), w) for z, w in spec.tables[block_i])) if distinct else ()
-    return replace(spec, shifts=shifts)
+    checks = ()
+    if distinct and block_i < len(spec.check_tables):
+        checks = tuple((sign * z + distinct[0], w, axis) for z, w, axis in spec.check_tables[block_i])
+    return replace(spec, shifts=shifts, checks=checks)
 
 
 @dataclass
@@ -272,11 +280,15 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
 REFINE_MAX_SHIFTS = 8
 #: Thermal energies closer than this share one frame (a repeated shift is accumulated once).
 DEGENERATE_ENERGY = 1e-9
-#: At most this many held-out shifts (each costs one more accumulator shift) for the acceptance test, and the factor by
-#: which the frontier error, summed over the held-out shifts (the hard, poorly resolved ones dominate it), may grow in a
-#: round before the round is rejected (review F4/R1).
-REFINE_MAX_HOLD = 4
-REFINE_ACCEPT_SLACK = 0.05
+#: The check shifts of the acceptance test (:func:`g0_check_shifts`; each costs one more accumulator shift, two with
+#: the conjugates): evenly spaced real-mesh points and the lowest Matsubara points. On M1 65k and SMO 40k the round
+#: decisions were the same from 51 + 8 down to 8 + 2 points (doc/reviews/gf_refinement_review.md §7).
+REFINE_CHECK_REAL = 16
+REFINE_CHECK_MATSUBARA = 4
+#: The factor by which the largest estimated self-energy error on one axis may grow in a round before the round is
+#: rejected. 0.05 raised a false alarm on SMO 40k (+11 % on the real axis in a round that improved the graded Sigma
+#: 3.25 -> 2.46); the rounds it has to catch grew 1.7x and 3.5x (M1 65k).
+REFINE_ACCEPT_SLACK = 0.15
 
 
 def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=None, n_matsubara=2):
@@ -321,6 +333,32 @@ def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=None
     weight = np.asarray(norms) ** 2
     weight = weight / max(float(weight.max()), 1e-300)
     return zs, [float(x) for x in weight]
+
+
+def g0_check_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, n_real=None, n_matsubara=None):
+    r"""The check shifts of one Green's-function block for the acceptance test (:func:`sigma_error`): ``n_real`` evenly
+    spaced points of the real mesh at ``omega + i delta`` and the ``n_matsubara`` Matsubara points nearest the real
+    axis, as ``((z, weight, axis), ...)`` with ``weight = ||G_0^-1(z)||_2^2`` (a change ``dG`` moves the self-energy by
+    ``G^-1 dG G^-1``) and ``axis`` 0 on the real mesh, 1 on the Matsubara mesh. Unsigned, like
+    :func:`g0_zero_shifts`; replicated if ``g0_inv_of`` and the meshes are."""
+    n_real = REFINE_CHECK_REAL if n_real is None else n_real
+    n_matsubara = REFINE_CHECK_MATSUBARA if n_matsubara is None else n_matsubara
+    zs, axes = [], []
+    if omega_mesh is not None and len(omega_mesh) and n_real > 0:
+        w = np.sort(np.asarray(omega_mesh, dtype=float))
+        pick = np.unique(np.linspace(0, len(w) - 1, min(n_real, len(w))).round().astype(int))
+        zs += [complex(w[i], delta) for i in pick]
+        axes += [0] * len(pick)
+    if matsubara_mesh is not None and len(matsubara_mesh) and n_matsubara > 0:
+        pts = np.asarray(matsubara_mesh, dtype=complex)
+        order = np.argsort(np.abs(pts.imag), kind="stable")[:n_matsubara]
+        zs += [complex(pts[i]) for i in order]
+        axes += [1] * len(order)
+    if not zs:
+        return ()
+    g = np.asarray(g0_inv_of(np.asarray(zs, dtype=complex)))
+    weights = [float(np.linalg.norm(m, 2) ** 2) for m in g]
+    return tuple(zip(zs, weights, axes))
 
 
 def _exempt_pslots(matrix, seed_keys, seed_block, extra_keys):
@@ -401,56 +439,87 @@ def _select_swap(matrix, scores, exempt, k_max):
 @dataclass(frozen=True)
 class ScoringPlan:
     """What the recurrence must accumulate for the scores, decided before it runs (replicated): the scoring shifts
-    and their weights, the shifts the accumulator is given (the conjugates appended when ``need_y``, then the
-    held-out shifts the acceptance test measures the error at) and the residual the run stops at."""
+    and their weights, the check shifts of the acceptance test (:func:`sigma_error`) with their weights and axes, and
+    the residual the run stops at. The accumulator is given the scoring shifts, their conjugates when ``need_y``, the
+    check shifts and their conjugates when ``need_y``."""
 
     zs: tuple
     weights: tuple
     need_y: bool
     stop_rtol: float
-    hold: tuple = ()
+    checks: tuple = ()
+    check_weights: tuple = ()
+    check_axes: tuple = ()
 
     @property
     def accumulator_shifts(self):
-        return list(self.zs) + ([complex(z).conjugate() for z in self.zs] if self.need_y else []) + list(self.hold)
+        def with_conj(zs):
+            return list(zs) + ([complex(z).conjugate() for z in zs] if self.need_y else [])
+
+        return with_conj(self.zs) + with_conj(self.checks)
 
     def split(self, solutions):
-        """``(xs, ys)`` from the accumulator's solution list."""
+        """``(xs, ys)`` at the scoring shifts from the accumulator's solution list."""
         n = len(self.zs)
         return list(solutions[:n]), (list(solutions[n : 2 * n]) if self.need_y else None)
 
-    def hold_solutions(self, solutions):
-        """The solutions at the held-out shifts."""
-        return list(solutions[len(solutions) - len(self.hold) :]) if self.hold else []
+    def check_solutions(self, solutions):
+        """``(xs, ys)`` at the check shifts (``ys`` ``None`` without ``need_y``)."""
+        start = len(self.zs) * (2 if self.need_y else 1)
+        n = len(self.checks)
+        xs = list(solutions[start : start + n])
+        return xs, (list(solutions[start + n : start + 2 * n]) if self.need_y else None)
 
 
-def held_out_shifts(zs, n_max=REFINE_MAX_HOLD):
-    """Shifts the scores never see, for the acceptance test: each scoring shift with its broadening doubled (a
-    different, better conditioned resolvent on the same axis), the ``n_max`` with the smallest ``|Im z|`` (the real-axis
-    points the self-energy is most fragile at), none equal to a scoring shift."""
-    cand = {complex(z.real, 2.0 * z.imag) for z in zs if z.imag != 0.0} - set(zs)
-    return tuple(sorted(cand, key=lambda z: (abs(z.imag), z.real))[:n_max])
+def sigma_error(matrix, zs, xs, ys=None, weights=None):
+    r"""Per shift, the estimated error of the self-energy the support ``P`` leaves: ``w(z) max_ij |dG_ij(z)|`` with
+    ``dG_ij = sum_{f in F} conj((H Y_i)_f) (H X_j)_f / (z - H_ff - Sigma_f)`` the second-order (Loewdin) correction
+    that the discovered rows ``F`` would add to ``G = s^H X``, ``X = (z - PHP)^-1 s`` on P, ``Y`` the solution at
+    ``z*`` (``None``: ``Y = conj(X)``, real ``H`` and seeds real up to a phase), ``Sigma_f`` as in
+    :func:`importance_scores` and ``w = ||G_0^-1(z)||^2`` (``weights``; ``None``: 1), since ``dSigma ~ G^-1 dG G^-1``.
 
-
-def frontier_error(matrix, zs, xs):
-    """Per shift, the second-order estimate of what the frontier still contributes to ``G``,
-    ``sum_{f in F} |(H X)_f|^2 / |z - H_ff|^2`` summed over the seed columns, ``X`` the solution of ``(z - PHP) X = s`` on
-    P: the squared norm of the true residual's frontier part, each row divided by how far its energy is from ``z``.
-    It falls as ``P`` captures what couples to the seeds at ``z`` and, unlike the change in ``G`` between two supports,
-    is a property of one support. **Collective.**"""
+    It is a property of one support, so two rounds compare. Measured (doc/reviews/gf_refinement_review.md §7):
+    against the true self-energy error point by point, Spearman 0.65-0.74 on the real axis with this weight (0.90-0.96
+    with the round's own ``|G^-1|^2``, which a unit does not have); round to round it got the direction of the
+    worst point right in 5 of 6 rounds of M1 65k and SMO 40k, where the frontier residual
+    ``sum_F |(H X)_f|^2 / |z - H_ff|^2`` it replaces got 3 (it fell while the real-axis Sigma degraded 3x). Not
+    validated where the support is acausal everywhere: on a dense oracle in that regime no second-order estimate
+    tracked the real-axis direction. **Collective.**"""
     alive = matrix.alive().astype(bool)
     p_kslot = matrix.p_to_k_slot()
     in_p = np.zeros(matrix.n_k_local, dtype=bool)
     in_p[p_kslot[alive]] = True
-    diag_k = matrix.k_diagonal()
-    out = np.zeros(len(zs))
-    for i, (z, x) in enumerate(zip(zs, xs)):
-        x = np.ascontiguousarray(np.where(alive[:, None], x, 0.0), dtype=complex)
-        plan_all = matrix.exchange_plan(max(x.shape[1], 1), "importance", rows="all")
-        flow = matrix.matvec(x, rows="all", plan=plan_all)
-        denom = np.maximum(np.abs(complex(z) - diag_k) ** 2, 1e-300)
-        out[i] = float(((np.abs(flow) ** 2).sum(axis=1) / denom)[~in_p].sum())
-    return np.array([_allreduce(matrix.comm, e, MPI.SUM) for e in out])
+    f_rows = ~in_p
+    diag_p, diag_k = matrix.diagonal(), matrix.k_diagonal()
+    m = xs[0].shape[1] if len(xs) else 0
+    dg = np.zeros((len(zs), m, m), dtype=complex)
+    for i, (shift, x) in enumerate(zip(zs, xs)):
+        denom = _dressed_denominator(matrix, complex(shift), alive, p_kslot, diag_p, diag_k)[f_rows]
+        denom = np.where(np.abs(denom) > 1e-300, denom, 1e-300)
+
+        def flow_of(v):
+            v = np.ascontiguousarray(np.where(alive[:, None], v, 0.0), dtype=complex)
+            plan_all = matrix.exchange_plan(max(v.shape[1], 1), "importance", rows="all")
+            return matrix.matvec(v, rows="all", plan=plan_all)[f_rows]
+
+        flow_x = flow_of(x)
+        flow_y = flow_x.conj() if ys is None else flow_of(ys[i])
+        dg[i] = np.einsum("fi,fj,f->ij", flow_y.conj(), flow_x, 1.0 / denom)
+    if matrix.comm is not None and matrix.comm.size > 1:
+        matrix.comm.Allreduce(MPI.IN_PLACE, dg, op=MPI.SUM)
+    w = np.ones(len(zs)) if weights is None else np.asarray(weights, dtype=float)
+    return w * np.abs(dg).reshape(len(zs), -1).max(axis=1, initial=0.0)
+
+
+def _round_worse(err_prev, err, axes, slack=None):
+    """Whether the largest estimated error on any axis (real, Matsubara) grew by more than ``slack``
+    (``REFINE_ACCEPT_SLACK``). Each axis is judged on its own: a sum lets the small real-axis entries drown in the
+    Matsubara ones, and a test per shift rejects every round (some point always gets worse). Replicated."""
+    slack = REFINE_ACCEPT_SLACK if slack is None else slack
+    axes = np.asarray(axes)
+    return any(
+        float(np.max(err[axes == a])) > (1.0 + slack) * float(np.max(err_prev[axes == a])) for a in np.unique(axes)
+    )
 
 
 def scoring_plan(spec, seed_block, matrix, operator_real):
@@ -465,7 +534,19 @@ def scoring_plan(spec, seed_block, matrix, operator_real):
     zs = tuple(complex(z) for z, _w in spec.shifts)
     weights = tuple(float(w) if weighted else 1.0 for _z, w in spec.shifts)
     rtol = REFINE_STOP_RTOL if spec.stop_rtol is None else spec.stop_rtol
-    return ScoringPlan(zs, weights, need_y, rtol, held_out_shifts(zs) if spec.verify else ()), None
+    checks = spec.checks if spec.verify else ()
+    return (
+        ScoringPlan(
+            zs,
+            weights,
+            need_y,
+            rtol,
+            checks=tuple(complex(z) for z, _w, _a in checks),
+            check_weights=tuple(float(w) for _z, w, _a in checks),
+            check_axes=tuple(int(a) for _z, _w, a in checks),
+        ),
+        None,
+    )
 
 
 def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc, rerun, g_cf, eval_meshes, seed_block):
@@ -485,8 +566,9 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     gains, or after ``spec.rounds`` swaps. Rounds after the first run only until the scoring residual is met
     (``"scored"``); the unit's result is then one more recurrence, to Green's-function convergence, on the final P,
     unless the last permitted round's run already did both.
-    A round after which the frontier error at the held-out shifts (:func:`frontier_error`) has grown is undone and
-    ends the refinement (``record["rejected"]``). A refinement whose final estimated gain is larger than round 0's
+    A round after which the largest estimated self-energy error (:func:`sigma_error` on ``plan.checks``) has grown on
+    the real or the Matsubara axis (:func:`_round_worse`) is undone and ends the refinement (``record["rejected"]``;
+    ``record["sigma_error"]`` holds each pass's per-axis maxima). A refinement whose final estimated gain is larger than round 0's
     falls back to round 0's P and result. The
     record's ``dG_*`` are ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on
     held-out ones."""
@@ -517,11 +599,15 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         seeds = seed_block(matrix, seed_keys, seed_q0)
         xs, ys = plan.split(acc.solutions())
         scores = importance_scores(matrix, seeds, zs, xs=xs, ys=ys, weights=plan.weights)
-        if plan.hold:
-            err = frontier_error(matrix, plan.hold, plan.hold_solutions(acc.solutions()))
-            record.setdefault("frontier_error", []).append([float(e) for e in err])
-            if err_prev is not None and err.sum() > err_prev.sum() * (1.0 + REFINE_ACCEPT_SLACK):
-                # The last swap made the support worse where it is measured: undo it and stop (review F4/R1).
+        if plan.checks:
+            cx, cy = plan.check_solutions(acc.solutions())
+            err = sigma_error(matrix, plan.checks, cx, cy, plan.check_weights)
+            del cx, cy
+            record.setdefault("sigma_error", []).append(
+                [float(err[np.asarray(plan.check_axes) == a].max()) for a in sorted(set(plan.check_axes))]
+            )
+            if err_prev is not None and _round_worse(err_prev, err, plan.check_axes):
+                # The last swap made the estimated self-energy worse on one axis: undo it and stop (review F4/R1).
                 record["rejected"] = round_
                 matrix.set_p_keys(keys_prev)
                 swapped_total -= record["swapped"].pop()

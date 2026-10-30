@@ -12,7 +12,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.gf_refinement import importance_scores
+from impurityModel.ed.gf_refinement import _round_worse, importance_scores, sigma_error
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp
 from impurityModel.test.basis.test_sparse_matrix_build import N_ORB, _all_dets, _basis
 
@@ -344,3 +344,66 @@ def test_the_weights_scale_the_scores_and_pick_the_shift_that_counts():
     first_only = importance_scores(matrix, block, ZS[:1], xs[:1])
     masked = importance_scores(matrix, block, ZS, xs, weights=[1.0, 0.0])
     np.testing.assert_allclose(masked.s_ret[finite], first_only.s_ret[finite], rtol=1e-12)
+
+
+def _dense_dg2(h, in_p, seeds_global, z):
+    """The second-order frontier correction ``dG_ij = sum_f conj((H Y_i)_f) (H X_j)_f / (z - H_ff - Sigma_f)``."""
+    p, f = np.flatnonzero(in_p), np.flatnonzero(~in_p)
+    hpp, hfp = h[np.ix_(p, p)], h[np.ix_(f, p)]
+    x = np.linalg.solve(z * np.eye(len(p)) - hpp, seeds_global[p])
+    y = np.linalg.solve(np.conj(z) * np.eye(len(p)) - hpp, seeds_global[p])
+    sigma = (np.abs(hfp) ** 2) @ (1.0 / (z - np.diag(h)[p]))
+    return np.einsum("fi,fj,f->ij", (hfp @ y).conj(), hfp @ x, 1.0 / (z - np.diag(h)[f] - sigma))
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("drop", [False, True])
+def test_the_sigma_error_equals_its_dense_definition(drop):
+    comm = MPI.COMM_WORLD
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm, drop)
+    block = _seeds(matrix, index, dets)
+    seeds_g = _global_seeds(matrix, block, index, comm)
+    xs = _dense_solutions(matrix, h, in_p, index, block, ZS)
+    ys = _dense_solutions(matrix, h, in_p, index, block, ZS, conj=True)
+    weights = [3.0, 0.5]
+    want = [w * np.abs(_dense_dg2(h, in_p, seeds_g, z)).max() for z, w in zip(ZS, weights)]
+    np.testing.assert_allclose(sigma_error(matrix, ZS, xs, ys, weights), want, rtol=1e-8)
+    # Real H and real seeds: Y = conj(X), the conjugate solve is not needed.
+    np.testing.assert_allclose(sigma_error(matrix, ZS, xs, None, weights), want, rtol=1e-8)
+
+
+def test_the_second_order_correction_estimates_what_the_frontier_adds_to_g():
+    """``dG`` against the exact change of ``G`` when the coupled rows join P: within 30 % at these shifts, where the
+    bare denominator ``z - H_ff`` is off by 1.5-26x. The estimate is perturbative: next to a pole at small broadening
+    (``2 + 0.05i`` on this fixture) it is not (measured 4.6x off)."""
+    comm = MPI.COMM_SELF
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm)
+    seeds_g = _global_seeds(matrix, _seeds(matrix, index, dets), index, comm)
+    p = np.flatnonzero(in_p)
+    f = np.flatnonzero(~in_p)
+    u = np.concatenate([p, f[np.abs(h[np.ix_(f, p)]).sum(axis=1) > 0]])
+
+    def g_on(rows, z):
+        return seeds_g[rows].conj().T @ np.linalg.solve(z * np.eye(len(rows)) - h[np.ix_(rows, rows)], seeds_g[rows])
+
+    for z in ZS + (0.5j,):
+        true = g_on(u, z) - g_on(p, z)
+        err = np.abs(_dense_dg2(h, in_p, seeds_g, z) - true).max() / np.abs(true).max()
+        assert err < 0.3, (z, err)
+
+
+def test_a_round_is_judged_on_the_largest_error_of_each_axis():
+    """Review F4/R1, the M1 65k pattern: the real-axis estimate grows 3.5x while the Matsubara one falls 4.7x from a
+    larger value. A sum over the shifts falls (the rule that accepted every M1 round); per axis the round is
+    rejected."""
+    axes = [0, 0, 0, 1, 1]
+    before = np.array([2.2, 0.4, 0.1, 7.0, 1.0])
+    after = np.array([7.8, 0.5, 0.1, 1.5, 0.3])
+    assert after.sum() < before.sum()
+    assert _round_worse(before, after, axes)
+    # SMO 40k round 1: a few points get worse while each axis's worst point improves -- accepted, where a test per
+    # shift rejects.
+    after = np.array([1.5, 0.45, 0.12, 5.0, 1.1])
+    assert (after > before).any()
+    assert not _round_worse(before, after, axes)
+    assert not _round_worse(before, before * 1.1, axes)  # within the slack
