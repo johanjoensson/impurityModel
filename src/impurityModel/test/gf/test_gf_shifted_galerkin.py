@@ -191,3 +191,41 @@ def test_the_fused_update_equals_the_per_shift_numpy_recurrence_across_width_cha
         state = _numpy_step(ZS, state, v, alpha, beta_prev)
         for x, (_di, _ze, _p, x_ref) in zip(g.solutions(), state):
             np.testing.assert_allclose(x, x_ref, rtol=1e-11, atol=1e-11)
+
+
+def test_the_fused_kernel_refuses_mismatched_shapes_and_accepts_read_only_input():
+    from impurityModel.ed.SparseScatter import shifted_update
+
+    n, nz, w, p = 5, 2, 3, 3
+    c = lambda *shape: np.ones(shape, dtype=complex)  # noqa: E731
+    args = [c(n, nz, w), c(n, nz, w), np.zeros((n, nz, p), dtype=complex), c(n, w), c(w, w), c(nz, w, w), c(nz, w, p)]
+    shifted_update(*args, False)  # consistent
+    for index, bad in ((5, c(nz, w, w + 1)), (6, c(nz, w + 1, p)), (6, c(nz + 1, w, p)), (0, c(n, nz + 1, w))):
+        wrong = list(args)
+        wrong[index] = bad
+        with pytest.raises(ValueError, match="shifted_update"):
+            shifted_update(*wrong, False)
+    ro = list(args)
+    for index in (0, 3, 4, 5, 6):
+        ro[index] = ro[index].copy()
+        ro[index].flags.writeable = False
+    shifted_update(*ro, False)  # read-only inputs are only read
+
+
+def test_a_second_first_block_needs_a_reset_and_growth_reuses_the_backing_array():
+    rng = np.random.default_rng(1)
+    g = ShiftedGalerkin([0.3 + 0.1j, -0.2 - 0.1j])
+    alpha = np.eye(2, dtype=complex)
+    g.step(rng.standard_normal((10, 2)) + 0j, alpha)
+    with pytest.raises(ValueError, match="reset"):
+        g.step(rng.standard_normal((10, 2)) + 0j, alpha)
+    g2 = ShiftedGalerkin([0.3 + 0.1j])
+    with pytest.raises(ValueError, match="first block"):
+        g2.step(rng.standard_normal((10, 2)) + 0j, alpha, beta_prev=np.eye(2, dtype=complex))
+    g.reset(10)
+    g.step(rng.standard_normal((10, 2)) + 0j, alpha)
+    beta = np.eye(2, dtype=complex)
+    g.step(rng.standard_normal((11, 2)) + 0j, alpha, beta)  # reallocates once (11 > capacity 10) ...
+    buf = g._x_buf
+    g.step(rng.standard_normal((12, 2)) + 0j, alpha, beta)  # ... and then grows inside the 25 % headroom
+    assert g._x_buf is buf and g._x.shape[0] == 12 and np.shares_memory(g.solutions()[0], buf)

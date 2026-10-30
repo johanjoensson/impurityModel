@@ -492,7 +492,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         record["fell_back"] = True
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
-    acc = None
+    acc = xs = ys = scores = seeds = None  # the views keep the whole accumulator alive through the final run
     if result[3] == "scored":
         # The last run stopped on the scoring residual: G needs its own recurrence on the final P.
         result = rerun(seed_block(matrix, seed_keys, seed_q0), None, None, False)

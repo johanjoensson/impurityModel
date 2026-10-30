@@ -386,24 +386,37 @@ class ShiftedGalerkin:
         self.floor_exceeded = False
         self._d_inv = None  # (n_z, w, w)
         self._zeta = None  # (n_z, w, p)
-        self._p = None  # (rows, n_z, w): the shifts of a row are contiguous, which the fused update relies on
+        # (capacity, n_z, .) backing arrays; _p / _x are their first n_rows rows. The shifts of a row are contiguous,
+        # which the fused update relies on; rows past n_rows are zero, so a row is admitted without a copy.
+        self._p_buf = self._x_buf = None
+        self._p = None  # (rows, n_z, w)
         self._x = None  # (rows, n_z, p)
         self.n_steps = 0
 
     def pad_rows(self, n):
-        """Grow the stored blocks to ``n`` rows (zeros: a row admitted at this step carried no earlier mass)."""
+        """Grow the stored blocks to ``n`` rows (zeros: a row admitted at this step carried no earlier mass). The
+        backing arrays grow geometrically (25 %), so a growing support is not copied every step; views from
+        :meth:`solutions` taken before a reallocation are detached from the accumulator."""
         if n <= self.n_rows:
             return
         for name in ("_p", "_x"):
-            a = getattr(self, name)
-            if a is not None:
-                pad = np.zeros((n - a.shape[0],) + a.shape[1:], dtype=complex)
-                setattr(self, name, np.concatenate((a, pad)))
+            buf = getattr(self, name + "_buf")
+            if buf is None:
+                continue
+            if n > buf.shape[0]:
+                grown = np.zeros((max(n, buf.shape[0] + buf.shape[0] // 4),) + buf.shape[1:], dtype=complex)
+                grown[: self.n_rows] = buf[: self.n_rows]
+                buf = grown
+                setattr(self, name + "_buf", buf)
+            setattr(self, name, buf[:n])
         self.n_rows = int(n)
 
     def step(self, v, alpha, beta_prev=None):
         """Fold block ``v`` (``(rows, w_j)``) with its ``alpha`` (``(w_j, w_j)``) and the previous ``beta``
-        (``(w_j, w_{j-1})``; ``None`` on the first block) into every shift's solution."""
+        (``(w_j, w_{j-1})``; ``None`` on the first block) into every shift's solution. The first block of a
+        recurrence is the one with ``beta_prev=None``: call :meth:`reset` before a restart."""
+        if (beta_prev is None) != (self.n_steps == 0):
+            raise ValueError("ShiftedGalerkin.step: beta_prev is None exactly on the first block (reset() to restart)")
         v = np.ascontiguousarray(v, dtype=complex)
         self.pad_rows(v.shape[0])
         if v.shape[0] < self.n_rows:
@@ -423,11 +436,13 @@ class ShiftedGalerkin:
         d_inv = np.linalg.inv(d)
         zeta = np.ascontiguousarray(zeta, dtype=complex)
         if self._x is None:
-            self._x = np.zeros((self.n_rows, self.n_z, zeta.shape[2]), dtype=complex)
+            self._x_buf = np.zeros((self.n_rows, self.n_z, zeta.shape[2]), dtype=complex)
+            self._x = self._x_buf
+        capacity = self._x_buf.shape[0]
         if beta_prev is None or self._p is None or self._p.shape[2] != w:
-            p_prev = p = np.empty((self.n_rows, self.n_z, w), dtype=complex)
-            if beta_prev is not None:  # the block width changed: the old p is read, a new one written
-                p_prev = self._p
+            self._p_buf, p_buf = np.zeros((capacity, self.n_z, w), dtype=complex), self._p_buf
+            p = self._p_buf[: self.n_rows]
+            p_prev = p if beta_prev is None else self._p  # a width change: the old p is read, a new one written
         else:
             p_prev = p = self._p
         shifted_update(p_prev, p, self._x, v, b_h, np.ascontiguousarray(d_inv), zeta, beta_prev is None)
@@ -448,7 +463,9 @@ class ShiftedGalerkin:
         return np.linalg.norm(beta @ self._d_inv @ self._zeta, axis=1).astype(float)
 
     def solutions(self):
-        """The per-shift solution blocks ``(rows, p)`` (strided views of one array, not copies)."""
+        """The per-shift solution blocks ``(rows, p)``: strided views of the accumulator's own array, not copies.
+        They change under the next :meth:`step` and are detached by a :meth:`pad_rows` reallocation; a view keeps
+        the whole ``(rows, n_z, p)`` array alive."""
         return [self._x[:, i, :] for i in range(self.n_z)]
 
 

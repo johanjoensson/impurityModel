@@ -133,9 +133,10 @@ def scatter_discovered(segments, char[:] alive, double complex[:, ::1] X, int c0
                                          use_ptab, send_rows, 32, S, Y)
 
 
-def shifted_update(double complex[:, :, ::1] P_prev, double complex[:, :, ::1] P, double complex[:, :, ::1] X,
-                   double complex[:, ::1] V, double complex[:, ::1] bH, double complex[:, :, ::1] d_inv,
-                   double complex[:, :, ::1] zeta, bint first):
+def shifted_update(const double complex[:, :, ::1] P_prev not None, double complex[:, :, ::1] P not None,
+                   double complex[:, :, ::1] X not None, const double complex[:, ::1] V not None,
+                   const double complex[:, ::1] bH not None, const double complex[:, :, ::1] d_inv not None,
+                   const double complex[:, :, ::1] zeta not None, bint first):
     """One block of :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin` for every shift in one sweep.
 
     Per row ``r`` and shift ``i``: ``t = V[r] + P_prev[r, i] @ bH`` (``V[r]`` alone when ``first``),
@@ -153,6 +154,10 @@ def shifted_update(double complex[:, :, ::1] P_prev, double complex[:, :, ::1] P
     cdef double complex s
     if V.shape[1] != w or P.shape[0] != n or X.shape[0] != n or X.shape[1] != nz or P_prev.shape[0] != n:
         raise ValueError("shifted_update: inconsistent block shapes")
+    if P_prev.shape[1] != nz or d_inv.shape[0] != nz or d_inv.shape[1] != w or d_inv.shape[2] != w:
+        raise ValueError("shifted_update: d_inv must have shape (nz, w, w) and P_prev (n, nz, w_prev)")
+    if zeta.shape[0] != nz or zeta.shape[1] != w or zeta.shape[2] != p:
+        raise ValueError("shifted_update: zeta must have shape (nz, w, p)")
     if not first and (bH.shape[0] != wp or bH.shape[1] != w):
         raise ValueError("shifted_update: bH must have shape (w_prev, w)")
     cdef double complex* t = <double complex*>malloc((w if w > 0 else 1) * sizeof(double complex))
