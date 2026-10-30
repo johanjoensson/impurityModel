@@ -449,3 +449,22 @@ Swaps and the remaining-gain sequences are identical to the unfused run. The acc
 to ~30-40 %; extrapolated, refinement alone would cost ~3.3x breadth (not measured as a full run). Still above the
 ≤ 2x target where the cap binds; the open levers are an earlier stop of the scoring rounds (`REFINE_STOP_RTOL`) and a
 row-parallel kernel. Parked by the user (2026-10-30); the default is unaffected because pruning keeps NiO under the cap.
+
+## 13. NiO it.1 ground-state certification replay (R8.2, 2026-10-30)
+
+One replay of the NiO 10-bath it.1 archive (`freeze_replay run --units 0`, `-n 3`, swm 1e-10, archive cap: GS 715,137
+auto), 9 m 35 s whole run, to see whether R8.2a (skip a pass-2 re-expansion that admits nothing) and R8.2b (force
+pass 2 at the winning level) still have anything to fix after `6dd6c806`.
+
+- The cap never binds: the largest class is 186,034 determinants, no truncation or guard line appears, every class
+  ends at PT2 ~1e-8. The sectors' pass-2 headers read "2 of 8 … 6 cut", "1 of 8 … 7 cut", "1 of 3 … 2 cut" and, for the
+  last sector, "6 of 6 … 0 cut" (reach 0.023 Ry).
+- Ten pass-2 runs in total; **every one grew** (3 to 11 cycles, 1e-8 residual) — none was a "0 refinement cycles"
+  re-expansion, so R8.2a has nothing to skip here. The six classes of the last sector all ran pass 2 and agree to 2e-7
+  Ry (-53.30350614 / -53.30350599; the 2Sz=0 parity 0000 pair is identical), i.e. they are compared at one size
+  already; R8.2b has nothing to force.
+- Not shown: capped dynamics (FCC Ni's 570k-cap classes, where the 12 % weight asymmetry arose). That needs a capped
+  GS workload and is not replayed (R9 dropped the FCC Ni legs).
+
+**Verdict:** R8.2a/b are not implemented; R8.2c/d stay dropped. The R8.2 reporting (per-cycle/per-class lines,
+pass-2 header, class table) is what remains of it, and it is in.
