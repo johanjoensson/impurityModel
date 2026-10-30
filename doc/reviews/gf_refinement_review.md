@@ -427,5 +427,19 @@ state, and a unit refining alone does not have it.
 - **SMO 40k.** Every round is accepted, and the result is identical to the unguarded refinement: grade 2.455, worst
   Im Σ +2.2e-3, against breadth's 16.8 and +6.8e-2.
 
+Costs and guards (from the Opus review of these commits):
+- **Memory.** The check shifts are accumulator shifts, and `choose_matrix_mode` now prices them. Its bound is
+  2 × (scoring + check shifts), since `need_y` is decided later. A check point that is also a scoring shift is
+  solved once.
+- **Run length.** The scoring rounds now run until the check shifts converge too, because the stop rule takes the
+  worst residual over every accumulator shift. That is necessary, since the estimate needs a converged X. It does
+  lengthen the score-only reruns about 10x: on SMO 40k from 101–131 blocks to 968–1181, close to the
+  Green's-function length.
+  - The whole-run wall was 501 s against 534 s for the old rule, but the old run shared the machine with the oracle,
+    so that comparison is not cost evidence.
+  - A cap on the score-only run length, or a looser `stop_rtol` for the check shifts, is the lever if this cost
+    matters.
+- **Breakdown.** A non-finite estimate rejects the round.
+
 R2 (loosening the tail) is therefore safe on these two workloads. It is not proposed yet: CrI3 and the NiO legs were
 not run.

@@ -12,7 +12,13 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.gf_refinement import _round_worse, importance_scores, sigma_error
+from impurityModel.ed.gf_refinement import (
+    ScoringPlan,
+    _round_worse,
+    g0_check_shifts,
+    importance_scores,
+    sigma_error,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp
 from impurityModel.test.basis.test_sparse_matrix_build import N_ORB, _all_dets, _basis
 
@@ -407,3 +413,36 @@ def test_a_round_is_judged_on_the_largest_error_of_each_axis():
     assert (after > before).any()
     assert not _round_worse(before, after, axes)
     assert not _round_worse(before, before * 1.1, axes)  # within the slack
+    assert _round_worse(before, np.where(axes == np.int64(1), np.nan, before), axes)  # a broken estimate rejects
+
+
+def test_the_check_shifts_are_mesh_points_at_the_broadening_and_the_lowest_matsubara_points():
+    def g0_inv(zs):
+        return (np.asarray(zs)[:, None, None] - 0.3) * np.eye(2)[None]
+
+    w = np.linspace(-2.0, 2.0, 101)
+    iw = 1j * np.pi * (2 * np.arange(10) + 1) / 20.0
+    got = g0_check_shifts(g0_inv, w[::-1], iw[::-1], 0.05, n_real=5, n_matsubara=3)
+    zs = [z for z, _w, _a in got]
+    assert [a for _z, _w, a in got] == [0] * 5 + [1] * 3
+    np.testing.assert_allclose(zs[:5], np.linspace(-2.0, 2.0, 5) + 0.05j)
+    np.testing.assert_allclose(zs[5:], iw[:3])
+    np.testing.assert_allclose([wt for _z, wt, _a in got], np.abs(np.asarray(zs) - 0.3) ** 2)
+
+
+@pytest.mark.parametrize("need_y", [False, True])
+def test_a_check_shift_that_is_also_a_scoring_shift_is_solved_once(need_y):
+    zs = (0.1 + 0.2j, 0.5j)
+    plan = ScoringPlan(zs, (1.0, 1.0), need_y, 1e-3, checks=(0.3 + 0.2j, 0.5j, 0.7 + 0.2j), check_axes=(0, 1, 0))
+    shifts = plan.accumulator_shifts
+    assert len(shifts) == (4 if not need_y else 8)  # 0.5j is shared
+    solutions = [np.array([[z]]) for z in shifts]  # each "solution" carries its own shift
+    xs, ys = plan.split(solutions)
+    assert [complex(x[0, 0]) for x in xs] == list(zs)
+    cx, cy = plan.check_solutions(solutions)
+    assert [complex(x[0, 0]) for x in cx] == list(plan.checks)
+    if need_y:
+        assert [complex(y[0, 0]) for y in ys] == [np.conj(z) for z in zs]
+        assert [complex(y[0, 0]) for y in cy] == [np.conj(z) for z in plan.checks]
+    else:
+        assert ys is None and cy is None

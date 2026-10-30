@@ -693,3 +693,8 @@ def test_calc_selfenergy_hands_the_default_pruning_and_refinement_to_the_green_f
     kwargs = mock_get_gf.call_args.kwargs
     assert kwargs["gf_prune_tol"] == prune
     assert (None if kwargs["gf_refine"] is None else kwargs["gf_refine"].rounds) == rounds
+    if rounds is not None:
+        # The acceptance test's check shifts reach the units: one table per block, on both axes.
+        spec = kwargs["gf_refine"]
+        assert spec.check_tables and len(spec.check_tables) == len(spec.tables)
+        assert all({axis for _z, _w, axis in table} == {0, 1} for table in spec.check_tables)

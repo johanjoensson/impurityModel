@@ -1074,7 +1074,12 @@ def block_Green_discovered(
             memory_budget,
             report,
             refine is not None and refine.rounds > 0 and bool(refine.shifts),
-            2 * len(refine.shifts) if refine is not None and refine.rounds > 0 else 0,
+            # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds.
+            (
+                2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0))
+                if refine is not None and refine.rounds > 0
+                else 0
+            ),
         )
         if verbose and rank == 0 and report:
             print(

@@ -440,8 +440,8 @@ def _select_swap(matrix, scores, exempt, k_max):
 class ScoringPlan:
     """What the recurrence must accumulate for the scores, decided before it runs (replicated): the scoring shifts
     and their weights, the check shifts of the acceptance test (:func:`sigma_error`) with their weights and axes, and
-    the residual the run stops at. The accumulator is given the scoring shifts, their conjugates when ``need_y``, the
-    check shifts and their conjugates when ``need_y``."""
+    the residual the run stops at. The accumulator is given the scoring shifts, the check shifts that are not also
+    scoring shifts (a shared point is solved once) and, when ``need_y``, the conjugates of both."""
 
     zs: tuple
     weights: tuple
@@ -452,23 +452,27 @@ class ScoringPlan:
     check_axes: tuple = ()
 
     @property
-    def accumulator_shifts(self):
-        def with_conj(zs):
-            return list(zs) + ([complex(z).conjugate() for z in zs] if self.need_y else [])
+    def _extra_checks(self):
+        return list(dict.fromkeys(z for z in self.checks if z not in self.zs))
 
-        return with_conj(self.zs) + with_conj(self.checks)
+    @property
+    def accumulator_shifts(self):
+        zs = list(self.zs) + self._extra_checks
+        return zs + ([complex(z).conjugate() for z in zs] if self.need_y else [])
 
     def split(self, solutions):
         """``(xs, ys)`` at the scoring shifts from the accumulator's solution list."""
         n = len(self.zs)
-        return list(solutions[:n]), (list(solutions[n : 2 * n]) if self.need_y else None)
+        n_all = n + len(self._extra_checks)
+        return list(solutions[:n]), (list(solutions[n_all : n_all + n]) if self.need_y else None)
 
     def check_solutions(self, solutions):
         """``(xs, ys)`` at the check shifts (``ys`` ``None`` without ``need_y``)."""
-        start = len(self.zs) * (2 if self.need_y else 1)
-        n = len(self.checks)
-        xs = list(solutions[start : start + n])
-        return xs, (list(solutions[start + n : start + 2 * n]) if self.need_y else None)
+        zs = list(self.zs) + self._extra_checks
+        at = {z: i for i, z in enumerate(zs)}
+        idx = [at[z] for z in self.checks]
+        xs = [solutions[i] for i in idx]
+        return xs, ([solutions[len(zs) + i] for i in idx] if self.need_y else None)
 
 
 def sigma_error(matrix, zs, xs, ys=None, weights=None):
@@ -516,6 +520,8 @@ def _round_worse(err_prev, err, axes, slack=None):
     (``REFINE_ACCEPT_SLACK``). Each axis is judged on its own: a sum lets the small real-axis entries drown in the
     Matsubara ones, and a test per shift rejects every round (some point always gets worse). Replicated."""
     slack = REFINE_ACCEPT_SLACK if slack is None else slack
+    if not np.all(np.isfinite(err)):
+        return True  # an estimate that broke down is no evidence the round helped
     axes = np.asarray(axes)
     return any(
         float(np.max(err[axes == a])) > (1.0 + slack) * float(np.max(err_prev[axes == a])) for a in np.unique(axes)
