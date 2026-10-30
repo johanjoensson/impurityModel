@@ -1236,9 +1236,12 @@ def block_Green_discovered(
                 max_blocks=4 * n_first + 100 if score_only else 10**7,
             )
 
-        def g_cf(result, zs):
+        def g_cf(result, zs, framed=True):
+            # ``framed=False``: the orthonormal seeds' frame (r -> 1), the one the scores are taken in.
             a_t, b_t = _trim_blocks(result[0], result[1], result[2])
-            return calc_G(a_t, b_t, r, np.asarray(zs, dtype=complex), 0.0, 0.0)
+            return calc_G(
+                a_t, b_t, r if framed else np.eye(r.shape[0], dtype=r.dtype), np.asarray(zs, dtype=complex), 0.0, 0.0
+            )
 
         monitor_state = (converged_flag, delta_min, last_dg)  # round 0's, for a refinement that keeps round 0
         holder = [acc]

@@ -356,3 +356,23 @@ def test_the_last_permitted_round_is_also_the_green_function_run(monkeypatch, co
     assert rec["rounds"] == 1 and (True, False) not in calls[1:], calls
     calls, rec = run_with(8)
     assert rec["rounds"] < 8 and calls[-1] == (True, False), (calls, rec)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_settle_threshold_is_taken_in_the_frame_the_gain_is_measured_in(monkeypatch, comm):
+    """Review R7: the scores see the orthonormal seeds, so the gain does not scale with the seed norm while G does.
+    The threshold's reference |G| must not either (it was ``|r|^2`` times too small for small seeds)."""
+    import sys
+
+    module = sys.modules[__name__]
+    real_seeds = module._seeds
+
+    def run(c):
+        monkeypatch.setattr(module, "_seeds", lambda: [c * s for s in real_seeds()])
+        _g, info = _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4), comm=comm)
+        return info["refine"]
+
+    big, small = run(1.0), run(0.1)
+    assert small["scale"] == pytest.approx(0.01 * big["scale"], rel=1e-6)
+    assert small["scale_gain"] == pytest.approx(big["scale_gain"], rel=1e-6)
+    assert small["gain"][0] == pytest.approx(big["gain"][0], rel=1e-6)

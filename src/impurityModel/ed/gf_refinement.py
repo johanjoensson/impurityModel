@@ -410,13 +410,14 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     ``first`` is round 0's ``(alphas, betas, widths, status, q_last)`` and ``first_acc`` the
     :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin` that run stepped (a recurrence on the final P,
     ``plan.accumulator_shifts``); ``rerun(q0, shifted, shifted_rtol)`` is the frozen recurrence from a seed block on
-    the matrix's current P slots, stepping the accumulator it is given; ``g_cf(result, zs)`` the continued-fraction
+    the matrix's current P slots, stepping the accumulator it is given; ``g_cf(result, zs, framed=True)`` the continued-fraction
     ``G`` of a result on the shifts ``zs``; ``seed_block(matrix, seed_keys, q0)`` the seed block on the current P slots.
 
     Round ``n`` scores the retained and discovered determinants from the accumulator's solutions
     (:func:`importance_scores`), then swaps the least important retained against the most important discovered ones
     (:meth:`DistributedSparseMatrix.set_p_keys`: the cap is unchanged) and runs the recurrence again on the new P. It
-    stops when the remaining estimated gain is below ``spec.tol`` times the largest ``|G|`` on the shifts, when no swap
+    stops when the remaining estimated gain is below ``spec.tol`` times the largest ``|G|`` on the shifts (in the
+    orthonormal seeds' frame, where the gain is measured), when no swap
     gains, or after ``spec.rounds`` swaps. Rounds after the first run only until the scoring residual is met
     (``"scored"``); the unit's result is then one more recurrence, to Green's-function convergence, on the final P,
     unless the last permitted round's run already did both.
@@ -433,6 +434,10 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     z_hold = [z for z in z_hold if z not in zs]
     g0 = g_cf(first, zs)
     scale = float(np.abs(g0).max())
+    # The estimated gain is in the orthonormal seeds' frame (the scores see Q_1, not Q_1 r): the settle threshold is
+    # taken against the largest |G| in that frame, else a small seed norm |r| makes it too strict by 1/|r|^2.
+    scale_gain = float(np.abs(g_cf(first, zs, framed=False)).max())
+    record["scale"], record["scale_gain"] = scale, scale_gain
     g0_hold = g_cf(first, z_hold) if z_hold else None
     keys0 = [key for key, a in zip(matrix.p_keys(), matrix.alive()) if a]
     n_alive = int(_allreduce(comm, float(matrix.n_alive_local), MPI.SUM))
@@ -454,7 +459,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         if first_gain is None:
             first_gain = gain
         n_swap = int(_allreduce(comm, float(len(retire)), MPI.SUM))
-        if gain <= spec.tol * scale or n_swap == 0 or round_ == spec.rounds:
+        if gain <= spec.tol * scale_gain or n_swap == 0 or round_ == spec.rounds:
             break
         record["swapped"].append(n_swap)  # the swaps made, not the one the last pass would have made
         del scores, seeds, xs, ys, acc  # the solutions and the accumulator go before the (memory-hungry) set_p_keys
@@ -477,7 +482,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
             record["stopped"] = "a scoring recurrence diverged"
             record["seconds"] = time.perf_counter() - t0
             return RefineOutcome(None, record)
-    record["settled"] = bool(gain <= spec.tol * scale)
+    record["settled"] = bool(gain <= spec.tol * scale_gain)
     if swapped_total == 0:
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
