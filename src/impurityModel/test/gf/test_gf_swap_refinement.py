@@ -273,11 +273,16 @@ def test_the_unit_shifts_are_signed_for_the_side_offset_by_the_thermal_energies_
     table = ((0.3 + 0.02j, 1.0), (0.0 + 0.5j, 0.5))
     spec = _RefineSpec(rounds=1, tables=(table,))
     for side, sign in ((0, 1.0), (1, -1.0)):
-        got = unit_refine_spec(spec, 0, side, [0.0, 2.5]).shifts
-        assert [z for z, _w in got] == [sign * z + e for e in (0.0, 2.5) for z, _w in table]
+        got = unit_refine_spec(spec, 0, side, [2.5]).shifts
+        assert [z for z, _w in got] == [sign * z + 2.5 for z, _w in table]
     real = _gf_signed_axes(None, np.array([0.3]), 1, 0.02)[0][0]
     assert unit_refine_spec(spec, 0, 1, [0.0]).shifts[0][0] == pytest.approx(real)  # the monitor's own frame
-    assert len(unit_refine_spec(spec, 0, 0, [1.0, 1.0]).shifts) == len(table)  # degenerate energies: no repeats
+    assert len(unit_refine_spec(spec, 0, 0, [1.0, 1.0 + 1e-12]).shifts) == len(table)  # degenerate: no repeats
+    stacked = unit_refine_spec(spec, 0, 0, [0.0, 2.5])  # review F1/R3: no cross-state scoring
+    assert stacked.shifts == () and "stacked thermal states" in stacked.note
+    from impurityModel.ed.gf_refinement import scoring_plan
+
+    assert "stacked thermal states" in scoring_plan(stacked, None, None, True)[1]
     assert unit_refine_spec(spec, 5, 0, [0.0]).shifts == ()  # no table for the block
 
 

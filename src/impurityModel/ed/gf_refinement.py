@@ -154,6 +154,8 @@ class RefineSpec:
     weighted: Optional[bool] = None
     shifts: tuple = ()
     tables: tuple = ()
+    #: Why :func:`unit_refine_spec` left ``shifts`` empty, when it is not that the block has no table.
+    note: str = ""
 
 
 def unit_refine_spec(spec, block_i, side_i, es):
@@ -167,8 +169,21 @@ def unit_refine_spec(spec, block_i, side_i, es):
     if not spec.tables or block_i >= len(spec.tables):
         return replace(spec, shifts=())
     sign = 1.0 if side_i == 0 else -1.0
-    # Degenerate thermal energies would repeat a shift: each distinct frequency is accumulated once.
-    shifts = tuple(dict.fromkeys(((sign * z + e), w) for e in es for z, w in spec.tables[block_i]))
+    # Thermal energies equal to within `DEGENERATE_ENERGY` are one frame; each distinct frequency is accumulated once.
+    distinct = []
+    for e in es:
+        if all(abs(e - d) > DEGENERATE_ENERGY for d in distinct):
+            distinct.append(e)
+    if len(distinct) > 1:
+        # The scores take the maximum over every column and every shift, so a stacked state's seed column would be
+        # scored at another state's frame (review F1). Pairing each column with its own state's shifts is not
+        # implemented: such a unit is not refined rather than ranked wrongly.
+        return replace(
+            spec,
+            shifts=(),
+            note="stacked thermal states with distinct energies (columns would be scored in the wrong frame)",
+        )
+    shifts = tuple(dict.fromkeys(((sign * z + distinct[0]), w) for z, w in spec.tables[block_i])) if distinct else ()
     return replace(spec, shifts=shifts)
 
 
@@ -247,6 +262,8 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
 
 
 REFINE_MAX_SHIFTS = 8
+#: Thermal energies closer than this share one frame (a repeated shift is accumulated once).
+DEGENERATE_ENERGY = 1e-9
 
 
 def g0_zero_shifts(g0_inv_of, omega_mesh, matsubara_mesh, delta, max_shifts=None, n_matsubara=2):
@@ -395,7 +412,7 @@ def scoring_plan(spec, seed_block, matrix, operator_real):
     operator, replicated, before the first run: the matrix does not hold its later columns yet). **Collective** (the
     seeds real up to a phase is a global test)."""
     if not spec.shifts:
-        return None, "no scoring shifts"
+        return None, spec.note or "no scoring shifts"
     need_y = not operator_real or not seeds_real_up_to_a_phase(matrix, seed_block)
     weighted = REFINE_WEIGHTED if spec.weighted is None else spec.weighted
     zs = tuple(complex(z) for z, _w in spec.shifts)
