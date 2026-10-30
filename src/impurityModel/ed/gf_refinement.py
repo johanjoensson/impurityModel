@@ -418,7 +418,8 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     (:meth:`DistributedSparseMatrix.set_p_keys`: the cap is unchanged) and runs the recurrence again on the new P. It
     stops when the remaining estimated gain is below ``spec.tol`` times the largest ``|G|`` on the shifts, when no swap
     gains, or after ``spec.rounds`` swaps. Rounds after the first run only until the scoring residual is met
-    (``"scored"``); the unit's result is then one more recurrence, to Green's-function convergence, on the final P.
+    (``"scored"``); the unit's result is then one more recurrence, to Green's-function convergence, on the final P,
+    unless the last permitted round's run already did both.
     A refinement whose final estimated gain is larger than round 0's falls back to round 0's P and result. The
     record's ``dG_*`` are ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on
     held-out ones."""
@@ -466,7 +467,9 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         swapped_total += n_swap
         record["rounds"] = round_ + 1
         acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-        result = rerun(seed_block(matrix, seed_keys, seed_q0), acc, plan.stop_rtol, True)
+        # The last permitted round runs on to Green's-function convergence as well ("converged"): its result is the
+        # unit's, with no separate final recurrence. Earlier rounds stop on the scoring residual alone.
+        result = rerun(seed_block(matrix, seed_keys, seed_q0), acc, plan.stop_rtol, round_ + 1 < spec.rounds)
         if acc.n_steps == 0 or result[3] == "diverged":
             # The swapped support cannot be scored (a diverged first step): back to round 0's, whose result is `first`.
             matrix.set_p_keys(keys0)

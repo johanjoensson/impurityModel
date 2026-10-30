@@ -222,7 +222,8 @@ def test_a_final_recurrence_that_diverges_falls_back_to_round_zeros_support(monk
         return out
 
     monkeypatch.setattr(gf_recurrence, "block_lanczos_discovered", spy)
-    g_ref, info = _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4), comm=comm)
+    # Stops on "no swap gains" before the round limit, so the Green's function needs its own recurrence.
+    g_ref, info = _run(10, RefineSpec(rounds=8, tol=1e-12, swap=0.4), comm=comm)
     assert info["refine"].get("fell_back") is True and "final" in info["refine"]["stopped"], info["refine"]
     np.testing.assert_allclose(g_ref, g_breadth, atol=1e-10)
     assert _gather(info["proxy"].retained_keys(), comm) == _gather(info0["proxy"].retained_keys(), comm)
@@ -330,3 +331,28 @@ def test_the_default_scoring_residual_is_inside_the_range_the_oracle_ranks_exact
     from impurityModel.ed import gf_refinement
 
     assert gf_refinement.REFINE_STOP_RTOL <= 2e-3
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_last_permitted_round_is_also_the_green_function_run(monkeypatch, comm):
+    """Review R6: a refinement that uses all its rounds ends on a recurrence that is both scored and converged, so
+    there is no further accumulator-free recurrence; one that stops early still needs it."""
+    from impurityModel.ed import gf_recurrence
+
+    real = gf_recurrence.block_lanczos_discovered
+
+    def run_with(rounds):
+        calls = []
+
+        def spy(*args, **kw):
+            calls.append((kw.get("shifted") is None, kw.get("score_only", False)))
+            return real(*args, **kw)
+
+        monkeypatch.setattr(gf_recurrence, "block_lanczos_discovered", spy)
+        _g, info = _run(10, RefineSpec(rounds=rounds, tol=1e-12, swap=0.4), comm=comm)
+        return calls, info["refine"]
+
+    calls, rec = run_with(1)
+    assert rec["rounds"] == 1 and (True, False) not in calls[1:], calls
+    calls, rec = run_with(8)
+    assert rec["rounds"] < 8 and calls[-1] == (True, False), (calls, rec)
