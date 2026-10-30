@@ -511,3 +511,14 @@ Full record: `doc/reviews/gf_refinement_review.md`; scripts and raw outputs in `
 - **Thermal cross-pairing** of columns and shifts is unreachable at the default `GF_EIGENSTATE_GROUP = 1`.
 - **CrI3's 1.5x (§14) is not the accumulator alone.** The default arm's pruning restarts every capped unit's
   recurrence, and the split between the two was not measured.
+
+## 16. The acceptance test's error model (2026-10-30)
+
+R1's frontier residual fell while M1's real-axis Σ degraded threefold: wrong quantity, wrong points, summed. It is
+replaced by an estimate of the self-energy error, ‖G₀⁻¹‖²·|dG₂|: the second-order frontier correction to G, at
+real-axis and Matsubara check points at the production δ. A round is rejected when the worst point grows on either
+axis.
+
+Graded per round on M1 65k and SMO 40k at tail 1e-2, it rejects M1's damaging round (+4.08 → +0.54, breadth) and
+keeps all of SMO's gain (grade 16.8 → 2.46). It is not validated in the everywhere-acausal regime of the dense oracle.
+Full record: `doc/reviews/gf_refinement_review.md` §7.

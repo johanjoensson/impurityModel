@@ -57,7 +57,7 @@ is marked confirmed, refuted or not run, with its evidence. Proposed fixes are a
 | B4 | `_g_of_solutions`, `matrix_is_real` dead | confirmed (grep incl. .pyx/.pxi) | · |
 | N2 | The recursive Galerkin residual is dishonest without reorthogonalisation | **refuted for a fixed P** (caveats in §2) | — |
 | N4 | The first-order `R_DD`/Epstein–Nesbet scores misrank against the exact dG | **refuted** | — |
-| P2 | Matsubara shifts dominate the max with unit weights | **refuted** (the opposite holds) | — |
+| P2 | Matsubara shifts dominate the max with unit weights | refuted on the oracle and SMO; **true on M1** (iω₀ wins every top candidate, §7) | — |
 | F3 | A score-only rerun that hits `max_blocks` returns an unjudged G | refuted (benign) | — |
 | B1 | Round 0 is lengthened by the scoring residual | refuted (CrI3, SMO) | — |
 | B2 | `importance_scores` matvecs are a bottleneck | refuted (0.3–13 s per pass) | — |
@@ -346,8 +346,8 @@ Landed, one commit each, gf directory green at `-n 1` (1060 passed), refinement 
 | R6 | done: the last permitted round also runs to GF convergence; early-stopping units still need the final run |
 | R7 | done: the settle threshold uses |G| in the orthonormal seeds' frame (`record["scale_gain"]`) |
 | R3 | **guard form only**: a unit stacking thermal states of distinct energies is declined with the reason. Per-state column pairing and Boltzmann weighting are not implemented (they need per-state column maps through the QR); the case is unreachable at `GF_EIGENSTATE_GROUP = 1` |
-| R1 | **implemented, did not pass its M1 test** (below) |
-| R2 | **not done**: `FIRST_SHELL_EXEMPT_TAIL` stays 1e-6 |
+| R1 | **implemented, did not pass its M1 test** (below); **replaced by the self-energy error model of §7, which passes it** |
+| R2 | **not done**: `FIRST_SHELL_EXEMPT_TAIL` stays 1e-6 (§7 makes it safe on M1 and SMO; not yet proposed) |
 
 **R1 on M1 (65k, tail loosened to 1e-2, graded against the uncapped reference).** The acceptance test compares the
 frontier error `sum_F |(H X)_f|^2/|z-H_ff|^2` summed over up to four held-out shifts. It accepted every round
@@ -361,3 +361,71 @@ adversarial swap (test), so it protects against gross regressions only. It also 
 refined unit that nothing yet shows to be worth it, which is a reason to reconsider `verify=True` as the default.
 What R1 needs is an error measure that tracks the real-axis G or Σ itself, or a different view of why the real axis worsens
 while every first-order estimate improves; that is open.
+
+## 7. The error model of the acceptance test (2026-10-30)
+
+**Why R1 failed.** Its frontier residual `sum_F |(H X)_f|^2/|z-H_ff|^2` was wrong on three counts:
+- **The quantity.** It is the squared frontier part of the solution correction, in G-like units. The damage is to
+  Σ, and dΣ ≈ G⁻¹ dG G⁻¹. At M1's worst point, Im G⁻¹ ≈ 26, so a G error there is amplified about 700x.
+- **The points.** `held_out_shifts` took the smallest |Im z|, which made two of its four slots doubled Matsubara
+  points. Its real-axis ties were broken by real part, which picks the leftmost bath poles rather than the heaviest.
+  Even production scoring on M1 was decided at iω₀ (P2).
+- **The aggregation.** A raw sum over the shifts: the logged real-axis entries were zero to the printed digits.
+
+**Per-round truth.** Each workload ran four times, with `refine_rounds` = 0, 1, 2 and 3, under identical
+instrumentation, so every arm makes the same swaps. Each arm was graded against the uncapped reference. Scripts and
+raw data are in `debug/refinement_review/em/` (`FINDINGS.md`).
+
+| round | M1 65k tail 1e-2: grade (B), worst Im Σ | SMO 40k tail 1e-2: grade (B), worst Im Σ |
+|---|---|---|
+| 0 (breadth) | 322, +0.54 | 16.8, +6.8e-2 |
+| 1 | 1031, +2.19 | 3.25, +7.2e-3 |
+| 2 | 1626, +4.01 | 2.46, +2.0e-3 |
+| 3 | 1648, +4.08 | 2.46, +2.2e-3 |
+
+On both workloads, Matsubara improves in every round.
+
+**Proxies.** Each proxy was logged at evaluation points on both axes at the production δ. The table counts rounds
+where it got the direction of the worst point per axis right:
+
+| proxy | M1 | SMO | fixed-support Spearman vs true dΣ, real axis (M1 / SMO) |
+|---|---|---|---|
+| frontier residual (R1) | 1/3 (misses both worsenings) | 2/3 | 0.02 / 0.83 |
+| \|G₀⁻¹\|² · \|dG₂\| | 3/3 | 2/3 (one false alarm, +11 %) | 0.74 / 0.65 |
+| \|G_round⁻¹\|² · \|dG₂\| | 3/3 | 3/3 | 0.96 / 0.90 |
+
+dG₂ is the signed second-order (Löwdin) correction that the discovered rows would add to G, with the dressed
+denominator of the scores. The round's own |G⁻¹|² needs the whole block's G, across both sides and every thermal
+state, and a unit refining alone does not have it.
+
+**The comparison rule.**
+- Rejecting a round when any single shift got worse is unusable. It would reject SMO's round 1, where 4–7 % of the
+  points get worse; even the true error has 2 % of its points worse in that round.
+- Comparing the worst point per axis is what tracks the truth.
+- The decisions are identical from 51 + 8 evaluation points down to 8 + 2.
+
+**The dense oracle** has a capped addition side, an exact removal side, 12 configurations and 50 transitions.
+- No second-order proxy tracks the real-axis direction there, under either metric.
+- A nonlinear form, |1/G_P − 1/(G_P + dG₂)|, does not help either.
+- Every configuration is acausal at every round, with worst Im Σ between +0.35 and +5.8, so the oracle is outside
+  the perturbative regime.
+- The metric itself matters there. Graded on dΣ/headroom, round 1 *improves* every swapping configuration at δ 0.05,
+  while the raw max |dΣ| worsens.
+- On Matsubara, every proxy got all 17 decisive transitions right.
+
+**Shipped** (decided by the user: proceed despite the oracle; worst point per axis; the |G₀⁻¹|² weight per unit):
+- `sigma_error` = ‖G₀⁻¹(z)‖² max_ij |dG₂,ij|.
+- It is evaluated on `g0_check_shifts`: 16 real-mesh points at the production δ plus the 4 lowest Matsubara points.
+  Their conjugates are added when `need_y`.
+- A round is rejected when the largest estimate on either axis grows by more than `REFINE_ACCEPT_SLACK` = 0.15. The
+  value 0.05 raised the SMO false alarm; the worsenings that must be caught grew 1.7x and 3.5x.
+- The `-v` line names a rejected round.
+
+**End to end** (shipped code, tail 1e-2, graded against the uncapped references):
+- **M1 65k.** Both cap-bound units reject round 1, so the result equals breadth: worst Im Σ +0.536, against +4.08
+  without the test.
+- **SMO 40k.** Every round is accepted, and the result is identical to the unguarded refinement: grade 2.455, worst
+  Im Σ +2.2e-3, against breadth's 16.8 and +6.8e-2.
+
+R2 (loosening the tail) is therefore safe on these two workloads. It is not proposed yet: CrI3 and the NiO legs were
+not run.
