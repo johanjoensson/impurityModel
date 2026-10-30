@@ -417,3 +417,35 @@ Verdict (user): pruning keeps the basis small; refinement helps when the cap bin
 inside the first shell, so pruning is bit-identical to breadth-first (the overflow top-K is the same selection) and
 no arm is causal; refinement halves the error but swaps almost nothing on the worst unit (first-shell rows exempt).
 Cost of the default arm (pruned + refined): 1.7x breadth-first wall at 80k, 1.6x at 40k.
+
+## 12. NiO it.1: breadth, refinement alone, pruning + refinement (R8.1, 2026-10-29), and the fused update
+
+NiO it.1 replay, `-n 3`, swm 1e-10, cap 1,000,000, `--matrix-mode discovered`, `OPENBLAS_NUM_THREADS=1`, idle machine,
+three arms back to back (`/usr/bin/time` around `mpiexec`; VmHWM is the largest rank's):
+
+| arm | whole run | GF phase | per-process peak RSS | worst Im Σ (real axis) | graded against breadth |
+|---|---|---|---|---|---|
+| breadth (`--prune-tol 0 --refine-rounds 0`) | 30:08 | 1805 s | 0.94 GB | +6.887e-2 (acausal, the feature) | — |
+| refinement alone (`--refine-rounds 3`) | 3:19:26 | 11964 s (**6.6x**) | 2.75 GB | -2.005e-4 | max\|dΣ_mats\| 2.2e-4 |
+| default: prune 1e-3 + refine 3 | 30:15 | 1812 s (**1.0x**) | 0.81 GB | -2.005e-4 | max\|dΣ_mats\| 2.1e-4 |
+
+The -2.005e-4 is the saturated tail value at the mesh edge (§8.2 correction); at the feature the refined arm is causal
+where breadth is not. With pruning on, no unit reaches the cap (heaviest 536k), so refinement never runs on NiO and the
+default costs what breadth costs. Refinement alone restores causality from a breadth-first start at 6.6x: the swapped
+units run about four recurrences each (the scoring rounds do not stop early at ~900-1500 blocks) and the accumulator was
+55-60 % of a refined unit's wall.
+
+**The fused update** (`SparseScatter.shifted_update`: one sweep per row over all shifts, `p` and `x` stored
+`(rows, shifts, w)`, `V` read once, `P` may alias `P_prev`). Microbench 2.2x. On the three heaviest units, one swap
+round, prune off, cap 1M, 3 ranks (`IMPMOD`-wrapped timing of `ShiftedGalerkin.step`):
+
+| unit | wall before | wall after | `shifted_step` per rank before → after |
+|---|---|---|---|
+| 4 | 2741 s | 1410 s | 1554 → 452 s |
+| 10 | 2846 s | 1479 s | 1688 → 517 s |
+| 9 | 3210 s | 2066 s | 1915 → 868 s |
+
+Swaps and the remaining-gain sequences are identical to the unfused run. The accumulator share of a refined unit falls
+to ~30-40 %; extrapolated, refinement alone would cost ~3.3x breadth (not measured as a full run). Still above the
+≤ 2x target where the cap binds; the open levers are an earlier stop of the scoring rounds (`REFINE_STOP_RTOL`) and a
+row-parallel kernel. Parked by the user (2026-10-30); the default is unaffected because pruning keeps NiO under the cap.
