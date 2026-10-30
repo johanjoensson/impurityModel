@@ -492,3 +492,22 @@ So the complex-H path is exercised end to end only on the chain fixture (§10.5,
 CrI3 cap above its first shell (the closure is ~80k per unit against a 60k cap; a cap of ~75k would still bind and
 leave swappable rows) would be the run that tests it. Acausality here (+0.17) is a first-shell truncation that neither
 mechanism can fix; a larger cap or looser restrictions is the lever.
+
+## 15. Review of the refinement (2026-10-30)
+
+Full record: `doc/reviews/gf_refinement_review.md`; scripts and raw outputs in `debug/refinement_review/`. Its headlines:
+
+- **The scores are good.** Against the exact single-row dG, the first-order scores rank with Spearman 1.000. The
+  recursive Galerkin residual is honest without reorthogonalisation.
+- **The acceptance rule is the problem.**
+  - Rounds after the first regress G on the dense oracle.
+  - The gain-based fallback cannot see it.
+  - The first-shell exemption (tail 1e-6) leaves 3–79 swappable rows where the cap binds (SMO 40k, M1 65k).
+- **Loosening the exemption is workload-dependent.**
+  - SMO 40k: worst Im Σ +6.7e-2 → +1.7e-3.
+  - M1 65k: Matsubara 4x better, but worst Im Σ +0.56 → +4.1 on the real axis.
+
+  So it needs an acceptance that measures held-out real-axis G first.
+- **Thermal cross-pairing** of columns and shifts is unreachable at the default `GF_EIGENSTATE_GROUP = 1`.
+- **CrI3's 1.5x (§14) is not the accumulator alone.** The default arm's pruning restarts every capped unit's
+  recurrence, and the split between the two was not measured.
