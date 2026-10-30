@@ -200,15 +200,6 @@ def _allreduce(comm, value, op):
     return float(value[0])
 
 
-def matrix_is_real(matrix):
-    """Whether every stored element is real (the score identities need real ``H``). **Collective.**"""
-    worst = 0.0
-    for _c0, _indptr, _packed, data in matrix._segments:
-        if data.size:
-            worst = max(worst, float(np.abs(np.asarray(data).imag).max()))
-    return _allreduce(matrix.comm, worst, MPI.MAX) <= 1e-12
-
-
 def seeds_real_up_to_a_phase(matrix, block, tol=1e-10):
     """Whether every column of the seed block on the P slots is real up to one global phase (``|s^T s| = s^H s``).
     The removal identity reads ``X_i(D) = s_i^H R e_D`` off the solution of column ``i`` only then. **Collective.**"""
@@ -365,16 +356,6 @@ def _select_swap(matrix, scores, exempt, k_max):
             return r_slots[m_r], matrix.keys_of(f_slots[m_c]), gain
         k = kk // 2
     return np.zeros(0, dtype=np.int64), [], gain
-
-
-def _g_of_solutions(comm, seeds, solutions):
-    """``seeds^H X`` per shift, ``(len(zs), m, m)``, summed over the ranks."""
-    out = np.zeros((len(solutions), seeds.shape[1], seeds.shape[1]), dtype=complex)
-    for i, x in enumerate(solutions):
-        out[i] = seeds.conj().T @ x
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, out, op=MPI.SUM)
-    return out
 
 
 @dataclass(frozen=True)
