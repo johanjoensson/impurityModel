@@ -37,6 +37,19 @@ class ImportanceScores:
     s_cand: np.ndarray
 
 
+def _dressed_denominator(matrix, z, alive, p_kslot, diag_p, diag_k, first_order=True):
+    """``z - H_DD - Sigma_D`` on every K slot (see the module docstring; ``first_order=False`` drops ``Sigma_D``).
+    **Collective.**"""
+    if not first_order:
+        return z - diag_k
+    inv_p = np.where(alive, 1.0 / (z - diag_p), 0.0)
+    plan_all = matrix.exchange_plan(1, "importance", rows="all")
+    sigma = matrix.matvec(inv_p[:, None], rows="all", plan=plan_all, squared=True)[:, 0]
+    # A retained determinant's own column is not among its neighbours.
+    sigma[p_kslot[alive]] -= (np.abs(diag_p[alive]) ** 2) * inv_p[alive]
+    return z - diag_k - sigma
+
+
 def importance_scores(matrix, seeds, zs, xs, ys=None, first_order=True, weights=None):
     r"""``s_ret`` and ``s_cand`` (see the module docstring) of ``matrix`` for the seed block ``seeds``
     (``(n_p_local, m)`` on the P slots) at the shifts ``zs``, maximised over the shifts and the columns.
@@ -71,15 +84,7 @@ def importance_scores(matrix, seeds, zs, xs, ys=None, first_order=True, weights=
     out = ImportanceScores(s_ret, s_cand)
     for iz, shift in enumerate(zs):
         z = complex(shift)
-        if first_order:
-            inv_p = np.where(alive, 1.0 / (z - diag_p), 0.0)
-            plan_all = matrix.exchange_plan(1, "importance", rows="all")
-            sigma = matrix.matvec(inv_p[:, None], rows="all", plan=plan_all, squared=True)[:, 0]
-            # A retained determinant's own column is not among its neighbours.
-            sigma[p_kslot[alive]] -= (np.abs(diag_p[alive]) ** 2) * inv_p[alive]
-        else:
-            sigma = np.zeros(n_k, dtype=complex)
-        denom = np.abs(z - diag_k - sigma)
+        denom = np.abs(_dressed_denominator(matrix, z, alive, p_kslot, diag_p, diag_k, first_order))
         denom = np.maximum(denom, 1e-300)
         X = np.where(alive[:, None], xs[iz], 0.0)
         ax, flow_x = np.abs(X).max(axis=1), flow_of(X)
