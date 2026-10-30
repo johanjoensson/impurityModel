@@ -397,17 +397,21 @@ def test_the_settle_threshold_is_taken_in_the_frame_the_gain_is_measured_in(monk
 
 def _worst_swaps(monkeypatch, from_call):
     """From the ``from_call``-th selection on, retire the *most* important retained rows for the *least* important
-    candidates (the importance order inverted; the candidates keep a large offset so the swap is still taken)."""
+    candidates (the importance order inverted; the candidates keep a large offset so the swap is still taken). The
+    reported gain stays the honest one: the offset would otherwise trip the fall-back test."""
     from impurityModel.ed import gf_refinement
 
     real, calls = gf_refinement._select_swap, []
 
     def bad(matrix, scores, exempt, k_max):
         calls.append(1)
-        if len(calls) >= from_call:
-            scores.s_ret = 1.0 / (1.0 + np.nan_to_num(scores.s_ret, neginf=0.0))
-            scores.s_cand = 1e6 + 1.0 / (1.0 + np.nan_to_num(scores.s_cand, neginf=0.0))
-        return real(matrix, scores, exempt, k_max)
+        if len(calls) < from_call:
+            return real(matrix, scores, exempt, k_max)
+        gain = real(matrix, scores, exempt, k_max)[2]
+        scores.s_ret = 1.0 / (1.0 + np.nan_to_num(scores.s_ret, neginf=0.0))
+        scores.s_cand = 1e6 + 1.0 / (1.0 + np.nan_to_num(scores.s_cand, neginf=0.0))
+        retire, admit, _inflated = real(matrix, scores, exempt, k_max)
+        return retire, admit, gain
 
     monkeypatch.setattr(gf_refinement, "_select_swap", bad)
 
@@ -433,6 +437,7 @@ def test_a_round_that_raises_the_estimated_sigma_error_is_undone_and_ends_the_re
     g_later, info_later = _run(10, RefineSpec(rounds=3, tol=1e-12, swap=0.4), comm=comm)
     rec = info_later["refine"]
     assert rec["rejected"] == 2 and len(rec["swapped"]) == 1, rec
+    assert len(rec["gain"]) == 2  # rounds 0 and 1: the fall-back test reads round 1's, the support it keeps
     np.testing.assert_allclose(g_later, g_one, atol=1e-10)
     assert _gather(info_later["proxy"].retained_keys(), comm) == _gather(info_one["proxy"].retained_keys(), comm)
 

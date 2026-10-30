@@ -610,8 +610,8 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
                 # The last swap made the estimated self-energy worse on one axis: undo it and stop (review F4/R1).
                 record["rejected"] = round_
                 matrix.set_p_keys(keys_prev)
+                # `gain` holds the passes on rounds 0 .. round_ - 1, the last on the support restored here: it stays.
                 swapped_total -= record["swapped"].pop()
-                record["gain"].pop()
                 record["rounds"] = round_ - 1
                 rejected = True
                 break
