@@ -477,6 +477,13 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     if result[3] == "scored":
         # The last run stopped on the scoring residual: G needs its own recurrence on the final P.
         result = rerun(seed_block(matrix, seed_keys, seed_q0), None, None, False)
+        if result[3] == "diverged":
+            # As for a diverged scoring run: round 0's support and result, which the caller keeps.
+            matrix.set_p_keys(keys0)
+            record["fell_back"] = True
+            record["stopped"] = "the final recurrence diverged"
+            record["seconds"] = time.perf_counter() - t0
+            return RefineOutcome(None, record)
     dg = np.abs(g_cf(result, zs) - g0).max() / scale if scale > 0 else 0.0
     record["dG_scoring"] = float(dg)
     if g0_hold is not None:

@@ -187,6 +187,28 @@ def test_a_refinement_whose_estimate_grows_falls_back_to_round_zeros_support(mon
 
 
 @pytest.mark.parametrize("comm", COMMS)
+def test_a_final_recurrence_that_diverges_falls_back_to_round_zeros_support(monkeypatch, comm):
+    """The Green's-function rerun on the swapped support is checked for divergence like the scoring reruns."""
+    from impurityModel.ed import gf_recurrence
+
+    g_breadth, info0 = _run(10, comm=comm)
+    real, calls = gf_recurrence.block_lanczos_discovered, []
+
+    def spy(*args, **kw):
+        out = real(*args, **kw)
+        calls.append((kw.get("shifted") is None, kw.get("score_only", False)))
+        if len(calls) > 1 and calls[-1] == (True, False):  # the final rerun: no accumulator, not score-only
+            return out[:3] + ("diverged",) + out[4:]
+        return out
+
+    monkeypatch.setattr(gf_recurrence, "block_lanczos_discovered", spy)
+    g_ref, info = _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4), comm=comm)
+    assert info["refine"].get("fell_back") is True and "final" in info["refine"]["stopped"], info["refine"]
+    np.testing.assert_allclose(g_ref, g_breadth, atol=1e-10)
+    assert _gather(info["proxy"].retained_keys(), comm) == _gather(info0["proxy"].retained_keys(), comm)
+
+
+@pytest.mark.parametrize("comm", COMMS)
 def test_seeds_that_are_not_real_up_to_a_phase_are_refined_with_the_conjugate_shift_solve(monkeypatch, comm):
     """A column with a relative phase between its determinants (the real archives' seeds) is not declined: the
     scores need ``Y = R(z*) s`` as well, and the refinement still keeps the cap, swaps, and beats breadth-first
