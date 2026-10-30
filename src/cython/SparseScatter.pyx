@@ -5,10 +5,12 @@
 ================
 The scatter kernels of :class:`impurityModel.ed.DistributedSparseMatrix.DistributedSparseMatrix`: the compiled
 inner loops of its matvec. The class itself is Python (it owns the key store, the growth and the exchange layout);
-only the per-entry loop, which must not hold the GIL, is compiled here.
+only the per-entry loop, which must not hold the GIL, is compiled here. Also the fused per-row update of
+:class:`impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`, which is the same kind of memory-bound sweep.
 """
 
 import numpy as np
+from libc.stdlib cimport malloc, free
 
 
 ctypedef fused row_index_t:
@@ -129,3 +131,52 @@ def scatter_discovered(segments, char[:] alive, double complex[:, ::1] X, int c0
             with nogil:
                 scatter_discovered_nogil(col_begin, indptr, packed64, data, alive, p, c0, X, base, goff, ptab,
                                          use_ptab, send_rows, 32, S, Y)
+
+
+def shifted_update(double complex[:, :, ::1] P_prev, double complex[:, :, ::1] P, double complex[:, :, ::1] X,
+                   double complex[:, ::1] V, double complex[:, ::1] bH, double complex[:, :, ::1] d_inv,
+                   double complex[:, :, ::1] zeta, bint first):
+    """One block of :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin` for every shift in one sweep.
+
+    Per row ``r`` and shift ``i``: ``t = V[r] + P_prev[r, i] @ bH`` (``V[r]`` alone when ``first``),
+    ``P[r, i] = t @ d_inv[i]`` and ``X[r, i] += P[r, i] @ zeta[i]``. ``V`` is read once for all shifts and the
+    shifts of a row are contiguous, so the sweep touches each of ``P_prev``, ``P`` and ``X`` once. ``P`` may be
+    ``P_prev`` (the update is row-local and reads the old row before writing the new one); ``X`` is updated in
+    place. Shapes: ``V (n, w)``, ``bH (w_prev, w)``, ``P (n, nz, w)``, ``P_prev (n, nz, w_prev)``,
+    ``X (n, nz, p)``, ``d_inv (nz, w, w)``, ``zeta (nz, w, p)``."""
+    cdef Py_ssize_t n = V.shape[0]
+    cdef Py_ssize_t nz = P.shape[1]
+    cdef Py_ssize_t w = P.shape[2]
+    cdef Py_ssize_t wp = P_prev.shape[2]
+    cdef Py_ssize_t p = X.shape[2]
+    cdef Py_ssize_t r, i, c, m, k, q
+    cdef double complex s
+    if V.shape[1] != w or P.shape[0] != n or X.shape[0] != n or X.shape[1] != nz or P_prev.shape[0] != n:
+        raise ValueError("shifted_update: inconsistent block shapes")
+    if not first and (bH.shape[0] != wp or bH.shape[1] != w):
+        raise ValueError("shifted_update: bH must have shape (w_prev, w)")
+    cdef double complex* t = <double complex*>malloc((w if w > 0 else 1) * sizeof(double complex))
+    if t == NULL:
+        raise MemoryError()
+    try:
+        with nogil:
+            for r in range(n):
+                for i in range(nz):
+                    for c in range(w):
+                        s = V[r, c]
+                        if not first:
+                            for k in range(wp):
+                                s = s + P_prev[r, i, k] * bH[k, c]
+                        t[c] = s
+                    for c in range(w):
+                        s = 0
+                        for m in range(w):
+                            s = s + t[m] * d_inv[i, m, c]
+                        P[r, i, c] = s
+                    for q in range(p):
+                        s = 0
+                        for c in range(w):
+                            s = s + P[r, i, c] * zeta[i, c, q]
+                        X[r, i, q] = X[r, i, q] + s
+    finally:
+        free(t)

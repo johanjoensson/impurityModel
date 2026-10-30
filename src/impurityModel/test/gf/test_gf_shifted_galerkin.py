@@ -151,3 +151,43 @@ def test_the_hook_in_the_recurrence_tracks_a_growing_support(cap, monkeypatch):
         resid = z * full - matrix.matvec(np.ascontiguousarray(full), rows="P", plan=plan) - rhs
         # Measured at the GF monitor's stop: 1e-7..1e-9 at |Im z| >= 0.2, 1e-3 at |Im z| = 0.05 / 0.02.
         assert np.linalg.norm(resid, axis=0).max() < (1e-5 if abs(z.imag) >= 0.2 else 1e-2), (z, cap)
+
+
+def _numpy_step(zs, state, v, alpha, beta_prev):
+    """The recurrence of the class docstring in plain numpy, one shift at a time (the fused kernel's oracle)."""
+    w = v.shape[1]
+    out = []
+    for i, z in enumerate(zs):
+        if beta_prev is None:
+            d, zeta, p = z * np.eye(w) - alpha, np.eye(w, dtype=complex), v
+        else:
+            d_inv_prev, zeta_prev, p_prev, _x = state[i]
+            bd = beta_prev @ d_inv_prev
+            d = z * np.eye(w) - alpha - bd @ beta_prev.conj().T
+            zeta, p = bd @ zeta_prev, v + p_prev @ beta_prev.conj().T
+        d_inv = np.linalg.inv(d)
+        p = p @ d_inv
+        x = p @ zeta + (0 if beta_prev is None else state[i][3])
+        out.append((d_inv, zeta, p, x))
+    return out
+
+
+def test_the_fused_update_equals_the_per_shift_numpy_recurrence_across_width_changes():
+    """Random complex blocks whose width changes 3 -> 3 -> 2 -> 2 (a deflation), non-Hermitian ``alpha``/``beta``
+    so that a transposed or unconjugated ``beta`` cannot cancel."""
+    rng = np.random.default_rng(5)
+    n, widths = 37, [3, 3, 2, 2]
+    g = ShiftedGalerkin(ZS, n)
+    state = None
+    for k, w in enumerate(widths):
+        beta_prev = (
+            None
+            if k == 0
+            else 0.4 * (rng.standard_normal((w, widths[k - 1])) + 1j * rng.standard_normal((w, widths[k - 1])))
+        )
+        v = rng.standard_normal((n, w)) + 1j * rng.standard_normal((n, w))
+        alpha = rng.standard_normal((w, w)) + 1j * rng.standard_normal((w, w))
+        g.step(v, alpha, beta_prev)
+        state = _numpy_step(ZS, state, v, alpha, beta_prev)
+        for x, (_di, _ze, _p, x_ref) in zip(g.solutions(), state):
+            np.testing.assert_allclose(x, x_ref, rtol=1e-11, atol=1e-11)

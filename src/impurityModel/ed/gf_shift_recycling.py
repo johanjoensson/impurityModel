@@ -24,6 +24,7 @@ from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.gf_primitives import _distributed_seed_qr, _trim_blocks, guarded_proxy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
+from impurityModel.ed.SparseScatter import shifted_update
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
 
@@ -383,45 +384,54 @@ class ShiftedGalerkin:
         self.n_rows = int(n_rows)
         self.floor[:] = 0.0
         self.floor_exceeded = False
-        self._d_inv = [None] * self.n_z
-        self._zeta = [None] * self.n_z
-        self._p = [None] * self.n_z
-        self._x = [None] * self.n_z
+        self._d_inv = None  # (n_z, w, w)
+        self._zeta = None  # (n_z, w, p)
+        self._p = None  # (rows, n_z, w): the shifts of a row are contiguous, which the fused update relies on
+        self._x = None  # (rows, n_z, p)
         self.n_steps = 0
 
     def pad_rows(self, n):
         """Grow the stored blocks to ``n`` rows (zeros: a row admitted at this step carried no earlier mass)."""
         if n <= self.n_rows:
             return
-        for lst in (self._p, self._x):
-            for i, a in enumerate(lst):
-                if a is not None:
-                    lst[i] = np.concatenate((a, np.zeros((n - a.shape[0], a.shape[1]), dtype=complex)))
+        for name in ("_p", "_x"):
+            a = getattr(self, name)
+            if a is not None:
+                pad = np.zeros((n - a.shape[0],) + a.shape[1:], dtype=complex)
+                setattr(self, name, np.concatenate((a, pad)))
         self.n_rows = int(n)
 
     def step(self, v, alpha, beta_prev=None):
         """Fold block ``v`` (``(rows, w_j)``) with its ``alpha`` (``(w_j, w_j)``) and the previous ``beta``
         (``(w_j, w_{j-1})``; ``None`` on the first block) into every shift's solution."""
-        v = np.asarray(v, dtype=complex)
+        v = np.ascontiguousarray(v, dtype=complex)
         self.pad_rows(v.shape[0])
         if v.shape[0] < self.n_rows:
             v = np.concatenate((v, np.zeros((self.n_rows - v.shape[0], v.shape[1]), dtype=complex)))
         w = v.shape[1]
-        for i, z in enumerate(self.zs):
-            if beta_prev is None:
-                d = z * np.eye(w) - alpha
-                zeta = np.eye(w, dtype=complex)
-                p = v
-            else:
-                bd = beta_prev @ self._d_inv[i]
-                d = z * np.eye(w) - alpha - bd @ beta_prev.conj().T
-                zeta = bd @ self._zeta[i]
-                p = v + self._p[i] @ beta_prev.conj().T
-            d_inv = np.linalg.inv(d)
-            p = p @ d_inv
-            self._d_inv[i], self._zeta[i], self._p[i] = d_inv, zeta, p
-            update = p @ zeta
-            self._x[i] = update if self._x[i] is None else self._x[i] + update
+        z = self.zs[:, None, None]
+        eye = np.eye(w, dtype=complex)
+        if beta_prev is None:
+            d = z * eye - alpha
+            zeta = np.broadcast_to(eye, (self.n_z, w, w)).copy()
+            b_h = np.zeros((1, w), dtype=complex)
+        else:
+            bd = beta_prev @ self._d_inv
+            d = z * eye - alpha - bd @ beta_prev.conj().T
+            zeta = bd @ self._zeta
+            b_h = np.ascontiguousarray(beta_prev.conj().T, dtype=complex)
+        d_inv = np.linalg.inv(d)
+        zeta = np.ascontiguousarray(zeta, dtype=complex)
+        if self._x is None:
+            self._x = np.zeros((self.n_rows, self.n_z, zeta.shape[2]), dtype=complex)
+        if beta_prev is None or self._p is None or self._p.shape[2] != w:
+            p_prev = p = np.empty((self.n_rows, self.n_z, w), dtype=complex)
+            if beta_prev is not None:  # the block width changed: the old p is read, a new one written
+                p_prev = self._p
+        else:
+            p_prev = p = self._p
+        shifted_update(p_prev, p, self._x, v, b_h, np.ascontiguousarray(d_inv), zeta, beta_prev is None)
+        self._d_inv, self._zeta, self._p = d_inv, zeta, p
         self.n_steps += 1
 
     def note_deflation(self, sigma_dropped):
@@ -432,16 +442,14 @@ class ShiftedGalerkin:
     def residuals(self, beta):
         """``(n_z, p)`` residual norms per shift and seed column after the last :meth:`step`, ``beta`` being the
         block ``b_j`` that step's TSQR returned (``None``: the Krylov space closed, an exact solution)."""
-        p = self._zeta[0].shape[1] if self.n_z else 0
+        p = self._zeta.shape[2] if self.n_z else 0
         if beta is None:
             return np.zeros((self.n_z, p))
-        return np.array(
-            [np.linalg.norm(beta @ self._d_inv[i] @ self._zeta[i], axis=0) for i in range(self.n_z)], dtype=float
-        )
+        return np.linalg.norm(beta @ self._d_inv @ self._zeta, axis=1).astype(float)
 
     def solutions(self):
-        """The per-shift solution blocks ``(rows, p)`` (views, not copies)."""
-        return list(self._x)
+        """The per-shift solution blocks ``(rows, p)`` (strided views of one array, not copies)."""
+        return [self._x[:, i, :] for i in range(self.n_z)]
 
 
 def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwargs):
