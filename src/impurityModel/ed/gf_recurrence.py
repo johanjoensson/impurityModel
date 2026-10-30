@@ -965,6 +965,12 @@ def _refine_line(rec):
     if rec.get("fell_back"):
         return head + " -- final estimate worse than round 0, kept round 0's support"
     tail = "settled" if rec.get("settled") else "not settled"
+    if rec.get("rejected") is not None:
+        before, after = rec["sigma_error"][-2], rec["sigma_error"][-1]
+        tail = (
+            f"round {rec['rejected']} rejected, estimated Sigma error per axis "
+            f"{[float(f'{e:.2e}') for e in before]} -> {[float(f'{e:.2e}') for e in after]}"
+        )
     if "dG_scoring" in rec:
         tail += f", max|dG|/max|G| {rec['dG_scoring']:.2e} on the scoring shifts"
         if "dG_holdout" in rec:

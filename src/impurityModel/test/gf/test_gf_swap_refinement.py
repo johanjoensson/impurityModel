@@ -421,6 +421,9 @@ def test_a_round_that_raises_the_estimated_sigma_error_is_undone_and_ends_the_re
     g_bad, info = _run(10, RefineSpec(rounds=3, tol=1e-12, swap=0.4), comm=comm)
     rec = info["refine"]
     assert rec["rejected"] == 1 and rec["swapped"] == [], rec
+    from impurityModel.ed.gf_recurrence import _refine_line
+
+    assert "round 1 rejected" in _refine_line(rec)  # the -v line says why nothing was swapped
     np.testing.assert_allclose(g_bad, g_breadth, atol=1e-10)
     assert _gather(info["proxy"].retained_keys(), comm) == _gather(info0["proxy"].retained_keys(), comm)
 
