@@ -468,3 +468,27 @@ pass 2 at the winning level) still have anything to fix after `6dd6c806`.
 
 **Verdict:** R8.2a/b are not implemented; R8.2c/d stay dropped. The R8.2 reporting (per-cycle/per-class lines,
 pass-2 header, class table) is what remains of it, and it is in.
+
+## 14. CrI3 (SOC archive, complex H), cap 60,000 (R8.3, 2026-10-30)
+
+`impmod_tests/CrI3/impmod_soc` it.1, `-n 3`, `--cap 60000` (pins the GS and the GF cap; the GS is truncated
+identically in both arms), `--matrix-mode discovered`, archive swm 1.49e-8, idle machine.
+
+| arm | whole run | per-process peak RSS | worst Im Σ (real) | graded against breadth |
+|---|---|---|---|---|
+| breadth (`--prune-tol 0 --refine-rounds 0`) | 10:44 | 0.65 GB | +1.701e-1 (acausal) | — |
+| default (prune 1e-3 + refine 3) | 16:27 (1.5x) | 0.82 GB | +1.701e-1 | max\|dΣ_mats\| 7e-15, max\|dΣ_real\| 3e-9 |
+
+**Neither mechanism changed anything.** All 12 units hit the cap (excited basis 69-79k against 60k, `cap_hit=True`) in
+both arms and the default arm's Σ is identical to breadth to rounding. Pruned growth is a no-op because the cap is
+reached inside the seeds' first H-shell (as on M1, §10.3: the overflow top-K is the same selection); refinement ran
+**0 swap rounds** on every unit ("remaining gain 19-39, not settled", one scoring recurrence of ~850 blocks each), so
+`n_swap == 0` at round 0: the swappable set (non-exempt retained rows against better candidates) is empty. Whether
+that is the exempt first shell covering P or no candidate beating the worst retained row is not separated here (the
+record does not say); it is the same regime as M1, with the cap inside the first shell. The 1.5x wall is the unused
+scoring accumulator and the extra recurrence bookkeeping.
+
+So the complex-H path is exercised end to end only on the chain fixture (§10.5, step 3.7), not on this workload: a
+CrI3 cap above its first shell (the closure is ~80k per unit against a 60k cap; a cap of ~75k would still bind and
+leave swappable rows) would be the run that tests it. Acausality here (+0.17) is a first-shell truncation that neither
+mechanism can fix; a larger cap or looser restrictions is the lever.
