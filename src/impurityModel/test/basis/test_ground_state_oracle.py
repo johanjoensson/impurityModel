@@ -22,7 +22,7 @@ PASSING = [(1, 3, False), (1, 5, False), (1, 12, False), (1, 13, False), (2, 0, 
 # Models the review found wrong, by the fix that repairs them.
 FIXED_BY_P7 = [(1, 37, False), (2, 2, True)]
 # (1, 40) and (1, 54) are also P7 cases (the scan picks the wrong sector); S1 leaves a non-winning sector off.
-FIXED_BY_S1 = []
+FIXED_BY_S1 = [(11, 77, False), (11, 80, False), (1, 40, False), (1, 54, False)]
 
 
 @pytest.mark.parametrize("comm", COMMS)

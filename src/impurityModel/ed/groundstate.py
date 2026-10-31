@@ -11,8 +11,11 @@ from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.gs_report import report_ground_state
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
+from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.seed_sectors import _images as seed_images
+from impurityModel.ed.seed_sectors import gather_seed
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -190,6 +193,41 @@ class SectorSolve(NamedTuple):
     solver: CIPSISolver
 
 
+def widen_by_single_excitations(basis, *, max_seed):
+    """``basis`` widened by every single excitation ``c_i^+ c_j |seed>`` (collective), or ``None``.
+
+    The seed of a closed shell (d0, d10, one determinant) spans one symmetry class of ``H``, and the
+    ground state can sit in another one. ``H|seed>`` cannot help: ``H`` conserves what defines the class,
+    so the whole Krylov space of the seed stays in it (review S1: the expansion closed on a 15-determinant
+    span holding 2e-30 of the exact ground state, which lies on the sector's other determinant
+    component). A single excitation does not conserve it: the determinants it adds span the other
+    classes, and the plan made on the widened seed expands each one.
+
+    The excitations are generated on rank 0 under the seed's own restrictions and broadcast;
+    ``Basis.add_states`` routes each determinant to its owner and drops duplicates, so the replicated
+    list is safe on a rank that holds none of the seed. ``None`` when there is nothing to add or the
+    widened seed would be above ``max_seed`` (no plan can be made on it): the caller keeps the seed it has.
+    """
+    comm = basis.comm if basis.is_distributed else None
+    seed = gather_seed(basis)
+    shell = None
+    if comm is None or comm.rank == 0:
+        n = basis.num_spin_orbitals
+        excite = tensors_to_operator(np.ones((n, n)))
+        excite.set_restrictions(basis.restrictions)
+        excite.set_weighted_restrictions(basis.weighted_restrictions)
+        known = set(seed)
+        shell = sorted({key for det in seed for key in seed_images(excite, det)} - known)
+    if comm is not None:
+        shell = comm.bcast(shell, root=0)
+    if not shell:
+        return None
+    if len(seed) + len(shell) > max_seed:
+        solver_trace.note("widen_skipped", n_seed=len(seed), n_shell=len(shell))
+        return None
+    return basis.clone(initial_basis=[SlaterDeterminant(det) for det in seed + shell])
+
+
 def solve_sector(
     h_op,
     impurity_indices,
@@ -280,44 +318,61 @@ def solve_sector(
             memory_policy=_memory_policy(truncation_threshold),
         )
         if config.GS_SECTOR_CERTIFY.get():
-            # A record holds for the seed and the accuracy it was certified at, so both are in its
-            # key (every component replicated), and only for a seed of one impurity occupation: on
-            # it the shift is a constant, so the plan is the same at every shift. A mixed-valence
-            # seed is certified afresh at every one.
             widths = mixed_valence.values() if isinstance(mixed_valence, dict) else [mixed_valence or 0]
             single_occupation = not any(int(v) for v in widths)
             store = plan_store
-            store_key = (
-                sector_key(N0, frozen_occupations),
-                len(basis),
-                float(de2_min or 0.0),
-                float(e_pt2_tol or 0.0),
-                float(slaterWeightMin),
-                basis.truncation_threshold,
-                int(dense_cutoff),
-            )
-            certification = store.plan(store_key) if store is not None and single_occupation else None
+            max_seed = config.GS_CERTIFY_MAX_SEED.get()
+
+            def acquire(seed_basis):
+                # A record holds for the seed and the accuracy it was certified at, so both are in its
+                # key (every component replicated), and only for a seed of one impurity occupation: on
+                # it the shift is a constant, so the plan is the same at every shift. A mixed-valence
+                # seed is certified afresh at every one.
+                key = (
+                    sector_key(N0, frozen_occupations),
+                    len(seed_basis),
+                    float(de2_min or 0.0),
+                    float(e_pt2_tol or 0.0),
+                    float(slaterWeightMin),
+                    seed_basis.truncation_threshold,
+                    int(dense_cutoff),
+                )
+                plan = store.plan(key) if store is not None and single_occupation else None
+                recorded = plan is not None
+                jobs_only = store.jobs_at(key, shift, window=window) if recorded else None
+                if plan is None:
+                    with solver_trace.timed("certify_plan"):
+                        plan = certification_plan(h_op, seed_basis, max_seed=max_seed, spin_layout=spin_layout)
+                    if plan is None:
+                        # `len(basis)` is replicated, so is this branch. Said, because the single
+                        # expansion that follows can stop in an excited symmetry class.
+                        solver_trace.note("certify_skipped", n0=key[0], n_seed=len(seed_basis))
+                        if store is not None:
+                            store.uncertified.add(key)
+                        if verbose and (comm is None or comm.rank == 0):
+                            print(
+                                f"  sector {key[0]}: seed of {len(seed_basis):,} determinants is above "
+                                f"GS_CERTIFY_MAX_SEED = {max_seed:,}; solved by one expansion, not certified",
+                                flush=True,
+                            )
+                return key, plan, jobs_only, recorded
+
             window = 0.0 if isinstance(manifold, Lowest) else float(manifold.max_energy)
-            only = store.jobs_at(store_key, shift, window=window) if certification is not None else None
-            if certification is None:
-                with solver_trace.timed("certify_plan"):
-                    max_seed = config.GS_CERTIFY_MAX_SEED.get()
-                    certification = certification_plan(h_op, basis, max_seed=max_seed, spin_layout=spin_layout)
-                if certification is None:
-                    # `len(basis)` is replicated, so is this branch. Said, because the single
-                    # expansion that follows can stop in an excited symmetry class.
-                    solver_trace.note("certify_skipped", n0=store_key[0], n_seed=len(basis))
-                    if store is not None:
-                        store.uncertified.add(store_key)
-                    if verbose and (comm is None or comm.rank == 0):
-                        print(
-                            f"  sector {store_key[0]}: seed of {len(basis):,} determinants is above "
-                            f"GS_CERTIFY_MAX_SEED = {max_seed:,}; solved by one expansion, not certified",
-                            flush=True,
-                        )
+            store_key, certification, only, recorded = acquire(basis)
+            if certification is not None and len(certification.jobs) <= 1 and not recorded:
+                # One class on the seed does not make one class in the sector: a closed-shell seed (d0,
+                # d10, a single determinant) spans one symmetry class of H, and the ground state can
+                # sit in another one that H|seed> never reaches (review S1: the expansion closed on an
+                # H-invariant span that held 2e-30 of the exact ground state). So the seed is widened,
+                # once, by its single excitations, and the plan is made again on it: the added
+                # determinants span the other classes, and each is expanded.
+                wide = widen_by_single_excitations(basis, max_seed=max_seed)
+                if wide is not None:
+                    basis, solver = wide, CIPSISolver(wide)
+                    store_key, certification, only, recorded = acquire(basis)
             if certification is not None and len(certification.jobs) <= 1 and store is not None:
-                # One class, nothing to be trapped away from: certified as it stands. No verdicts,
-                # so no shift ever skips its expansion.
+                # Still one class, on the widened seed where there was a shell to widen by: certified
+                # as it stands. No verdicts, so no shift ever skips its expansion.
                 store.record(store_key, certification, shift, ())
             if certification is not None and len(certification.jobs) > 1:
                 if verbose and (comm is None or comm.rank == 0):

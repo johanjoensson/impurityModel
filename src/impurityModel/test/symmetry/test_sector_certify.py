@@ -732,3 +732,30 @@ def test_a_verbose_certification_reports_each_class_by_pass_and_ends_with_a_tabl
     assert "PT2" in out and " s)" in out
     table = out.split("class table:")[1]
     assert table.count("\n    2Sz=") == len(plan.jobs)  # every job, mirrors included
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_closed_shell_seed_is_widened_so_the_other_symmetry_class_is_expanded(comm, monkeypatch):
+    """Review S1: one determinant spans one symmetry class and ``H|seed>`` never leaves it. The sector
+    here (4 impurity electrons, 2 valence) has its ground state in a class the seed cannot reach; the
+    seed is widened by its single excitations, re-planned on more than one job, and the solve is exact."""
+    from impurityModel.ed import groundstate, sector_solver
+    from impurityModel.test.support import gs_oracle
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    h_op, imp, bath, _N0, n_orb, n_val, _ = gs_oracle.pinned_model(11, 77)
+    plans = []
+    real = sector_solver.certification_plan
+
+    def spy(*args, **kwargs):
+        plans.append(real(*args, **kwargs))
+        return plans[-1]
+
+    monkeypatch.setattr(groundstate, "certification_plan", spy)
+    result = groundstate.solve_sector(
+        h_op, imp, bath, {0: 4}, {0: 0}, 0, False, 1000, manifold=Lowest(), comm=comm, verbose=False,
+        truncation_threshold=np.inf, plan_store=sector_solver.SectorPlanStore(),
+    )  # fmt: skip
+    exact = gs_oracle.exact_spectra(h_op, n_orb)[4 + n_val][0]
+    assert len(plans) == 2 and len(plans[0].jobs) == 1 and len(plans[1].jobs) > 1
+    assert float(np.min(np.real(result.es))) == pytest.approx(exact, abs=1e-6)
