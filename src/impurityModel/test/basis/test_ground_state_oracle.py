@@ -97,3 +97,22 @@ def test_canonical_split_clips_keeps_the_total_and_leaves_frozen_groups(occupati
     assert out == expected
     assert sum(out.values()) == sum(occupation.values())
     assert all(out[i] == occupation[i] for i in frozen)
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("complex_h", [False, True], ids=["real", "complex"])
+def test_sweep_random_models_every_sector_against_the_dense_answer(complex_h):
+    """The review's sweep (opt-in, ``pytest -m benchmark``): 60 random models, both walks, every failing
+    model reported at once, not the first."""
+    import numpy as np
+
+    rng = np.random.default_rng(100 + complex_h)
+    failures = []
+    for index in range(60):
+        h_op, imp, bath, N0, n_orb, _n_val, _params = gs_oracle.random_model(rng, complex_h=complex_h)
+        spectra = gs_oracle.exact_spectra(h_op, n_orb)
+        for name, options in OPTIONS.items():
+            found = gs_oracle.check_model(h_op, imp, bath, N0, n_orb, spectra=spectra, **options)
+            if found:
+                failures.append((index, name, found))
+    assert not failures, "\n".join(map(str, failures))
