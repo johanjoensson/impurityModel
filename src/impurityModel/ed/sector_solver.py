@@ -918,6 +918,29 @@ def manifold_deficit(plan, verdicts, es, psis, basis):
     return len(level), len(labels) * multiplicity
 
 
+def _record_union_cut(solver, union_cut, cap, retained):
+    """Say in the solver's reports what the cap did to the thermal union (review S3).
+
+    A union that left out or cut a class is a truncated basis: ``truncation_report`` gets ``union_cut``, and the
+    convergence report is no longer ``converged``. The ``manifold_check`` rides on the convergence report, which
+    is what reaches the ground-state JSON.
+    """
+    conv = solver.convergence_report
+    if conv is None:
+        conv = solver.convergence_report = {}
+    check = getattr(solver, "manifold_check", None)
+    if check is not None:
+        conv["manifold_check"] = dict(check)
+    if union_cut is None:
+        return
+    report = dict(solver.truncation_report or {"cycles": 0, "memory_bound": False})
+    report.update(cap_hit=True, union_cut=dict(union_cut), retained=int(retained))
+    report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
+    solver.truncation_report = report
+    conv["converged"] = False
+    conv["limited_by"] = conv.get("limited_by") or "cap"
+
+
 def solve_certified(
     h_op, basis, plan, manifold, *, expand_kwargs, dense_cutoff, slater_weight_min, verbose=False, only=None
 ):
@@ -981,15 +1004,24 @@ def solve_certified(
         merged, whole = _add_units_within_cap(
             merged, [kept[i] for i in level], rows_of, cap, truncate=True, importance=importance
         )
+        later = [i for i in range(len(kept)) if i not in level]
+        union_cut = {
+            "level_cut": not whole,
+            "level_classes": len(level),
+            "later_left_out": 0,
+            "later_classes": len(later),
+        }
         if not whole:
             cut.append(f"the {len(level)} class(es) at the winning energy were cut short")
+            union_cut["later_left_out"] = len(later)
+            if later:
+                cut.append(f"{len(later)} later class(es) not added: the level itself did not fit")
         else:
-            for i in range(len(kept)):
-                if i in level:
-                    continue
+            for pos, i in enumerate(later):
                 merged, whole = _add_units_within_cap(merged, [kept[i]], rows_of, cap, truncate=False)
                 if not whole:
-                    cut.append(f"{len(kept) - i - 1 + 1} later class(es) left out")
+                    union_cut["later_left_out"] = len(later) - pos
+                    cut.append(f"{len(later) - pos} later class(es) left out")
                     break
         if cut and (basis.comm is None or basis.comm.rank == 0) and verbose:
             print(
@@ -1011,6 +1043,7 @@ def solve_certified(
         phase.dets = merged.size
     found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
     solver.manifold_check = {"found": found, "expected": expected}
+    _record_union_cut(solver, union_cut if cut else None, cap, merged.size)
     if found < expected and (basis.comm is None or basis.comm.rank == 0):
         print(
             f"WARNING: the thermal manifold holds {found} states of its lowest level, but certification "

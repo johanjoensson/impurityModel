@@ -720,6 +720,14 @@ def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(mo
     assert cap - 20 <= sizes[-1] <= cap
     found, expected = capped.solver.manifold_check["found"], capped.solver.manifold_check["expected"]
     assert 0 < found < expected == 8
+    # ... and the cut is on the record (review S3): the report names it and the expansion is not converged.
+    report = capped.solver.truncation_report
+    assert report is not None and report["cap_hit"] and report["union_cut"]["level_cut"]
+    assert capped.solver.convergence_report["converged"] is False
+    assert capped.solver.convergence_report["limited_by"] == "cap"
+    assert capped.solver.convergence_report["manifold_check"] == capped.solver.manifold_check
+    assert wide.solver.truncation_report is None or "union_cut" not in wide.solver.truncation_report
+    assert wide.solver.convergence_report["manifold_check"] == {"found": 8, "expected": 8}
 
 
 @pytest.mark.parametrize("tail, rerun", [(0.010, False), (0.020, True)])
