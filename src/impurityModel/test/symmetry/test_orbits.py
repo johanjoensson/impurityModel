@@ -227,3 +227,14 @@ def test_the_thermal_union_under_a_cap_is_made_of_whole_orbits(monkeypatch, cap)
     members = {tuple(b) for b in orbits.members(np.unique(rep, axis=0))}
     held = {tuple(b) for b in _bits(dets, orbits.n_orb)}
     assert members <= held
+
+
+def test_an_orbit_larger_than_the_budget_is_skipped_and_a_cut_never_comes_back_empty():
+    """The best orbit alone may be larger than the whole budget (review S2): skipped, never an empty cut."""
+    from impurityModel.ed.orbits import _select_by_budget
+
+    scores = np.array([9.0, 5.0, 4.0])
+    sizes = np.array([40, 3, 3])
+    taken = _select_by_budget(scores, sizes, np.ones(3, dtype=bool), 8, None)
+    assert taken.tolist() == [False, True, True]  # the big orbit never fits; it must not stop the ones behind it
+    assert _select_by_budget(np.array([2.0, 2.0]), np.array([5, 5]), np.ones(2, dtype=bool), 6, None).any()

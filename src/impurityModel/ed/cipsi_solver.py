@@ -1048,6 +1048,7 @@ class CIPSISolver:
                 )
         guard = MemoryGuard(self.basis, memory_budget_bytes, tighten=memory_policy == "tighten")
         discarded_total = 0.0
+        orbit_stalled = False
         self.stopped_early = False
         # Matrix snapshots are kept only while this call runs (see `_build_h_matrix`).
         self._snapshot_budget = memory_budget_bytes
@@ -1127,6 +1128,15 @@ class CIPSISolver:
                 )
                 n_new = self._allreduce_sum(len(new_Dj))
                 sel = self.last_selection or {}
+                if (
+                    self.orbits is not None
+                    and n_new == 0
+                    and admit_target is not None
+                    and sel.get("n_candidates", 0) > 0
+                ):
+                    # No orbit fits the admission budget although candidates remain: the cap stopped the
+                    # expansion, which must not read as converged.
+                    orbit_stalled = True
                 guard.after_selection(sel, old_size, admit_target)
                 discarded_total += float(sel.get("discarded_de2_mass", 0.0))
                 _sel_event.update(
@@ -1192,12 +1202,17 @@ class CIPSISolver:
             guard.note_truncation(self.basis.size)
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
             residual_current = False
-        if cap_cycles > 0 or guard.limited:
+        if cap_cycles > 0 or guard.limited or orbit_stalled:
             self._record_truncation(cap_cycles, guard, discarded_total)
 
         # An expansion its cycle hook ended on purpose is not "not converged": say nothing about it.
         self._report_convergence(
-            e_pt2_tol, de2_min, cap_cycles > 0, guard.limited, residual_current, quiet=self.stopped_early
+            e_pt2_tol,
+            de2_min,
+            cap_cycles > 0 or orbit_stalled,
+            guard.limited,
+            residual_current,
+            quiet=self.stopped_early,
         )
         self._h_matrix = None
         self._snapshot_budget = False

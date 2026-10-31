@@ -23,7 +23,7 @@ Every ``Orbits`` method taking a ``basis`` is collective on its communicator and
 rank, an empty one included.
 """
 
-from itertools import product
+from itertools import combinations
 from math import comb
 
 import numpy as np
@@ -192,10 +192,17 @@ class Orbits:
 
     def _spin_choices(self, k, two_sz_max):
         """``(m, k)`` 0/1 up-flags of the arrangements of ``k`` open pairs with ``|2 S_z| <= two_sz_max``."""
-        rows = [flags for flags in product((0, 1), repeat=k) if abs(2 * sum(flags) - k) <= two_sz_max]
+        rows = []
+        for u in range(k + 1):
+            if abs(2 * u - k) > two_sz_max:
+                continue
+            for up in combinations(range(k), u):
+                flags = np.zeros(k, dtype=np.uint8)
+                flags[list(up)] = 1
+                rows.append(flags)
         return np.array(rows, dtype=np.uint8).reshape(len(rows), k)
 
-    def members(self, rep_rows, two_sz_max=None):
+    def members(self, rep_rows, two_sz_max=None, cap_orbits=True):
         """The members of the orbits with patterns ``rep_rows``, filtered by the restrictions: ``(m, n_orb)`` bits.
 
         ``two_sz_max=None`` uses ``M``; a larger value (truncation passes the pair count) takes every arrangement.
@@ -211,7 +218,7 @@ class Orbits:
                 singles = np.flatnonzero(image == 1)
                 doubles = np.flatnonzero(image == 2)
                 choices = self._spin_choices(len(singles), limit)
-                if len(choices) > ORBIT_CAP:
+                if cap_orbits and len(choices) > ORBIT_CAP:
                     choices = choices[:ORBIT_CAP]
                     if "an orbit of open pairs was cut at ORBIT_CAP" not in self.notes:
                         self.notes.append("an orbit of open pairs was cut at ORBIT_CAP")
@@ -302,7 +309,7 @@ class Orbits:
         rep, _n = self.canonical(reps)
         selected = _select_by_budget(total, present, np.ones(len(total), dtype=bool), target, comm)
         # Every arrangement, not only |2 S_z| <= M: a present determinant must be found by its own pattern.
-        bits = self.members(rep[selected], two_sz_max=self.n_cols if self.pairs is not None else 0)
+        bits = self.members(rep[selected], two_sz_max=self.n_cols if self.pairs is not None else 0, cap_orbits=False)
         routed = basis.redistribute_block(
             ManyBodyState(dict.fromkeys(_keys_of(bits, self.n_bytes), 1.0), width=1)
             if len(bits)
@@ -327,6 +334,9 @@ def _select_by_budget(scores, sizes, candidate, budget, comm):
         return candidate
     if budget <= 0:
         return np.zeros_like(candidate)
+    # An orbit larger than the whole budget can never be taken; leaving it in would stop the best-first
+    # prefix at it and take nothing (a truncation would then empty the basis).
+    candidate = candidate & (sizes <= budget)
     total = _allreduce(comm, float(sizes[candidate].sum()))
     if total <= budget:
         return candidate
@@ -346,7 +356,14 @@ def _select_by_budget(scores, sizes, candidate, budget, comm):
             lo = mid
         else:
             hi = mid
-    return candidate & (scores >= np.exp(hi))
+    taken = candidate & (scores >= np.exp(hi))
+    if _allreduce(comm, int(np.count_nonzero(taken))) == 0 and _allreduce(comm, int(np.count_nonzero(candidate))) > 0:
+        # Even the best tie group alone overshoots: take it anyway rather than nothing. A cut must keep
+        # something, and the cap is a soft target for a whole orbit.
+        best_local = float(scores[candidate].max()) if candidate.any() else -np.inf
+        best = comm.allreduce(best_local, op=MPI.MAX) if comm is not None and comm.size > 1 else best_local
+        taken = candidate & (scores >= best * (1.0 - 1e-12))
+    return taken
 
 
 def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
@@ -419,7 +436,7 @@ def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
     if pair_array is not None:
         # The largest |2 S_z| of the seed bounds the 2 S of every multiplet the solve holds.
         sz = _bits(list(basis.local_basis), n_orb).astype(np.int64)
-        local = int(np.max(np.abs(sz[:, pair_array[:, 1]] - sz[:, pair_array[:, 0]]).sum(axis=1))) if len(sz) else 0
+        local = int(np.max(np.abs((sz[:, pair_array[:, 1]] - sz[:, pair_array[:, 0]]).sum(axis=1)))) if len(sz) else 0
         two_sz_max = local if comm is None else int(comm.allreduce(local, op=MPI.MAX))
     orbits = Orbits(
         n_orb,

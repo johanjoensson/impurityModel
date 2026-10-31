@@ -1155,16 +1155,18 @@ def solve_certified(
             seed_reps = _orbit_reps(orbits, merged, ManyBodyState.from_keys(list(merged.local_basis)), None)
             merged, _ = _add_orbits_within_cap(merged, [seed_reps], orbits, None, truncate=False)
             level_sources = [i for i in level if kept.derived[i] is None]
-            merged, whole = _add_orbits_within_cap(
-                merged,
-                [
-                    _orbit_reps(orbits, merged, kept[i], importance if n == 0 else None)
-                    for n, i in enumerate(level_sources)
-                ],
-                orbits,
-                cap,
-                truncate=True,
-            )
+            units = [
+                _orbit_reps(orbits, merged, kept[i], importance if n == 0 else None)
+                for n, i in enumerate(level_sources)
+            ]
+            # A mirror is the same orbits only if its symmetry is in the group (a generator that did not map
+            # spin pairs onto pairs, or a group over the cap, leaves it out): its orbits not already there join.
+            held = {bytes(r) for reps, _s in units for r in reps}
+            for i in (j for j in level if kept.derived[j] is not None):
+                reps, scores = _orbit_reps(orbits, merged, kept[i], None)
+                fresh = np.array([bytes(r) not in held for r in reps], dtype=bool)
+                units.append((reps[fresh], scores[fresh]))
+            merged, whole = _add_orbits_within_cap(merged, units, orbits, cap, truncate=True)
         else:
             merged, whole = _add_units_within_cap(
                 merged,
