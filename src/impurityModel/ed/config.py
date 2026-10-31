@@ -688,6 +688,18 @@ GS_CERTIFY_WINDOW_FACTOR = Knob(
     covers every crossover that a single hybridization shell can drive, with margin.""",
 )
 
+GS_ORBIT_CLOSURE = Knob(
+    name="GS_ORBIT_CLOSURE",
+    kind="bool",
+    default=True,
+    group="groundstate",
+    doc="""A `Within` (thermal) ground-state solve selects and truncates whole symmetry orbits of determinants
+    (`orbits`): the closure of the detected symmetries of H and, with total spin conserved, every spin arrangement
+    of a pair-occupation pattern at |2Sz| up to the seed's. The thermal states then keep every symmetry of H under a
+    binding cap, at the cost of some energy; per-determinant selection splits a degenerate multiplet there.
+    ``0`` selects and truncates determinant by determinant.""",
+)
+
 GS_CERTIFY_LABEL_SYMMETRY = Knob(
     name="GS_CERTIFY_LABEL_SYMMETRY",
     kind="bool",
@@ -1041,6 +1053,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_CERTIFY_WINDOW,
     GS_CERTIFY_WINDOW_FACTOR,
     GS_CERTIFY_LABEL_SYMMETRY,
+    GS_ORBIT_CLOSURE,
     GS_SELECTION_CHUNK,
     GS_MATVEC_EXCHANGE_BYTES,
     APPLY_ROW_CHUNKS,

@@ -25,6 +25,7 @@ from impurityModel.ed.memory_estimate import (
     resident_bytes_per_rank,
     resolve_cap_policy,
 )
+from impurityModel.ed.orbits import build_orbits
 from impurityModel.ed.sector_solver import (
     WINDOW_OVERTAKE_WARN,
     SectorPlanStore,
@@ -172,7 +173,11 @@ def build_basis_and_solver(
         weighted_restrictions=weighted_restrictions,
     )
     solver = CIPSISolver(basis)
+    if basis.size > basis.truncation_threshold:
+        # Cutting the seed itself: by whole orbits too. The restrictions are not set yet, so no member is filtered.
+        solver.orbits = _orbits_for(h_op, basis, manifold, None)
     solver.truncate_initial(h_op, manifold, dense_cutoff=dense_cutoff)
+    solver.orbits = None
 
     basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
     return basis, solver
@@ -197,6 +202,13 @@ class SectorSolve(NamedTuple):
     psis: object
     basis: Basis
     solver: CIPSISolver
+
+
+def _orbits_for(h_op, basis, manifold, spin_layout):
+    """The symmetry orbits a ``Within`` solve selects and truncates by (collective), or ``None``."""
+    if isinstance(manifold, Lowest) or not config.GS_ORBIT_CLOSURE.get():
+        return None
+    return build_orbits(h_op, basis, spin_layout=spin_layout)
 
 
 def widen_by_single_excitations(basis, *, max_seed):
@@ -401,12 +413,14 @@ def solve_sector(
                 replace_record = False
                 if verbose and (comm is None or comm.rank == 0):
                     print(f"  sector {store_key[0]}: {describe_plan(certification)}", flush=True)
+                orbits = _orbits_for(h_op, basis, manifold, spin_layout)
                 with solver_trace.timed("certify"):
                     es, psis, sector_basis, sector_solver, verdicts = solve_certified(
                         h_op,
                         basis,
                         certification,
                         manifold,
+                        orbits=orbits,
                         expand_kwargs=expand_kwargs,
                         dense_cutoff=dense_cutoff,
                         slater_weight_min=slaterWeightMin,
@@ -423,6 +437,7 @@ def solve_sector(
                             basis,
                             certification,
                             manifold,
+                            orbits=orbits,
                             expand_kwargs=expand_kwargs,
                             dense_cutoff=dense_cutoff,
                             slater_weight_min=slaterWeightMin,
@@ -458,6 +473,7 @@ def solve_sector(
                 sector_fields["certified_classes"] = len(verdicts)
                 sector_fields["n_dets"] = len(sector_basis)
                 return SectorSolve(es, psis, sector_basis, sector_solver)
+        solver.orbits = _orbits_for(h_op, basis, manifold, spin_layout)
         with solver_trace.timed("expand"):
             solver.expand(h_op, manifold, **expand_kwargs)
 

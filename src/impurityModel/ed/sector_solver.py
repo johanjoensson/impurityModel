@@ -1008,7 +1008,17 @@ def window_deficit(verdicts, es, within, lowest_expected):
 
 
 def solve_certified(
-    h_op, basis, plan, manifold, *, expand_kwargs, dense_cutoff, slater_weight_min, verbose=False, only=None
+    h_op,
+    basis,
+    plan,
+    manifold,
+    *,
+    expand_kwargs,
+    dense_cutoff,
+    slater_weight_min,
+    verbose=False,
+    only=None,
+    orbits=None,
 ):
     """A certified sector solve for ``manifold``: ``(es, psis, basis, solver, verdicts)``.
 
@@ -1112,6 +1122,7 @@ def solve_certified(
         kept.clear()
         del importance, psis
         solver = CIPSISolver(merged)
+        solver.orbits = orbits
         solver.expand(h_op, manifold, **expand_kwargs)
         es, psis = solver.get_eigenvectors(
             h_op,

@@ -456,6 +456,10 @@ class CIPSISolver:
         self.last_selection = None
         self.last_truncation: dict | None = None
         self.truncation_report = None
+        #: The :class:`~impurityModel.ed.orbits.Orbits` selection and truncation act on, or ``None`` (per
+        #: determinant). Set for a ``Within`` solve: the thermal states must have every symmetry of ``H``, so a
+        #: binding cap keeps or drops whole symmetry orbits, never part of one (review S2).
+        self.orbits = None
         #: ``(basis, H_mat) -> H_mat``, applied to every matrix the eigensolves build (collective,
         #: like the build). ``seed_sectors.ClassPenalty`` installs one to keep an expansion in a
         #: symmetry class; ``None`` (the default) diagonalizes ``H`` itself. Selection never sees it.
@@ -563,7 +567,11 @@ class CIPSISolver:
                     norms2 = np.maximum(norms2, group_norms2)
         else:
             keys, norms2 = blk.row_max_norms2()
-        keep_mask = self._top_k_mask(norms2, keys, int(target))
+        if self.orbits is not None:
+            kept = self.orbits.retain(self.basis, keys, norms2, int(target))
+            keep_mask = np.fromiter((k in kept for k in keys), dtype=bool, count=len(keys))
+        else:
+            keep_mask = self._top_k_mask(norms2, keys, int(target))
         retained = set(itertools.compress(keys, keep_mask))
         kept_weight = self._allreduce_sum(float(norms2[keep_mask].sum()))
         total_weight = self._allreduce_sum(float(norms2.sum()))
@@ -918,7 +926,11 @@ class CIPSISolver:
             # Collective, and reached on every rank: `e_pt2_tol` is a replicated argument.
             comm = self.basis.comm if self.basis.is_distributed else None
             preselect &= scores > collective_mass_cutoff(scores, float(e_pt2_tol), comm)
-        de2_mask, selection_stats = self._admit_top(scores, preselect, max_new, local_Djs)
+        if self.orbits is not None:
+            # Whole symmetry orbits: collective and unconditional (a rank with no candidates takes part).
+            new_Dj, selection_stats = self.orbits.select_new(self.basis, local_Djs, scores, preselect, max_new)
+        else:
+            de2_mask, selection_stats = self._admit_top(scores, preselect, max_new, local_Djs)
         selection_stats["hpsi_rows"] = hpsi_rows
         # The reference states this round scored, i.e. the states `residual_pt2` covers. Not
         # `psi_refs` after `expand` returns: a capped run exits at the loop head, after an
@@ -926,7 +938,8 @@ class CIPSISolver:
         selection_stats["n_references"] = _psi_ref_width(psi_ref)
         selection_stats.update(memory_stats)
         self.last_selection = selection_stats
-        new_Dj = set(itertools.compress(local_Djs, de2_mask))
+        if self.orbits is None:
+            new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
         return new_Dj
 

@@ -169,3 +169,35 @@ def test_a_budget_smaller_than_the_best_orbit_admits_nothing_and_a_tie_group_is_
     # a budget between "one orbit" and "two tied orbits": either all of a tie group or none of it
     selected = _select(MPI.COMM_WORLD, smallest)
     assert len(selected) in {0, smallest, *sizes.values()} or len(selected) <= smallest
+
+
+def _capped_cubic_d7(monkeypatch, cap, closure, comm=None):
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    monkeypatch.setenv("GS_ORBIT_CLOSURE", "1" if closure else "0")
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
+    return solve_sector(
+        h_op, imp, baths, {0: 7}, None, 0, False, 1000, manifold=Within(1e-6), comm=comm, verbose=False,
+        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=cap,
+    )  # fmt: skip
+
+
+@pytest.mark.mpi
+def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_splits_it_without(monkeypatch):
+    """Cubic d7 at a cap of 160 (the uncapped union is 240): the cap binds, and the lowest four states --
+    one degenerate level -- agree to roundoff when selection and truncation act on whole orbits, where
+    per-determinant selection splits them by ~1e-7 (review S2)."""
+    cap = 160
+    comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
+    closed = _capped_cubic_d7(monkeypatch, cap, True, comm)
+    report = closed.solver.truncation_report
+    assert report is not None and report["cap_hit"] and report["cycles"] > 0, "the cap must bind"
+    es = np.sort(np.real(closed.es))
+    lowest = es[:4] if comm is None else np.sort(np.concatenate(comm.allgather(es)))[:4]
+    assert np.ptp(lowest) < 1e-9, lowest
+    if comm is None:  # how a tie splits depends on the rank count: the control is the serial run
+        split = np.sort(np.real(_capped_cubic_d7(monkeypatch, cap, False).es))[:4]
+        assert np.ptp(split) > 1e-8, "per-determinant selection no longer splits the quartet: the test lost its teeth"
