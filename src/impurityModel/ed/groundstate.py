@@ -529,6 +529,32 @@ class SectorSearch(NamedTuple):
     cap_policy: CapPolicy
 
 
+def canonical_split(occupation, sizes, frozen_occupations=None):
+    """The per-group split of an occupation total, clipped to ``[0, size]``: a new dict.
+
+    The walk decides the *total* (:func:`sector_key`); how it is split over the unfrozen groups does not
+    change the determinant set, so a walk can end on a split such as ``{0: -1, 1: 1}`` or one
+    with a group over-full. This moves such a group to the nearest bound, in key order, and puts the
+    surplus or deficit on the other unfrozen groups that have room (also in key order). The total and the
+    frozen groups are untouched, and an already valid split is returned unchanged.
+    """
+    frozen = set(frozen_occupations or ())
+    out = dict(occupation)
+    free = [i for i in sorted(out) if i not in frozen]
+    surplus = 0
+    for i in free:
+        clipped = min(max(out[i], 0), sizes[i])
+        surplus += out[i] - clipped
+        out[i] = clipped
+    for i in free:
+        if surplus == 0:
+            break
+        step = min(surplus, sizes[i] - out[i]) if surplus > 0 else max(surplus, -out[i])
+        out[i] += step
+        surplus -= step
+    return out
+
+
 def find_ground_state_sector(
     h_op,
     impurity_orbitals,
@@ -853,14 +879,11 @@ def find_ground_state_sector(
                 dN_gs = dN
                 winning_impurity_occ = trial_N0
         for i in N0:
-            while (
-                dN_gs[i] != 0
-                and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in winning_impurity_occ.items())
-                and all(
-                    imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
-                    for j, imp_occ in winning_impurity_occ.items()
-                )
-            ):
+            # No per-group bound here: `dN_gs` is 0 for a frozen group, and `get_energy` rejects a total
+            # outside [0, max] (and a frozen value out of range), so a step that leaves the lattice
+            # is not accepted. Guarding every group at `> 0` made occupation 0 unreachable and let
+            # any group at 0 block the extension of all the others (review P7).
+            while dN_gs[i] != 0:
                 trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in winning_impurity_occ.items()}
                 e_trial = get_energy(trial_N0)
                 report_trial(trial_N0, e_trial)
@@ -869,6 +892,11 @@ def find_ground_state_sector(
                 winning_impurity_occ[i] += dN_gs[i]
                 e_gs = e_trial
 
+    winning_impurity_occ = canonical_split(
+        winning_impurity_occ,
+        {i: sum(len(block) for block in impurity_orbitals[i]) for i in winning_impurity_occ},
+        frozen_occupations,
+    )
     if (
         sector_key(winning_impurity_occ, frozen_occupations) != best_cached_key
         and verbose >= V_SUMMARY
