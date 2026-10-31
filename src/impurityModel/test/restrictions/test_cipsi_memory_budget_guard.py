@@ -388,3 +388,71 @@ def test_expand_refuses_a_budget_that_exists_on_only_some_ranks():
             de2_min=GS_DE2_MIN,
             memory_budget_bytes=None if comm.rank == 0 else 2**60,
         )
+
+
+def _expand_with_rss(monkeypatch, rss_from_cycle, budget=1 << 40, cap=10**6):
+    """One expansion whose measured peak is over ``budget`` from cycle ``rss_from_cycle`` on (None: never)."""
+    from impurityModel.ed import cipsi_solver as _cs
+
+    cycles = {"n": 0}
+    real_eigenvectors = _cs.CIPSISolver.get_eigenvectors
+
+    def counting_eigenvectors(self, *args, **kwargs):
+        cycles["n"] += 1
+        return real_eigenvectors(self, *args, **kwargs)
+
+    def fake_peak_rss():
+        return 0 if rss_from_cycle is None or cycles["n"] < rss_from_cycle else budget * 2
+
+    monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", counting_eigenvectors)
+    monkeypatch.setattr(_cs, "peak_rss_bytes", fake_peak_rss)
+    all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
+    solver = _make_solver(None, truncation_threshold=cap)
+    solver.basis.clear()
+    solver.basis.add_states([all_dets[0]])
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
+    return solver, cycles["n"]
+
+
+def test_a_trip_wire_that_withholds_nothing_is_not_memory_bound(monkeypatch, capfd):
+    """The trip-wire lowers the cap to the current basis. Fired in the last cycle, where nothing more
+    was to be admitted, memory kept nothing out: the expansion is not ``memory_bound`` (review M4)."""
+    reference, n_cycles = _expand_with_rss(monkeypatch, None)
+    assert reference.truncation_report is None
+    monkeypatch.undo()
+    solver, _n = _expand_with_rss(monkeypatch, n_cycles)
+    assert solver.basis.truncation_threshold == solver.basis.size, "the trip-wire should have fired"
+    assert set(solver.basis.local_basis) == set(reference.basis.local_basis)
+    assert solver.truncation_report is None
+
+
+def test_a_trip_wire_that_stops_growth_is_memory_bound(monkeypatch):
+    """Fired mid-expansion with candidates still to admit, the same lowering withholds them."""
+    solver, _n = _expand_with_rss(monkeypatch, 2)
+    report = solver.truncation_report
+    assert report is not None and report["memory_bound"]
+    assert report["discarded_de2_mass_total"] >= report["discarded_de2_mass"]
+
+
+def test_a_cap_already_at_the_basis_size_is_not_tightened_again(monkeypatch, capfd):
+    from impurityModel.ed.cipsi_budget import MemoryGuard
+
+    solver, _n = _expand_with_rss(monkeypatch, None)
+    solver.basis.truncation_threshold = solver.basis.size
+    guard = MemoryGuard(solver.basis, 1, tighten=True)
+    capfd.readouterr()
+    guard.after_cycle(10, 10, 0)
+    out, err = capfd.readouterr()
+    assert "tightening" not in out + err
+    assert not guard.withheld
+    guard.note_truncation(solver.basis.size + 5)  # over the cap this expansion started with: the user's
+    assert not guard.withheld
+
+
+def test_a_clamped_round_withholds(monkeypatch):
+    from impurityModel.ed.cipsi_budget import MemoryGuard
+
+    solver, _n = _expand_with_rss(monkeypatch, None)
+    guard = MemoryGuard(solver.basis, 1 << 30, tighten=True)
+    guard.after_selection({"memory_admit_cap": 3, "n_candidates": 10}, solver.basis.size, None)
+    assert guard.withheld and guard.limited

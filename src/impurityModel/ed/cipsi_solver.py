@@ -1034,6 +1034,7 @@ class CIPSISolver:
                     "None on all or an int on all (a rank-local GS_MEMORY_BUDGET_SAFETY read?)"
                 )
         guard = MemoryGuard(self.basis, memory_budget_bytes, tighten=memory_policy == "tighten")
+        discarded_total = 0.0
         self.stopped_early = False
         # Matrix snapshots are kept only while this call runs (see `_build_h_matrix`).
         self._snapshot_budget = memory_budget_bytes
@@ -1114,6 +1115,7 @@ class CIPSISolver:
                 n_new = self._allreduce_sum(len(new_Dj))
                 sel = self.last_selection or {}
                 guard.after_selection(sel, old_size, admit_target)
+                discarded_total += float(sel.get("discarded_de2_mass", 0.0))
                 _sel_event.update(
                     basis_size=int(old_size),
                     p=_psi_ref_width(psi_refs),
@@ -1146,6 +1148,7 @@ class CIPSISolver:
                 # re-diagonalizes and the cycle repeats until the energy stabilizes.
                 cap_cycles += 1
                 truncated = True
+                guard.note_truncation(self.basis.size + n_new)
                 keep = max(int(guard.threshold) - n_new, int(guard.threshold) // 2, 1)
                 psi_refs = self.truncate(psi_refs, e_ref, target=keep, slaterWeightMin=slaterWeightMin)
                 if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
@@ -1173,10 +1176,11 @@ class CIPSISolver:
         if guard.capped and self.basis.size > guard.threshold and self.psi_refs is not None:
             # Enforce the hard threshold on exit. `e_ref` must describe the *current* `psi_refs`: after a
             # restore that is the best cycle's, not the last one's.
+            guard.note_truncation(self.basis.size)
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
             residual_current = False
         if cap_cycles > 0 or guard.limited:
-            self._record_truncation(cap_cycles, guard)
+            self._record_truncation(cap_cycles, guard, discarded_total)
 
         # An expansion its cycle hook ended on purpose is not "not converged": say nothing about it.
         self._report_convergence(
@@ -1220,7 +1224,7 @@ class CIPSISolver:
         )
         return peak_rss, anon_rss, shmem_rss, local_min, local_max
 
-    def _record_truncation(self, cap_cycles, guard):
+    def _record_truncation(self, cap_cycles, guard, discarded_total=0.0):
         """Write ``truncation_report`` (and warn): a cap or the memory guard limited this expansion.
 
         Written when a refinement cycle ran or memory limited the expansion even without one, so a
@@ -1236,6 +1240,8 @@ class CIPSISolver:
             # Still `inf` when only an observed round limited the expansion; report where it stopped.
             "threshold": int(threshold) if np.isfinite(threshold) else int(self.basis.size),
             "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
+            # Summed over every selection round: a cap that binds in several rounds hides more than the last.
+            "discarded_de2_mass_total": float(discarded_total),
             "n_candidates_last": int(sel.get("n_candidates", 0)),
             "memory_bound": bool(guard.limited),
             "residual_pt2": float(sel.get("residual_pt2", 0.0)),

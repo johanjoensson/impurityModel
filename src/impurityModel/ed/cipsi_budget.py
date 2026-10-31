@@ -40,8 +40,12 @@ class MemoryGuard:
         A look-ahead bound became a *permanent* cap (two consecutive binding rounds, or zero affordable
         growth).
     observed
-        Any memory limit was observed -- a binding round, or the trip-wire. This is what the truncation
-        report keys off, so a memory-limited expansion is never reported as converged.
+        A look-ahead bound clamped some round's admission.
+    withheld
+        Memory actually kept something out of the basis, accumulated over the expansion: a clamped round
+        (:attr:`observed`), or a cap cycle / final truncation that the cap this expansion *started* with
+        would not have triggered. This is what the truncation report keys off. The trip-wire alone does
+        not set it: it can fire on a basis that was never going to grow, which withheld nothing.
     """
 
     def __init__(self, basis: Basis, budget_bytes, tighten: bool):
@@ -52,6 +56,8 @@ class MemoryGuard:
         self.capped = bool(np.isfinite(self.threshold))
         self.bound = False
         self.observed = False
+        self.withheld = False
+        self.initial_threshold = self.threshold
         self.warning = None
         self._tripped = False
         self._streak = 0
@@ -61,12 +67,20 @@ class MemoryGuard:
         return self.basis.comm is None or self.basis.comm.rank == 0
 
     def _lower(self, to):
-        """Tighten the cap to ``to`` (never loosen an existing one); returns the previous cap."""
+        """Tighten the cap to ``to`` (never loosen an existing one); returns ``(previous cap, lowered)``.
+
+        ``lowered`` is whether the cap strictly dropped: a cap already at or below ``to`` is only confirmed.
+        """
         previous = self.threshold
         self.threshold = min(float(self.threshold), float(to))
         self.capped = True
         self.basis.truncation_threshold = self.threshold
-        return previous
+        return previous, bool(self.threshold < previous)
+
+    def note_truncation(self, size_before_truncation):
+        """Record a truncation: memory withheld something if the starting cap would not have asked for it."""
+        if size_before_truncation <= self.initial_threshold:
+            self.withheld = True
 
     @staticmethod
     def _was(previous):
@@ -96,10 +110,13 @@ class MemoryGuard:
         )
         self._streak = self._streak + 1 if round_bound else 0
         self.observed = self.observed or round_bound
+        self.withheld = self.withheld or round_bound
         if self.bound or not round_bound or not (memory_cap == 0 or self._streak >= 2):
             return
         self.bound = True
-        previous = self._lower(old_size + memory_cap)
+        previous, lowered = self._lower(old_size + memory_cap)
+        if not lowered:
+            return
         rss_now = sel.get("round_rss_bytes", 0)
         budget = self.budget_bytes
         if sel.get("memory_cap_reason") == "budget":
@@ -156,10 +173,12 @@ class MemoryGuard:
                 kind="gs-memory",
             )
             return
-        # Only `observed` (a reporting flag), never `bound`: whether a look-ahead may still adopt a tighter
-        # cap later is unaffected by this backstop having fired.
-        self.observed = True
-        previous = self._lower(self.basis.size)
+        # Neither `bound` (whether a look-ahead may still adopt a tighter cap later is unaffected by this
+        # backstop having fired) nor `withheld` (that is decided when something is actually truncated, see
+        # `note_truncation`).
+        previous, lowered = self._lower(self.basis.size)
+        if not lowered:
+            return
         emit_memory_warning(
             f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
             f"{format_bytes(budget)} memory budget mid-expansion; tightening {self._was(previous)} to a "
@@ -172,8 +191,8 @@ class MemoryGuard:
 
     @property
     def limited(self):
-        """Whether memory limited the expansion (permanently or only observed)."""
-        return self.bound or self.observed
+        """Whether memory kept something out of the basis."""
+        return self.withheld
 
 
 class CapRefiner:
