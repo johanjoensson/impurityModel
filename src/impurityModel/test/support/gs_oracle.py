@@ -162,6 +162,6 @@ def check_model(h_op, imp, bath, N0, n_orb, *, comm=None, tau=0.05, spectra=None
     ex = spectra[n_found]
     win = ex[ex <= ex[0] + energy_cut(tau) + 1e-6]
     whole = ex[ex <= win[-1] + 1e-6]  # the straddling degenerate group kept whole
-    if not any(len(c) == len(es) and np.allclose(c, es, atol=1e-6) for c in (win, whole)):
+    if not any(len(c) == len(es) and np.allclose(c, es, atol=1e-6, rtol=0) for c in (win, whole)):
         msgs.append(f"thermal window: exact {np.round(win - ex[0], 4)} vs got {np.round(es - es[0], 4)}")
     return msgs

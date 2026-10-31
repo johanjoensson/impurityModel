@@ -194,7 +194,7 @@ class SectorSolve(NamedTuple):
 
 
 def widen_by_single_excitations(basis, *, max_seed):
-    """``basis`` widened by every single excitation ``c_i^+ c_j |seed>`` (collective), or ``None``.
+    """``(wide basis or None, too_big)``: ``basis`` widened by every single excitation ``c_i^+ c_j |seed>`` (collective).
 
     The seed of a closed shell (d0, d10, one determinant) spans one symmetry class of ``H``, and the
     ground state can sit in another one. ``H|seed>`` cannot help: ``H`` conserves what defines the class,
@@ -205,8 +205,9 @@ def widen_by_single_excitations(basis, *, max_seed):
 
     The excitations are generated on rank 0 under the seed's own restrictions and broadcast;
     ``Basis.add_states`` routes each determinant to its owner and drops duplicates, so the replicated
-    list is safe on a rank that holds none of the seed. ``None`` when there is nothing to add or the
-    widened seed would be above ``max_seed`` (no plan can be made on it): the caller keeps the seed it has.
+    list is safe on a rank that holds none of the seed. ``(None, False)`` when there is nothing to add;
+    ``(None, True)`` when the widened seed would be above ``max_seed`` (no plan can be made on it): the
+    caller keeps the seed it has and must not call the sector certified.
     """
     comm = basis.comm if basis.is_distributed else None
     seed = gather_seed(basis)
@@ -217,15 +218,20 @@ def widen_by_single_excitations(basis, *, max_seed):
         excite.set_restrictions(basis.restrictions)
         excite.set_weighted_restrictions(basis.weighted_restrictions)
         known = set(seed)
-        shell = sorted({key for det in seed for key in seed_images(excite, det)} - known)
+        found = set()
+        for det in seed:
+            found.update(key for key in seed_images(excite, det) if key not in known)
+            if len(seed) + len(found) > max_seed:
+                break  # decided on rank 0: the rest of the shell is never built or broadcast
+        shell = False if len(seed) + len(found) > max_seed else sorted(found)
     if comm is not None:
         shell = comm.bcast(shell, root=0)
+    if shell is False:
+        solver_trace.note("widen_skipped", n_seed=len(seed), max_seed=max_seed)
+        return None, True
     if not shell:
-        return None
-    if len(seed) + len(shell) > max_seed:
-        solver_trace.note("widen_skipped", n_seed=len(seed), n_shell=len(shell))
-        return None
-    return basis.clone(initial_basis=[SlaterDeterminant(det) for det in seed + shell])
+        return None, False
+    return basis.clone(initial_basis=[SlaterDeterminant(det) for det in seed + shell]), False
 
 
 def solve_sector(
@@ -359,6 +365,7 @@ def solve_sector(
 
             window = 0.0 if isinstance(manifold, Lowest) else float(manifold.max_energy)
             store_key, certification, only, recorded = acquire(basis)
+            skipped = False
             if certification is not None and len(certification.jobs) <= 1 and not recorded:
                 # One class on the seed does not make one class in the sector: a closed-shell seed (d0,
                 # d10, a single determinant) spans one symmetry class of H, and the ground state can
@@ -366,11 +373,21 @@ def solve_sector(
                 # H-invariant span that held 2e-30 of the exact ground state). So the seed is widened,
                 # once, by its single excitations, and the plan is made again on it: the added
                 # determinants span the other classes, and each is expanded.
-                wide = widen_by_single_excitations(basis, max_seed=max_seed)
+                wide, skipped = widen_by_single_excitations(basis, max_seed=max_seed)
+                if skipped:
+                    # The trapped-class risk stays: say so, as for a seed too large to plan.
+                    if store is not None:
+                        store.uncertified.add(store_key)
+                    if verbose and (comm is None or comm.rank == 0):
+                        print(
+                            f"  sector {store_key[0]}: the seed's single excitations exceed "
+                            f"GS_CERTIFY_MAX_SEED = {max_seed:,}; solved by one expansion, not certified",
+                            flush=True,
+                        )
                 if wide is not None:
                     basis, solver = wide, CIPSISolver(wide)
                     store_key, certification, only, recorded = acquire(basis)
-            if certification is not None and len(certification.jobs) <= 1 and store is not None:
+            if certification is not None and len(certification.jobs) <= 1 and store is not None and not skipped:
                 # Still one class, on the widened seed where there was a shell to widen by: certified
                 # as it stands. No verdicts, so no shift ever skips its expansion.
                 store.record(store_key, certification, shift, ())
