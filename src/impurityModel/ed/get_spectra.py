@@ -11,7 +11,7 @@ import h5py
 import numpy as np
 
 # Local stuff
-from impurityModel.ed import spectra
+from impurityModel.ed import config, spectra
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import calc_gs
@@ -259,6 +259,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         Printing level (rank-uniform; printing itself is gated on rank downstream).
         ``None`` -> ``V_RESULT`` (0), the terse default.
     """
+    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     rank = comm.rank if comm is not None else 0
     if verbosity is None:
         verbosity = V_RESULT

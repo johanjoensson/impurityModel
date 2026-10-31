@@ -47,7 +47,7 @@ The results are written to a ``chi.h5`` file (one group per operator with ``real
 
 import numpy as np
 
-from impurityModel.ed import spectra
+from impurityModel.ed import config, spectra
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
@@ -228,6 +228,7 @@ def calc_susceptibility(
         chi(w), "matsubara": chi(i nu) | None, "curie_coefficient": C, "expectation":
         <A_+>_th}}, "skipped": {name: reason}}``. ``None`` on other ranks.
     """
+    config.assert_uniform(basis.comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
     skipped, notes = {}, {}
@@ -452,6 +453,7 @@ def calc_susceptibility_workflow(
     """
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
+    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.gs_connectivity import solver_basis_connectivity
     from impurityModel.ed.memory_estimate import resolve_cap_policy

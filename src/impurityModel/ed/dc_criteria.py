@@ -967,6 +967,7 @@ def fixed_peak_dc(
         ``allow_charge_state_change`` is ``False`` -- a different failure mode (the target *was*
         reached, on the wrong sector), raised directly here rather than by the shared search.
     """
+    config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
     with dc_record.recording(
         "peak", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:
@@ -1551,6 +1552,7 @@ def fixed_gap_dc(
         If the converged ``mu`` centres the gap on a non-nominal charge state and
         ``allow_charge_state_change`` is ``False``.
     """
+    config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
     with dc_record.recording(
         "gap", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:
@@ -2124,6 +2126,7 @@ def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosit
         Achieved thermal impurity occupation, the lowest eigenvalue, and the walk's winning
         sector total at this ``mu`` (see :func:`_evaluate_occupation_and_energy_at_mu`).
     """
+    config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
     ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
@@ -2229,6 +2232,7 @@ def fixed_occupation_dc(
         on a charge-sector plateau the observable steps across rather than crosses (B3: this is a
         modelling verdict -- "no solution here" -- not a tolerable miss to approximate silently).
     """
+    config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
     with dc_record.recording(
         "occupation", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:

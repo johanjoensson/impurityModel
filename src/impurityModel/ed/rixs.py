@@ -864,6 +864,7 @@ def calc_map(
         ``gs[in, out, wIn, wLoss]`` (thermally averaged) on global rank 0 and in the serial
         path; ``None`` on other ranks.
     """
+    config.assert_uniform(basis.comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     n_in = len(tOpsIn)
     n_out = len(tOpsOut)
     solver_stats = _new_rixs_solver_stats()
@@ -1008,6 +1009,7 @@ def calc_tensor_map(
     ndarray
         ``C[in, out, in', out', wIn, wLoss]`` on rank 0, thermally averaged; empty elsewhere.
     """
+    config.assert_uniform(basis.comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     n_in = len(in_component_ops)
     n_out = len(out_component_ops)
     n_pairs = n_in * n_out

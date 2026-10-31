@@ -1082,6 +1082,7 @@ def solve_ground_state(
     GroundState
         ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
+    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     if plan_store is None:
         plan_store = SectorPlanStore()
     search = find_ground_state_sector(
