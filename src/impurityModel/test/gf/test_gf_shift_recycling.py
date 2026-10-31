@@ -17,6 +17,8 @@ residual bookkeeping the resume/convergence loop actually relies on).
 from itertools import pairwise
 
 import numpy as np
+import pytest
+from mpi4py import MPI
 
 from impurityModel.ed import gf_shift_recycling, rixs
 from impurityModel.ed.gf_shift_recycling import _shifted_tridiag_solutions
@@ -167,3 +169,19 @@ def test_an_explicit_override_still_wins():
 
 def test_the_live_cache_count_is_one_per_eigenstate_plus_r2():
     assert rixs._n_live_sector_caches([object()] * 7) == 8
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs two ranks to disagree")
+def test_the_recycle_bound_is_the_same_on_every_rank_even_with_a_rank_dependent_node_read(monkeypatch):
+    """M5: the bound used to come from a node-local read per rank, so one rank could decline the recurrence
+    while the others entered it. With a comm the probe is a min-reduction, whatever each rank reads."""
+    from impurityModel.ed import memory_estimate
+
+    comm = MPI.COMM_WORLD
+    monkeypatch.delenv("GF_KRYLOV_RECYCLE_MAX_BYTES", raising=False)
+    monkeypatch.setattr(memory_estimate, "_node_available_bytes", lambda: (comm.rank + 1) * 4 * 1024**3)
+    bound = gf_shift_recycling._gf_krylov_recycle_max_bytes(comm)
+    assert len(set(comm.allgather(bound))) == 1
+    # ...and the old no-comm read really did differ, so this test can tell the two apart.
+    assert len(set(comm.allgather(gf_shift_recycling._gf_krylov_recycle_max_bytes()))) > 1

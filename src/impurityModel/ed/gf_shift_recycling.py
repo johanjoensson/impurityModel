@@ -29,7 +29,7 @@ from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
 
 
-def _sector_dense_max(n_live_caches=1):
+def _sector_dense_max(n_live_caches=1, comm=None):
     """Largest sector size the spectral cache may densify (:data:`config.GF_SECTOR_DENSE_MAX`).
 
     Building one cache holds ~3 dense ``(N, N)`` complex arrays (H, the eigenvector matrix and
@@ -52,11 +52,14 @@ def _sector_dense_max(n_live_caches=1):
 
     See ``doc/plans/dc_smo_memory.md``, round 9.
     """
+    # Probed before the override is consulted: with a ``comm`` the probe is collective, and a knob read
+    # from each rank's own environment must never decide whether a rank joins it.
+    available = available_bytes_per_rank(comm)
     override = config.GF_SECTOR_DENSE_MAX.get()
     if override is not None:
         return override
     n_live = max(1, int(n_live_caches))
-    return int(np.sqrt(0.25 * available_bytes_per_rank() / ((n_live + 2) * 16)))
+    return int(np.sqrt(0.25 * available / ((n_live + 2) * 16)))
 
 
 def _sector_cache_dir():
@@ -141,7 +144,7 @@ class SectorResolventCache:
             return False
         if self._covers(seeds):
             return True
-        bound = _sector_dense_max(self._n_live_caches)
+        bound = _sector_dense_max(self._n_live_caches, basis.comm)
         self._expand_to_closure(basis, hOp, seeds, slaterWeightMin, size_bound=bound)
         if len(basis) > bound:
             self._declined = True
@@ -266,17 +269,23 @@ class SectorResolventCache:
         return out
 
 
-def _gf_krylov_recycle_max_bytes():
+def _gf_krylov_recycle_max_bytes(comm=None):
     """Per-rank byte cap on a recycled Krylov store (:data:`config.GF_KRYLOV_RECYCLE_MAX_BYTES`).
 
     The retained Krylov basis is :class:`KrylovShiftedResolvent`'s dominant allocation;
     unset, it is capped at a quarter of the available per-rank memory, mirroring
     :func:`_sector_dense_max`'s budget for the dense spectral cache.
+
+    **Collective on** ``comm`` when it has several ranks (:func:`available_bytes_per_rank` splits a
+    shared-memory communicator and min-reduces), so every rank gets the same bound -- a node-local
+    read gave each rank its own, and a rank that declined left the others inside the recurrence.
+    Pass the *parent* communicator, not a colour's: a sub-communicator undercounts the ranks per node.
     """
+    available = available_bytes_per_rank(comm)
     override = config.GF_KRYLOV_RECYCLE_MAX_BYTES.get()
     if override is not None:
         return override
-    return available_bytes_per_rank() // 4
+    return available // 4
 
 
 def _shifted_tridiag_solutions(alphas, betas, block_widths, b0, zs):
@@ -532,7 +541,7 @@ class KrylovShiftedResolvent:
     def __init__(self, reort=True):
         self._reort = bool(reort)
 
-    def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False, cap_info=None):
+    def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False, cap_info=None, max_bytes=None):
         """Solutions ``[x_k(z) for k] for z in zs`` as ``ManyBodyState`` lists, or ``None``.
 
         ``None`` means declined -- the memory bound would be exceeded before the shifted
@@ -550,6 +559,10 @@ class KrylovShiftedResolvent:
         ``_CappedBasisProxy`` only under a finite cap, and only the proxy counts the
         determinants the matvec discovers -- ``basis.size`` is left at the right-hand side's
         support, so reading it back would report the seed, not the Krylov space.
+
+        ``max_bytes`` is the per-rank cap on the retained store, identical on every rank. When ``None`` it is
+        probed on ``basis.comm``; a caller whose ``basis.comm`` is a colour of a larger communicator passes
+        the bound it computed on the parent (see :func:`_gf_krylov_recycle_max_bytes`).
         """
         if cap_info is not None:
             # Every key present on every return path, including the early declines below.
@@ -560,7 +573,8 @@ class KrylovShiftedResolvent:
         rank = comm.rank if mpi else 0
         n_rhs = len(rhs)
         zs = np.asarray(zs, dtype=complex)
-        max_bytes = _gf_krylov_recycle_max_bytes()
+        if max_bytes is None:
+            max_bytes = _gf_krylov_recycle_max_bytes(comm)
         if max_bytes == 0:
             return None
         if n_rhs == 0 or len(zs) == 0:

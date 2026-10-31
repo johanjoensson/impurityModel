@@ -20,7 +20,7 @@ import numpy as np
 from mpi4py import MPI
 
 import impurityModel.ed.greens_function as gf
-from impurityModel.ed import config, gf_solvers
+from impurityModel.ed import config, gf_shift_recycling, gf_solvers
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import (
     build_excited_restrictions,
@@ -297,7 +297,7 @@ class _R1SolverChain:
     it serves a point, so :func:`_report_rixs_solver_stats` can summarize the whole run.
     """
 
-    def __init__(self, r1_cache, eigenstate, counters=None, freeze=False):
+    def __init__(self, r1_cache, eigenstate, counters=None, freeze=False, recycle_max_bytes=None):
         self.r1_cache = r1_cache
         # the support freeze for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
         # once a solve admits nothing beyond its starting support the remaining points solve on the
@@ -306,6 +306,9 @@ class _R1SolverChain:
         self._frozen = None
         self.eigenstate = eigenstate  # for the unconverged-fallback warning message only
         self.counters = counters
+        # Per-rank byte cap of the recycled Krylov store, computed once by the caller on the PARENT communicator
+        # (this chain runs on a colour, which undercounts the ranks per node); ``None`` probes on the basis comm.
+        self._recycle_max_bytes = recycle_max_bytes
         self._recycled = None  # in-chunk wIn index -> shift-recycled solution
         self._recycle_declined = r1_cache is None
         # Largest intermediate-resolvent support this chain ran on, and whether any solve's
@@ -356,6 +359,7 @@ class _R1SolverChain:
                     atol=_RIXS_R1_ATOL,
                     verbose=verbose,
                     cap_info=recycle_cap_info,
+                    max_bytes=self._recycle_max_bytes,
                 )
                 if sols is not None:
                     # One recurrence serves every remaining shift of the chunk, so its support
@@ -600,6 +604,9 @@ def _rixs_map_flat(
     Z = thermal.Z
     comm = basis.comm
     n_win = len(wIns)
+    # Collective on the parent communicator, here, before any split: every colour's recycler gets this same
+    # bound instead of probing node-local memory on its own (which differed by rank).
+    recycle_max_bytes = gf_shift_recycling._gf_krylov_recycle_max_bytes(comm)
 
     # Conserved-charge sector of the core-excited intermediate state: confines the resolvent solve
     # (R1). Computed per eigenstate on the full communicator (collective, lock-step) before the
@@ -685,7 +692,11 @@ def _rixs_map_flat(
             # at the end of the unit.
             stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
             chain = _R1SolverChain(
-                r1_cache, eigenstate=e, counters=solver_stats, freeze=gf_solvers._BICGSTAB_CLOSURE_FREEZE
+                r1_cache,
+                eigenstate=e,
+                counters=solver_stats,
+                freeze=gf_solvers._BICGSTAB_CLOSURE_FREEZE,
+                recycle_max_bytes=recycle_max_bytes,
             )
             out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
             wins = wIns[w_chunk]
