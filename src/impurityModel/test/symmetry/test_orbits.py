@@ -85,3 +85,87 @@ def test_a_restriction_splitting_a_spin_pair_is_not_pair_closed():
         pairs, SimpleNamespace(restrictions={frozenset({0, 2}): (0, 1)}, weighted_restrictions=None)
     )
     assert not _pair_closed(pairs, SimpleNamespace(restrictions=None, weighted_restrictions=[({0: 1, 1: 2}, (0, 3))]))
+
+
+# -- the collective primitives ---------------------------------------------------------------------------
+from itertools import combinations  # noqa: E402
+
+from mpi4py import MPI  # noqa: E402
+
+from impurityModel.ed.manybody_basis import Basis  # noqa: E402
+from impurityModel.ed.orbits import _keys_of  # noqa: E402
+
+N_ORB = 8
+PAIRS4 = [(0, 1), (2, 3), (4, 5), (6, 7)]
+
+
+def _basis(comm):
+    """A basis holding only the all-empty determinant (outside every candidate orbit)."""
+    return Basis(
+        impurity_orbitals={0: [list(range(N_ORB))]}, bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=[bytes(1)], verbose=False, comm=comm,
+    )  # fmt: skip
+
+
+def _orbits4(two_sz_max=0):
+    group = _group_closure([(1, 0, 2, 3), (0, 2, 1, 3), (0, 1, 3, 2)], 4)  # S_4 on the four pairs
+    return Orbits(N_ORB, 1, group, PAIRS4, two_sz_max)
+
+
+def _two_electron_dets():
+    rows = []
+    for occ in combinations(range(N_ORB), 2):
+        bits = np.zeros(N_ORB, dtype=np.uint8)
+        bits[list(occ)] = 1
+        rows.append(bits)
+    return np.array(rows)
+
+
+def _select(comm, max_new):
+    """Every two-electron determinant is a candidate, each rank "finding" a different share of it; scored by
+    the pattern alone (a doubly occupied pair scores less), so all members of an orbit tie."""
+    basis = _basis(comm)
+    orbits = _orbits4()
+    rank, size = (0, 1) if comm is None else (comm.rank, comm.size)
+    mine = _two_electron_dets()[rank::size]
+    scores = 1.0 / (1.0 + (orbits.pattern(mine) == 2).sum(axis=1))
+    new, _stats = orbits.select_new(basis, _keys_of(mine, 1), scores, np.ones(len(mine), dtype=bool), max_new)
+    keys = sorted(bytes(k.to_bytearray())[:1] for k in new)
+    return sorted(keys if comm is None else [k for part in comm.allgather(keys) for k in part])
+
+
+def _as_bits(keys):
+    if not keys:
+        return np.zeros((0, N_ORB), dtype=np.uint8)
+    return np.unpackbits(np.array([list(k) for k in keys], dtype=np.uint8), axis=1)[:, :N_ORB]
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("max_new", [None, 8, 12, 28])
+def test_the_selected_orbits_are_whole_and_the_same_set_at_every_rank_count(max_new):
+    comm = MPI.COMM_WORLD
+    selected = _select(comm, max_new)
+    assert selected == _select(None, max_new)
+    orbits = _orbits4()
+    bits = _as_bits(selected)
+    rep, _n = orbits.canonical(orbits.pattern(bits))
+    classes = np.unique(rep, axis=0)
+    # whole: the selection is exactly the union of the full orbits of the patterns it touches
+    assert {tuple(b) for b in bits} == {tuple(b) for b in orbits.members(classes)} if len(bits) else True
+    if max_new is not None:
+        assert len(selected) <= max_new
+    if max_new is None:
+        assert len(selected) == 16  # the 4 doubly occupied pairs and the 12 S_z = 0 pairs of singles (M = 0)
+
+
+@pytest.mark.mpi
+def test_a_budget_smaller_than_the_best_orbit_admits_nothing_and_a_tie_group_is_never_split():
+    # patterns [1,1,0,0] (24 members: 6 pair choices x 4 spin choices with M=0 -> 2 of 4... ) tie; see sizes
+    orbits = _orbits4()
+    rep, n_images = orbits.canonical(orbits.pattern(_two_electron_dets()))
+    sizes = {tuple(r): int(s) for r, s in zip(rep, orbits.size(rep, n_images))}
+    smallest = min(sizes.values())
+    assert _select(MPI.COMM_WORLD, smallest - 1) == []
+    # a budget between "one orbit" and "two tied orbits": either all of a tie group or none of it
+    selected = _select(MPI.COMM_WORLD, smallest)
+    assert len(selected) in {0, smallest, *sizes.values()} or len(selected) <= smallest
