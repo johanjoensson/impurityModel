@@ -456,3 +456,17 @@ def test_a_clamped_round_withholds(monkeypatch):
     guard = MemoryGuard(solver.basis, 1 << 30, tighten=True)
     guard.after_selection({"memory_admit_cap": 3, "n_candidates": 10}, solver.basis.size, None)
     assert guard.withheld and guard.limited
+
+
+def test_a_trip_wire_that_cuts_deeper_than_the_starting_cap_withholds():
+    """The lowered cap is below the starting one: a truncation to it withheld memory's share, even when the
+    basis is also over the starting cap (the lowering was within ~10% of it)."""
+    from impurityModel.ed.cipsi_budget import MemoryGuard
+
+    basis, _ = _make_solver(None, truncation_threshold=1000).basis, None
+    guard = MemoryGuard(basis, 1, tighten=True)
+    guard.note_truncation(1050)  # at the starting cap: the user's cap would have cut here too
+    assert not guard.withheld
+    guard._lower(990)
+    guard.note_truncation(1050)
+    assert guard.withheld

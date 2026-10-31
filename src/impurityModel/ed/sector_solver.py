@@ -959,7 +959,17 @@ def _record_union_cut(solver, union_cut, cap, retained):
         conv["manifold_check"] = dict(check)
     if union_cut is None:
         return
-    report = dict(solver.truncation_report or {"cycles": 0, "memory_bound": False})
+    report = dict(
+        solver.truncation_report
+        or {
+            "cycles": 0,
+            "memory_bound": False,
+            "discarded_de2_mass": 0.0,
+            "discarded_de2_mass_total": 0.0,
+            "n_candidates_last": 0,
+            "residual_pt2": float(conv.get("residual_pt2") or 0.0),
+        }
+    )
     report.update(cap_hit=True, union_cut=dict(union_cut), retained=int(retained))
     report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
     solver.truncation_report = report
@@ -1082,11 +1092,17 @@ def solve_certified(
             if later:
                 cut.append(f"{len(later)} class(es) admitted by the margin alone not added: the window did not fit")
         else:
-            for pos, i in enumerate(later):
-                merged, whole = _add_units_within_cap(merged, [kept[i]], rows_of, cap, truncate=False)
+            # A source goes in with its mirrors or not at all: an asymmetric union breaks SYM.
+            sources = [i for i in later if kept.derived[i] is None]
+            for pos, i in enumerate(sources):
+                family = [i] + [j for j in later if kept.derived[j] is not None and kept.derived[j][0] == i]
+                merged, whole = _add_units_within_cap(merged, [kept[j] for j in family], rows_of, cap, truncate=False)
                 if not whole:
-                    union_cut["later_left_out"] = len(later) - pos
-                    cut.append(f"{len(later) - pos} later class(es) left out")
+                    left = sum(
+                        1 + sum(1 for j in later if kept.derived[j] and kept.derived[j][0] == k) for k in sources[pos:]
+                    )
+                    union_cut["later_left_out"] = left
+                    cut.append(f"{left} later class(es) left out")
                     break
         if cut and (basis.comm is None or basis.comm.rank == 0) and verbose:
             print(
@@ -1108,7 +1124,8 @@ def solve_certified(
         phase.dets = merged.size
     found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
     solver.manifold_check = {"found": found, "expected": expected}
-    in_window, in_window_expected = window_deficit(verdicts, es, float(manifold.max_energy), expected)
+    es_all = es if basis.comm is None else basis.comm.bcast(es, root=0)
+    in_window, in_window_expected = window_deficit(verdicts, es_all, float(manifold.max_energy), expected)
     solver.manifold_check.update(
         window_found=in_window, window_expected=in_window_expected, window_complete=in_window >= in_window_expected
     )

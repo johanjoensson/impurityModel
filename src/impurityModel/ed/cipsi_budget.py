@@ -78,8 +78,8 @@ class MemoryGuard:
         return previous, bool(self.threshold < previous)
 
     def note_truncation(self, size_before_truncation):
-        """Record a truncation: memory withheld something if the starting cap would not have asked for it."""
-        if size_before_truncation <= self.initial_threshold:
+        """Record a truncation: memory withheld something if it truncates to a cap below the starting one."""
+        if self.threshold < self.initial_threshold:
             self.withheld = True
 
     @staticmethod

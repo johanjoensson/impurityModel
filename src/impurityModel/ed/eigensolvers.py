@@ -437,8 +437,9 @@ def solve_window(
             cols.append(random_block(hashes, n_random - 1, 0))
         return np.ascontiguousarray(np.hstack(cols))
 
-    def krylov_depth(width, wanted):
-        return gs_krylov_blocks(n_global, width, wanted)
+    def krylov_depth(width, wanted, n_locked):
+        # The room is the complement of the locked set: sizing on the whole space over-asks a fallback.
+        return gs_krylov_blocks(n_global - n_locked, width, wanted)
 
     def run(psi0, wanted, locked=None, window=None):
         return trlm(
@@ -446,7 +447,7 @@ def solve_window(
             h_op,
             comm,
             num_wanted=wanted,
-            max_subspace_blocks=krylov_depth(psi0.shape[1], wanted),
+            max_subspace_blocks=krylov_depth(psi0.shape[1], wanted, 0 if locked is None else locked.shape[1]),
             tol=tol,
             max_restarts=max_restarts,
             verbose=verbose,
