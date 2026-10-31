@@ -116,6 +116,11 @@ import Python modules at runtime.
   MPICH 4.2.2 passes every cell, so this reproduces on CI and on no local machine.
   Reduce into the destination buffer instead — it is both safe and one copy cheaper
   (`DistributedSparseMatrix.pyx`'s `apply`, `_block_ops.pxi`'s `block_apply`).
+- Env knobs are re-read on each rank, so a knob that differs between ranks steers ranks into different
+  collectives. Every public entry calls `config.assert_uniform(comm)` on the comm its collectives run on
+  (it raises on every rank, naming the knob); a new entry must too, and a knob that may legitimately differ
+  per rank is declared `uniform=False`. Never let a rank-local knob or probe decide whether a rank joins a
+  collective (`expand_memory_budget` broadcasts its fraction; memory probes take a comm).
 - Empty-rank edge cases (a rank owning zero determinants) have bitten before — keep
   collective calls unconditional and buffer dtypes fixed.
 
