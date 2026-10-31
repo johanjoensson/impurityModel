@@ -822,3 +822,51 @@ def test_a_closed_shell_seed_whose_widening_is_too_big_is_counted_as_uncertified
         truncation_threshold=np.inf, plan_store=store,
     )  # fmt: skip
     assert len(store.uncertified) == 1 and not store.records
+
+
+def _unit_test_basis(n_orb=64):
+    from impurityModel.ed.manybody_basis import Basis
+
+    def single(o):
+        b = bytearray(n_orb // 8)
+        b[o // 8] |= 1 << (7 - o % 8)
+        return bytes(b)
+
+    seed = [single(o) for o in range(2)]
+    basis = Basis(
+        impurity_orbitals={0: [list(range(n_orb))]}, bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=seed, verbose=False, comm=None,
+    )  # fmt: skip
+    return basis, single
+
+
+def test_a_cut_gives_every_in_window_unit_a_share_and_a_mirror_is_the_image_of_its_sources(monkeypatch):
+    """Under a binding cap each unit keeps something (none is starved to feed another), and a mirror is
+    the image of the share its source kept -- an independent cut of the mirror would keep other keys."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+    from impurityModel.ed.sector_solver import _add_units_within_cap
+
+    merged, single = _unit_test_basis()
+
+    def dets(lo, hi):
+        return ManyBodyState.from_keys([SlaterDeterminant.from_bytes(single(o)) for o in range(lo, hi)])
+
+    a, b = dets(2, 22), dets(22, 42)
+    shift = 40
+
+    def image(share):
+        orbitals = [next(i for i in range(64) if det.to_bytearray()[i // 8] >> (7 - i % 8) & 1) for det in share.keys()]
+        return ManyBodyState.from_keys([SlaterDeterminant.from_bytes(single((o + shift) % 64)) for o in orbitals])
+
+    mirror = image(a)
+    units = [a, b, mirror]
+    cap = merged.size + 30  # 60 do not fit
+    out, whole = _add_units_within_cap(
+        merged, units, lambda d: [], cap, truncate=True, derived=[None, None, (0, image)]
+    )  # fmt: skip
+    assert not whole and out.size <= cap
+    kept = set(out.local_basis)
+    kept_a, kept_b = [d for d in a.keys() if d in kept], [d for d in b.keys() if d in kept]
+    assert kept_a and kept_b, "a unit was starved"
+    kept_mirror = {d for d in mirror.keys() if d in kept}
+    assert kept_mirror == set(image(ManyBodyState.from_keys(kept_a)).keys())

@@ -611,17 +611,30 @@ def certify_sector(
         # image follows its source, where the mirror's own (degenerate) class would have sorted, so the
         # union's cap drops the same classes with and without the symmetry.
         n_orb = basis.num_spin_orbitals
+        order = _thermal_union_order(winner, inside, mirrored)
         kept = [
             keys[source] if mirror is None else _image_keys(keys[source], plan.images[mirror], n_orb, basis.n_bytes)
-            for source, mirror in _thermal_union_order(winner, inside, mirrored)
+            for source, mirror in order
         ]
         win_v = verdict_of[winner]
+        position = {source: i for i, (source, mirror) in enumerate(order) if mirror is None}
+
+        def image_of_source(sp):
+            return lambda share: _image_keys(share, sp, n_orb, basis.n_bytes)
+
         kept = KeptClasses(
             kept,
             [
                 abs(verdict_of[source].energy - win_v.energy)
                 <= _energy_error(verdict_of[source]) + _energy_error(win_v)
-                for source, _mirror in _thermal_union_order(winner, inside, mirrored)
+                for source, _mirror in order
+            ],
+            # In the window by the class's *own* error bar, not through the margin that the largest residual
+            # of any class inflates: these are never dropped, only cut to a common share.
+            [verdict_of[source].energy - floor <= within + _energy_error(verdict_of[source]) for source, _m in order],
+            [
+                None if mirror is None else (position[source], image_of_source(plan.images[mirror]))
+                for source, mirror in order
             ],
         )
         keys.clear()
@@ -641,9 +654,15 @@ class KeptClasses(list):
     rather than drop.
     """
 
-    def __init__(self, classes=(), at_winning_level=()):
+    def __init__(self, classes=(), at_winning_level=(), in_window=(), derived=()):
         super().__init__(classes)
         self.at_winning_level = list(at_winning_level)
+        #: Whether class ``i`` is inside the window by its own error bar (a class admitted only through the
+        #: window's inflated margin is not).
+        self.in_window = list(in_window) or [True] * len(self)
+        #: ``None`` for a class expanded itself; for a mirror, ``(position of its source, share -> image)``: a
+        #: mirror is the image of whatever share of its source is kept, never cut on its own.
+        self.derived = list(derived) or [None] * len(self)
 
 
 def _group_size(group, comm):
@@ -710,7 +729,7 @@ def _grow_with(merged, groups):
     return trial
 
 
-def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=None):
+def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=None, derived=None):
     """Add classes and their partner rows to ``merged`` within ``cap``: ``(merged, whole)``. Collective.
 
     ``units`` are class key sets added together. Decided on the exact, replicated size of the union,
@@ -719,8 +738,10 @@ def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=N
     largest that fits together with the partner rows of the cut classes -- partners are regenerated from
     the cut class, so a multiplet keeps its shape, and no degenerate class is starved to feed another.
     The cut keeps a class's determinants by ``importance`` (a determinant-to-weight map, e.g. the
-    winner's amplitudes; the first unit only) and otherwise by hash.
+    winner's amplitudes; the first unit only) and otherwise by hash. ``derived[i]`` is ``None`` or
+    ``(j, image)``: unit ``i`` is then ``image`` of whatever unit ``j`` keeps, not cut on its own.
     """
+    derived = derived or [None] * len(units)
     comm = merged.comm
     groups = [group for keys in units for group in _unit_groups(keys, rows_of, comm)]
     if cap is None:
@@ -737,16 +758,21 @@ def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=N
     if not truncate:
         return merged, False
     scores = [
-        _scores(keys.keys(), importance if importance is not None and i == 0 else None) for i, keys in enumerate(units)
+        _scores(keys.keys(), importance if importance is not None and i == 0 else None) if derived[i] is None else None
+        for i, keys in enumerate(units)
     ]
     best, lo, hi = merged, 0.0, 1.0
     for _ in range(_FIT_BISECTIONS):
         mid = 0.5 * (lo + hi)
-        groups = []
-        for keys, score in zip(units, scores):
-            cut = _score_cut(score, mid, comm)
-            share = [det for det, sc in zip(keys.keys(), score) if sc <= cut]
-            groups += _unit_groups(ManyBodyState.from_keys(share), rows_of, comm)
+        groups, shares = [], {}
+        for i, (keys, score) in enumerate(zip(units, scores)):
+            if derived[i] is not None:
+                source, image = derived[i]
+                shares[i] = image(shares[source])
+            else:
+                cut = _score_cut(score, mid, comm)
+                shares[i] = ManyBodyState.from_keys([det for det, sc in zip(keys.keys(), score) if sc <= cut])
+            groups += _unit_groups(shares[i], rows_of, comm)
         trial = _grow_with(merged, groups)
         if trial.size <= cap:
             best, lo = trial, mid
@@ -1000,11 +1026,20 @@ def solve_certified(
         importance = _importance(psis)
         # The classes at the winning energy make the level the window exists to hold: they go in
         # together and are cut together. Every later class goes in whole or stops the union.
-        level = [i for i, at_level in enumerate(kept.at_winning_level) if at_level]
+        level = [i for i, own in enumerate(kept.in_window) if own or kept.at_winning_level[i]]
+        local = {i: n for n, i in enumerate(level)}
         merged, whole = _add_units_within_cap(
-            merged, [kept[i] for i in level], rows_of, cap, truncate=True, importance=importance
+            merged,
+            [kept[i] for i in level],
+            rows_of,
+            cap,
+            truncate=True,
+            importance=importance,
+            derived=[
+                None if kept.derived[i] is None else (local[kept.derived[i][0]], kept.derived[i][1]) for i in level
+            ],
         )
-        later = [i for i in range(len(kept)) if i not in level]
+        later = [i for i in range(len(kept)) if i not in local]
         union_cut = {
             "level_cut": not whole,
             "level_classes": len(level),
@@ -1012,10 +1047,10 @@ def solve_certified(
             "later_classes": len(later),
         }
         if not whole:
-            cut.append(f"the {len(level)} class(es) at the winning energy were cut short")
+            cut.append(f"the {len(level)} class(es) inside the window were cut to a common share")
             union_cut["later_left_out"] = len(later)
             if later:
-                cut.append(f"{len(later)} later class(es) not added: the level itself did not fit")
+                cut.append(f"{len(later)} class(es) admitted by the margin alone not added: the window did not fit")
         else:
             for pos, i in enumerate(later):
                 merged, whole = _add_units_within_cap(merged, [kept[i]], rows_of, cap, truncate=False)
