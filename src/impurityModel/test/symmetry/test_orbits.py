@@ -93,7 +93,7 @@ from itertools import combinations  # noqa: E402
 from mpi4py import MPI  # noqa: E402
 
 from impurityModel.ed.manybody_basis import Basis  # noqa: E402
-from impurityModel.ed.orbits import _keys_of  # noqa: E402
+from impurityModel.ed.orbits import _bits, _keys_of  # noqa: E402
 
 N_ORB = 8
 PAIRS4 = [(0, 1), (2, 3), (4, 5), (6, 7)]
@@ -201,3 +201,29 @@ def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_
     if comm is None:  # how a tie splits depends on the rank count: the control is the serial run
         split = np.sort(np.real(_capped_cubic_d7(monkeypatch, cap, False).es))[:4]
         assert np.ptp(split) > 1e-8, "per-determinant selection no longer splits the quartet: the test lost its teeth"
+
+
+@pytest.mark.parametrize("cap", [200, 230])
+def test_the_thermal_union_under_a_cap_is_made_of_whole_orbits(monkeypatch, cap):
+    """The basis the window solve starts on (seed and class union, cut to the cap) holds every member of every
+    orbit it touches -- a cut that took part of one would split the degenerate multiplet before the solve."""
+    from impurityModel.ed import sector_solver
+
+    seen = {}
+    real = sector_solver.CIPSISolver
+
+    class Spy(real):
+        def expand(self, h_op, manifold, **kwargs):
+            seen["dets"] = list(self.basis.local_basis)
+            seen["orbits"] = self.orbits
+            return super().expand(h_op, manifold, **kwargs)
+
+    monkeypatch.setattr(sector_solver, "CIPSISolver", Spy)
+    _capped_cubic_d7(monkeypatch, cap, True)
+    orbits, dets = seen["orbits"], seen["dets"]
+    assert orbits is not None
+    bits = orbits.pattern(_bits(dets, orbits.n_orb))
+    rep, _n = orbits.canonical(bits)
+    members = {tuple(b) for b in orbits.members(np.unique(rep, axis=0))}
+    held = {tuple(b) for b in _bits(dets, orbits.n_orb)}
+    assert members <= held
