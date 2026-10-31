@@ -1024,6 +1024,15 @@ class CIPSISolver:
         H.set_weighted_restrictions(self.basis.weighted_restrictions)
         psi_refs = getattr(self, "psi_refs", None)
 
+        if self.basis.is_distributed:
+            # Whether a budget exists decides which collectives every rank runs below (`measuring`, the
+            # frontier-fit test). A rank-divergent budget is a deadlock; make it an error on every rank.
+            n_budgeted = self.basis.comm.allreduce(int(memory_budget_bytes is not None), op=MPI.SUM)
+            if 0 < n_budgeted < self.basis.comm.size:
+                raise RuntimeError(
+                    f"memory_budget_bytes is set on {n_budgeted} of {self.basis.comm.size} ranks; it must be "
+                    "None on all or an int on all (a rank-local GS_MEMORY_BUDGET_SAFETY read?)"
+                )
         guard = MemoryGuard(self.basis, memory_budget_bytes, tighten=memory_policy == "tighten")
         self.stopped_early = False
         # Matrix snapshots are kept only while this call runs (see `_build_h_matrix`).
@@ -1315,14 +1324,16 @@ class CIPSISolver:
         is expected to fit the share of the memory budget a kept matrix may take (collective). Without a budget it
         always does. Sized from the mean image of a strided sample of the local basis: a matrix that is too big to
         keep is built as the cheaper ``P H P`` (through the basis filter) instead of built whole and thrown away."""
-        if self._snapshot_budget is None:
-            return True
-        local = self.basis.local_basis
-        picked = range(0, len(local), max(1, len(local) // 64))
-        op = ManyBodyOperator(H) if isinstance(H, dict) else H
-        sizes = [len(image) for image in iter_local_operator_images(self.basis, op, 0.0, indices=picked)]
-        fanout = float(np.mean(sizes)) if sizes else 0.0
-        fits = len(local) * fanout * _FRONTIER_BYTES_PER_ENTRY <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
+        # The reduction below is unconditional: whether this rank has a budget must never decide whether it
+        # joins the collective (a rank-local early return here once left the others waiting in the LAND).
+        fits = True
+        if self._snapshot_budget is not None:
+            local = self.basis.local_basis
+            picked = range(0, len(local), max(1, len(local) // 64))
+            op = ManyBodyOperator(H) if isinstance(H, dict) else H
+            sizes = [len(image) for image in iter_local_operator_images(self.basis, op, 0.0, indices=picked)]
+            fanout = float(np.mean(sizes)) if sizes else 0.0
+            fits = len(local) * fanout * _FRONTIER_BYTES_PER_ENTRY <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
         if self.basis.is_distributed:
             fits = self.basis.comm.allreduce(fits, op=MPI.LAND)
         return bool(fits)

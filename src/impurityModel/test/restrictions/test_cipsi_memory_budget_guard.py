@@ -363,3 +363,28 @@ def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation
     for stream in (out, err):
         assert stream.lower().count("tightening") == 1, stream
         assert stream.count("WARNING determinant cap: GS basis stopped at") == 1, stream
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs two ranks to disagree")
+def test_frontier_fit_joins_its_collective_on_a_rank_without_a_budget():
+    """M1: a rank whose budget is ``None`` returned before the LAND, leaving the others in it."""
+    comm = MPI.COMM_WORLD
+    solver = _make_solver(comm)
+    solver._snapshot_budget = None if comm.rank == 0 else 2**60
+    fits = solver._frontier_matrix_fits(_hamiltonian())
+    assert all(comm.allgather(fits))
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs two ranks to disagree")
+def test_expand_refuses_a_budget_that_exists_on_only_some_ranks():
+    comm = MPI.COMM_WORLD
+    solver = _make_solver(comm)
+    with pytest.raises(RuntimeError, match="memory_budget_bytes is set on"):
+        solver.expand(
+            _hamiltonian(),
+            Within.thermal(solver.basis.tau),
+            de2_min=GS_DE2_MIN,
+            memory_budget_bytes=None if comm.rank == 0 else 2**60,
+        )
