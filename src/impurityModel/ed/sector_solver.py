@@ -967,6 +967,36 @@ def _record_union_cut(solver, union_cut, cap, retained):
     conv["limited_by"] = conv.get("limited_by") or "cap"
 
 
+def window_deficit(verdicts, es, within, lowest_expected):
+    """``(found, expected)`` for the whole thermal window, not only its lowest level (review C7).
+
+    ``expected`` is a lower bound: the lowest level's bound ``lowest_expected`` plus one state per hard label
+    in every further cluster of distinct class energies inside the window. Classes that leaked into another
+    class's state are left out (their energy is that class's), and a class is in the window by its *own*
+    error bar. Labels are exact, so the states of different labels at one energy are different states; a
+    class's multiplicity above the lowest level is not read (it is one at least). ``found`` counts the
+    eigenvalues within the window. Pure and replicated: no collective.
+    """
+    finished = [v for v in verdicts if not v.stopped_early] or list(verdicts)
+    lowest = min(finished, key=lambda v: v.energy)
+    inside = sorted(
+        (v for v in finished if v.energy - lowest.energy <= within + _energy_error(v)), key=lambda v: v.energy
+    )
+    clusters = []  # [last energy, last error, {labels}]
+    for v in inside:
+        label = (v.job.two_sz, v.job.parity)
+        if clusters and v.energy - clusters[-1][0] <= _energy_error(v) + clusters[-1][1]:
+            clusters[-1][2].add(label)
+            clusters[-1][0], clusters[-1][1] = v.energy, _energy_error(v)
+        else:
+            clusters.append([v.energy, _energy_error(v), {label}])
+    expected = int(lowest_expected) + sum(len(c[2]) for c in clusters[1:])
+    es = np.sort(np.real(np.asarray(es, dtype=complex)))
+    top = lowest.energy + within + max((_energy_error(v) for v in inside), default=0.0)
+    found = int(np.count_nonzero(es - es[0] <= top - lowest.energy)) if len(es) else 0
+    return found, expected
+
+
 def solve_certified(
     h_op, basis, plan, manifold, *, expand_kwargs, dense_cutoff, slater_weight_min, verbose=False, only=None
 ):
@@ -1078,12 +1108,23 @@ def solve_certified(
         phase.dets = merged.size
     found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
     solver.manifold_check = {"found": found, "expected": expected}
+    in_window, in_window_expected = window_deficit(verdicts, es, float(manifold.max_energy), expected)
+    solver.manifold_check.update(
+        window_found=in_window, window_expected=in_window_expected, window_complete=in_window >= in_window_expected
+    )
     _record_union_cut(solver, union_cut if cut else None, cap, merged.size)
     if found < expected and (basis.comm is None or basis.comm.rank == 0):
         print(
             f"WARNING: the thermal manifold holds {found} states of its lowest level, but certification "
             f"found that level in rows that make at least {expected}: thermal averages over it are "
             "misweighted. Raise the determinant cap, or widen the thermal window.",
+            flush=True,
+        )
+    if in_window < in_window_expected and (basis.comm is None or basis.comm.rank == 0):
+        print(
+            f"WARNING: the thermal window holds {in_window} states, but certification found classes in it that "
+            f"make at least {in_window_expected}: states of the higher levels are missing. Raise the determinant "
+            "cap (truncation_threshold), or narrow the thermal window.",
             flush=True,
         )
     return es, psis, merged, solver, verdicts

@@ -337,7 +337,8 @@ def test_a_spin_and_orbitally_degenerate_thermal_level_comes_back_whole(monkeypa
     got = np.sort(np.real(result.es))
     assert len(got) == multiplicity
     np.testing.assert_allclose(got, exact[:multiplicity], atol=1e-6)
-    assert result.solver.manifold_check == {"found": 8, "expected": 8}
+    check = result.solver.manifold_check
+    assert (check["found"], check["expected"], check["window_complete"]) == (8, 8, True)
 
 
 def test_a_thermal_manifold_short_of_its_level_is_reported(monkeypatch, capsys):
@@ -709,7 +710,8 @@ def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(mo
     and only the expansion's exit truncated). A union that fits is the same set as before."""
     natural, wide = _union_size_at_the_window_solve(monkeypatch, 100_000)
     union = natural[-1]
-    assert wide.solver.manifold_check == {"found": 8, "expected": 8}
+    assert wide.solver.manifold_check["found"] == 8 and wide.solver.manifold_check["expected"] == 8
+    assert wide.solver.manifold_check["window_complete"], wide.solver.manifold_check
     assert union == 240  # the seed's 120 determinants and the partner rows of the 8-fold level
 
     cap = union - 40  # under what the winning level's classes and their partner rows need
@@ -726,8 +728,9 @@ def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(mo
     assert capped.solver.convergence_report["converged"] is False
     assert capped.solver.convergence_report["limited_by"] == "cap"
     assert capped.solver.convergence_report["manifold_check"] == capped.solver.manifold_check
+    assert not capped.solver.manifold_check["window_complete"]
     assert wide.solver.truncation_report is None or "union_cut" not in wide.solver.truncation_report
-    assert wide.solver.convergence_report["manifold_check"] == {"found": 8, "expected": 8}
+    assert wide.solver.convergence_report["manifold_check"]["window_complete"]
 
 
 @pytest.mark.parametrize("tail, rerun", [(0.010, False), (0.020, True)])
@@ -870,3 +873,17 @@ def test_a_cut_gives_every_in_window_unit_a_share_and_a_mirror_is_the_image_of_i
     assert kept_a and kept_b, "a unit was starved"
     kept_mirror = {d for d in mirror.keys() if d in kept}
     assert kept_mirror == set(image(ManyBodyState.from_keys(kept_a)).keys())
+
+
+def test_the_window_check_counts_the_levels_above_the_lowest_one():
+    """A CrI3-shaped window: three levels of distinct energy, one hard label each. Two states in hand against
+    the three the classes make is flagged; the lowest level alone (``expected = 1``) would not be (review C7)."""
+    from impurityModel.ed.sector_solver import window_deficit
+
+    verdicts = [_verdict(k, e, 8.0)[1] for k, e in enumerate((-1.00, -0.99, -0.98))]
+    assert window_deficit(verdicts, np.array([-1.0, -0.99]), 0.05, 1) == (2, 3)
+    assert window_deficit(verdicts, np.array([-1.0, -0.99, -0.98]), 0.05, 1) == (3, 3)
+    # A class outside the window, or one that leaked into another's state, adds nothing.
+    far = _verdict(3, -0.5, 8.0)[1]
+    _job, leaked = _verdict(4, -0.985, 8.0, stopped=True)
+    assert window_deficit([*verdicts, far, leaked], np.array([-1.0, -0.99, -0.98]), 0.05, 1) == (3, 3)
