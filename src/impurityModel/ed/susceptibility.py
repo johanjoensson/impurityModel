@@ -451,9 +451,9 @@ def calc_susceptibility_workflow(
     output_filename : str or None, optional
         HDF5 output path; ``None`` skips saving.
     """
+    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
-    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.gs_connectivity import solver_basis_connectivity
     from impurityModel.ed.memory_estimate import resolve_cap_policy

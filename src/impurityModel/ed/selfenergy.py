@@ -537,8 +537,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     dict
         Dictionary containing self-energy, Green's function, thermal density matrix, and ground state info.
     """
-    # Unpack the grouped parameters into the local names used throughout the body.
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
+    # Unpack the grouped parameters into the local names used throughout the body.
     h0 = model.h0
     dc = model.dc
     u4 = model.u4

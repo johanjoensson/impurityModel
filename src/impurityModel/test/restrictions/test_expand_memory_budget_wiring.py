@@ -198,6 +198,7 @@ def test_a_rank_local_zero_does_not_disable_the_guard_on_one_rank_only(monkeypat
     """M1: ``GS_MEMORY_BUDGET_SAFETY=0`` on rank 1 alone used to make rank 1 return ``None`` while
     the others returned an int, which sent them into different collectives in ``expand``."""
     comm = MPI.COMM_WORLD
+    monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY", raising=False)
     if comm.rank == 1:
         monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "0")
     budgets = comm.allgather(groundstate.expand_memory_budget(comm))
