@@ -24,7 +24,7 @@ from impurityModel.ed.average import energy_cut
 from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.memory_estimate import gs_krylov_blocks
-from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
+from impurityModel.ed.trlm import STATUS_CONVERGED, Window, _deflate, trlm
 
 _U64 = (1 << 64) - 1
 #: Salt separating the imaginary part's hash stream from the real part's (the splitmix64 "golden
@@ -485,16 +485,27 @@ def solve_window(
         e0 = float(e[0])
         top = max(e0 + max_energy, float(e[n_in - 1])) + deg_tol
         locked = np.ascontiguousarray(vecs[:, :n_in])
-        r_new = max(4, 2 * k_max)
-        fresh = random_block(hashes, r_new, rounds)
         win = Window(top - e0, deg_tol, e0=e0)
-        if locked.shape[1] >= n_global:
+        # The fresh block lives in the complement of the locked vectors, so it is sized on that: no wider
+        # than the complement is (a block wider than the room left made trlm refuse its own depth, which was
+        # read as "complement empty" and certified a window that was not complete -- review C2').
+        r_new = min(max(4, 2 * k_max), n_global - locked.shape[1])
+        if r_new <= 0:
             saturated = []  # the window is the whole space: nothing left to miss
             break
+        fresh = random_block(hashes, r_new, rounds)
+        rank_c = _global_gram_rank(_deflate(fresh, locked, mpi, comm), mpi, comm)
+        if mpi:  # one decision for every rank, not each rank's own eigvalsh of the same Gram matrix
+            rank_c = comm.bcast(rank_c, root=0)
+        if rank_c == 0:
+            saturated = []  # the complement is exhausted: nothing left to miss
+            break
         try:
-            res2 = run(fresh, max(r_new, 1), locked=locked, window=win)
-        except ValueError:  # BlockBreakdown, rank-symmetric: the complement of the locked set is empty
-            saturated = []
+            res2 = run(fresh, r_new, locked=locked, window=win)
+        except ValueError:
+            # trlm raises on replicated data only (a breakdown of the TSQR factor, or a depth it cannot use),
+            # so every rank takes this branch together. Either way the complement was not searched.
+            certified = False
             break
         certified = res2.status in STATUS_CONVERGED
         status = res2.status

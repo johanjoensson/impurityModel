@@ -232,6 +232,44 @@ def test_the_multiplicity_found_sizes_the_next_solves_random_block(system):
     assert locked_calls == [False]
 
 
+def _small_system(n_orb, copies):
+    comm = MPI.COMM_WORLD
+    basis = Basis(
+        impurity_orbitals={0: [list(range(n_orb))]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=[_bit(n_orb, o) for o in range(n_orb)],
+        verbose=False,
+        comm=comm,
+    )
+    n = len(basis)
+    rng = np.random.default_rng(3)
+    evals = np.concatenate([np.zeros(copies), 1.0 + np.arange(n - copies)])
+    U = np.linalg.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
+    h = (U * evals) @ U.conj().T
+    return basis, sps.csr_matrix(0.5 * (h + h.conj().T)), U, evals
+
+
+def _bit(n_orb, orbital):
+    b = bytearray((n_orb + 7) // 8)
+    b[orbital // 8] |= 1 << (7 - orbital % 8)
+    return bytes(b)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("n_orb, copies", [(8, 6), (8, 7), (16, 6), (16, 12)])
+def test_a_fallback_wider_than_the_complement_still_finds_every_copy(n_orb, copies):
+    """The fallback's fresh block is sized on the room the locked vectors leave, not on ``2 k_max``.
+
+    ``n = 8`` with a 6-fold level: 4 copies are found and locked, 4 dimensions remain, the old block was
+    8 wide. trlm refused that depth, the refusal was read as "complement empty", and a window missing two
+    copies came back certified (review C2'). Complete, or not certified -- never both wrong and certified.
+    """
+    system = _small_system(n_orb, copies)
+    eig = _window_solve(system, n_random=2, warm=False, max_energy=0.1)
+    assert eig.n_in == copies or not eig.certified, (eig.n_in, eig.certified)
+    assert eig.certified and eig.n_in == copies
+
+
 def test_trlm_with_a_locked_set_solves_in_its_complement():
     """``locked`` restricts TRLM to the orthogonal complement: it returns the next states up.
 
