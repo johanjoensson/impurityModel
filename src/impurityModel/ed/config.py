@@ -19,11 +19,12 @@ and the call site derives as usual.
 it, so a new knob is documented by declaring it here.
 """
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
-__all__ = ["KNOBS", "Knob", "dump"]
+__all__ = ["KNOBS", "Knob", "NonUniformKnobError", "assert_uniform", "dump"]
 
 
 def _parse_bool(raw: str) -> bool:
@@ -58,6 +59,10 @@ class Knob:
         Lower clamp applied after parsing (numeric knobs only).
     group : str
         Section heading used by :func:`dump`.
+    uniform : bool
+        Whether every MPI rank must read the same value (:func:`assert_uniform`). True for
+        everything that can steer a collective; False only for a knob that is legitimately
+        per-rank, such as a scratch path.
     """
 
     name: str
@@ -66,6 +71,7 @@ class Knob:
     doc: str
     minimum: Any = None
     group: str = "general"
+    uniform: bool = True
 
     def get(self) -> Any:
         """The knob's current value: the parsed environment variable, else the default.
@@ -544,6 +550,7 @@ GF_SECTOR_CACHE_DIR = Knob(
     kind="str",
     default="",
     group="rixs-solvers",
+    uniform=False,
     doc="""Directory persisting SectorResolventCache eigendecompositions across runs. Empty =
     in-memory only. With it, the dominant one-time `eigh` cost (measured ~450 s at 5565
     determinants; OpenBLAS's Hermitian eigensolvers are bound by their non-parallelizing
@@ -1086,3 +1093,63 @@ def dump() -> str:
 
 if __name__ == "__main__":  # pragma: no cover - developer convenience
     print(dump())
+
+
+class NonUniformKnobError(RuntimeError):
+    """Raised on every rank by :func:`assert_uniform` when a knob reads differently on some of them."""
+
+
+def _raw_knob_values() -> dict[str, str | None]:
+    """This rank's raw value of every uniform knob, normalised the way :meth:`Knob.get` reads it:
+    unset, or empty for a non-string knob, is ``None``."""
+    values: dict[str, str | None] = {}
+    for name in sorted(KNOBS):
+        knob = KNOBS[name]
+        if not knob.uniform:
+            continue
+        raw = os.environ.get(name)
+        values[name] = None if raw is None or (raw == "" and knob.kind != "str") else raw
+    return values
+
+
+def _digest(values: dict[str, str | None]) -> str:
+    # blake2b, not hash(): str hashing is salted per process, so ranks would never agree.
+    return hashlib.blake2b(repr(sorted(values.items())).encode(), digest_size=8).hexdigest()
+
+
+def assert_uniform(comm) -> None:
+    """Raise :class:`NonUniformKnobError` on **every** rank if a uniform knob differs between ranks.
+
+    Collective on ``comm`` (one 8-byte allgather when the ranks agree). Knobs are re-read from
+    each rank's own environment on every :meth:`Knob.get`, and many of them decide which
+    collectives a rank runs, so a value that differs between ranks is a deadlock at some later
+    point. Call this at the top of every public entry, on the communicator that entry's
+    collectives run on. Not cached: harnesses change the environment between calls.
+
+    ``comm`` is anything with ``size`` and ``allgather`` (this module imports no mpi4py);
+    ``None`` and one-rank communicators return immediately.
+    """
+    if comm is None or comm.size == 1:
+        return
+    values = _raw_knob_values()
+    digests = comm.allgather(_digest(values))
+    if all(d == digests[0] for d in digests):
+        return
+    # Every rank saw the same digests, so every rank takes this branch together.
+    everyone = comm.allgather(values)
+    lines = []
+    for name in sorted(values):
+        by_value: dict[str | None, list[int]] = {}
+        for rank, vals in enumerate(everyone):
+            by_value.setdefault(vals[name], []).append(rank)
+        if len(by_value) > 1:
+            parts = []
+            for value, ranks in by_value.items():
+                shown = ",".join(map(str, ranks[:8])) + (",..." if len(ranks) > 8 else "")
+                parts.append(f"{'<unset>' if value is None else repr(value)} on rank(s) {shown}")
+            lines.append(f"  {name}: " + "; ".join(parts))
+    raise NonUniformKnobError(
+        "environment knobs differ between MPI ranks (each rank re-reads them, and they steer collectives):\n"
+        + "\n".join(lines)
+        + "\nSet them identically on every rank."
+    )
