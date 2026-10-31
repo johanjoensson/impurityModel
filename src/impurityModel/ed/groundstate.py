@@ -89,7 +89,7 @@ def expand_memory_budget(comm):
        reach this. It is called unconditionally at both :meth:`CIPSISolver.expand` call sites for
        that reason; never move it behind a rank-local test.
 
-    The fraction comes from ``GS_MEMORY_BUDGET_SAFETY``, defaulting to
+    The fraction comes from ``GS_MEMORY_BUDGET_SAFETY`` (rank 0's value, broadcast), defaulting to
     :data:`memory_estimate.DEFAULT_MEMORY_SAFETY`. A safety of ``0`` disables the guard and
     returns ``None``, which restores the behaviour in which an uncapped expansion grows until the
     kernel kills the rank.
@@ -113,6 +113,12 @@ def expand_memory_budget(comm):
     safety = config.GS_MEMORY_BUDGET_SAFETY.get()
     if safety is None:
         safety = DEFAULT_MEMORY_SAFETY
+    if comm is not None:
+        # Root's value wins. The knob is read from each rank's own environment, and whether the
+        # budget is ``None`` decides whether ``CIPSISolver.expand`` runs its measuring collectives
+        # (and the early return in ``_frontier_matrix_fits``): a rank that read ``0`` while the
+        # others did not left them waiting in an allreduce it never entered.
+        safety = comm.bcast(safety, root=0)
     if safety <= 0.0:
         return None
     # Both collectives, both unconditional and in a fixed order on every rank -- including the

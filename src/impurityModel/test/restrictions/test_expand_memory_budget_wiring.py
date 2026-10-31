@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed import config, groundstate
 from impurityModel.ed.cipsi_solver import _memory_growth_bound
@@ -189,3 +190,16 @@ def test_a_walk_the_memory_guard_held_is_not_reported_memory_bound_after_the_ref
     assert report["cap_hit"] is True
     refined = {"cap_hit": True, "memory_bound": True}
     assert groundstate.refined_truncation_report(SimpleNamespace(truncation_report=refined), walk) is refined
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs two ranks to disagree")
+def test_a_rank_local_zero_does_not_disable_the_guard_on_one_rank_only(monkeypatch):
+    """M1: ``GS_MEMORY_BUDGET_SAFETY=0`` on rank 1 alone used to make rank 1 return ``None`` while
+    the others returned an int, which sent them into different collectives in ``expand``."""
+    comm = MPI.COMM_WORLD
+    if comm.rank == 1:
+        monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "0")
+    budgets = comm.allgather(groundstate.expand_memory_budget(comm))
+    assert all(b is not None for b in budgets), budgets
+    assert len(set(budgets)) == 1, budgets
