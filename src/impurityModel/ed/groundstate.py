@@ -398,6 +398,7 @@ def solve_sector(
                 # as it stands. No verdicts, so no shift ever skips its expansion.
                 store.record(store_key, certification, shift, ())
             if certification is not None and len(certification.jobs) > 1:
+                replace_record = False
                 if verbose and (comm is None or comm.rank == 0):
                     print(f"  sector {store_key[0]}: {describe_plan(certification)}", flush=True)
                 with solver_trace.timed("certify"):
@@ -427,8 +428,11 @@ def solve_sector(
                             slater_weight_min=slaterWeightMin,
                             verbose=verbose,
                         )
+                        # The fresh certification replaces the stale record and is a full one.
+                        only = None
+                        replace_record = True
                 if store is not None:
-                    store.record(store_key, certification, shift, verdicts)
+                    store.record(store_key, certification, shift, verdicts, replace=replace_record)
                 if only is None:
                     # A full certification: say whether the seed window had room to spare.
                     overtake = window_overtake(certification, verdicts)

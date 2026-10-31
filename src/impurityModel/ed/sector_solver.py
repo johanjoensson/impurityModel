@@ -1070,9 +1070,12 @@ class SectorPlanStore:
         record = self.records.get(key)
         return None if record is None else record.plan
 
-    def record(self, key, plan, mu, verdicts):
-        """Keep the first, full certification of sector ``key``; later partial ones add nothing."""
-        if key not in self.records:
+    def record(self, key, plan, mu, verdicts, replace=False):
+        """Keep the first, full certification of sector ``key``; later partial ones add nothing.
+
+        ``replace`` is for a recertification, which supersedes the record its tangent violation invalidated.
+        """
+        if replace or key not in self.records:
             self.records[key] = SectorRecord(plan, float(mu), tuple(verdicts))
 
     def clear(self):

@@ -425,6 +425,43 @@ def test_a_class_held_by_the_cap_marks_the_sector_solve_cap_bound(monkeypatch):
     assert report is not None and report["cap_hit"] and "losing_class" in report
 
 
+def test_a_tangent_violation_replaces_the_stored_record_and_is_a_full_certification(monkeypatch):
+    """The recertification after a tangent violation is a full one: it replaces the stale record (mu and
+    verdicts) and, being full, runs the window-overtake check the partial solve skips (review C4)."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.sector_solver import SectorPlanStore
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    store = SectorPlanStore()
+
+    def solve(shift):
+        return groundstate.solve_sector(
+            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=Lowest(),
+            comm=None, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store, shift=shift,
+        )  # fmt: skip
+
+    solve(0.0)
+    (key,) = store.records
+    first = store.records[key]
+    assert len(first.plan.jobs) > 1
+    store.overtake = None
+    only_calls = []
+    real = groundstate.solve_certified
+
+    def spy(*args, **kwargs):
+        only_calls.append(kwargs.get("only"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(groundstate, "solve_certified", spy)
+    monkeypatch.setattr(SectorPlanStore, "violated", lambda self, key, mu, verdicts: True)
+    monkeypatch.setattr(SectorPlanStore, "jobs_at", lambda self, key, mu, window=0.0: {0})
+    solve(0.05)
+    assert only_calls == [{0}, None], only_calls
+    assert store.records[key] is not first and store.records[key].mu == 0.05
+    assert key in store.recertified
+    assert store.overtake is not None, "the full recertification must run the overtake check"
+
+
 def test_a_leaked_class_stops_only_once_it_has_settled_near_a_finished_one():
     from impurityModel.ed.sector_solver import LEAK_ENERGY_TOL, LEAK_PLATEAU_TOL, _has_leaked
 
