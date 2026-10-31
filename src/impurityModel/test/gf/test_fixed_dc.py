@@ -2515,7 +2515,9 @@ def test_a_memory_bound_search_raises_on_every_rank(monkeypatch):
     ``test_a_user_cap_is_never_memory_bound`` below.
     """
     monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-9")
-    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    # A hybridization that leaves candidates to admit: at v = 0.01 every seed is already complete, the guard then
+    # withholds nothing, and (since the M4 fix) a guard that withheld nothing is not "memory-bound".
+    kwargs, _ = common_kwargs(v=0.5, tau=1e-3, dc_scale=0.0)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
     raised = False
     try:

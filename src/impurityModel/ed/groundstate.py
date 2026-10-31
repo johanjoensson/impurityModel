@@ -460,16 +460,23 @@ def solve_sector(
                             "way. Raise GS_CERTIFY_WINDOW_FACTOR to check.",
                             flush=True,
                         )
-                if sector_solver.truncation_report is None:
-                    # A class may have lost because the cap or the memory guard held it high: say so on
-                    # the solve callers read, so a cap-decided comparison is not taken for a converged one.
-                    capped = [v for v in verdicts if v.truncation_report is not None]
-                    if capped:
-                        sector_solver.truncation_report = dict(
-                            capped[0].truncation_report,
-                            losing_class=repr(capped[0].job),
-                            memory_bound=any(v.memory_bound for v in capped),
-                        )
+                # A class may have lost because the cap or the memory guard held it high: say so on the solve
+                # callers read, so a cap-decided comparison is not taken for a converged one. The union's own
+                # report (a cut, say) must not hide that: its memory_bound is the classes' too.
+                capped = [v for v in verdicts if v.truncation_report is not None]
+                if capped and sector_solver.truncation_report is None:
+                    sector_solver.truncation_report = dict(
+                        capped[0].truncation_report,
+                        losing_class=repr(capped[0].job),
+                        memory_bound=any(v.memory_bound for v in capped),
+                    )
+                elif capped:
+                    sector_solver.truncation_report = dict(
+                        sector_solver.truncation_report,
+                        losing_class=repr(capped[0].job),
+                        memory_bound=bool(sector_solver.truncation_report.get("memory_bound"))
+                        or any(v.memory_bound for v in capped),
+                    )
                 sector_fields["certified_classes"] = len(verdicts)
                 sector_fields["n_dets"] = len(sector_basis)
                 return SectorSolve(es, psis, sector_basis, sector_solver)
