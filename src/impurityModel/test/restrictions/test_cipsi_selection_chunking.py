@@ -18,7 +18,8 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.cipsi_solver import CIPSISolver, _degenerate_groups, _score_candidates
+from impurityModel.ed.cipsi_solver import CIPSISolver, _score_candidates
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
@@ -51,8 +52,8 @@ def test_score_candidates_matches_the_unchunked_formula(seed, chunk_size):
     e_ref[(seed + 4) % p] = e_ref[(seed + 3) % p] = e_ref[(seed + 2) % p]
     overlaps = rng.normal(size=(p, n_Dj)) + 1j * rng.normal(size=(p, n_Dj))
     e_Dj = rng.normal(size=n_Dj) * 5
-    groups = _degenerate_groups(np.sort(e_ref), tol=1e-9)
-    e_ref = np.sort(e_ref)  # _degenerate_groups assumes ascending input, like production callers
+    groups = degenerate_groups(np.sort(e_ref), tol=1e-9)
+    e_ref = np.sort(e_ref)  # degenerate_groups assumes ascending input, like production callers
 
     expected = _reference_score(overlaps, e_ref, e_Dj, groups)
     actual = _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=chunk_size)
@@ -61,7 +62,7 @@ def test_score_candidates_matches_the_unchunked_formula(seed, chunk_size):
 
 def test_score_candidates_handles_empty_candidates():
     e_ref = np.array([0.0, 1.0])
-    groups = _degenerate_groups(e_ref, tol=1e-9)
+    groups = degenerate_groups(e_ref, tol=1e-9)
     overlaps = np.zeros((2, 0), dtype=complex)
     e_Dj = np.zeros(0)
     for chunk_size in (None, 1, 5):

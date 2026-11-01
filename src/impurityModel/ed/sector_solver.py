@@ -41,12 +41,12 @@ from mpi4py import MPI
 from impurityModel.ed import config, label_symmetries, seed_sectors, solver_trace
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.cipsi_solver import DEGENERACY_TOL, DEGENERACY_TOL_MARGIN, CIPSISolver, _degeneracy_tol
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.eigensolvers import Lowest, cold_vector
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.ed.memory_estimate import measured_phase
 from impurityModel.ed.observables import (
-    _group_degenerate,
     casimir_operator,
     casimir_to_quantum_number,
     make_spin_operators,
@@ -1046,7 +1046,7 @@ def split_multiplets(energies, two_s, roundoff):
     energies = np.asarray(energies, dtype=float)
     two_s = np.asarray(two_s, dtype=int)
     order = np.argsort(energies, kind="stable")
-    clusters = [order[c] for c in _group_degenerate(energies[order], roundoff)]
+    clusters = [order[c] for c in degenerate_groups(energies[order], roundoff)]
     bad, spread = [], 0.0
     for ts in sorted(set(two_s.tolist())):
         partial = [c for c in clusters if int(np.count_nonzero(two_s[c] == ts)) % (ts + 1)]

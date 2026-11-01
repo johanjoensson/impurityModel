@@ -25,10 +25,10 @@ from impurityModel.ed.cipsi_solver import (
     DEGENERACY_TOL,
     DEGENERACY_TOL_MARGIN,
     _degeneracy_tol,
-    _degenerate_groups,
     _eigen_tol,
     _energy_cut_indices,
 )
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.eigensolvers import _splitmix64, cold_vector
 
 
@@ -89,8 +89,8 @@ def test_degeneracy_tol_was_ten_times_too_tight_on_the_loose_paths():
     # An exactly degenerate pair returned split by the residual the solver was allowed:
     # the old fixed floor bisects it, the derived tolerance keeps it whole.
     split = np.array([0.0, _eigen_tol(0.0), 5.0])
-    assert _degenerate_groups(split, tol=DEGENERACY_TOL) == [[0], [1], [2]]
-    assert _degenerate_groups(split, tol=_degeneracy_tol(split, 0.0)) == [[0, 1], [2]]
+    assert degenerate_groups(split, tol=DEGENERACY_TOL) == [[0], [1], [2]]
+    assert degenerate_groups(split, tol=_degeneracy_tol(split, 0.0)) == [[0, 1], [2]]
 
     # ...and the same for the cut, which must not hand back half a manifold.
     idx, _ = _energy_cut_indices(split, max_energy=0.0, tol=DEGENERACY_TOL)
@@ -129,13 +129,13 @@ def test_splitmix64_is_a_bijection_on_small_inputs():
 
 
 def test_degenerate_groups():
-    assert _degenerate_groups([]) == []
-    assert _degenerate_groups([1.0]) == [[0]]
+    assert degenerate_groups([], DEGENERACY_TOL) == []
+    assert degenerate_groups([1.0], DEGENERACY_TOL) == [[0]]
     # ascending, one exactly-degenerate pair
-    assert _degenerate_groups([-111.17311714, -111.173059, -111.173059]) == [[0], [1, 2]]
-    assert _degenerate_groups([-1.0, -1.0, -1.0]) == [[0, 1, 2]]
+    assert degenerate_groups([-111.17311714, -111.173059, -111.173059], DEGENERACY_TOL) == [[0], [1, 2]]
+    assert degenerate_groups([-1.0, -1.0, -1.0], DEGENERACY_TOL) == [[0, 1, 2]]
     # splittings well above the tolerance stay separate
-    assert _degenerate_groups([0.0, 10 * DEGENERACY_TOL, 1.0]) == [[0], [1], [2]]
+    assert degenerate_groups([0.0, 10 * DEGENERACY_TOL, 1.0], DEGENERACY_TOL) == [[0], [1], [2]]
 
 
 def test_energy_cut_never_bisects_a_degenerate_manifold():
@@ -170,7 +170,7 @@ def test_energy_cut_handles_edges():
 def _score(de2, e_ref):
     """The production candidate score: max over manifolds of the manifold-summed de2."""
     de2_abs = np.abs(de2)
-    return np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in _degenerate_groups(e_ref)]), axis=0)
+    return np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in degenerate_groups(e_ref, DEGENERACY_TOL)]), axis=0)
 
 
 def test_score_is_invariant_under_rotations_within_a_degenerate_manifold():

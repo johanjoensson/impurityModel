@@ -11,6 +11,7 @@ from impurityModel.ed.basis_transcription import (
     iter_local_operator_images,
 )
 from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
+from impurityModel.ed.degeneracy import absorb_degenerate_tail, degenerate_groups
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.eigensolvers import (
     EigenResult,
@@ -160,27 +161,6 @@ def _degeneracy_tol(e_ref, slaterWeightMin):
     )
 
 
-def _degenerate_groups(e_ref, tol=DEGENERACY_TOL):
-    """Partition reference-state indices into runs of (near-)degenerate eigenvalues.
-
-    ``e_ref`` comes from the eigensolver in ascending order, so a single forward scan suffices.
-    Returns a list of index lists, one per manifold.
-
-    ``tol`` defaults to the :data:`DEGENERACY_TOL` *floor* so this stays a pure, directly
-    testable function of its arguments. **Production callers must pass**
-    ``tol=_degeneracy_tol(e_ref, slaterWeightMin)`` instead: the floor alone is tighter than the
-    eigensolver's own accuracy whenever ``slaterWeightMin`` is loose, and then splits manifolds
-    that are exactly degenerate.
-    """
-    e = np.asarray(e_ref).real
-    groups, start = [], 0
-    for i in range(1, len(e) + 1):
-        if i == len(e) or abs(e[i] - e[start]) > tol:
-            groups.append(list(range(start, i)))
-            start = i
-    return groups
-
-
 def _chunk_groups(groups, chunk_size):
     """Batch ``groups`` (a list of index lists) into runs of at least ``chunk_size`` reference
     rows each, never splitting a group across a batch. ``chunk_size=None`` yields one batch
@@ -211,7 +191,7 @@ def _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=None):
     of every other group, so accumulating an elementwise running max over already-processed
     groups is identical to stacking every group's sum and maxing once at the end -- the same
     "a degenerate manifold has no preferred basis, so only a quantity summed over the whole
-    manifold is well defined" argument :data:`DEGENERACY_TOL` and :func:`_degenerate_groups`
+    manifold is well defined" argument :data:`DEGENERACY_TOL` and :func:`~impurityModel.ed.degeneracy.degenerate_groups`
     already rest on, one level up: a batch boundary is only ever placed *between* manifolds.
 
     Written to size the CIPSI selection round's memory peak
@@ -232,7 +212,7 @@ def _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=None):
     e_Dj : ndarray, shape (n_Dj,)
         Diagonal-probe candidate energies.
     groups : list of list of int
-        Degenerate-manifold partition of ``range(p)`` (:func:`_degenerate_groups`).
+        Degenerate-manifold partition of ``range(p)`` (:func:`~impurityModel.ed.degeneracy.degenerate_groups`).
     chunk_size : int, optional
         Target number of reference rows per batch (:func:`_chunk_groups`); ``None``
         processes every group in one batch -- the unchunked computation, bit-for-bit.
@@ -368,7 +348,7 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     that the boundary manifold is complete (or even that the cut was reached). Only a computed
     state lying strictly outside -- and not degenerate with the last kept one -- certifies that.
 
-    As for :func:`_degenerate_groups`, ``tol`` defaults to the :data:`DEGENERACY_TOL` floor for
+    ``tol`` defaults to the :data:`DEGENERACY_TOL` floor for
     testability and production callers must pass :func:`_degeneracy_tol`; grouping below the
     achieved residual bisects the very manifolds this function exists to keep whole.
     """
@@ -380,9 +360,7 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
 
     n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
     # Never split a manifold: absorb any state degenerate with the last kept one.
-    original_n_keep = n_keep
-    while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[original_n_keep - 1]) <= tol:
-        n_keep += 1
+    n_keep = absorb_degenerate_tail(e_sorted, n_keep, tol, anchor="last_kept")
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 
 
@@ -561,7 +539,7 @@ class CIPSISolver:
             amps = np.array(blk)
             norms2 = np.zeros(len(keys), dtype=float)
             if amps.size > 0:
-                for group in _degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slaterWeightMin)):
+                for group in degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slaterWeightMin)):
                     group_amps = amps[:, group]
                     group_norms2 = np.real(group_amps * np.conj(group_amps)).sum(axis=1)
                     norms2 = np.maximum(norms2, group_norms2)
@@ -889,7 +867,7 @@ class CIPSISolver:
         # summing de2 directly equivalent. Reduces to the old max when the spectrum is
         # non-degenerate.
         if len(local_Djs):
-            groups = _degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slater_cutoff))
+            groups = degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slater_cutoff))
             scores = _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=config.GS_SELECTION_CHUNK.get())
         else:
             scores = np.zeros(0)
@@ -1574,7 +1552,7 @@ class CIPSISolver:
                     # Only the lowest level is read (column 0, made generic over the level below).
                     e_all, psi_dense = dense_lowest(
                         H_mat,
-                        lambda es: len(_degenerate_groups(es, tol=_degeneracy_tol(es, slaterWeightMin))[0]),
+                        lambda es: len(degenerate_groups(es, tol=_degeneracy_tol(es, slaterWeightMin))[0]),
                         comm=self.basis.comm,
                     )
                 else:
@@ -1606,7 +1584,7 @@ class CIPSISolver:
         The degeneracy verdict is read from ``e_all``, which ``eigensystem`` broadcasts, so every rank
         enters the ``allreduce`` below or none does.
         """
-        group = _degenerate_groups(e_all, tol=_degeneracy_tol(e_all, slaterWeightMin))[0]
+        group = degenerate_groups(e_all, tol=_degeneracy_tol(e_all, slaterWeightMin))[0]
         if len(group) < 2:
             return psi_dense
         hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)

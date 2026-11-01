@@ -749,7 +749,7 @@ GS_SELECTION_CHUNK = Knob(
     its remaining headroom is the ~660 MiB between those two sites. Measured at 128 ranks, cap
     2,745,510 (`doc/plans/dc_smo_memory.md`, round 9 step 7). Chunking happens on
     group boundaries only
-    (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
+    (`degeneracy.degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
     keeps the result exact: the manifold-summed score is `max over independent groups of
     (group-summed de2)`, and an elementwise running max over already-processed groups equals
     stacking every group and maxing once at the end. Unset (the default) processes every group in

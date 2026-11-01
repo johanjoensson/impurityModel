@@ -15,6 +15,7 @@ from mpi4py import MPI
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, block_inner_cy, inner
 from impurityModel.ed.utils import rotate_matrix
 
@@ -705,7 +706,7 @@ _TERM_LETTERS = "SPDFGHIKLMNOQRTUV"
 TERM_SYMBOL_TOL = 5e-2
 
 #: Energy tolerance for grouping eigenstates into a degenerate manifold -- the same scale
-#: `manifold_observable_values` uses internally (`_group_degenerate`) to decide which
+#: `manifold_observable_values` uses internally (`degenerate_groups`) to decide which
 #: states share a physical eigenspace of a Casimir operator. `is_j_sharp` reuses this
 #: exact scale to identify the ground-state manifold, rather than a fresh literal.
 DEGENERACY_TOL = 1e-6
@@ -1616,24 +1617,6 @@ def compute_energy_decomposition(thermal_rho, h1, impurity_indices, e_thermal):
     }
 
 
-def _group_degenerate(energies, tol):
-    """Group indices of (ascending-sorted) ``energies`` into near-degenerate blocks.
-
-    Returns a list of lists of indices into ``energies``; consecutive energies
-    within ``tol`` of the block's first energy share a block.
-    """
-    groups = []
-    current = [0]
-    for i in range(1, len(energies)):
-        if abs(energies[i] - energies[current[0]]) <= tol:
-            current.append(i)
-        else:
-            groups.append(current)
-            current = [i]
-    groups.append(current)
-    return groups
-
-
 def manifold_observable_values(
     eigenstates, energies, apply_op, degeneracy_tol=DEGENERACY_TOL, comm=None, redistribute=None
 ):
@@ -1696,7 +1679,7 @@ def manifold_observable_values(
 
     order = np.argsort(energies, kind="stable")
     values = np.empty(n)
-    for block in _group_degenerate(energies[order], degeneracy_tol):
+    for block in degenerate_groups(energies[order], degeneracy_tol):
         idx = order[block]
         sub = o_matrix[np.ix_(idx, idx)]
         evals = np.linalg.eigvalsh(sub)
@@ -1743,14 +1726,14 @@ def is_j_sharp(j_values, es, degeneracy_tol=DEGENERACY_TOL, term_tol=TERM_SYMBOL
     several values at the same energy). Reporting a single ``term``/``g_J``/``mu_eff``
     for such a manifold would misleadingly imply a definite ``J``.
 
-    Groups ``es`` into near-degenerate manifolds with :func:`_group_degenerate`, using
+    Groups ``es`` into near-degenerate manifolds with :func:`~impurityModel.ed.degeneracy.degenerate_groups`, using
     the *same* ``degeneracy_tol`` that :func:`manifold_observable_values` already uses to
     decide two states are degenerate (not a fresh energy scale), then checks whether the
     ground manifold's per-state ``J`` quantum numbers (``j_values``) all agree to within
     ``term_symbol``'s own half-integer cleanliness tolerance (``term_tol`` -- reused
     rather than inventing a second "how much spread is too much" literal).
 
-    ``_group_degenerate`` compares each candidate state against the *first* energy in the
+    ``degenerate_groups`` compares each candidate state against the *first* energy in the
     growing block, not transitively against its immediate neighbour, so a manifold spread
     over many states with consecutive gaps just under ``degeneracy_tol`` can be grouped
     narrower than a transitive-closure reading of "all mutually within tolerance" would
@@ -1778,7 +1761,7 @@ def is_j_sharp(j_values, es, degeneracy_tol=DEGENERACY_TOL, term_tol=TERM_SYMBOL
     es = np.asarray(es, dtype=float)
     j_values = np.asarray(j_values, dtype=float)
     order = np.argsort(es, kind="stable")
-    ground_block = _group_degenerate(es[order], degeneracy_tol)[0]
+    ground_block = degenerate_groups(es[order], degeneracy_tol)[0]
     ground_j = j_values[order[ground_block]]
     return bool(np.max(ground_j) - np.min(ground_j) <= 2 * term_tol)
 

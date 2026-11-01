@@ -22,6 +22,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.average import energy_cut
 from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.memory_estimate import gs_krylov_blocks
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, _deflate, trlm
@@ -48,17 +49,6 @@ def _splitmix64_array(x):
     x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
     x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
     return x ^ (x >> np.uint64(31))
-
-
-def degenerate_groups(e, tol):
-    """Partition ascending energies ``e`` into manifolds: runs whose members lie within ``tol`` of the first."""
-    e = np.asarray(e).real
-    groups, start = [], 0
-    for i in range(1, len(e) + 1):
-        if i == len(e) or abs(e[i] - e[start]) > tol:
-            groups.append(list(range(start, i)))
-            start = i
-    return groups
 
 
 def cold_vector(hashes):

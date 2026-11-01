@@ -36,6 +36,7 @@ from impurityModel.ed.BlockLanczosCore import (
     block_orthogonalize,
     eigh_block_tridiagonal,
 )
+from impurityModel.ed.degeneracy import absorb_degenerate_tail
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
@@ -208,8 +209,7 @@ class Window:
         ref = theta[0] if self.e0 is None else self.e0
         edge = ref + self.max_energy
         n_in = int(np.count_nonzero(theta <= edge))
-        while 0 < n_in < len(theta) and theta[n_in] - theta[n_in - 1] <= self.deg_tol:
-            n_in += 1
+        n_in = absorb_degenerate_tail(theta, n_in, self.deg_tol, anchor="chain")
         return n_in, (max(edge, float(theta[n_in - 1])) if n_in else edge)
 
 

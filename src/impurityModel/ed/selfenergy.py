@@ -6,7 +6,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
-from impurityModel.ed.cipsi_solver import _degeneracy_tol, _degenerate_groups
+from impurityModel.ed.cipsi_solver import _degeneracy_tol
 
 # The double-counting criteria live in their own modules; re-export their public entry points so
 # calc_selfenergy's calls and existing selfenergy.<name> callers (and their test patches) resolve
@@ -23,6 +23,7 @@ from impurityModel.ed.dc_reference import (  # noqa: F401
 )
 from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc  # noqa: F401
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
 from impurityModel.ed.gf_refinement import REFINE_SWAP, REFINE_TOL, RefineSpec, g0_check_shifts, g0_zero_shifts
 from impurityModel.ed.greens_function import (
@@ -487,7 +488,7 @@ def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=
     weights = np.exp(-(e - e0) / tau)
     weights /= weights.sum()
     e_sorted = e[order]
-    groups = _degenerate_groups(e_sorted, tol=_degeneracy_tol(e_sorted, slaterWeightMin))
+    groups = degenerate_groups(e_sorted, tol=_degeneracy_tol(e_sorted, slaterWeightMin))
     keep = sorted(
         int(order[j])
         for g_i, group in enumerate(groups)
