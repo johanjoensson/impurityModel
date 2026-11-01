@@ -127,7 +127,6 @@ def build_ground_state(
         "tau": wl["tau"],
         "chain_restrict": wl["chain_restrict"],
         "dense_cutoff": wl["dense_cutoff"],
-        "rank": comm.rank if comm is not None else 0,
         "comm": comm,
         "truncation_threshold": truncation_threshold,
         "weighted_restrictions": weighted_restrictions,

@@ -41,6 +41,12 @@ def test_solve_ground_state_raises_on_every_rank_when_a_knob_differs(monkeypatch
         monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
     h_op, imp, bath, N0, _n_orb, _n_val, _params = gs_oracle.pinned_model(1, 3, False)
     with pytest.raises(config.NonUniformKnobError, match="GS_SECTOR_CERTIFY"):
-        groundstate.solve_ground_state(
-            h_op, imp, bath, dict(N0), tau=0.05, slaterWeightMin=1e-12, comm=comm, rank=comm.rank, verbose=0
-        )
+        groundstate.solve_ground_state(h_op, imp, bath, dict(N0), tau=0.05, slaterWeightMin=1e-12, comm=comm, verbose=0)
+
+
+def test_solve_ground_state_takes_its_rank_from_the_communicator():
+    """``rank=`` was a second source of truth for what ``comm.rank`` says: a caller passing the wrong one printed
+    the warnings of rank 0 from every rank (or from none). There is one source now."""
+    import inspect
+
+    assert "rank" not in inspect.signature(groundstate.solve_ground_state).parameters

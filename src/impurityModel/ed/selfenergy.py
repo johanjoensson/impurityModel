@@ -631,7 +631,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "tau": tau,
         "chain_restrict": chain_restrict,
         "dense_cutoff": dense_cutoff,
-        "rank": rank,
         "comm": comm,
         "spin_layout": sb.spin_layout,
         "truncation_threshold": cap_policy,

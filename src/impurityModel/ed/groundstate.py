@@ -1250,7 +1250,6 @@ def solve_ground_state(
     chain_restrict=False,
     dense_cutoff=1000,
     comm=None,
-    rank=0,
     verbose=False,
     truncation_threshold=None,
     weighted_restrictions=None,
@@ -1376,7 +1375,7 @@ def solve_ground_state(
     if widened and report is not None and report.get("converged"):
         report["converged"] = False
         report["limited_by"] = "manifold_widened"
-        if rank == 0:
+        if comm is None or comm.rank == 0:
             print(
                 f"WARNING: the thermal manifold ({len(es)} states) is wider than the {n_references} "
                 "reference states the CIPSI expansion converged; the residual PT2 energy does not "
@@ -1483,7 +1482,7 @@ def calc_gs(
         )
         basis_setup["spin_layout"] = layout
     note = layout.provenance_note()
-    if note is not None and verbose >= V_SUMMARY and basis_setup.get("rank", 0) == 0:
+    if note is not None and verbose >= V_SUMMARY and (basis_setup.get("comm") is None or basis_setup["comm"].rank == 0):
         print(note, flush=True)
     # One definition of "the ground state of this model", shared with the double-counting
     # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice

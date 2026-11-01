@@ -504,7 +504,6 @@ def calc_susceptibility_workflow(
         "tau": tau,
         "chain_restrict": False,
         "dense_cutoff": dense_cutoff,
-        "rank": rank,
         "comm": comm,
         "spin_layout": sb.spin_layout,
         "truncation_threshold": cap_policy,
