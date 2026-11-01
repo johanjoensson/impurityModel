@@ -12,27 +12,21 @@ import pytest
 from impurityModel.ed.degeneracy import absorb_degenerate_tail, degenerate_groups
 
 
-def _first_anchor_reference(e, tol):
-    e = np.asarray(e).real
-    groups, start = [], 0
-    for i in range(1, len(e) + 1):
-        if i == len(e) or abs(e[i] - e[start]) > tol:
-            groups.append(list(range(start, i)))
-            start = i
-    return groups
+def _chain_groups_reference(e, tol):
+    groups, current = [], [0]
+    for i in range(1, len(e)):
+        if abs(e[i] - e[i - 1]) <= tol:
+            current.append(i)
+        else:
+            groups.append(current)
+            current = [i]
+    return groups + [current] if len(e) else []
 
 
-def _chain_reference(theta, n_in, deg_tol):
+def _chain_tail_reference(theta, n_in, deg_tol):
     while 0 < n_in < len(theta) and theta[n_in] - theta[n_in - 1] <= deg_tol:
         n_in += 1
     return n_in
-
-
-def _last_kept_reference(e_sorted, n_keep, tol):
-    original = n_keep
-    while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[original - 1]) <= tol:
-        n_keep += 1
-    return n_keep
 
 
 def _levels(rng, n):
@@ -42,33 +36,24 @@ def _levels(rng, n):
 
 
 @pytest.mark.parametrize("seed", range(40))
-def test_first_anchor_is_the_old_rule(seed):
+def test_groups_and_tail_are_the_chain_rule(seed):
     rng = np.random.default_rng(seed)
     e = _levels(rng, int(rng.integers(0, 30)))
     for tol in (1e-9, 1e-6, 2e-6, 1e-5):
-        assert degenerate_groups(e, tol) == _first_anchor_reference(e, tol)
-        assert degenerate_groups(e, tol, anchor="first") == _first_anchor_reference(e, tol)
+        assert degenerate_groups(e, tol) == _chain_groups_reference(e, tol)
+        for n in range(len(e) + 1):
+            assert absorb_degenerate_tail(e, n, tol) == _chain_tail_reference(e, n, tol)
 
 
-@pytest.mark.parametrize("seed", range(40))
-def test_the_cut_helpers_are_the_old_loops(seed):
-    rng = np.random.default_rng(seed)
-    e = _levels(rng, int(rng.integers(2, 30)))
-    for tol in (1e-9, 1e-6, 2e-6):
-        for n in range(1, len(e)):
-            assert absorb_degenerate_tail(e, n, tol) == _last_kept_reference(e, n, tol)
-            assert absorb_degenerate_tail(e, n, tol, anchor="chain") == _chain_reference(e, n, tol)
-
-
-def test_chain_does_not_split_a_creeping_run_but_first_does():
+def test_a_creeping_run_is_one_manifold():
+    """The old first-level anchor cut this at 1.6 (two levels of the run in each half)."""
     e = np.array([0.0, 0.8, 1.6, 2.4, 10.0])
-    assert degenerate_groups(e, 1.0, anchor="first") == [[0, 1], [2, 3], [4]]
-    assert degenerate_groups(e, 1.0, anchor="chain") == [[0, 1, 2, 3], [4]]
+    assert degenerate_groups(e, 1.0) == [[0, 1, 2, 3], [4]]
+    assert absorb_degenerate_tail(e, 1, 1.0) == 4
 
 
 def test_a_gap_of_exactly_tol_stays_in_the_manifold():
     assert degenerate_groups([0.0, 1.0, 3.0], 1.0) == [[0, 1], [2]]
-    assert degenerate_groups([0.0, 1.0, 3.0], 1.0, anchor="chain") == [[0, 1], [2]]
 
 
 def test_empty_and_single_inputs():
@@ -80,10 +65,3 @@ def test_empty_and_single_inputs():
 
 def test_the_levels_may_be_complex_with_a_real_part():
     assert degenerate_groups(np.array([0.0 + 1e-3j, 0.5 - 1e-3j, 3.0]), 1.0) == [[0, 1], [2]]
-
-
-def test_an_unknown_anchor_raises():
-    with pytest.raises(ValueError, match="anchor"):
-        degenerate_groups([0.0], 1.0, anchor="last_kept")
-    with pytest.raises(ValueError, match="anchor"):
-        absorb_degenerate_tail(np.array([0.0, 1.0]), 1, 1.0, anchor="first")

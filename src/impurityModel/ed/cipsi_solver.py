@@ -360,7 +360,7 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
 
     n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
     # Never split a manifold: absorb any state degenerate with the last kept one.
-    n_keep = absorb_degenerate_tail(e_sorted, n_keep, tol, anchor="last_kept")
+    n_keep = absorb_degenerate_tail(e_sorted, n_keep, tol)
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 
 

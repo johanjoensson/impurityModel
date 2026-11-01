@@ -209,7 +209,7 @@ class Window:
         ref = theta[0] if self.e0 is None else self.e0
         edge = ref + self.max_energy
         n_in = int(np.count_nonzero(theta <= edge))
-        n_in = absorb_degenerate_tail(theta, n_in, self.deg_tol, anchor="chain")
+        n_in = absorb_degenerate_tail(theta, n_in, self.deg_tol)
         return n_in, (max(edge, float(theta[n_in - 1])) if n_in else edge)
 
 
