@@ -878,7 +878,7 @@ def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energ
     plan = CertificationPlan(jobs, {}, [], False, {})
     calls = []
 
-    def fake_expand_job(h_op, basis, plan, job, finished, *args, rank=False, keys=None):
+    def fake_expand_job(h_op, basis, plan, job, finished, *args, rank=False, keys=None, window=None):
         k = jobs.index(job)
         calls.append((k, rank))
         if k == 0 or not rank:
@@ -1032,6 +1032,23 @@ def test_the_window_check_counts_the_levels_above_the_lowest_one():
     far = _verdict(3, -0.5, 8.0)[1]
     _job, leaked = _verdict(4, -0.985, 8.0, stopped=True)
     assert window_deficit([*verdicts, far, leaked], np.array([-1.0, -0.99, -0.98]), 0.05, 1) == (3, 3)
+
+
+def test_a_class_that_holds_two_window_states_makes_the_window_expect_both():
+    """CrI3's reduced cluster: three classes, four states in the window. A class's converged levels count, so
+    the expected count is 4 where one state per label said 3 (review C7); two classes of one label may share
+    states, so they add by maximum, not by sum."""
+    from dataclasses import replace
+
+    from impurityModel.ed.sector_solver import window_deficit
+
+    v = [_verdict(k, e, 8.0)[1] for k, e in enumerate((-1.00, -0.99, -0.98))]
+    v[1] = replace(v[1], levels=(-0.99, -0.97))
+    assert window_deficit(v, np.array([-1.0, -0.99, -0.98]), 0.05, 1) == (3, 4)
+    assert window_deficit(v, np.array([-1.0, -0.99, -0.98, -0.97]), 0.05, 1) == (4, 4)
+    twin = _verdict(1, -0.99, 8.0)[1]  # the same label (k=1), another class with the same two states
+    twin = replace(twin, levels=(-0.99, -0.97))
+    assert window_deficit([*v, twin], np.array([-1.0, -0.99, -0.98, -0.97]), 0.05, 1) == (4, 4)
 
 
 def test_a_class_is_in_the_window_by_its_own_error_bar_not_the_largest_residual_of_another(monkeypatch):

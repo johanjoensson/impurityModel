@@ -43,7 +43,7 @@ from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.cipsi_solver import DEGENERACY_TOL, DEGENERACY_TOL_MARGIN, CIPSISolver, _degeneracy_tol
 from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.density_matrices import occupations as state_occupations
-from impurityModel.ed.eigensolvers import Lowest, cold_vector
+from impurityModel.ed.eigensolvers import Lowest, Within, cold_vector
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.ed.memory_estimate import measured_phase
 from impurityModel.ed.observables import (
@@ -152,6 +152,9 @@ class ClassVerdict:
     #: ``lower`` what it may still fall to, and ``residual_pt2`` includes the difference.
     ranked: bool = False
     lower: float = float("nan")
+    #: The class basis's energies inside the thermal window above its lowest (:func:`_class_window_levels`), when
+    #: it was asked for them; empty otherwise. ``energy`` is the first.
+    levels: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -409,12 +412,26 @@ def _job_keys(plan, job, basis):
 
 
 def _expand_job(
-    h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm, rank=False, keys=None
+    h_op,
+    basis,
+    plan,
+    job,
+    finished,
+    expand_kwargs,
+    dense_cutoff,
+    slater_weight_min,
+    comm,
+    rank=False,
+    keys=None,
+    window=None,
 ):
     """One class expansion: ``(verdict, es, psis, class_basis, solver)`` (collective).
 
     ``rank`` stops it once settled (pass 1, :func:`_ranking_remaining`); ``keys`` continues it from
     those determinants instead of its seed (pass 2).
+
+    ``window`` (a thermal window width) makes a finished class report the energies of its basis within it of
+    its lowest state (:func:`_class_window_levels`, review C7), which the verdict counts.
     """
     class_basis = basis.clone(
         initial_basis=_job_keys(plan, job, basis) if keys is None else list(keys.keys()),
@@ -455,8 +472,11 @@ def _expand_job(
         solver.expand(h_op, Lowest(), **expand_kwargs)
         fields["n_dets"] = len(class_basis)
         fields["stopped_early"] = bool(solver.stopped_early)
-    solver.matrix_hook = None
     solver.cycle_hook = None
+    levels = ()
+    if window is not None and not rank and not solver.stopped_early:
+        levels = _class_window_levels(solver, h_op, window, dense_cutoff, slater_weight_min)
+    solver.matrix_hook = None
     solver.eig = None
     # The verdict is the unpenalized lowest state of the whole class basis, whatever sector it is in:
     # Lanczos, whose generic start vector reaches every sector, on rank 0 for a small basis.
@@ -489,10 +509,27 @@ def _expand_job(
         None if solver.truncation_report is None else dict(solver.truncation_report),
         ranked,
         energy - tail if ranked else float("nan"),
+        levels,
     )
     if comm is not None:
         fields = comm.bcast(fields, root=0)
     return ClassVerdict(job, fields[0], len(class_basis), *fields[1:]), es, psis, class_basis, solver
+
+
+def _class_window_levels(solver, h_op, within, dense_cutoff, slater_weight_min):
+    """The class basis's energies within ``within`` of its lowest, ascending (collective, replicated result).
+
+    No expansion: these are the Ritz values of the basis the class already converged for its lowest state.
+    By interlacing, ``k`` of them inside a window mean at least ``k`` true states of the class inside it, so
+    counting them keeps :func:`window_deficit`'s ``expected`` a lower bound. A state the basis has no overlap
+    with is not among them -- the limit of what a class expansion can see (review C7, oracle seed 1 m8).
+    """
+    es, _psis = solver.get_eigenvectors(
+        h_op, Within(float(within)), dense_cutoff=dense_cutoff, slaterWeightMin=slater_weight_min,
+        psi_refs=solver.psi_refs,
+    )  # fmt: skip
+    es = np.sort(np.real(np.asarray(es, dtype=complex)))
+    return tuple(float(e) for e in es if e - es[0] <= within + 1e-12)
 
 
 def certify_sector(
@@ -533,7 +570,7 @@ def certify_sector(
         t_class = time.perf_counter()
         verdict, es, psis, class_basis, solver = _expand_job(
             h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm,
-            rank=ranking, keys=start,
+            rank=ranking, keys=start, window=within,
         )  # fmt: skip
         verdict_of[k] = verdict
         timings.setdefault(k, []).append(time.perf_counter() - t_class)
@@ -1169,6 +1206,15 @@ def window_deficit(verdicts, es, within, lowest_expected):
         else:
             clusters.append([v.energy, _energy_error(v), {label}])
     expected = int(lowest_expected) + sum(len(c[2]) for c in clusters[1:])
+    # A class that converged its window holds every state of its label there: labels are exact, so the sum over
+    # labels of the most any one class of the label found is a bound of its own (the classes of a label may
+    # share states, hence the max and not the sum).
+    per_label = {}
+    for v in inside:
+        n = max(1, sum(1 for e in v.levels if e - lowest.energy <= within + _energy_error(v)))
+        label = (v.job.two_sz, v.job.parity)
+        per_label[label] = max(per_label.get(label, 0), n)
+    expected = max(expected, sum(per_label.values()))
     es = np.sort(np.real(np.asarray(es, dtype=complex)))
     top = lowest.energy + within + max((_energy_error(v) for v in inside), default=0.0)
     found = int(np.count_nonzero(es - es[0] <= top - lowest.energy)) if len(es) else 0

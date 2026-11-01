@@ -22,6 +22,12 @@ PASSING = [(1, 3, False), (1, 5, False), (1, 12, False), (1, 13, False), (2, 0, 
 FIXED_BY_P7 = [(1, 37, False), (2, 2, True)]
 # (1, 40) and (1, 54) are also P7 cases (the scan picks the wrong sector); S1 leaves a non-winning sector off.
 FIXED_BY_S1 = [(11, 77, False), (11, 80, False), (1, 40, False), (1, 54, False)]
+# C7, seed 1 m8: levels 0, .1018, .2045, .2958. The last is a second state of the label that holds .1018, in the same
+# H-connected component, but absent from the basis grown for that label's lowest state: that basis nearly holds the
+# .4783 eigenstate instead, PT2 selects nothing, and CIPSI only grows toward states the basis overlaps. A `Within`
+# expansion with the bracket state as a reference passes at -n 1/2 and fails at -n 3 (which states a basis holds
+# depends on the layout), so the window is not complete by construction. Open: review 7' design fork.
+UNREACHABLE_WINDOW_STATE = [(1, 8, False)]
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -31,6 +37,16 @@ def test_every_solved_sector_winner_and_window_match_the_dense_answer(comm, opti
     h_op, imp, bath, N0, n_orb, _n_val, _params = gs_oracle.pinned_model(seed, index, complex_h)
     failures = gs_oracle.check_model(h_op, imp, bath, N0, n_orb, comm=comm, **OPTIONS[option])
     assert not failures, failures
+
+
+@pytest.mark.xfail(
+    reason="a thermal-window state the class basis has no overlap with (see UNREACHABLE_WINDOW_STATE)", strict=False
+)
+@pytest.mark.parametrize("option", sorted(OPTIONS))
+@pytest.mark.parametrize("seed, index, complex_h", UNREACHABLE_WINDOW_STATE)
+def test_a_window_state_the_class_basis_cannot_see_is_found(option, seed, index, complex_h):
+    h_op, imp, bath, N0, n_orb, _n_val, _params = gs_oracle.pinned_model(seed, index, complex_h)
+    assert not gs_oracle.check_model(h_op, imp, bath, N0, n_orb, comm=None, **OPTIONS[option])
 
 
 # P7: the legacy dN scan's extension guard made occupation 0 unreachable and let a group at 0 block the rest.
