@@ -84,7 +84,6 @@ def test_the_ground_state_is_a_spin_eigenstate():
         impurity_orbitals,
         bath_states,
         nominal_impurity_occ={0: 2},
-        mixed_valence={0: 0},
         tau=1e-3,
         # Capped, which is both faster and closer to production: spin purity has to survive a
         # budget, not just the exact limit. Uncapped this model reaches 3589 determinants and

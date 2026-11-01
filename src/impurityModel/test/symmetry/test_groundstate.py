@@ -46,7 +46,6 @@ def _solved_basis(search, h_op, comm):
         {0: [[0, 1, 2, 3, 4]]},
         ({0: [[]]}, {0: [[]]}),
         search.occupation,
-        mixed_valence={0: 0},
         tau=0.01,
         chain_restrict=False,
         dense_cutoff=10,
@@ -242,7 +241,6 @@ def test_calc_energy(comm):
         impurity_indices={0: [[0, 1, 2, 3, 4]]},
         bath_states=({0: [[]]}, {0: [[]]}),
         N0={0: 2},
-        mixed_valence={0: 0},
         chain_restrict=False,
         dense_cutoff=10,
         comm=comm,
@@ -325,8 +323,8 @@ def test_find_ground_state_sector_walk_rescues_seed_off_by_two(monkeypatch):
 
 
 def test_calc_gs_options_serial():
-    # Test with the mixed_valence and chain_restrict options enabled in serial
-    # We shift the eigenvalues so that N=2 is the true global ground state even when N can fluctuate.
+    # Test with the chain_restrict option enabled in serial
+    # We shift the eigenvalues so that N=2 is the true global ground state.
     # Energy of N=2 is -1.5 + -1.0 = -2.5. Energy of N=1 is -1.5. Energy of N=3 is -2.5 + 1.5 = -1.0.
     eigvals = np.array([-1.5, -1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
@@ -336,7 +334,6 @@ def test_calc_gs_options_serial():
         "impurity_orbitals": {0: [[0, 1, 2, 3, 4]]},
         "bath_states": ({0: [[]]}, {0: [[]]}),
         "nominal_impurity_occ": {0: 2},
-        "mixed_valence": {0: 1},  # Enable mixed valence
         "tau": 0.01,
         "chain_restrict": True,  # Enable chain restriction
         "dense_cutoff": 10,
@@ -374,7 +371,7 @@ def test_calc_gs_options_serial():
 @pytest.mark.mpi
 def test_calc_gs_options_mpi():
     comm = MPI.COMM_WORLD
-    # We shift the eigenvalues so that N=2 is the true global ground state even when N can fluctuate.
+    # We shift the eigenvalues so that N=2 is the true global ground state.
     eigvals = np.array([-1.5, -1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
@@ -383,7 +380,6 @@ def test_calc_gs_options_mpi():
         "impurity_orbitals": {0: [[0, 1, 2, 3, 4]]},
         "bath_states": ({0: [[]]}, {0: [[]]}),
         "nominal_impurity_occ": {0: 2},
-        "mixed_valence": {0: 1},
         "tau": 0.01,
         "chain_restrict": True,
         "dense_cutoff": 10,

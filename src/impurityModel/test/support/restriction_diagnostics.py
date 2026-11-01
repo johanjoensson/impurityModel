@@ -124,7 +124,6 @@ def build_ground_state(
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,
         "N0": sb.nominal_occ,
-        "mixed_valence": sb.mixed_valence,
         "tau": wl["tau"],
         "chain_restrict": wl["chain_restrict"],
         "dense_cutoff": wl["dense_cutoff"],
@@ -553,7 +552,6 @@ def window_diff(archive, iterations, swms=(1e-8, 1e-10), cluster=None):
             sb.impurity_orbitals,
             sb.bath_states,
             nominal_impurity_occ=sb.nominal_occ,
-            mixed_valence=sb.mixed_valence,
             tau=wl["tau"],
             chain_restrict=wl["chain_restrict"],
         )

@@ -53,7 +53,6 @@ from impurityModel.ed.solver_basis import (  # noqa: F401
     _MAX_ROTATION_FILL,
     _ROTATION_TRIM_TOL,
     _per_group_occupation,
-    _per_group_scalar,
     prepare_solver_basis,
 )
 from impurityModel.ed.utils import V_DETAIL, V_RESULT, V_SUMMARY, Reporter
@@ -604,7 +603,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     nominal_occ = sb.nominal_occ
-    mixed_valence = sb.mixed_valence
     rotation_full = sb.rotation_full
     u_imp = sb.u_imp
     rot_to_spherical = sb.rot_to_spherical
@@ -629,7 +627,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "impurity_orbitals": impurity_orbitals,
         "bath_states": bath_states,
         "N0": nominal_occ,
-        "mixed_valence": mixed_valence,
         "tau": tau,
         "chain_restrict": chain_restrict,
         "dense_cutoff": dense_cutoff,

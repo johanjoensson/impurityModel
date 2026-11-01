@@ -1017,7 +1017,12 @@ _TABLE_LIST += [
                 "Green's-function path treats absent as NO window at all.",
                 minimum=0,
             ),
-            Key("mixed_valence", Kind.DIMENSIONLESS, None, "Mixed-valence scalar, forwarded per group."),
+            Key(
+                "mixed_valence",
+                Kind.DIMENSIONLESS,
+                None,
+                "Reserved for the charge-sector ensemble. Only 0/false/unset is accepted for now; anything else raises.",
+            ),
         ),
     ),
     Table(

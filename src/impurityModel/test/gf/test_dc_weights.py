@@ -248,13 +248,9 @@ def test_the_lowest_and_the_thermal_manifold_agree_on_the_ground_state_energy():
         weighted_restrictions=ctx.weighted_restrictions,
     )
     args = (h_op, ctx.impurity_orbitals, ctx.bath_states, occ)
-    mv = ctx.mixed_valence
-    energy, _report = calc_energy(
-        *args, mixed_valence=mv, chain_restrict=ctx.chain_restrict, dense_cutoff=ctx.dense_cutoff, **common
-    )
+    energy, _report = calc_energy(*args, chain_restrict=ctx.chain_restrict, dense_cutoff=ctx.dense_cutoff, **common)
     es, _psis, _basis, _solver = solve_sector(
         *args,
-        mixed_valence=mv,
         tau=ctx.tau,
         chain_restrict=ctx.chain_restrict,
         dense_cutoff=ctx.dense_cutoff,

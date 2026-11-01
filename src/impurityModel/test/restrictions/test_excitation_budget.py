@@ -185,7 +185,6 @@ def _run_calc_gs(weighted_restrictions):
         impurity_orbitals=imp,
         bath_states=bath,
         N0={0: 1},
-        mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
         comm=None,

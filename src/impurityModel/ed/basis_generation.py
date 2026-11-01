@@ -22,6 +22,29 @@ def _bounds(patterns: list[tuple[int, int, int]], slot: int) -> tuple[int, int]:
     return min(values), max(values)
 
 
+def check_mixed_valence(mixed_valence) -> None:
+    """Reject a non-zero ``mixed_valence``: it now names the charge-sector ensemble, not a seed widening.
+
+    ``None``, ``False``, ``0`` and a dict of zeros mean *off*. Anything else raises, because the option used to
+    widen the seed's impurity window (removed: it never reached the sectors that matter) and is reserved for the
+    multi-sector ensemble, which is not implemented yet. Silently running with the option ignored would hand back
+    a single-sector answer to a caller who asked for a mixed-valence one.
+
+    The value is replicated input, so every rank raises together; call it before any collective.
+
+    Raises
+    ------
+    ValueError
+        If any entry is truthy.
+    """
+    values = mixed_valence.values() if isinstance(mixed_valence, dict) else [mixed_valence]
+    if any(v is not None and v is not False and v != 0 for v in values):
+        raise ValueError(
+            f"mixed_valence={mixed_valence!r}: mixed_valence now selects the charge-sector ensemble, which is not "
+            "implemented yet; the old seed widening is gone. Use None, False or 0."
+        )
+
+
 def generate_initial_basis(
     impurity_orbitals: dict[int, list[list[int]]],
     bath_states: tuple[dict[int, list[list[int]]], dict[int, list[list[int]]]],
@@ -29,7 +52,6 @@ def generate_initial_basis(
     delta_conduction_occ: Optional[dict[int, int]],
     delta_impurity_occ: Optional[dict[int, int]],
     nominal_impurity_occ: dict[int, int],
-    mixed_valence: dict[int, int],
     n_bytes: int,
     verbose: bool,
     frozen_occupations: Optional[set] = None,
@@ -51,11 +73,6 @@ def generate_initial_basis(
         Allowed impurity occupation variations.
     nominal_impurity_occ : dict
         Nominal impurity occupations.
-    mixed_valence : dict
-        Per group, how far the *impurity* occupation may fluctuate around its nominal value.
-        Realised as charge transfer with the bath, so the total electron number is unchanged;
-        a value of ``k`` buys ``k`` bath charge-transfer excitations. Use ``total_charge_slack``
-        for the different question of spanning several total-charge sectors.
     verbose : bool
         Whether to print configuration details.
     frozen_occupations : set, optional
@@ -70,9 +87,7 @@ def generate_initial_basis(
         basis a single charge sector, which is what every energy comparison needs: ``H``
         conserves ``N``, so a basis spanning several sectors makes ``calc_energy(N0)`` report
         the minimum over the window rather than the energy of ``N0``. Only a caller that
-        deliberately wants a multi-sector space should set it non-zero. It is a
-        different concept from ``mixed_valence``, which fluctuates the *impurity* charge against
-        the bath at fixed total.
+        deliberately wants a multi-sector space should set it non-zero.
 
     Returns
     -------
@@ -96,27 +111,6 @@ def generate_initial_basis(
     if frozen_occupations is None:
         frozen_occupations = set()
 
-    # Mixed valence is charge transfer *with the bath*, not charge from nowhere. An impurity
-    # occupation of ``nominal + d`` has to be paid for by d electrons taken off the valence bath
-    # (or put onto the conduction bath) -- which is precisely what the ``delta_*`` mechanism
-    # below does, and what keeps the total electron number fixed. Widening the ``nominal_occ``
-    # loop instead created determinants at several total electron numbers; since H conserves N,
-    # ``calc_energy`` then returned the minimum over the whole window rather than the energy of
-    # the requested sector, and ``fixed_peak_dc``'s observable ``E[N+1] - E[N]`` collapsed to
-    # exactly 0.0. Fold the requested window into the bath-transfer windows and keep the nominal
-    # impurity charge pinned.
-    # The excitation budget stays honest: a mixed valence of k buys k bath charge-transfer
-    # excitations, so it reaches impurity occupations nominal +/- k but does not smuggle in the
-    # charge-neutral (valence -> conduction) double excitation that widening all three windows
-    # independently would allow. The caller's own dN windows are untouched -- their pairwise sum
-    # is already their bound -- so dN behaviour is bit-identical.
-    excitation_budget = {
-        i: max(delta_valence_occ[i] + delta_conduction_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals
-    }
-    delta_valence_occ = {i: max(delta_valence_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals}
-    delta_conduction_occ = {i: max(delta_conduction_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals}
-    delta_impurity_occ = {i: max(delta_impurity_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals}
-
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
     # Per group, materialise the allowed configurations tagged with their impurity
     # occupation, as (impurity_occupation, occupied_orbital_tuple). Materialising (rather
@@ -136,11 +130,8 @@ def generate_initial_basis(
     # redistribute (their window is pinned below) and contribute no slack to the total window.
     redistribute = len([i for i in impurity_orbitals if i not in frozen_occupations]) > 1
     total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
-    # ``mixed_valence`` was folded into ``delta_impurity_occ`` above, so it is not added again
-    # here. The two contributions are independent questions -- how far the impurity charge may
-    # fluctuate against the bath, and how many total-charge sectors the space spans -- so the
-    # impurity-charge window has to admit both. Only the latter loosens the electron-count filter
-    # at the DFS leaf, which stays the binding constraint.
+    # The impurity-charge window admits both the caller's own ``delta_impurity_occ`` and the total-charge slack;
+    # only the latter loosens the electron-count filter at the DFS leaf, which stays the binding constraint.
     total_slack = total_charge_slack + max(
         (abs(delta_impurity_occ[i]) for i in valence_baths if i not in frozen_occupations),
         default=0,
@@ -177,7 +168,7 @@ def generate_initial_basis(
                     delta_impurity = delta_valence - delta_conduction
                     if (
                         abs(delta_impurity) <= abs(delta_impurity_occ[i])
-                        and delta_valence + delta_conduction <= excitation_budget[i]
+                        and delta_valence + delta_conduction <= delta_valence_occ[i] + delta_conduction_occ[i]
                         and nominal_occ + delta_impurity <= total_impurity_orbitals[i]
                         and nominal_occ + delta_impurity >= 0
                         and delta_valence <= len(valence_electron_indices)

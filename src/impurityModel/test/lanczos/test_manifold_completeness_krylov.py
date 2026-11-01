@@ -61,7 +61,6 @@ def expanded():
         impurity_orbitals,
         bath_states,
         nominal_impurity_occ={0: 2},
-        mixed_valence={0: 0},
         tau=1e-3,
         truncation_threshold=THRESHOLD,
         comm=MPI.COMM_WORLD,

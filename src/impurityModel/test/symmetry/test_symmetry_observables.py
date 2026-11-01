@@ -605,7 +605,6 @@ def test_kondo_correlation_reported(capsys):
         impurity_orbitals={0: [[0, 1]]},
         bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
         N0={0: 1},
-        mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
         comm=None,
@@ -691,7 +690,6 @@ def test_kondo_correlation_reported_polarized_bath(capsys):
         impurity_orbitals={0: [[0, 1]]},
         bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
         N0={0: 1},
-        mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
         comm=None,
@@ -1121,7 +1119,6 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=N0,
-        mixed_valence=dict.fromkeys(impurity_orbitals, 1),
         tau=0.01,
         # dense_cutoff=4000 forced the O(N^3) dense eigh branch on every trial solve in the
         # eg/t2g diagonal-move probe + axis walk (~330s measured). This is a "must not raise" +
@@ -1167,7 +1164,6 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
             impurity_orbitals={0: [[0, 1]]},
             bath_states=({0: [valence_block]}, {0: [conduction_block]}),
             N0={0: 1},
-            mixed_valence={0: 1},
             tau=0.01,
             dense_cutoff=1000,
             comm=None,

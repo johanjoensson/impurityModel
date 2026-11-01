@@ -658,7 +658,6 @@ def _calc_gs_kwargs(truncation_threshold):
         "impurity_orbitals": IMPURITY_ORBITALS,
         "bath_states": BATH_STATES,
         "nominal_impurity_occ": {0: 2},
-        "mixed_valence": {0: 2},
         "tau": 0.01,
         "dense_cutoff": 1000,
         "truncation_threshold": truncation_threshold,

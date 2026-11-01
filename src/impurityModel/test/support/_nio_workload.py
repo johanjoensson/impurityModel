@@ -213,7 +213,6 @@ def as_calc_selfenergy_args(inputs):
 
 def build_ground_state_workload(
     nBaths=10,
-    mixed_valence=1,
     truncation_threshold=30000,
     dense_cutoff=50,
     slater_weight_min=1e-12,
@@ -231,10 +230,6 @@ def build_ground_state_workload(
     ----------
     nBaths : int
         Which ``h0/h0_NiO_<n>bath.pickle`` to load.
-    mixed_valence : int
-        Impurity occupation slack per orbital group. The 10-bath anchor's zero window
-        pins every group's occupation and collapses the ground-state sector to a
-        trivial basis, so benchmarks want at least 1.
     truncation_threshold : int
         CIPSI basis-size cap.
     dense_cutoff : int
@@ -257,7 +252,6 @@ def build_ground_state_workload(
         _MAX_ROTATION_FILL,
         _ROTATION_TRIM_TOL,
         _per_group_occupation,
-        _per_group_scalar,
     )
     from impurityModel.ed.symmetries import (
         classify_bath_occupation,
@@ -292,9 +286,6 @@ def build_ground_state_workload(
         h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_orb, h0_matrix=h_matrix
     )
     nominal_occ = _per_group_occupation(inputs["nominal_occ"], impurity_orbitals, h_matrix)
-    # _per_group_scalar maps a dict keyed by the derived group indices through unchanged;
-    # anything else collapses to the default -- so key the window by group explicitly.
-    mv = _per_group_scalar(dict.fromkeys(impurity_orbitals, mixed_valence), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
     ground_state = solve_ground_state(
@@ -304,7 +295,6 @@ def build_ground_state_workload(
         nominal_occ,
         tau=tau,
         slaterWeightMin=slater_weight_min,
-        mixed_valence=mv,
         chain_restrict=False,
         dense_cutoff=dense_cutoff,
         comm=comm,

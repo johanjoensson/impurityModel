@@ -96,7 +96,6 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
         impurity_orbitals,
         bath_states,
         nominal_occ,
-        mixed_valence=None,
         tau=0,
         chain_restrict=True,
         truncation_threshold=None,

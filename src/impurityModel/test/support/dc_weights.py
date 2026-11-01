@@ -162,7 +162,6 @@ def _sector_states(ctx, h_op, n_trial, num_states, max_energy):
         ctx.impurity_orbitals,
         ctx.bath_states,
         occ_trial,
-        mixed_valence=ctx.mixed_valence,
         tau=ctx.tau,
         chain_restrict=ctx.chain_restrict,
         dense_cutoff=ctx.dense_cutoff,

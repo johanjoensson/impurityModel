@@ -501,7 +501,6 @@ def calc_susceptibility_workflow(
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,
         "N0": sb.nominal_occ,
-        "mixed_valence": sb.mixed_valence,
         "tau": tau,
         "chain_restrict": False,
         "dense_cutoff": dense_cutoff,

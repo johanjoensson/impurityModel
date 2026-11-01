@@ -68,15 +68,14 @@ legend once, where the grouping is derived:
 ```text
 Block structure: 10 blocks, solving in the symmetry-adapted basis (operator fill 1.3x)
 Impurity orbital groups:
-  group  orbitals              imp  val  con nominal  window
-      0  0-1,3,5-6,8             6    4    0       6    +/-0
-      1  2,4,7,9                 4    6    0       2    +/-0
+  group  orbitals              imp  val  con nominal
+      0  0-1,3,5-6,8             6    4    0       6
+      1  2,4,7,9                 4    6    0       2
 ```
 
 `orbitals` are the impurity spin-orbital indices the group holds (compressed to ranges);
 `imp`/`val`/`con` are how many impurity, valence-bath and conduction-bath spin-orbitals
-belong to it; `nominal` is the seed impurity occupation the basis is generated around and
-`window` the mixed-valence half-width it may fluctuate by. In this example
+belong to it; `nominal` is the seed impurity occupation the basis is generated around. In this example
 (`examples/NiO_selfenergy.toml`, ten bath orbitals) group 1 is the $e_g$ manifold and
 group 0 the $t_{2g}$ one — that mapping is exactly what the legend is for, since the
 integer keys carry no meaning on their own. The same keys name the `N(...)` columns and

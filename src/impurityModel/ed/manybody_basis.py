@@ -355,7 +355,6 @@ class Basis:
         impurity_orbitals,
         bath_states,
         nominal_impurity_occ=None,
-        mixed_valence=None,
         total_charge_slack=0,
         initial_basis=None,
         restrictions=None,
@@ -383,8 +382,6 @@ class Basis:
             Valence and conduction bath states.
         nominal_impurity_occ : dict, optional
             Nominal impurity occupations.
-        mixed_valence : dict, optional
-            Impurity charge fluctuation against the bath, at fixed total electron number.
         total_charge_slack : int, optional
             Half-width of the *total charge* window; ``0`` (the default) keeps the basis a
             single charge sector. See
@@ -457,7 +454,6 @@ class Basis:
                 delta_conduction_occ=delta_conduction_occ,
                 delta_impurity_occ=delta_impurity_occ,
                 nominal_impurity_occ=nominal_impurity_occ,
-                mixed_valence=mixed_valence if mixed_valence is not None else dict.fromkeys(nominal_impurity_occ, 0),
                 n_bytes=self.n_bytes,
                 # generate_initial_basis is deliberately comm-free (pure, rank-deterministic);
                 # gate the rank here so its prints don't fire nranks times.

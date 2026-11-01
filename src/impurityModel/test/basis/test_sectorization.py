@@ -531,7 +531,6 @@ def test_hf_seed_matches_brute_force_loop():
         impurity_orbitals={0: [[0, 1]]},
         bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
         N0={0: 2},
-        mixed_valence={0: 1},
         chain_restrict=False,
         dense_cutoff=1000,
         comm=None,

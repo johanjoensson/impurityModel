@@ -4,6 +4,7 @@ from typing import NamedTuple
 import numpy as np
 
 from impurityModel.ed import config, solver_trace
+from impurityModel.ed.basis_generation import check_mixed_valence
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
@@ -69,9 +70,8 @@ def sector_key(trial_N0, frozen_occupations=None):
     only through that generator (it is not stored on the basis, and the ``delta_*`` arguments use
     ``dict.fromkeys``, i.e. the keys alone), the whole solve is a function of this key.
 
-    With one or zero unfrozen groups the generator instead uses the per-group window
-    ``nominal +/- mixed_valence``, but then the frozen values plus the total determine the
-    remaining group uniquely, so the key stays injective and merges nothing.
+    With one or zero unfrozen groups the frozen values plus the total determine the remaining group
+    uniquely, so the key stays injective and merges nothing.
 
     Every component is an ``int``. That is not incidental: a float anywhere in the key would make
     a cache hit depend on roundoff, and one rank taking the cached value while another runs the
@@ -143,7 +143,6 @@ def build_basis_and_solver(
     bath_states,
     N0,
     *,
-    mixed_valence,
     tau,
     chain_restrict,
     truncation_threshold,
@@ -164,7 +163,6 @@ def build_basis_and_solver(
         delta_conduction_occ=dict.fromkeys(N0, 0),
         frozen_occupations=frozen_occupations,
         nominal_impurity_occ=N0,
-        mixed_valence=mixed_valence,
         total_charge_slack=total_charge_slack,
         tau=tau,
         chain_restrict=chain_restrict,
@@ -259,7 +257,6 @@ def solve_sector(
     bath_states,
     N0,
     *,
-    mixed_valence,
     tau,
     chain_restrict,
     dense_cutoff,
@@ -315,7 +312,6 @@ def solve_sector(
                 impurity_indices,
                 bath_states,
                 N0,
-                mixed_valence=mixed_valence,
                 tau=tau,
                 chain_restrict=chain_restrict,
                 truncation_threshold=truncation_threshold,
@@ -343,16 +339,13 @@ def solve_sector(
             memory_policy=_memory_policy(truncation_threshold),
         )
         if config.GS_SECTOR_CERTIFY.get():
-            widths = mixed_valence.values() if isinstance(mixed_valence, dict) else [mixed_valence or 0]
-            single_occupation = not any(int(v) for v in widths)
             store = plan_store
             max_seed = config.GS_CERTIFY_MAX_SEED.get()
 
             def acquire(seed_basis):
                 # A record holds for the seed and the accuracy it was certified at, so both are in its
-                # key (every component replicated), and only for a seed of one impurity occupation: on
-                # it the shift is a constant, so the plan is the same at every shift. A mixed-valence
-                # seed is certified afresh at every one.
+                # key (every component replicated). The seed is of one impurity occupation, so the shift is
+                # a constant on it and the plan is the same at every shift.
                 key = (
                     sector_key(N0, frozen_occupations),
                     len(seed_basis),
@@ -362,7 +355,7 @@ def solve_sector(
                     seed_basis.truncation_threshold,
                     int(dense_cutoff),
                 )
-                plan = store.plan(key) if store is not None and single_occupation else None
+                plan = store.plan(key) if store is not None else None
                 recorded = plan is not None
                 jobs_only = store.jobs_at(key, shift, window=window) if recorded else None
                 if plan is None:
@@ -507,7 +500,6 @@ def calc_energy(
     bath_states,
     N0,
     *,
-    mixed_valence,
     chain_restrict,
     dense_cutoff,
     comm=None,
@@ -541,7 +533,6 @@ def calc_energy(
         impurity_indices,
         bath_states,
         N0,
-        mixed_valence=mixed_valence,
         tau=0,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
@@ -725,7 +716,11 @@ def find_ground_state_sector(
     (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
 
+    mixed_valence : None, False or 0
+        Must be off; anything else raises (see
+        :func:`~impurityModel.ed.basis_generation.check_mixed_valence`). Checked before any collective.
     """
+    check_mixed_valence(mixed_valence)
     # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
     # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
     # re-resolving it would reprint the cap line and restart the warning counts on every trial of
@@ -747,8 +742,6 @@ def find_ground_state_sector(
             log="derived",
             connectivity=lambda: measure_gs_connectivity(h_op, impurity_orbitals, bath_states, N0, comm),
         )
-    if mixed_valence is None or mixed_valence is False:
-        mixed_valence = dict.fromkeys(N0, 0)
     (
         _num_val_baths,
         _num_cond_baths,
@@ -790,7 +783,7 @@ def find_ground_state_sector(
         # cache key *is* the total (see sector_key). An unattainable total must never be
         # answerable from the cache: generate_initial_basis builds the window
         # [total_nominal - total_slack, total_nominal + total_slack] and clamps each group to
-        # [0, group_size], so with mixed_valence > 0 a request for 7 electrons in 6 orbitals
+        # [0, group_size], so with a non-zero charge window a request for 7 electrons in 6 orbitals
         # silently yields a basis at an attainable total and a perfectly finite energy filed
         # under the impossible one.
         total_occ = sum(trial_N0.values())
@@ -825,7 +818,6 @@ def find_ground_state_sector(
                 impurity_orbitals,
                 bath_states,
                 trial_N0,
-                mixed_valence=mixed_valence,
                 chain_restrict=chain_restrict,
                 dense_cutoff=dense_cutoff,
                 comm=comm,
@@ -1145,6 +1137,7 @@ def solve_ground_state(
         ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
+    check_mixed_valence(mixed_valence)  # replicated input: every rank raises together, before a collective
     if frozen_occupations and (comm is None or comm.rank == 0):
         # A freeze is only ever the user's (review O5), and it is exact only where H conserves the shell. Where it
         # does not (RSPt h_dft with a one-body core-valence element, say), say so once, at every verbosity. Rank 0
@@ -1187,7 +1180,6 @@ def solve_ground_state(
         impurity_orbitals,
         bath_states,
         search.occupation,
-        mixed_valence=mixed_valence,
         tau=tau,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,

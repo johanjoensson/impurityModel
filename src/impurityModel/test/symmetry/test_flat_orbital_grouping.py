@@ -1,7 +1,7 @@
 """Flat-list orbital grouping for calc_selfenergy (group by full-H conserved charges)."""
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.selfenergy import _per_group_occupation, _per_group_scalar
+from impurityModel.ed.selfenergy import _per_group_occupation
 from impurityModel.ed.symmetries import classify_bath_occupation, group_orbitals_by_charges
 
 
@@ -74,9 +74,3 @@ def test_per_group_occupation_distributes_total():
 def test_per_group_occupation_uneven_sizes_remainder_to_largest():
     imp = {0: [[0, 1, 2]], 1: [[3]]}  # sizes 3 and 1
     assert _per_group_occupation(3, imp) == {0: 3, 1: 0}  # 3*3//4=2, 3*1//4=0, remainder 1 -> largest
-
-
-def test_per_group_scalar():
-    imp = {0: [[0]], 1: [[1]]}
-    assert _per_group_scalar(0, imp) == {0: 0, 1: 0}
-    assert _per_group_scalar({0: 1, 1: 0}, imp) == {0: 1, 1: 0}

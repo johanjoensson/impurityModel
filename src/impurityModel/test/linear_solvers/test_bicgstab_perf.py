@@ -42,7 +42,6 @@ case is memory, not time.
 
 Sizing knobs (environment):
     BICG_NBATHS   which ``h0/h0_NiO_<n>bath.pickle`` to load (default 50)
-    BICG_MV       mixed-valence window (default 2; 0 collapses the GS sector)
     BICG_TRUNC    CIPSI basis-size cap (default 200000)
     BICG_DE2_MIN  CIPSI Epstein-Nesbet selection threshold (default 1e-12)
     BICG_WIDTHS   comma-separated block widths to sweep (default "1,5")
@@ -74,7 +73,6 @@ pytestmark = [
 ]
 
 NBATHS = int(os.environ.get("BICG_NBATHS", "50"))
-MIXED_VALENCE = int(os.environ.get("BICG_MV", "2"))
 TRUNC = int(os.environ.get("BICG_TRUNC", "200000"))
 # The CIPSI selection threshold, not the bath count, sets the ground-state basis size:
 # at the 1e-6 default the NiO anchor selects ~600 determinants and the excited basis the
@@ -184,7 +182,6 @@ def gf_workload():
     comm = _comm()
     work = build_ground_state_workload(
         nBaths=NBATHS,
-        mixed_valence=MIXED_VALENCE,
         truncation_threshold=TRUNC,
         dense_cutoff=DENSE_CUTOFF,
         slater_weight_min=SLATER_WEIGHT_MIN,

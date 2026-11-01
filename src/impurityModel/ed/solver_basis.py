@@ -5,6 +5,7 @@ from typing import cast
 
 import numpy as np
 
+from impurityModel.ed.basis_generation import check_mixed_valence
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import (
@@ -43,7 +44,6 @@ class SolverBasis:
     impurity_orbitals: dict
     bath_states: tuple
     nominal_occ: dict
-    mixed_valence: dict
     rotation_full: "np.ndarray"
     u_imp: "np.ndarray"
     rot_to_spherical: "np.ndarray"
@@ -105,38 +105,8 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):
     return alloc
 
 
-def _per_group_scalar(value, impurity_orbitals, default=0):
-    """Map a per-group scalar setting (e.g. ``mixed_valence``) onto the derived group keys.
-
-    Unlike ``nominal_occ``, which is a *charge* and has to be redistributed (see
-    :func:`_per_group_occupation`), this is a per-group *window width*: how far a group's
-    occupation may deviate. The right image of one width under a group split is therefore the
-    same width on each derived group -- ``basis_generation`` takes ``total_slack`` as the
-    ``max`` over groups, so broadcasting reproduces the unsplit window exactly.
-
-    A mismatched-key dict used to fall through to ``default`` and silently discard the setting.
-    That is precisely the caller's case: the RSPt interface passes ``{0: mv}`` keyed on the
-    *input* group, while the keys here are the groups derived from the block structure, so any
-    impurity whose block structure splits (a cubic d-shell into ``eg``/``t2g`` -- NiO) lost its
-    mixed valence without a word.
-    """
-    keys = list(impurity_orbitals)
-    if isinstance(value, dict):
-        if set(value) == set(keys):
-            return dict(value)
-        # Keys from a different grouping: keep the setting, widen every derived group by the
-        # largest window asked for. Dropping it silently is never the safer reading -- it
-        # collapses the charge-transfer window the caller explicitly requested.
-        widest = max((abs(int(v)) for v in value.values()), default=default)
-        return dict.fromkeys(keys, widest)
-    if value is None:
-        return dict.fromkeys(keys, default)
-    # A bare scalar (including the bool that BasisOptions.mixed_valence often carries).
-    return dict.fromkeys(keys, abs(int(value)))
-
-
 def prepare_solver_basis(
-    h0, dc, u, impurity_orbitals, nominal_occ, *, mixed_valence, rot_to_spherical, verbosity, rank=0, comm=None
+    h0, dc, u, impurity_orbitals, nominal_occ, *, mixed_valence=None, rot_to_spherical, verbosity, rank=0, comm=None
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
@@ -151,7 +121,11 @@ def prepare_solver_basis(
     legend prints once per rank. The one collective is the broadcast of the resolved
     :attr:`SolverBasis.spin_layout`, made when ``comm`` is given (unconditionally, on every rank of
     it); without a ``comm`` the layout is resolved rank-locally.
+
+    ``mixed_valence`` only has to be off (``None``/``False``/``0``): see
+    :func:`~impurityModel.ed.basis_generation.check_mixed_valence`. It is checked first, before any collective.
     """
+    check_mixed_valence(mixed_valence)
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
     # The *non-interacting part of the Hamiltonian actually diagonalised* -- h0 with the double
@@ -245,7 +219,6 @@ def prepare_solver_basis(
                 flush=True,
             )
     nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix)
-    mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
@@ -265,14 +238,14 @@ def prepare_solver_basis(
             f"solving in the {basis_note} (operator fill {fill_ratio:.1f}x)"
         )
         print("Impurity orbital groups:")
-        print(f"  {'group':>5}  {'orbitals':<20} {'imp':>4} {'val':>4} {'con':>4}" f" {'nominal':>7} {'window':>7}")
+        print(f"  {'group':>5}  {'orbitals':<20} {'imp':>4} {'val':>4} {'con':>4}" f" {'nominal':>7}")
         for i in sorted(impurity_orbitals):
             orbs = sorted(orb for block in impurity_orbitals[i] for orb in block)
             n_val = sum(len(block) for block in valence_baths[i])
             n_con = sum(len(block) for block in conduction_baths[i])
             print(
                 f"  {i:>5}  {format_index_ranges(orbs):<20} {len(orbs):>4} {n_val:>4} {n_con:>4}"
-                f" {nominal_occ[i]:>7} {'+/-' + str(mixed_valence[i]):>7}"
+                f" {nominal_occ[i]:>7}"
             )
     spin_layout = resolve_spin_layout(h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm)
     return SolverBasis(
@@ -283,7 +256,6 @@ def prepare_solver_basis(
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         nominal_occ=nominal_occ,
-        mixed_valence=mixed_valence,
         rotation_full=rotation_full,
         u_imp=u_imp,
         rot_to_spherical=rot_to_spherical,

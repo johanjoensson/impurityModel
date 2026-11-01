@@ -19,9 +19,6 @@ harness doubles as a PARTIAL-mode regression.
 
 Sizing knobs (environment):
     BLBENCH_NBATHS   which ``h0/h0_NiO_<n>bath.pickle`` to load (default 10)
-    BLBENCH_MV       mixed-valence window (impurity occupation slack; default 1 —
-                     the zero window of the 10-bath anchor pins every group's
-                     occupation and collapses the GS sector to a trivial basis)
     BLBENCH_TRUNC    CIPSI basis-size cap / truncation threshold (default 30000)
     BLBENCH_MAXITER  sparse-kernel fixed iteration budget (default 40)
     BLBENCH_BLOCK    sparse-kernel block width p (default 2)
@@ -57,7 +54,7 @@ from impurityModel.ed.ManyBodyUtils import (
     inner_multi,
     support_stats,
 )
-from impurityModel.ed.selfenergy import _MAX_ROTATION_FILL, _ROTATION_TRIM_TOL, _per_group_occupation, _per_group_scalar
+from impurityModel.ed.selfenergy import _MAX_ROTATION_FILL, _ROTATION_TRIM_TOL, _per_group_occupation
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,
     extract_tensors,
@@ -71,7 +68,6 @@ from impurityModel.ed.trlm import thick_restart_block_lanczos
 pytestmark = pytest.mark.benchmark
 
 NBATHS = int(os.environ.get("BLBENCH_NBATHS", "10"))
-MIXED_VALENCE = int(os.environ.get("BLBENCH_MV", "1"))
 TRUNC = int(os.environ.get("BLBENCH_TRUNC", "30000"))
 MAXITER = int(os.environ.get("BLBENCH_MAXITER", "40"))
 BLOCK = int(os.environ.get("BLBENCH_BLOCK", "2"))
@@ -172,9 +168,6 @@ def nio_workload():
         h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_orb, h0_matrix=h_matrix
     )
     nominal_occ = _per_group_occupation(inputs["nominal_occ"], impurity_orbitals, h_matrix)
-    # _per_group_scalar maps a dict keyed by the derived group indices through unchanged;
-    # anything else collapses to the default — so key the window by group explicitly.
-    mixed_valence = _per_group_scalar(dict.fromkeys(impurity_orbitals, MIXED_VALENCE), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
     ground_state = solve_ground_state(
@@ -184,7 +177,6 @@ def nio_workload():
         nominal_occ,
         tau=tau,
         slaterWeightMin=SLATER_WEIGHT_MIN,
-        mixed_valence=mixed_valence,
         chain_restrict=False,
         dense_cutoff=DENSE_CUTOFF,
         comm=comm,

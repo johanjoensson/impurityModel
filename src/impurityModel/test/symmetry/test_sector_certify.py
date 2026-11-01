@@ -31,7 +31,6 @@ def _seed(h_op, comm):
         IMPURITY_ORBITALS,
         BATH_STATES,
         {0: 2},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         truncation_threshold=None,
@@ -101,7 +100,6 @@ def _solve_sector(h_op, comm, manifold):
         IMPURITY_ORBITALS,
         BATH_STATES,
         {0: 2},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         dense_cutoff=1000,
@@ -212,7 +210,6 @@ def test_a_second_shift_through_the_store_expands_fewer_classes_and_finds_the_sa
             IMPURITY_ORBITALS,
             BATH_STATES,
             {0: 2},
-            mixed_valence=None,
             tau=0,
             chain_restrict=False,
             dense_cutoff=1000,
@@ -241,10 +238,10 @@ def test_a_second_shift_through_the_store_expands_fewer_classes_and_finds_the_sa
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_valence_seed(comm, monkeypatch):
+def test_the_store_is_reused_only_at_its_own_accuracy(comm, monkeypatch):
     """A record says which classes can win *at the accuracy and seed it was certified with*. At a
-    different ``e_pt2_tol`` the sector is certified in full again; a mixed-valence seed spans several
-    impurity occupations, on which a shift is not a constant, so it is counted but never reused."""
+    different ``e_pt2_tol`` the sector is certified in full again. The seed is always of one impurity
+    occupation (the old mixed-valence widening is gone), so the record is reused unconditionally."""
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.ed.sector_solver import SectorPlanStore
 
@@ -258,14 +255,13 @@ def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_vale
 
     monkeypatch.setattr(CIPSISolver, "expand", counting)
 
-    def solve(mu, store, e_pt2_tol=1e-12, mixed_valence=None):
+    def solve(mu, store, e_pt2_tol=1e-12):
         expansions["n"] = 0
         solve_sector(
             _hamiltonian(mu=mu),
             IMPURITY_ORBITALS,
             BATH_STATES,
             {0: 2},
-            mixed_valence=mixed_valence,
             tau=0,
             chain_restrict=False,
             dense_cutoff=1000,
@@ -284,10 +280,6 @@ def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_vale
     full = solve(0.0, store)
     assert solve(0.01, store) < full, "the store did not skip a class at its own accuracy"
     assert solve(0.01, store, e_pt2_tol=1e-11) == full, "a record was reused at another accuracy"
-    mixed = SectorPlanStore()
-    full_mixed = solve(0.0, mixed, mixed_valence={0: 1})
-    assert solve(0.01, mixed, mixed_valence={0: 1}) == full_mixed, "a mixed-valence record was reused"
-    assert mixed.summary()["certified_sectors"] == 1, "a certified mixed-valence sector went uncounted"
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -305,7 +297,6 @@ def test_a_sector_too_large_to_certify_is_counted_as_uncertified(comm, monkeypat
             IMPURITY_ORBITALS,
             BATH_STATES,
             {0: 2},
-            mixed_valence=None,
             tau=0,
             chain_restrict=False,
             dense_cutoff=1000,
@@ -351,7 +342,6 @@ def test_with_spin_orbit_coupling_neither_spin_label_is_assumed_and_the_answer_i
         imp,
         baths,
         {0: n_imp_el},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         truncation_threshold=None,
@@ -412,7 +402,6 @@ def test_a_spin_and_orbitally_degenerate_thermal_level_comes_back_whole(monkeypa
         imp,
         baths,
         {0: n_imp_el},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         dense_cutoff=1000,
@@ -453,7 +442,6 @@ def test_a_thermal_manifold_short_of_its_level_is_reported(monkeypatch, capsys):
         imp,
         baths,
         {0: 7},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         dense_cutoff=1000,
@@ -499,7 +487,6 @@ def test_labels_with_equal_seed_spectra_but_different_baths_are_both_expanded(ep
         IMPURITY_ORBITALS,
         BATH_STATES,
         {0: 1},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         truncation_threshold=None,
@@ -554,7 +541,6 @@ def test_a_tangent_violation_replaces_the_stored_record_and_is_a_full_certificat
             IMPURITY_ORBITALS,
             BATH_STATES,
             {0: 2},
-            mixed_valence=None,
             tau=0,
             chain_restrict=False,
             dense_cutoff=1000,
@@ -829,7 +815,6 @@ def _union_size_at_the_window_solve(monkeypatch, cap, capsys=None):
         imp,
         baths,
         {0: 7},
-        mixed_valence=None,
         tau=0,
         chain_restrict=False,
         dense_cutoff=1000,
@@ -945,7 +930,6 @@ def test_a_closed_shell_seed_is_widened_so_the_other_symmetry_class_is_expanded(
         imp,
         bath,
         {0: 4},
-        mixed_valence={0: 0},
         tau=0,
         chain_restrict=False,
         dense_cutoff=1000,
@@ -976,7 +960,6 @@ def test_a_closed_shell_seed_whose_widening_is_too_big_is_counted_as_uncertified
         imp,
         bath,
         {0: 4},
-        mixed_valence={0: 0},
         tau=0,
         chain_restrict=False,
         dense_cutoff=1000,

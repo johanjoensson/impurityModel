@@ -19,8 +19,6 @@ the impurity is taken off the bath. Widening ``nominal_occ`` itself is not: it a
 electrons out of nowhere. Mixed valence therefore has to be expressed through the bath.
 """
 
-import pytest
-
 from impurityModel.ed.basis_generation import generate_initial_basis
 
 
@@ -67,13 +65,11 @@ def _total_n_histogram(basis, n_bytes=1):
     return counts
 
 
-@pytest.mark.parametrize("mv", [0, 1])
-def test_basis_holds_a_single_total_electron_number(mv):
+def test_basis_holds_a_single_total_electron_number():
     """The property the sector comparison depends on.
 
-    With ``mixed_valence = 1`` the old generator produced determinants at three different total
-    electron numbers, so ``calc_energy`` returned ``min(E[N-1], E[N], E[N+1])`` for every trial
-    and ``E[N+1] - E[N]`` came out as exactly ``0.0``.
+    A generator that spans several total electron numbers makes ``calc_energy`` return
+    ``min(E[N-1], E[N], E[N+1])`` for every trial, and ``E[N+1] - E[N]`` comes out as exactly ``0.0``.
     """
     impurity_orbitals, bath_states = _layout()
     basis, _n_spin_orbitals = generate_initial_basis(
@@ -84,49 +80,18 @@ def test_basis_holds_a_single_total_electron_number(mv):
         delta_impurity_occ=None,
         n_bytes=1,
         nominal_impurity_occ={0: 1},
-        mixed_valence={0: mv},
         verbose=False,
     )
 
     histogram = _total_n_histogram(basis)
     assert len(histogram) == 1, (
-        f"mixed_valence={mv} produced determinants at total electron numbers "
+        f"the generator produced determinants at total electron numbers "
         f"{sorted(histogram)}; H conserves N, so calc_energy would return the minimum over "
         "the whole window instead of the energy of the requested sector."
     )
 
 
-def test_mixed_valence_still_widens_the_impurity_occupation():
-    """Fixing the total must not silently disable mixed valence.
-
-    The impurity occupation is still allowed to fluctuate -- it just has to do so against the
-    bath, which is what a charge-transfer system physically does.
-    """
-    impurity_orbitals, bath_states = _layout()
-    impurity_mask = 0b11000000  # orbitals 0 and 1 -> bits 7 and 6 (MSB-first, see the memory)
-
-    occupations = set()
-    basis, _ = generate_initial_basis(
-        impurity_orbitals,
-        bath_states,
-        delta_valence_occ=None,
-        delta_conduction_occ=None,
-        delta_impurity_occ=None,
-        n_bytes=1,
-        nominal_impurity_occ={0: 1},
-        mixed_valence={0: 1},
-        verbose=False,
-    )
-    for det in basis:
-        occupations.add(bin(bytes(det.to_bytearray())[0] & impurity_mask).count("1"))
-
-    assert occupations == {0, 1, 2}, (
-        f"mixed_valence=1 around a nominal impurity occupation of 1 should reach impurity "
-        f"occupations {{0, 1, 2}}, got {sorted(occupations)}"
-    )
-
-
-def test_no_mixed_valence_pins_the_impurity_occupation():
+def test_the_impurity_occupation_is_pinned_without_a_window():
     impurity_orbitals, bath_states = _layout()
     impurity_mask = 0b11000000
 
@@ -138,7 +103,6 @@ def test_no_mixed_valence_pins_the_impurity_occupation():
         delta_impurity_occ=None,
         n_bytes=1,
         nominal_impurity_occ={0: 1},
-        mixed_valence={0: 0},
         verbose=False,
     )
     occupations = {bin(bytes(det.to_bytearray())[0] & impurity_mask).count("1") for det in basis}
@@ -146,8 +110,7 @@ def test_no_mixed_valence_pins_the_impurity_occupation():
     assert occupations == {1}, f"expected the impurity pinned at 1, got {sorted(occupations)}"
 
 
-@pytest.mark.parametrize("mv", [0, 1])
-def test_the_split_impurity_path_also_fixes_the_total(mv):
+def test_the_split_impurity_path_also_fixes_the_total():
     """The NiO-shaped case: the ``redistribute`` branch must obey the same rule.
 
     Here each group's nominal slides over its whole range and only the cross-group total is
@@ -163,16 +126,12 @@ def test_the_split_impurity_path_also_fixes_the_total(mv):
         delta_impurity_occ=None,
         n_bytes=2,
         nominal_impurity_occ={0: 1, 1: 3},
-        mixed_valence={0: mv, 1: mv},
         verbose=False,
     )
 
     impurity_occupations, totals = _occupations_and_totals(basis, impurity_orbs=[0, 1, 2, 3, 4, 5], n_orbitals=16)
 
-    assert totals == {10}, f"mixed_valence={mv} spans total electron numbers {sorted(totals)}, expected only 10"
-    # And mixed valence must still do its job on this path -- the fix must not silently pin the
-    # impurity charge of a split shell, which is exactly the covalency the NiO model needs.
-    expected = {4} if mv == 0 else {3, 4, 5}
-    assert (
-        impurity_occupations == expected
-    ), f"mixed_valence={mv} reached impurity occupations {sorted(impurity_occupations)}, expected {sorted(expected)}"
+    assert totals == {10}, f"spans total electron numbers {sorted(totals)}, expected only 10"
+    # The split shell's charge still redistributes between its groups (the covalency the NiO model needs); only
+    # the total is fixed.
+    assert impurity_occupations == {4}, f"reached impurity occupations {sorted(impurity_occupations)}, expected {{4}}"

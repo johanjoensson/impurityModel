@@ -409,7 +409,6 @@ class _SectorContext:
     impurity_orbitals: dict
     bath_states: dict
     N0: dict
-    mixed_valence: dict
     h_solver_matrix: np.ndarray
     max_occ_total: int
     weighted_restrictions: object
@@ -502,7 +501,6 @@ class _SectorContext:
             self.bath_states,
             self.N0,
             slaterWeightMin=self.slater_weight_min,
-            mixed_valence=self.mixed_valence,
             chain_restrict=self.chain_restrict,
             dense_cutoff=self.dense_cutoff,
             comm=MPI.COMM_WORLD,
@@ -579,7 +577,6 @@ class _SectorContext:
             self.impurity_orbitals,
             self.bath_states,
             occ_trial,
-            mixed_valence=self.mixed_valence,
             tau=self.tau,
             chain_restrict=self.chain_restrict,
             dense_cutoff=self.dense_cutoff,
@@ -804,7 +801,6 @@ def _prepare_sector_context(
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=sb.nominal_occ,
-        mixed_valence=sb.mixed_valence,
         h_solver_matrix=h_solver_matrix,
         max_occ_total=max_occ_total,
         # Bath-only restriction (the reference "valence filled, conduction empty" occupation never
@@ -1840,7 +1836,6 @@ class _OccupationContext:
     impurity_orbitals: dict
     bath_states: dict
     N0: dict
-    mixed_valence: dict
     tau: float
     chain_restrict: bool
     dense_cutoff: int
@@ -1931,7 +1926,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     N0 = sb.nominal_occ
-    mixed_valence = sb.mixed_valence
     h_op_i = sb.h
 
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
@@ -1976,7 +1970,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=N0,
-        mixed_valence=mixed_valence,
         tau=tau,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
@@ -2038,7 +2031,6 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             ctx.N0,
             tau=ctx.tau,
             slaterWeightMin=ctx.slaterWeightMin,
-            mixed_valence=ctx.mixed_valence,
             chain_restrict=ctx.chain_restrict,
             dense_cutoff=ctx.dense_cutoff,
             comm=MPI.COMM_WORLD,
