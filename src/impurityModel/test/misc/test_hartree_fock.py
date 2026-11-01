@@ -203,6 +203,77 @@ def test_an_oscillating_start_is_retried_at_gentler_mixing():
     assert energy == pytest.approx(e_gentle, abs=1e-8)
 
 
+def _complex_two_orbital_impurity(e_imp, u, j, v, phase, e_bath, so):
+    """:func:`_two_orbital_impurity` with complex hybridizations (phase ``phase * (o + 1)`` on spin-orbital ``o``)
+    and a spin-mixing ``i so`` element between spin-orbitals 0 and 3: an SOC-like, complex one-body part."""
+    terms = {}
+    for o in range(4):
+        terms[((o, "c"), (o, "a"))] = e_imp
+        terms[((o + 4, "c"), (o + 4, "a"))] = e_bath
+        terms[((o, "c"), (o + 4, "a"))] = v * np.exp(1j * phase * (o + 1))
+        terms[((o + 4, "c"), (o, "a"))] = v * np.exp(-1j * phase * (o + 1))
+    terms[((0, "c"), (3, "a"))] = so * 1j
+    terms[((3, "c"), (0, "a"))] = -so * 1j
+    for a in range(4):
+        for b in range(a + 1, 4):
+            same_orbital, opposite_spin = a // 2 == b // 2, a % 2 != b % 2
+            coupling = u if same_orbital else (u - 2 * j if opposite_spin else u - 3 * j)
+            terms[((a, "c"), (b, "c"), (b, "a"), (a, "a"))] = coupling
+    return ManyBodyOperator(terms), {0: [[0, 1, 2, 3]]}, ({0: [[4, 5, 6, 7]]}, {0: [[]]})
+
+
+def test_a_complex_model_linear_mixing_never_settles_is_converged_by_diis():
+    """Where every start fails at every mixing of the ladder, DIIS converges, to a true fixed point (review P8).
+
+    Linear mixing converged only 33-43% of random complex/SOC models; with the DIIS rung 97-99% converge.
+    The returned density must be the plain aufbau of its own unextrapolated Fock matrix (idempotent, the
+    right electron count), so ``converged`` means what it means for linear mixing. Found by a parameter
+    search.
+    """
+    h_op, impurity_orbitals, bath_states = _complex_two_orbital_impurity(-0.61, 1.6, 1.04, 0.4, 0.53, -0.98, 0.18)
+    N0 = {0: 1}
+    h, V, imp, n_orb, _c = hf.extract_hf_tensors(h_op, range(4))
+    n_tot = N0[0] + 4
+    nominal = hf._grouped_aufbau_density(0.5 * (h + h.conj().T), hf._resolve_groups(n_orb, n_tot, [(range(4), 1)]))
+    for rho0 in (None, nominal):
+        for scale in hf._MIXING_LADDER:
+            assert not hf.hartree_fock_density_matrix(h, V, imp, n_tot, mixing=0.5 * scale, rho0=rho0)[
+                1
+            ], "linear mixing now converges this model: it no longer tests the DIIS rung"
+
+    rho, converged, energy = hf.hartree_fock_density_matrix_diis(h, V, imp, n_tot)
+    assert converged
+    np.testing.assert_allclose(hf._aufbau_density(hf._fock_matrix(h, V, imp, rho), n_tot), rho, atol=1e-8)
+    np.testing.assert_allclose(rho @ rho, rho, atol=1e-10)
+    assert np.real(np.trace(rho)) == pytest.approx(n_tot, abs=1e-10)
+
+    winning, e_occ, conv_occ = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    assert conv_occ
+    assert e_occ <= energy + 1e-10
+    assert sum(winning.values()) == round(float(np.real(np.trace(rho[:4, :4]))))
+
+
+def test_constrained_diis_converges_to_the_constrained_fixed_point():
+    """With a frozen group the density is block-diagonal by construction; DIIS still converges to the fixed point
+    linear mixing finds, because its error is read on the group blocks only.
+
+    The core-valence element 0.3 is what makes this discriminate: with the core coupled in ``h``, the off-block
+    commutator of the constrained fixed point is not zero, and a DIIS reading the whole commutator does not
+    converge (measured: not in 200 iterations at 0.3; 64 instead of 21 at 0.05). The plain
+    ``_core_valence_model`` core couples to nothing, and there the mask makes no difference.
+    """
+    h_op, _io, _bs, _N0 = _core_valence_model()
+    terms = dict(h_op)
+    terms[((0, "c"), (2, "a"))] = terms[((2, "c"), (0, "a"))] = 0.3
+    h, V, imp, _n_orb, _c = hf.extract_hf_tensors(ManyBodyOperator(terms), list(range(8)))
+    rho_lin, conv_lin, e_lin = hf.hartree_fock_density_matrix(h, V, imp, n_tot=6, constraints=[([0, 1], 2)])
+    rho, conv, e = hf.hartree_fock_density_matrix_diis(h, V, imp, n_tot=6, constraints=[([0, 1], 2)], max_iter=60)
+    assert conv_lin and conv
+    assert e == pytest.approx(e_lin, abs=1e-8)
+    assert float(np.real(np.diag(rho)[[0, 1]].sum())) == pytest.approx(2.0, abs=1e-12)
+    np.testing.assert_allclose(rho, rho_lin, atol=1e-6)
+
+
 def test_two_body_outside_impurity_raises():
     terms = {((0, "c"), (1, "c"), (1, "a"), (0, "a")): 1.0}
     with pytest.raises(ValueError):

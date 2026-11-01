@@ -45,6 +45,9 @@ _SCF_MAX_ITER = 500
 #: converges there. 0.1 is the last resort (slow: it needed >500 iterations from that start).
 _MIXING_LADDER = (1.0, 0.5, 0.2)
 
+#: Fock matrices a DIIS step extrapolates over (:func:`hartree_fock_density_matrix_diis`).
+_DIIS_DEPTH = 8
+
 
 def extract_hf_tensors(h_op, impurity_indices):
     """Parse ``h_op`` into a full one-body matrix and an impurity-restricted two-body tensor.
@@ -272,6 +275,73 @@ def hartree_fock_density_matrix(
     return rho, converged, mean_field_energy(h, V, imp, rho)
 
 
+def _same_group_mask(n_orb, groups):
+    """Boolean ``(n_orb, n_orb)`` mask of the orbital pairs that lie in one group of ``groups``."""
+    label = np.empty(n_orb, dtype=int)
+    for g, (idx, _n_e) in enumerate(groups):
+        label[idx] = g
+    return label[:, None] == label[None, :]
+
+
+def hartree_fock_density_matrix_diis(
+    h, V, imp, n_tot, constraints=None, max_iter=_SCF_MAX_ITER, tol=1e-8, rho0=None, depth=_DIIS_DEPTH
+):
+    """Self-consistent Hartree-Fock density by Pulay DIIS on the Fock matrix.
+
+    The fallback for a start that linear mixing (:func:`hartree_fock_density_matrix`) does not converge.
+    On complex/spin-orbit models linear mixing sloshes between fixed points (review P8: 33-43% of random
+    complex models converged); extrapolating the Fock matrix on the commutator error does not.
+
+    Each step builds ``F(rho)``, extrapolates over the last ``depth`` Fock matrices to the combination
+    whose commutator error ``[F, P]`` (``P = rho^T``, the occupied projector in ``F``'s ordering) is
+    smallest, and refills by aufbau. With ``constraints`` the density is block-diagonal *by construction*,
+    so only the block-diagonal part of the commutator can vanish at a constrained fixed point; the error is
+    read on those blocks only.
+
+    **Convergence means what it means for linear mixing**: the plain aufbau of the unextrapolated
+    ``F(rho)`` reproduces ``rho`` to ``tol``. The returned density is that aufbau, so it is
+    idempotent and a true fixed point, never a state only the extrapolation made stationary.
+
+    A virtual level shift was tried on top (0.5 and 2.0) and rescued none of the random models DIIS leaves
+    unconverged; those have (near-)degenerate levels at the Fermi energy, and fall to the occupation
+    walk's +-1 search.
+
+    Parameters and returns as :func:`hartree_fock_density_matrix`, plus ``depth`` (the DIIS history).
+    """
+    n_orb = h.shape[0]
+    n_tot = int(max(0, min(n_tot, n_orb)))
+    groups = _resolve_groups(n_orb, n_tot, constraints)
+    mask = _same_group_mask(n_orb, groups)
+    rho = _grouped_aufbau_density(0.5 * (h + h.conj().T), groups) if rho0 is None else rho0
+    focks, errors = [], []
+    converged = False
+    for _ in range(max_iter):
+        f = _fock_matrix(h, V, imp, rho)
+        rho_plain = _grouped_aufbau_density(f, groups)
+        if np.linalg.norm(rho_plain - rho) < tol:
+            rho = rho_plain
+            converged = True
+            break
+        p = rho.T
+        focks.append(f)
+        errors.append(np.where(mask, f @ p - p @ f, 0.0).ravel())
+        del focks[:-depth], errors[:-depth]
+        m = len(focks)
+        b = np.zeros((m + 1, m + 1), dtype=complex)
+        b[:m, :m] = np.array([[np.vdot(ei, ej) for ej in errors] for ei in errors])
+        b[m, :m] = b[:m, m] = -1.0
+        rhs = np.zeros(m + 1, dtype=complex)
+        rhs[m] = -1.0
+        try:
+            coeffs = np.linalg.solve(b, rhs)[:m]
+        except np.linalg.LinAlgError:
+            focks, errors, coeffs = focks[-1:], errors[-1:], np.ones(1)
+        f_ext = sum(c * fi for c, fi in zip(coeffs, focks))
+        f_ext = 0.5 * (f_ext + f_ext.conj().T)
+        rho = _grouped_aufbau_density(f_ext, groups)
+    return rho, converged, mean_field_energy(h, V, imp, rho)
+
+
 def hartree_fock_occupation(
     h_op, impurity_orbitals, bath_states, N0, frozen_occupations=None, max_iter=_SCF_MAX_ITER, tol=1e-8, mixing=0.5
 ):
@@ -345,6 +415,12 @@ def hartree_fock_occupation(
             )
             if result[1]:
                 break
+        else:
+            # The ladder did not converge this start: Pulay DIIS on the Fock matrix (review P8). Only reached
+            # where linear mixing failed, so every start the ladder converges is unchanged.
+            result = hartree_fock_density_matrix_diis(
+                h, V, imp, n_tot, constraints=constraints, max_iter=max_iter, tol=tol, rho0=rho0
+            )
         # A converged result beats any unconverged one; among equals, the lower energy wins.
         if best is None or (result[1], -result[2]) > (best[1], -best[2]):
             best = result
