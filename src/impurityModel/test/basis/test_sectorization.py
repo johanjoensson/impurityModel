@@ -479,6 +479,38 @@ def test_a_frozen_shell_h_does_not_conserve_is_reported(mix, capsys):
         assert "1.00e-03" in out
 
 
+def test_the_frozen_shell_leak_counts_two_body_terms_and_is_relative(capsys):
+    """Two-body terms: the core-valence exchange ``c2+ c0+ c3 c1`` conserves the core count, ``c2+ c1+ c1 c0``
+    moves one core electron, the pair term ``c2+ c3+ c1 c0`` two -- each is ``[H, N_core]`` by its coefficient. And
+    the threshold is relative to H's largest term: a 1e-12 element under a core energy of -5 is noise, silent."""
+    from impurityModel.ed import groundstate
+
+    h_op, impurity_orbitals, bath_states, N0 = _core_shell_toy(0.0)
+    terms = dict(h_op)
+    terms[((2, "c"), (0, "c"), (3, "a"), (1, "a"))] = 0.4
+    assert groundstate.frozen_shell_leak(ManyBodyOperator(terms), impurity_orbitals, {1}) == (0.0, 0.0)
+    terms[((2, "c"), (1, "c"), (1, "a"), (0, "a"))] = 0.3
+    terms[((2, "c"), (3, "c"), (1, "a"), (0, "a"))] = 0.2
+    largest, total = groundstate.frozen_shell_leak(ManyBodyOperator(terms), impurity_orbitals, {1})
+    assert largest == pytest.approx(0.3) and total == pytest.approx(0.5)
+
+    h_op, impurity_orbitals, bath_states, N0 = _core_shell_toy(1e-12)
+    assert groundstate.frozen_shell_leak(h_op, impurity_orbitals, {1})[0] == pytest.approx(1e-12)
+    capsys.readouterr()
+    groundstate.solve_ground_state(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        tau=0.01,
+        slaterWeightMin=1e-12,
+        frozen_occupations={1},
+        truncation_threshold=np.inf,
+        verbose=False,
+    )
+    assert "does not conserve" not in capsys.readouterr().out
+
+
 def _bytes6(occ):
     b = bytearray(1)
     for o in occ:

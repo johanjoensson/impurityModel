@@ -1961,7 +1961,7 @@ def _bath_total(group, valence_baths, conduction_baths):
     "criterion, call",
     [
         ("fixed-occupation", lambda kw: fixed_occupation_dc(occupation=4.0, **kw)),
-        # This test is about the three inputs reaching find_ground_state_sector, not about the
+        # This test is about what reaches find_ground_state_sector (no freeze, no tau), not about the
         # landed charge state -- opt out of R2's charge-state guard.
         ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kw)),
         ("fixed-gap", lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kw)),
@@ -1974,7 +1974,7 @@ def test_dc_criteria_freeze_nothing_and_pass_no_tau(monkeypatch, criterion, call
     criteria used to freeze every bath-less group, while calc_selfenergy freezes nothing, so the dc
     was measured on a different state than the self-energy then solved.
 
-    Asserting on the returned ``dc`` cannot distinguish "the three inputs reached
+    Asserting on the returned ``dc`` cannot distinguish "the right inputs reached
     ``find_ground_state_sector``" from "they didn't, and it happened not to matter" -- both
     criteria' docstrings claimed parity with ``calc_gs`` before this was true (see the module
     warning), and the toy parity test passed the whole time. Spy on

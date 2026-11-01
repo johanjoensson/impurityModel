@@ -28,7 +28,7 @@ wrong charge state, which is worse than not fixing anything at all.
 
 .. warning::
    Until this fix, it was the same function but **not the same call** -- an earlier version of
-   this docstring claimed otherwise. Three differences, all found by review, are now closed:
+   this docstring claimed otherwise. The differences below, all found by review, are now closed:
 
    * ``calc_gs`` divides ``tau`` by 100 before the walk (``groundstate.py``, ``calc_gs``); both
      criteria now do the same for their own ``find_ground_state_sector`` call, restoring the full
