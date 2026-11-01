@@ -236,7 +236,7 @@ def test_calc_energy(comm):
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
-    energy, report = calc_energy(
+    energy, report, *_ = calc_energy(
         h_op=Hop,
         impurity_indices={0: [[0, 1, 2, 3, 4]]},
         bath_states=({0: [[]]}, {0: [[]]}),

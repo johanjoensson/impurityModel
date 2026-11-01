@@ -1,0 +1,1956 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>gs_review_2026-10</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<h1
+id="ground-state-determination-review-2026-10-30-rev.-2">Ground-state
+determination review (2026-10-30, rev. 2)</h1>
+<p><strong>Status:</strong> review and plan. Nothing in the code has
+changed. - <strong>Rev. 1</strong> went through three read-only Opus
+reviewers. Their corrections are marked <em>(review)</em>. -
+<strong>Rev. 2</strong> went through six (physics,
+numerics/memory/performance, architecture, MPI, code/testing,
+UX/cross-plan). Their corrections are marked <em>(r2)</em>. Several rev.
+1 claims did not survive and are corrected in place: M1’s fix, B1, B2’s
+cause, B4’s size, B5’s rule, the SMO “thermal worse than walk” reading,
+and the “printed once prints twice” item.</p>
+<p><strong>Decisions taken</strong> (user): J1, what “frozen” means
+(§6); O1–O5 (§8). Requirement <strong>SYM</strong> (user): symmetry over
+energy convergence, non-negotiable (above; drives S2 and O3).
+<strong>Still open:</strong> O6’s parameters.</p>
+<blockquote>
+<p><strong>Requirement SYM (user, 2026-10-30, non-negotiable).</strong>
+The ground state, and every state of the thermal manifold, must have
+<strong>all the symmetries of the Hamiltonian</strong>, even at the
+price of a less converged energy. Every selection, cap, memory-guard,
+trim or amplitude cut acts on whole symmetry orbits (S± partners,
+symmetry images). When the budget cannot hold the symmetric basis, every
+member loses accuracy equally; a partial orbit is never kept. Fixes that
+trade symmetry for energy are rejected.</p>
+</blockquote>
+<p>Evidence lives in <code>debug/gs_review_2026-10/</code> (gitignored):
+- <code>findings.md</code>, the running log; -
+<code>reviews_round1.md</code>, the condensed rev. 2 reviews; - the
+harness scripts and <code>logs/</code>; - the reviewers’ probes in
+<code>review_{physics,numerics,mpi,code}/</code>.</p>
+<p>Baseline: the GS test subset passes at 1, 2 and 3 ranks (508, 515 and
+515 passed; <code>logs/baseline_*</code>). <strong>None of the defects
+below is caught by the current tests.</strong></p>
+<h2 id="what-each-consumer-needs">1. What each consumer needs</h2>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>consumer</th>
+<th>needs</th>
+<th>gets today (printed arguments, <code>logs/parity_*.log</code>)</th>
+<th>defect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>self-energy / GF</td>
+<td>the complete thermal manifold; the basis and cap the GF stage
+inherits; the <em>same state</em> the DC search measured</td>
+<td>TOML options: chain_restrict=True, excitation budget, swmin 1.5e-8,
+dense_cutoff 500, tolerances</td>
+<td>cap re-derived per call (P10); thermal manifold can be incomplete
+(C7, S1)</td>
+</tr>
+<tr>
+<td>spectra (XAS/PES/RIXS)</td>
+<td>the complete initial multiplet at T with the core pinned; dichroism
+is sensitive to every degenerate copy</td>
+<td>swmin <strong>0</strong> (calc_gs default), chain_restrict
+<strong>False</strong>, dense_cutoff <strong>1000</strong>, no
+mixed_valence or tolerances; weighted restrictions built at swmin
+1.5e-8. RIXS reuses this GS and widens its restrictions
+(<code>rixs.py:597</code>).</td>
+<td>user <code>BasisOptions</code>/<code>SolverOptions</code> partly
+ignored (<code>run_spectra</code> takes no <code>SolverOptions</code>,
+<code>get_spectra.py:233</code>); inconsistent swmin (P2);
+<code>energy_cut</code> dead (P4)</td>
+</tr>
+<tr>
+<td>DC peak/gap</td>
+<td>E(N±1) per sector, certified, at <em>equal</em> accuracy with error
+bars (a one-sided cap error in N−1 biases the gap midpoint)</td>
+<td>walk at <code>dc_criteria.py:498</code>, then
+<strong><code>solve_sector(Lowest)</code> directly</strong> at
+<code>:577</code> (no walk, no thermal solve); bath-less groups frozen
+(wrongly, P1a); <code>DC_*</code> tolerance knobs</td>
+<td>P1a, P5, P10, C4, <strong>S1</strong> (a closed-shell N±1 can return
+an excited level)</td>
+</tr>
+<tr>
+<td>DC occupation</td>
+<td>a smooth ⟨N⟩(μ): the full thermal GS at every μ</td>
+<td><code>solve_ground_state</code> at <code>:2052</code>; bath-less
+groups frozen (P1a); <code>basis.e_pt2_tol</code> only, ignoring
+<code>DC_*</code> (<code>:~2061</code>); hard-coded
+<code>MPI.COMM_WORLD</code></td>
+<td>P1a, P9, B8</td>
+</tr>
+<tr>
+<td>susceptibility</td>
+<td>complete degenerate manifolds (the Curie split depends on the
+degeneracy grouping)</td>
+<td>chain_restrict hard-coded <strong>False</strong>
+(<code>susceptibility.py:495</code>; <code>BasisOptions</code> defaults
+True), <strong>no</strong> weighted restrictions, default
+tolerances</td>
+<td>different variational space from Σ (P3); degeneracy rules (H3)</td>
+</tr>
+</tbody>
+</table>
+<p>The cap probe (<code>gs_connectivity.py:94</code>, via
+<code>build_probe_seed</code>) and
+<code>test/support/dc_weights.py:160</code> also enter the solver
+directly. A1 must cover all of these entries, not only
+<code>calc_gs</code>/<code>solve_ground_state</code>.</p>
+<p>The two other plans (§6) add needs: - <strong>Ensemble default
+(MV).</strong> Self-energy, both DC families and RSPt default to
+<code>mixed_valence = auto</code>; spectra, RIXS and χ default to off.
+<em>(r2, physics)</em> χ <code>--from-archive</code> reads a Σ/DMFT
+archive whose bath is a reservoir, and its charge Curie term is exactly
+what inter-sector weight feeds. The default should follow the input’s
+provenance (O4, user: χ and spectra read the setting from the archive,
+else use their own default). The occupation DC also needs a continuous
+⟨N⟩(μ) across a sector crossing (MV D5). - <strong>Multishell
+(MS).</strong> The self-energy and DC paths need <code>shell_ls</code>,
+a per-shell N0, and DC shifts and N_imp over the active shells only
+(T4.7). They need <strong>no</strong> frozen core (J1).</p>
+<p>Legitimate differences exist (spectra is a closed cluster with a
+pinned core). Make them <strong>explicit</strong>, with one spec builder
+per driver (A1), not implicit in call sites.</p>
+<h2 id="findings-most-severe-first">2. Findings, most severe first</h2>
+<p>Status: <strong>C</strong> = confirmed by a run (or by reading, where
+noted); <strong>R</strong> = refuted; <strong>P</strong> =
+plausible.</p>
+<h3 id="wrong-answers">Wrong answers</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>ID</th>
+<th>status / evidence</th>
+<th>finding</th>
+<th>proposed modification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>S2</strong> <em>(new, violates SYM)</em></td>
+<td><strong>C</strong> run: thermal levels in
+<code>logs/prof_smo*_n*.log</code> (per-state table,
+<code>prof_smo4_n4.log:113-117</code>); <strong>C</strong> read:
+<code>sector_solver.py:1001-1002</code></td>
+<td><strong>A capped thermal solve breaks the Hamiltonian’s spin
+symmetry.</strong> <code>solve_certified</code> builds a symmetric
+union: classes plus S± partner rows and mirror images
+(<code>_add_units_within_cap</code>, <code>:714</code>, regenerates
+partners from a cut class “so a multiplet keeps its shape”). It then
+hands that union to a plain
+<code>CIPSISolver.expand(h_op, Within)</code> (<code>:1001-1002</code>),
+whose selection, <code>CapRefiner</code> cycles and memory-guard
+truncation pick determinants one by one, with no orbit closure. Evidence
+by workload: (a) <strong>SMO 4-bath</strong> (cap-bound, 6 cycles): the
+S=3/2 quartet splits into S_z=−3/2 at 0, +3/2 at 4.2e-7, −1/2 at 6.4e-6
+and +1/2 at 7.6e-6. Both SU(2) (|S_z|=1/2 vs 3/2) and the spin-flip
+pairing (±S_z) are broken. (b) <strong>SMO 3-bath</strong>
+(memory-bound): a spread of 5e-8 at -n 4 and 1e-8 at -n 1. (c)
+<strong>Uncapped, exactly degenerate:</strong> SMO 2-bath and NiO, where
+the <code>Within</code> expand admitted nothing. The GF stage inherits
+the asymmetric states, so G and Σ can carry spurious spin polarization.
+Rev. 1 (B2) and O3 had read this as an accuracy issue. Under SYM it is a
+correctness defect.</td>
+<td><strong>Every growth and every cut in the <code>Within</code> expand
+acts on orbits.</strong> Close each admitted candidate set under S±
+(<code>plan.su2</code>, <code>_spin_partner_rows</code>) and the
+symmetry images (<code>plan.images</code>, <code>_image_keys</code>),
+the same way the union does. <code>CapRefiner</code>, the memory guard’s
+<code>_lower</code>, <code>truncate</code> and the swmin cut keep or
+drop whole orbits, ranked by the orbit’s maximum weight. If the cap
+cannot hold the symmetric basis, admit fewer orbits: every member loses
+accuracy equally. The same rule applies to any other truncation that
+sees a symmetric manifold (audit: <code>truncate_initial</code>,
+<code>get_eigenvectors(slaterWeightMin)</code>, the GF support
+truncation). <strong>Acceptance:</strong> on an SU(2) fixture under a
+binding cap, the members of a degenerate level agree to roundoff, ⟨S²⟩
+is exact for each, and Σ↑ = Σ↓ for a paramagnetic input. Inject an
+orbit-breaking cut → the test fails.</td>
+</tr>
+<tr>
+<td><strong>S1</strong> <em>(r2, new)</em></td>
+<td><strong>C</strong> run on toys
+(<code>review_code/boundary3.py</code>); production exposure
+<strong>P</strong></td>
+<td><strong>A one-determinant seed is “certified as it stands” and
+returns an excited level.</strong> At full impurity occupation the seed
+is one determinant, so <code>certification_plan</code> yields one job,
+and <code>groundstate.py:318-321</code> takes the “one class, nothing to
+be trapped away from” branch. The expansion closes on an H-invariant
+span (15 of 28 determinants) on which the exact ground state has weight
+2e-30. The returned energy is exact <em>level 1</em>: −0.20474 vs
+−0.237399; −7.148735 vs −7.175867; −3.036391 vs −3.244187. Root cause:
+<code>seed_sectors</code> enumerates only the classes present in the
+seed span (bath full), so a class whose low states need bath holes or
+conduction electrons is never seeded. Exposure: any closed-shell sector
+(d10 as the N+1 of a Cu d9 gap DC, d0, FCC Ni’s d9→d10 step). The oracle
+missed it because it checks only the winning sector.</td>
+<td>A one-job plan whose seed span is smaller than the label set is not
+a certificate. Seed the missing S_z/parity labels from single bath
+excitations of the seed, or mark the sector uncertified. The promoted
+oracle compares <strong>every</strong> solved sector’s E(N) with the
+exact value; those values are already computed.</td>
+</tr>
+<tr>
+<td><strong>S3</strong> <em>(new, traced)</em></td>
+<td><strong>C</strong> run: <code>logs/trace_cri3_fast.log</code>,
+<code>prof_cri3_n1.log</code>; <strong>C</strong> read:
+<code>sector_solver.py:~980-1000</code>,
+<code>_add_units_within_cap</code> (<code>:714</code>)</td>
+<td><strong>The thermal union drops whole in-window classes when they do
+not fit under the cap, and reports the result as converged and
+untruncated.</strong> Classes at the winning level (within both error
+bars) are truncated to fit; every <em>later</em> in-window class is
+added whole or “stops the union” (<code>truncate=False</code>). On CrI3
+the first class holds 405,687 dets, so the second (494,833) cannot fit
+under the auto cap (607,191, sized “for the ground state alone”). Two of
+the four quartet states (0.108 and 0.226 mRy above, inside a 23 mRy
+window, about half the Boltzmann weight) are discarded. The only trace
+is a verbose line. <code>truncation</code> is <code>null</code> and
+<code>converged</code> is <code>True</code>, because the union cut is
+not recorded in the truncation report. That misled the review too: the
+1-rank rerun looked “untruncated”.</td>
+<td><strong>(1) Never drop an in-window class.</strong> Truncate every
+in-window class to the same share, with partners and images (as is
+already done for the winning level), so all window states lose accuracy
+equally: the completeness analogue of SYM. <strong>(2) Record the
+cut</strong> in the truncation report, and set
+<code>converged: False</code> / <code>limited_by: cap</code> when the
+union was cut. <strong>(3) Size the <code>Within</code> cap for the
+window</strong> (O3, P10). <strong>(4)</strong> The C7 detection
+compares the number of states returned with the number of in-window
+verdicts.</td>
+</tr>
+<tr>
+<td><strong>C7</strong></td>
+<td><strong>C</strong> run: oracle at τ=0.05 (real model 8: missing
+state at +0.296 = 6τ); τ=0.2: 10/100 real (<em>soft</em>, near the
+edge); 0/100 complex. <strong>CrI3 production: C</strong>
+(<code>review_physics/cri3_reduced.py</code>,
+<code>logs/cri3_reduced_series.log</code>,
+<code>logs/prof_cri3_n1.log</code>)</td>
+<td>The <code>Within.thermal</code> manifold misses states and still
+reports <code>converged: True</code>. <code>manifold_deficit</code>
+(<code>sector_solver.py:869</code>) checks only the lowest level, and
+without an S_z label (CrI3: “spin layout: none”) it expects multiplicity
+1. <em>(r2)</em> <strong>Production evidence:</strong> CrI3 keeps 2
+states (0 and 0.36 meV, both |S_z|≈1.6) in a 23 meV window. A reduced
+cluster built from the captured production h_op (N=13, dimension 77,520)
+has 4 states inside the window, exactly and in the uncapped code (0,
+0.11, 0.24, 0.37 meV: the S=3/2 quartet; next state at 65 meV). The ±1/2
+members would carry about half the Boltzmann weight, which biases ⟨S_z⟩,
+the moment and the Curie χ. <strong>Root cause traced (2026-10-31,
+<code>trace/trace_cri3.py</code>, <code>logs/trace_cri3_fast.log</code>)
+→ finding S3.</strong> With SOC there is no S_z label: all 120 seed
+determinants form <strong>one</strong> hard label with 3 seed classes.
+The class expansions <strong>do find</strong> the middle members: class
+1 at +0.108 mRy, class 2 at +0.226 mRy (exact: 0.105, 0.221; robust as
+the reduced bath grows, <code>logs/cri3_reduced_series.log</code>). The
+union then drops them: “thermal window: held at the cap (405,765 of
+607,191 determinants): 2 later class(es) left out”. Production keeps the
+outer pair only (0 and 3.55e-4).</td>
+<td><strong>Detection first (step 3):</strong> count states per hard
+label inside the window, and warn when a cap trim dropped any class
+within cut + error. <strong>Fix later (step 8):</strong> certify the
+window per label (k lowest per class).</td>
+</tr>
+<tr>
+<td><strong>P1</strong></td>
+<td><strong>C</strong> run: <code>p1_frozen.py</code>,
+<code>frozen_drain.py</code>; <code>core_conserve.py</code></td>
+<td><strong>(a)</strong> The DC criteria freeze bath-less groups
+(<code>dc_criteria.py:824,1958</code>); <code>calc_selfenergy</code>
+freezes nothing. With one bath-less shell the DC search measures a
+different state: E0 −8.97/−7.94/−6.81 frozen vs −9.34/−9.30/−9.28
+unfrozen. The comment at <code>:822</code> (“pinned exactly as
+get_spectra”) is false: get_spectra pins the <em>declared core</em>
+(<code>get_spectra.py:392</code>). <strong>(b)</strong> “Frozen” only
+pins the <strong>seed</strong> (<code>generate_initial_basis</code> and
+<code>sector_key</code>); the restrictions bound only the total impurity
+charge. Under core–valence mixing the pinned group leaks (3.3% left at
+n₁=2). No production archive has a bath-less group
+(<code>logs/bathless.log</code>), so (a) is latent.</td>
+<td><strong>Per J1.</strong> (a) Delete the bath-less rule. (b) The
+spectra Hamiltonian conserves N_core <em>structurally</em>
+(<em>(r2)</em> <code>slater_condon_Uop</code>,
+<code>atomic_physics.py:571-626</code>, builds only F_cc, F_cv and G_cv;
+413/413 terms on NiO L₂,₃), so the seed pin is exact there. Where the
+user freezes a shell, compute ‖[H, N_core]‖ on every rank from the
+replicated h_op, and warn once if it is non-zero (O5).</td>
+</tr>
+<tr>
+<td><strong>P7</strong></td>
+<td><strong>C</strong> run: <code>dbg_sector.py</code>, oracle (real
+3/240, all with the non-default <code>scan</code>; complex 17/160).
+<em>(r2)</em> fix verified by patching
+(<code>review_code/p7_patch.py</code>)</td>
+<td>In the legacy dN scan, the guard at
+<code>groundstate.py:856-863</code> tests
+<code>imp_occ + dN_gs[j] &gt; 0</code> for <strong>every</strong> group.
+It can never step to occupation 0, and any group already at 0 blocks
+every extension. That includes SMO’s group 0 at nominal 0
+(<code>{0:0, 1:3}</code>). In production it is reached only via P8:
+every wrong-sector failure is an HF-not-converged fallback.</td>
+<td><em>(r2)</em> <strong>Delete both <code>all(...)</code>
+clauses.</strong> <code>dN_gs</code> is already 0 for frozen groups, and
+<code>get_energy</code> (~<code>:668-677</code>) rejects out-of-range
+totals and frozen values. With the patch, all 11 failing models flip to
+the exact E0, a frozen empty shell goes −4.490 → −6.632, and two-group
+models work. Canonicalise the per-group split before returning: negative
+splits like <code>{0:-1, 1:1}</code> already occur, and MS’s per-shell
+N0 would inherit them. Alternative: run the HF branch’s bounded axis
+walk (<code>:807-834</code>) from the scan winner, which is also P8’s
+fallback.</td>
+</tr>
+<tr>
+<td><strong>P8</strong></td>
+<td><strong>C</strong> run: <code>hf_conv.py</code>,
+<code>hf_dbg.py</code>; <em>(r2)</em>
+<code>review_code/hf_gap.py</code></td>
+<td>HF converges for 92–97% of real random models but only 33–43% of
+complex/SOC ones. The Fock matrix is the exact gradient (‖F−∂E‖ ≈ 1e-9).
+<em>(r2)</em> It is not a degenerate Fermi level (0 of 45 non-converged
+last iterates have a gap &lt; 1e-3); Fermi smearing recovers 22 of 45,
+which points at sloshing between fixed points. A single-call count gave
+75/120 for complex models; recheck how <code>hf_conv.py</code> counts
+before quoting the rate. Every failure falls back to the scan (P7). The
+seed is also <strong>off by one on every SMO workload</strong> even when
+converged (seed N4, winner N3; 371 s = 19% on SMO 4-bath).</td>
+<td>Level shifting / DIIS / ODA and more starts. On failure, walk ±1
+from the nominal N0. Make “HF seed rejected” default-visible. For the
+off-by-one, start the walk cheaply (see B1). Keep
+<code>winning_N0</code>/<code>converged</code> broadcast as the only
+source (<code>groundstate.py:510-512</code>).</td>
+</tr>
+<tr>
+<td><strong>P11</strong> <em>(review)</em></td>
+<td><strong>C</strong> read</td>
+<td>The walk decides between cap-bound, variational <code>Lowest</code>
+energies with <strong>no margin check</strong>. It never compares the
+gap with the error bar, and it never records convexity. <em>(r2,
+physics)</em> N_imp is not conserved, so E_N(μ) is
+<strong>concave</strong> (a −½χμ² term), not affine.</td>
+<td>Record the margin-to-error ratio and the second difference. Below 1:
+tighten that sector or extend to N±2. Cross-check E_N(μ) ≤ E_N(0) −
+μn_N(0) <strong>one-sided</strong>, with a χ-sized margin. Decide on
+rank 0 and broadcast. One summary line.</td>
+</tr>
+<tr>
+<td><strong>P9</strong></td>
+<td><strong>C</strong> run: oracle notes. <em>(r2)</em>
+<strong>production evidence:</strong> the losing sectors of 3 of 5
+workloads are inside the cut (§3)</td>
+<td>Neighbouring N sectors inside the thermal window are dropped
+silently at fixed N.</td>
+<td>MV plan. Cheapest step now: warn with ΔE/τ from the walk’s energies.
+<em>(r2, physics)</em> <strong>Drop</strong> rev. 1’s free-energy
+re-ranking (E − τ ln g). It needs Z_N over a window the walk never
+solves, and it only matters in MV’s regime.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="false-certification">False certification</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>ID</th>
+<th>status</th>
+<th>finding</th>
+<th>proposed modification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C2’</strong></td>
+<td><strong>C</strong> run <em>(r2)</em>:
+<code>review_code/c2_small.py</code></td>
+<td><code>eigensolvers.py:496</code>: <code>except ValueError</code>
+around the locked fallback <code>run(...)</code> sets
+<code>saturated=[]</code>, and the earlier <code>certified=True</code>
+stands. <em>(r2)</em> The swallowed error in practice is
+<code>trlm.py:374</code> (“max_subspace_blocks must be strictly
+greater…”). The fallback’s fresh block (r_new=8) deflates against
+<code>locked</code> to rank 6, while <code>krylov_depth</code> was sized
+for the width before deflation (<code>gs_krylov_blocks(10,8,8)=2</code>
+vs k_blocks=ceil(8/6)=2). Repro: n=10 with a 6-fold ground level returns
+n_in=4, certified=True. <code>LinAlgError</code> is a
+<code>ValueError</code> subclass, so <code>eigh</code> failures are
+swallowed too. Production goes dense below <code>dense_cutoff</code>, so
+exposure is <strong>P</strong>.</td>
+<td>Size the fallback depth, and clip r_new, on the complement dimension
+<code>n_global − locked.shape[1]</code>. Treat only
+<code>BlockBreakdown</code> with code k==0 as “empty complement”.
+Everything else gives <code>certified=False</code>, not a re-raise.
+Verify at -n 3, since the catch wraps a collective.</td>
+</tr>
+<tr>
+<td>C1</td>
+<td><strong>R</strong></td>
+<td>TRLM’s breakdown → <code>invariant_subspace_continuation</code> is
+correct for a genuine invariant subspace.</td>
+<td>Optional: narrow to <code>BlockBreakdown</code>.</td>
+</tr>
+<tr>
+<td><strong>C4</strong></td>
+<td><strong>C</strong> run: <code>c4_store.py</code></td>
+<td><code>SectorPlanStore.record</code> keeps the first record
+(<code>sector_solver.py:1073</code>). After <code>violated()</code> and
+a recertification (<code>groundstate.py:337-353</code>), the new
+verdicts are dropped. <code>window_overtake</code> stays skipped because
+<code>only</code> stays non-None.</td>
+<td>Replace the record after a full recertification, and set
+<code>only = None</code> there. Test: monkeypatch
+<code>solve_certified</code> to trip <code>violated()</code>, then
+assert that the record’s μ and verdicts are replaced. A unit test of the
+store alone does not discriminate.</td>
+</tr>
+<tr>
+<td><strong>M4</strong></td>
+<td><strong>C</strong> run: <code>prof_nio10_n1/n4.log</code>,
+<code>union_nio10_n4.log</code></td>
+<td><code>memory_bound</code> depends on the rank count: NiO is null at
+-n 1 and true at -n 4 on the same basis and E0. <em>(r2)</em> The rev. 1
+cause (shm counted, <code>cipsi_budget.py:135</code>) is
+<strong>inferred, not measured</strong>: no log has the <code>-v</code>
+anon/shm lines. More: the union run sets <code>memory_bound: true</code>
+with zero discarded mass and zero cycles, and on SMO the “tightening”
+lowered the cap to the value already in force (509,546 → 509,546;
+440,512 → 440,512), while <code>_report_convergence</code>
+(<code>cipsi_solver.py:~1268</code>) still labels it memory.
+<code>_record_truncation</code> (<code>:1229</code>) reads only the last
+round’s discarded mass.</td>
+<td>Set <code>memory_bound</code> only when <code>_lower</code> actually
+lowers the threshold (<code>cipsi_budget.py:~165</code>). Accumulate a
+replicated “memory withheld” flag across rounds. Measure anon/shm with
+<code>-v</code> before changing the budget basis. If changed, use
+<code>peak − shmem</code> against an anon-based resident term on both
+sides (<code>memory_estimate.py:1029</code>), MAX/MIN-reduced. The code
+has no MPI shared windows, so anon budgeting loses no real cost. Depends
+on M1 (the discarded-mass allreduce sits under a branch replicated only
+if the budget is).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mpi-hazards">MPI hazards</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>ID</th>
+<th>status</th>
+<th>finding</th>
+<th>proposed modification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M1/M2</strong></td>
+<td><strong>C</strong> run: <code>mpi_env.py</code>; <em>(r2)</em>
+<code>review_mpi/m1_fixed.py</code></td>
+<td>When the env differs between ranks, the solve deadlocks for
+<code>GS_MEMORY_BUDGET_SAFETY=0</code>, <code>GS_CERTIFY_MAX_SEED</code>
+and <code>GS_SECTOR_CERTIFY</code>. <em>(r2)</em> <strong>Rev. 1’s fix
+is insufficient, measured.</strong> With the early return at
+<code>groundstate.py:113</code> moved below both collectives, the MPMD
+run still hangs (exit 124; the uniform control passes in 5.6 s). Whether
+a budget exists is rank-local. <code>measuring</code>
+(<code>cipsi_solver.py:1033</code>) runs two <code>_allreduce_max</code>
+calls in <code>determine_new_Dj</code> (<code>:889-901</code>) on one
+rank only, and <code>_frontier_matrix_fits</code> returns early at
+<code>:1318</code> while the other rank waits in the allreduce at
+<code>:1327</code>. <em>(r2)</em> The hazard covers more knobs:
+<code>APPLY_ROW_CHUNKS</code> (<code>_lanczos_step.pxi:847</code>, the
+number of collective <code>redistribute_block</code> calls),
+<code>GF_SUPPORT_TRACE</code> (an extra matvec), and an invalid
+<code>GS_LOWEST_SOLVER</code> raising rank-locally
+(<code>eigensolvers.py:807</code>).</td>
+<td><strong>(1)</strong> In <code>expand_memory_budget</code>, broadcast
+<code>safety</code> from root before the <code>&lt;= 0</code> test; make
+<code>_frontier_matrix_fits</code> reach its allreduce unconditionally.
+<strong>(2)</strong> <em>(r2)</em> Instead of the rev. 1 snapshot, which
+overrides env process-wide and breaks <code>gf_oracles.py:179</code> and
+<code>basis_size_harness.py:48</code>:
+<code>config.assert_uniform(comm)</code>. It allgathers a 64-bit digest
+of the raw env strings of every registered knob (Cython reads included),
+always, never cached, and raises the same error on every rank naming the
+knobs. Call it at <code>solve_ground_state</code>,
+<code>calc_selfenergy</code>, <code>run_spectra</code>,
+<code>calc_susceptibility(_workflow)</code>, rixs
+<code>calc_map</code>/<code>calc_tensor_map</code> and the DC entries. A
+per-knob <code>uniform</code> attribute exempts
+<code>GF_SECTOR_CACHE_DIR</code>. <strong>Test:</strong> set the knob on
+rank 1 only, assert that the <code>expand_memory_budget</code> results
+allgather equal and that every rank raises;
+<code>skipif(size == 1)</code>.</td>
+</tr>
+<tr>
+<td><strong>M5</strong> <em>(r2, new)</em></td>
+<td><strong>C</strong> read</td>
+<td>GF-side twin of M1, not env-driven.
+<code>KrylovShiftedResolvent.solve</code>
+(<code>gf_shift_recycling.py:563,637</code>) calls
+<code>available_bytes_per_rank()</code> <strong>without a comm</strong>:
+node-local MemAvailable, sampled per rank. It then returns
+<code>None</code> on some ranks while the others loop back into
+<code>block_lanczos</code>. It is reached from <code>rixs.py:350</code>
+on a colour comm. That is a latent multi-node RIXS deadlock, and near
+the memory threshold a single-node one too.</td>
+<td><code>available_bytes_per_rank(basis.comm)</code>. Same for
+<code>_sector_dense_max</code> (serial path only).</td>
+</tr>
+<tr>
+<td>M3</td>
+<td><strong>C</strong> run</td>
+<td><code>solve_ground_state(rank=0)</code> is the default, so spectra
+and the occupation DC print on every rank.</td>
+<td>Use <code>comm.rank</code>; drop the parameter. <em>(r2)</em>
+Callers that pass <code>rank=</code> must change in the same commit:
+<code>oracle.py</code>, <code>dc_criteria.py:300/767/845/1064</code>,
+<code>test_fixed_dc</code>, <code>test_sector_certify</code>,
+<code>_nio_workload</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inconsistencies-between-consumers">Inconsistencies between
+consumers</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>ID</th>
+<th>status</th>
+<th>finding</th>
+<th>proposed modification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P3</strong></td>
+<td><strong>C</strong> run: <code>parity_susc.log</code></td>
+<td>Susceptibility: chain_restrict hard-coded False, no weighted
+restrictions or tolerances
+(<code>susceptibility.py:489-509</code>).</td>
+<td>A1, with its own χ baseline.</td>
+</tr>
+<tr>
+<td><strong>P2</strong></td>
+<td><strong>C</strong> run: <code>parity_spectra.log</code></td>
+<td>Spectra solves the GS at swmin 0 but builds restrictions at 1.5e-8,
+and drops chain_restrict, dense_cutoff, mixed_valence and the
+tolerances.</td>
+<td>A1. Unifying changes the XAS/RIXS final-state bases, so it needs a
+spectrum A/B <strong>including RIXS</strong>. <code>run_spectra</code>
+gains <code>SolverOptions</code> (a public, TOML and CLI signature
+change; RSPt is unaffected).</td>
+</tr>
+<tr>
+<td><strong>P4</strong></td>
+<td><strong>C</strong> read</td>
+<td><code>SpectraOptions.energy_cut</code> (<code>model.py:1767</code>,
+<code>scripts/spectra.py:271</code>) and <code>ctx.energy_cut</code>
+(<code>dc_criteria.py:1869/2015</code>) are written and never read.</td>
+<td>Wire it to <code>Within(...)</code>, or delete it.</td>
+</tr>
+<tr>
+<td><strong>P10</strong></td>
+<td><strong>C</strong> run: caps 727105/693785/734146 on consecutive
+runs; 579,384 vs 626,972 on NiO</td>
+<td>The auto cap is re-derived from live free memory on every call, so
+the DC search, Σ and each DMFT iteration run at different caps. <em>(r2,
+numerics)</em> It also confounds every 1-rank vs 4-rank comparison in
+§3.</td>
+<td><em>(r2, architecture)</em> Resolve it in the
+<strong>caller</strong>: RSPt calls the DC and
+<code>calc_selfenergy</code> as separate API calls
+(<code>impmod_interface lib.py:1402-1426, 1542</code>). Pass a resolved
+<code>CapPolicy</code> through
+<code>BasisOptions.truncation_threshold</code>. Hidden dependency:
+<code>cap_from_memory = bcast(threshold is None)</code>
+(<code>dc_criteria.py:790, 1954</code>) would read a passed policy as
+user-set and switch off recalibration, so change it to
+<code>CapPolicy.coerce(...).from_memory</code> first. Replaying
+min(recorded, current) needs an archive attribute and an RSPt header
+field, read on rank 0 and broadcast.</td>
+</tr>
+<tr>
+<td>P5/P6</td>
+<td><strong>C</strong> read/run</td>
+<td><em>(r2)</em> The DC paths use <strong>three</strong> tolerance
+rules: <code>_prepare_sector_context</code> takes argument &gt;
+<code>DC_*</code> &gt; basis &gt; GS
+(<code>dc_criteria.py:847-848</code>); the <code>_SectorContext</code>
+default (<code>:457-459</code>); the occupation context uses
+<code>basis.e_pt2_tol</code> only. Σ ignores <code>DC_*</code>.
+dense_cutoff has <strong>four</strong> default sources: schema 500
+(<code>schema.py:1173</code>), <code>SolverOptions</code> 500
+(<code>model.py:1569</code>), the archive reader 1000
+(<code>model.py:1251</code>), the GS functions 1000. dense_cutoff
+changes the basis (21,257 vs 23,832 dets, <code>stag2.py</code>).</td>
+<td>Name one owner per default. One precedence: the DC knob if set
+(opt-in, for a rough DC; kept per O2), else the spec. B8 reuses states
+only when the knobs are unset.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ruled-out">Ruled out</h3>
+<ul>
+<li><strong>C6, rank-layout dependence: R.</strong>
+<code>logs/rankinv.log</code> agrees at -n 1/2/3 to the 9 decimals it
+prints <em>(r2: not bitwise)</em>.</li>
+<li><strong>R3</strong> as stated: <strong>R</strong>.
+<strong>R4</strong>, dense solves not cached: negligible (0.28 s on
+NiO).</li>
+<li><em>(r2)</em> <strong>“Printed once prints twice”: R, a harness
+artefact.</strong> <code>emit_memory_warning</code>
+(<code>memory_estimate.py:1353-1366</code>) prints to stdout
+<em>and</em> <code>sys.__stderr__</code> by design, as the RSPt channel.
+The profiles merged both streams (<code>2&gt;&amp;1</code>). Do not
+“fix” it. The real asymmetry: the per-sub-solve “not converged” warning
+(<code>cipsi_solver.py:1301</code>) goes to stdout only.</li>
+</ul>
+<h2 id="bottlenecks-measured">3. Bottlenecks (measured)</h2>
+<p>Trace kinds nest:
+<code>sector_solve ⊃ certify ⊃ {class_expand, class_eigensolve, union expand}</code>,
+with <code>eigensolve</code>, <code>h_matrix_build</code> and
+<code>cipsi_selection</code> as siblings inside those. Do not sum across
+them.</p>
+<p><em>(r2)</em> Caveats on the numbers: - <strong>peakRSS</strong>
+comes from <code>ru_maxrss</code>, which <code>clear_refs</code> resets,
+so it is a lower bound since the last reset. NiO -n 4 reports 1009 MiB
+while the guard measured 1.5 GiB. - <strong>The 1-rank vs 4-rank
+speedups</strong> compare different caps and bases (P10). -
+<strong>“Report &amp; rest”</strong> covers more than the GS report.</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+<col style="width: 11%" />
+</colgroup>
+<thead>
+<tr>
+<th>workload</th>
+<th>ranks</th>
+<th>calc_gs</th>
+<th>walk</th>
+<th>thermal</th>
+<th>report &amp; rest</th>
+<th>dets: walk winner → thermal</th>
+<th>notes</th>
+<th>log</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NiO 10-bath it.1</td>
+<td>1</td>
+<td>411 s</td>
+<td>220 s (d8 50 s, <strong>d7 165 s</strong>, d9 3 s)</td>
+<td>138 s</td>
+<td>~53 s</td>
+<td>47,080 → <strong>624,574</strong> (3-fold)</td>
+<td></td>
+<td><code>prof_nio10_n1.log</code></td>
+</tr>
+<tr>
+<td>NiO 10-bath it.1</td>
+<td>4</td>
+<td>344 s</td>
+<td>192 s</td>
+<td>119 s</td>
+<td>~33 s</td>
+<td>same</td>
+<td></td>
+<td><code>prof_nio10_n4.log</code></td>
+</tr>
+<tr>
+<td>NiO 10-bath it.1, rerun</td>
+<td>4</td>
+<td>351 s</td>
+<td>210 s</td>
+<td>107 s</td>
+<td>~34 s</td>
+<td>47,080 → <strong>379,129</strong> (cap 579,384)</td>
+<td>same E0, χ_zz and per-state observables</td>
+<td><code>union_nio10_n4.log</code></td>
+</tr>
+<tr>
+<td>SMO 2-bath</td>
+<td>4</td>
+<td>170 s</td>
+<td>137 s (N4 18 s, N3 30 s, N5 4 s, <strong>N2 85 s</strong>)</td>
+<td>25 s</td>
+<td>~8 s</td>
+<td>37,925 → 153,998 (4-fold)</td>
+<td>HF seed N4, winner N3</td>
+<td><code>prof_smo2_n4.log</code></td>
+</tr>
+<tr>
+<td>SMO 3-bath</td>
+<td>4</td>
+<td>1112 s</td>
+<td>827 s (N4 87 s, N3 210 s, N5 17 s, <strong>N2 513 s</strong>,
+cap-bound)</td>
+<td>255 s</td>
+<td>~30 s</td>
+<td>247,974 → 452,240 (4-fold), <code>converged: False</code></td>
+<td>thermal 1.5e-8 above walk, residual 5e-8</td>
+<td><code>prof_smo3_n4.log</code></td>
+</tr>
+<tr>
+<td>SMO 3-bath</td>
+<td>1</td>
+<td>1463 s</td>
+<td>1070 s (N2 718 s)</td>
+<td>340 s</td>
+<td>~50 s</td>
+<td>247,974 → 509,546</td>
+<td>thermal 6e-9 above walk, residual 2.2e-8</td>
+<td><code>prof_smo3_n1.log</code></td>
+</tr>
+<tr>
+<td>SMO 4-bath</td>
+<td>4</td>
+<td>1986 s</td>
+<td>1566 s (N4 371 s, N3 511 s, N5 40 s, <strong>N2 644 s</strong>)</td>
+<td>384 s</td>
+<td>~35 s</td>
+<td>440,512 (cap) → 440,512, residual 1.75e-5</td>
+<td>thermal 3.8e-6 above walk; 4-fold level spread 7.6e-6</td>
+<td><code>prof_smo4_n4.log</code></td>
+</tr>
+<tr>
+<td>CrI3 SOC</td>
+<td>4</td>
+<td>2346 s</td>
+<td>1557 s (seed 506 s, <strong>N2 954 s</strong>, at the cap; N4 96
+s)</td>
+<td>748 s</td>
+<td>~40 s</td>
+<td>405,687 → 487,647</td>
+<td><strong>2 of 4 quartet states kept (S3)</strong></td>
+<td><code>prof_cri3_n4.log</code></td>
+</tr>
+<tr>
+<td>CrI3 SOC</td>
+<td>1</td>
+<td>2953 s</td>
+<td>1905 s</td>
+<td>979 s</td>
+<td>~70 s</td>
+<td>→ 518,555, reported untruncated and converged</td>
+<td><strong>still 2 states: the union cut is unreported
+(S3)</strong></td>
+<td><code>prof_cri3_n1.log</code></td>
+</tr>
+<tr>
+<td>FCC Ni 15-bath it.1</td>
+<td>4</td>
+<td><strong>&gt; 5400 s (timed out)</strong></td>
+<td>the d9 seed sector alone ~47 min: 5 cap-bound class expansions at
+723,036, residual ~1.2e-5</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>not attributed (B8 note)</td>
+<td><code>prof_fccni15_n4.log</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Losing sectors and the thermal cut</strong> <em>(r2)</em>.
+With cut = 9.21τ, the losing sectors that dominate the walk are:</p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>sector</th>
+<th>gap</th>
+<th>cut</th>
+<th>inside the cut?</th>
+<th>share of calc_gs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SMO 4-bath N2</td>
+<td>0.0079</td>
+<td>0.0175</td>
+<td><strong>yes</strong>, Boltzmann ≈1.5% before multiplicity</td>
+<td>32%</td>
+</tr>
+<tr>
+<td>CrI3 N2</td>
+<td>0.0183</td>
+<td>0.0230</td>
+<td><strong>yes</strong>, ≈7e-4</td>
+<td>41%</td>
+</tr>
+<tr>
+<td>NiO d9</td>
+<td>0.02283</td>
+<td>0.02303</td>
+<td>at the 1e-4 design edge</td>
+<td>—</td>
+</tr>
+<tr>
+<td>SMO 3-bath N2</td>
+<td>0.034</td>
+<td></td>
+<td>no</td>
+<td>46%</td>
+</tr>
+<tr>
+<td>NiO d7</td>
+<td>0.044</td>
+<td></td>
+<td>no</td>
+<td>41% (-n 1)</td>
+</tr>
+</tbody>
+</table>
+<p>So under MV, 3 of 5 workloads have K = 2, and the expensive loser is
+a member, not waste.</p>
+<p><strong>“Thermal worse than walk” on SMO</strong> <em>(r2, numerics,
+physics)</em>: - <strong>The deficits sit inside the error
+bars:</strong> 6e-9 vs 2.2e-8, 1.5e-8 vs 5e-8, 3.8e-6 vs 1.75e-5. -
+<strong><code>converged: False</code> is printed.</strong> The walk
+prints E to four decimals, though, which hides the comparison. -
+<strong>The <code>limited_by: memory</code> label is wrong
+there</strong> (see M4). - <strong>The cause is the auto cap, sized “for
+the ground state alone”, applied to a 4-state union.</strong> The
+winning level alone needs about 4 × 248k determinants. - <strong>The
+harm is broken symmetry (S2), not the energy.</strong> |S_z|=1/2 sits
+6e-6 above 3/2 and ±3/2 differ by 4.2e-7. The Hamiltonian’s SU(2) and
+spin-flip symmetry are lost in the states handed to the GF stage. Under
+SYM this is a correctness defect, whatever its Boltzmann size (0.4% at τ
+= 0.0019). - <strong>Fixes:</strong> S2 (orbit-closed growth and cuts),
+and a cap resolved for the <code>Within</code> manifold (with P10).
+Detection: any split of a degenerate level beyond roundoff, decided on
+rank 0 and broadcast. Do <strong>not</strong> seed the thermal solve
+from the walk basis (that breaks the symmetry).</p>
+<p><strong>Matrix-build share</strong> <em>(r2, numerics)</em>.
+<code>h_matrix_build</code> is 22% of calc_gs (NiO), 31–32% (SMO) and
+50% (CrI3). That arithmetic is right. But builds equal sparse plus dense
+eigensolve calls <em>by construction</em> (NiO 399 + 74 = 473), so
+“builds &gt; selections” proves nothing about rebuilds. Measured split
+on SMO 2-bath at -n 2 (<code>build_probe_smo2_n2.log</code>):</p>
+<table>
+<thead>
+<tr>
+<th>build kind</th>
+<th>time</th>
+<th>share of build time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>incremental reuse (<code>set_p_keys</code>)</td>
+<td>68.6 s</td>
+<td>58%</td>
+</tr>
+<tr>
+<td>verdict rebuilds</td>
+<td>34.4 s</td>
+<td>29%</td>
+</tr>
+<tr>
+<td>fresh frontier builds</td>
+<td>15.1 s</td>
+<td>13%</td>
+</tr>
+</tbody>
+</table>
+<p><code>matrix_hook</code> (ClassPenalty) is nested inside the build,
+not additive. At -n 4 the frontier snapshot (0.1 × budget) may be
+refused. CrI3’s 6.9 s per build suggests a full rebuild every cycle, so
+re-measure at production budget.</p>
+<p>Levers. <em>(r2)</em> All expected gains are <strong>upper
+bounds</strong> until measured on the change.</p>
+<ul>
+<li><strong>B1. Stop clearly losing sectors early, using a bound that
+exists.</strong>
+<ul>
+<li><em>(r2)</em> Rev. 1’s ceiling “E_var − c·residual_PT2 &gt; E_best +
+margin” fails twice. Its margin (0.17) exceeds every measured gap, so it
+never fires. And the code’s <code>residual_pt2</code> is the mass of
+<em>un-admitted</em> candidates (<code>cipsi_solver.py:810</code>),
+which sits near e_pt2_tol by construction during growth: it
+underestimates the remaining drop by 90–2.8e4× early on
+(<code>review_numerics/pt2_bound.py</code>).</li>
+<li><strong>Lever:</strong> the pass-1 trajectory bound
+<code>lower</code> from <code>_ranking_remaining</code>
+(<code>sector_solver.py:95</code>, RANK_FLOOR 1e-3). Pass the walk’s
+E_best into <code>certify_sector</code>, and skip pass 2 for classes
+with <code>lower &gt; E_best + margin</code>.</li>
+<li><strong>Expected:</strong> about 55–66% of a losing sector (that
+function’s own NiO replay). <strong>Nothing</strong> on sectors inside
+<code>cut + margin</code> (J2), so nothing on SMO 4-bath N2, CrI3 N2 or
+NiO d9 under MV. Not for the DC peak/gap path (a per-call option).</li>
+<li>Implement it through <code>cycle_hook</code> (stop broadcast at
+<code>cipsi_solver.py:1077</code>), composed with
+<code>_expand_job</code>’s hook (<code>sector_solver.py:450</code>), not
+overwriting it.</li>
+</ul></li>
+<li><strong>B2. Thermal union margin.</strong> Must keep orbit closure
+(SYM): drop or continue whole classes with their partners and images.
+<ul>
+<li><em>(r2)</em> <strong>Rev. 1’s cause was wrong.</strong> NiO’s
+growth is neither the PT2 budget split nor “the cap sets the size”.
+<code>solve_certified</code> admits classes with
+<code>margin = within + max(residual over ALL verdicts)</code>
+(<code>sector_solver.py:603</code>). On NiO, window 0.02303 becomes
+margin 0.028, inflated by two ranking-only classes with residual
+~5e-3.</li>
+<li><strong>Measured</strong> (<code>union_probe_n2.log</code>): the
+winning triplet (classes of 47,080 + 25,584 dets plus partner rows) is
+<strong>134,804 dets, 2.9× the walk’s 47k</strong>. The rest (244k–490k)
+is whole classes of a level at +0.02646, <em>outside</em> the window
+(Boltzmann 2.5e-5), admitted through the inflated margin. The cap only
+decided whether one or two of them fit: 379,129 vs 624,574. The
+<code>Within</code> expand admits nothing (cycles 0). The identical E0
+is trivial, because those classes carry a different parity label. The
+same holds for χ_zz and every per-state observable to 6 digits.</li>
+<li><strong>Lever:</strong> a per-class error bar
+(<code>_energy_error(v)</code>) instead of the global maximum. Resolve
+ranked or leaked classes with an uncertain bound by continuing them
+(~91k dets), rather than admitting them whole with partners.</li>
+<li><strong>Expected:</strong> NiO thermal basis 624k → ~135k
+(<strong>4.6×</strong>). B6 and the GF stage shrink with it. Judge on Σ
+(Σ/G are untested); report the discarded norm, not the determinant
+count.</li>
+<li>Rev. 1’s alternative (“expand one row, close under S±”) is what
+<code>solve_certified</code> already does.</li>
+</ul></li>
+<li><strong>B3. Hand the walk’s winning-sector class keys to the thermal
+solve.</strong> <code>jobs_at</code> re-expands every in-window class
+from the seed at the same shift and accuracy: ~64 s on NiO.</li>
+<li><strong>B4. Matrix reuse in verdict solves.</strong> Pass the held,
+un-hooked matrix in as <code>h_matrix</code> (<code>expand</code> drops
+<code>_h_matrix</code> at <code>cipsi_solver.py:1176</code>).
+<em>(r2)</em> <strong>≤ ~11% of calc_gs</strong> on SMO 2-bath.
+Re-measure at production budget with
+<code>review_numerics/build_probe.py</code> before ranking. The
+incremental path (58% of build time) is the bigger target.</li>
+<li><strong>B5. Capped refinement stopping rule.</strong>
+<ul>
+<li><em>(r2)</em> The actual rule is “two consecutive cycles without
+improving by more than e_tol, or 10 cycles”
+(<code>cipsi_budget.py:197-207</code>).</li>
+<li>Rev. 1’s lever loses accuracy (<code>review_numerics/r3b.py</code>):
+<ul>
+<li>stopping at gain &lt; κ·residual leaves 9.5e-6 instead of 6.0e-6 at
+cap 2000;</li>
+<li>a 1e-5 floor is 5–26× worse at cap 5000;</li>
+<li>under a cap the residual underestimates the true error by 0.8–5×.
+The cycles are not wasted.</li>
+</ul></li>
+<li><strong>Lever:</strong> stop when a geometric-tail prediction of the
+remaining gain falls below the accuracy that matters: the sector margin,
+or 0.1τ for MV.</li>
+</ul></li>
+<li><strong>B6. GS report.</strong> Unpriced (part of “report &amp;
+rest”). It shrinks with B2.</li>
+<li><strong>B7. Task parallelism.</strong>
+<ul>
+<li>399 small Davidson/TRLM solves are latency-bound
+(<code>eigensolve</code> 176 → 168 s from 1 to 4 ranks).</li>
+<li>Lever: run independent class jobs on sub-communicators.</li>
+<li><em>(r2, MPI)</em> Requirements:
+<ul>
+<li>take the budget from the parent comm before the split and divide it
+among colours (<code>available_bytes_per_rank</code> divides by the
+sub-comm’s ranks per node, so colours overcommit);</li>
+<li>assign jobs to colours statically and merge verdicts in job order,
+because the leak verdict is order-dependent
+(<code>sector_solver.py:476-478</code>);</li>
+<li>gather every colour’s verdicts before
+<code>record</code>/<code>violated</code>/<code>jobs_at</code>/<code>manifold_deficit</code>;</li>
+<li>broadcast results rather than recompute them, since the release
+build is not bitwise-replicated;</li>
+<li>free the comms at a synchronized point, never from the GC;</li>
+<li>no <code>dc_criteria</code> COMM_WORLD inside a colour;</li>
+<li>test at -n 3 and -n 4.</li>
+</ul></li>
+</ul></li>
+<li><strong>B8. DC search followed by a full re-solve in Σ (R1 = MV
+§J4).</strong> Every RSPt DMFT iteration re-runs the prep, cap probe,
+walk and thermal solve.
+<ul>
+<li><strong>Bounded, not measured</strong> (§5): ~350 s NiO, ~1100 s SMO
+3-bath, ~2000 s SMO 4-bath, ~2350 s CrI3 per iteration at 4 ranks.</li>
+<li>Needs: A1 spec equality, the same dc, a caller-resolved cap (P10),
+and <em>(r2, architecture)</em> a new <code>calc_selfenergy</code> input
+that accepts a precomputed ground state or ensemble.</li>
+<li>O2: the DC tolerances stay. Reuse the states when they are unset
+(the default), and only the sector choice when the user loosened
+them.</li>
+</ul></li>
+<li><strong>FCC Ni</strong> <em>(r2)</em>. It took over 90 min and the
+walk did not finish. Its cost structure is classes × cap (five cap-bound
+class expansions in the seed sector alone). Attribute it to B1/B5/B7
+only after a per-class, per-cycle trace.</li>
+</ul>
+<h2 id="architecture-and-ux">4. Architecture and UX</h2>
+<ul>
+<li><strong>A1. <code>GroundStateSpec</code></strong> (frozen dataclass)
+in <code>groundstate.py</code> (Layer 5). <em>(r2, architecture)</em>
+<ul>
+<li><strong>The test for membership:</strong> whatever decides <em>which
+state is found</em> belongs in the spec. That is the
+<code>solve_ground_state</code> docstring’s own invariant
+(<code>groundstate.py:946-952</code>).</li>
+<li><strong>Carries:</strong> tolerances; dense_cutoff; chain_restrict;
+the restriction <strong>inputs</strong> (excitation_budget, cost_budget,
+swmin), not the built list (it depends on h_op: built at dc_guess for
+DC, at the final dc for Σ); <code>use_hf_seed</code>; the resolved cap
+(P10); the frozen set (spectra builder only, J1).</li>
+<li><strong>Leaves out:</strong>
+<ul>
+<li><code>comm</code>, <code>rank</code>, <code>plan_store</code>,
+<code>shift</code> and <code>verbose</code>;</li>
+<li><code>shell_ls</code> and the per-shell N0, which
+<code>SolverBasis</code> owns (a copy would be a second source of
+truth);</li>
+<li>the MV ensemble switch until MV 5 adds it, either as a
+<code>plan_ensemble</code> argument or as a field excluded from the
+solve key (<code>auto</code> resolves only after the walk).</li>
+</ul></li>
+<li><strong>One builder per driver</strong>, taking the
+<code>*Options</code> dataclasses duck-typed (<code>groundstate</code>
+must not import <code>model</code>) plus the group keys. All three front
+ends converge on those dataclasses, which is why one spec serves TOML,
+the CLIs and RSPt. Touch points:
+<code>inputformat/{schema,build}.py</code>, <code>lib.py</code>, and
+<code>model.py</code>’s archive round trip, which also drops
+<code>de2_min</code>.</li>
+<li>It replaces the untyped <code>basis_setup</code> dict and
+<code>calc_gs</code>’s pass-through, including the legacy renames at
+<code>groundstate.py:1124-1127</code>. It feeds every entry in §1:
+<code>solve_ground_state</code>, the DC walk (<code>:498</code>) and
+<code>solve_sector</code> (<code>:577</code>).</li>
+<li><strong>Plan-store key:</strong>
+<code>(sector_key, len(basis), spec.solve_key)</code>, which removes the
+<code>float(e_pt2_tol or 0.0)</code> collision structurally.</li>
+<li><strong>Series</strong> (each step its own commit):
+<ul>
+<li><ol type="a">
+<li>bit-identical plumbing: each driver builds today’s values
+explicitly, so the differences become visible;</li>
+</ol></li>
+<li><ol start="2" type="a">
+<li>one unification per commit, each with its A/B: P3 χ, P2 spectra +
+RIXS, P5 DC tolerances, P6 dense_cutoff;</li>
+</ol></li>
+<li><ol start="3" type="a">
+<li>P10 separately.</li>
+</ol></li>
+</ul></li>
+</ul></li>
+<li><strong>M1’s knob check</strong> lives in <code>config</code> (Layer
+0), not the spec (§2).</li>
+<li><strong>UX</strong> <em>(r2, UX)</em>:
+<ul>
+<li><strong>One summary at the end of <code>calc_gs</code></strong>, not
+after the walk: the thermal events (regression, cap tightening) happen
+after it. DC prints it for the accepted μ only (as MV D6), at
+V_RESULT.</li>
+<li><strong>Walk table columns:</strong> sector, E (to the error bar’s
+digits), dets, error bar, limited_by, certified, wall time. That makes a
+separate “k of n cap-bound” line redundant.</li>
+<li><strong>Every warning names its knob</strong> for each front end:
+CLI flag, TOML key, RSPt solver-line token, env var. State the effective
+accuracy (“E0 limited by the cap to ~1e-5”) rather than “not converged
+against 1e-8”.</li>
+<li><strong>stderr is tiered.</strong> It is the only channel the RSPt
+DC and Σ passes share (they write different files,
+<code>lib.py:1209-1218</code>). Only four events go there:
+<ul>
+<li>the thermal result regressed beyond its error bars;</li>
+<li>margin/error below 1;</li>
+<li>MV dropped weight above 1e-2;</li>
+<li>memory-bound with withheld mass.</li>
+</ul></li>
+<li><strong>Progress:</strong> print “solving sector N=…” at each trial;
+a rate-limited heartbeat (every ~5 min: cycle, dets, error, elapsed); an
+early “cap-bound at cycle k, error ~1000× tol, result will be
+cap-limited” line. FCC Ni printed nothing for 47 minutes.</li>
+<li><strong>Also:</strong> HF seed vs winner (“seed N=4 → winner N=3”);
+name the certified labels next to <code>converged</code>; state the
+frozen set and its provenance; print ΔE to N±1 in τ. Drop the
+“GS_MAX_BLOCK_WIDTH is unset… set it” nag, which advertises an internal
+env var on every run, and fix “1 states”.</li>
+</ul></li>
+<li><strong>Hygiene (read):</strong>
+<ul>
+<li>stale docs: <code>dc_criteria.py:33-46,384,1954</code>;
+<code>gf_units.py:47</code>; <code>gs_report.py:88-91</code>;
+<code>cipsi_solver.py:549,620,981,1414</code>;
+<code>config.py:602,721,766</code>; <code>groundstate.py:116</code>;
+<code>test_fixed_dc.py:232</code> (“basis_generation freezes any
+bath-less group” is false); the lazy-import comment at
+<code>dc_criteria.py:1987</code>;</li>
+<li>unused parameters:
+<code>_candidate_overlaps_and_energies(slaterWeightMin)</code>,
+<code>_local_diagonal(offset)</code> (<code>eigensolvers.py:567</code>),
+trlm <code>slaterWeightMin</code>/<code>basis</code>;</li>
+<li><code>solve_window(max_keep)</code> is never passed, so retention is
+unbounded;</li>
+<li><code>load_selfenergy_archive</code> drops
+<code>de2_min</code>;</li>
+<li>Boltzmann weights are computed in
+<code>gs_statistics._boltzmann_weights</code> and
+<code>ThermalEnsemble</code>; MV D2 would add
+<code>average.sector_weights</code> as a third, so consolidate in MV
+5;</li>
+<li>the occupation DC hard-codes <code>MPI.COMM_WORLD</code>
+(<code>dc_criteria.py:1960, 2052</code>).</li>
+</ul></li>
+<li><strong>H3. Degeneracy grouping. Architecture, not hygiene; schedule
+it before C7.</strong> <em>(r2)</em>
+<ul>
+<li>Four rules: <code>cipsi_solver.py:166-180</code> and its verbatim
+copy <code>eigensolvers.degenerate_groups</code> (<code>:53</code>)
+anchor on the first member; <code>cipsi_solver.py:384</code> anchors on
+the last kept; <code>trlm.py:211</code> chains neighbours.</li>
+<li>Tolerances vary: 1e-9, 1e-10 (seed_sectors), 1e-6
+(<code>susceptibility.py:57</code>, <code>observables.py:711</code>,
+<code>gs_connectivity:132</code>).</li>
+<li><code>selfenergy.py:9</code> imports the private helpers.</li>
+<li>Fix: one public helper in a leaf module. C7, B2 and the MV χ merge
+all group levels.</li>
+</ul></li>
+</ul>
+<h2 id="measurements-2026-10-30">5. Measurements (2026-10-30)</h2>
+<ul>
+<li><strong>Profiles:</strong> the §3 table. FCC Ni timed out after 90
+min inside the walk.</li>
+<li><strong>SMO 3-bath at -n 1:</strong> same regression pattern, inside
+the error bars (§3).</li>
+<li><strong>NiO union:</strong> the cause is the margin, not the cap
+(B2, <code>review_numerics/union_probe_n2.log</code>). The §3 rerun row
+is that measurement. <code>memory_bound: true</code> with zero withheld
+mass (M4).</li>
+<li><strong>R1/B8 price: not measured.</strong> Both DC configs failed
+in the search on the input: the example
+<code>h0_NiO_10bath.pickle</code> is not Fermi-referenced (every level
+below E_F). Fixed-gap landed at n_center = 1; fixed-occupation saturated
+at n_ref = 10. Those searches took 393 s and 471 s
+(<code>logs/r1_fixed_*_n4.log</code>). The bound is in B8. A measured
+price needs an archive-based DC with an explicit occupation target.</li>
+<li><strong>Bath-less group survey:</strong> none in any production
+archive (<code>logs/bathless.log</code>).</li>
+<li><strong>Core conservation in spectra:</strong> 413/413 terms
+(<code>logs/core_conserve.log</code>); structural (P1).</li>
+<li><strong>CrI3 quartet: traced (S3).</strong> The class expansions
+find all members. The thermal union then drops the two later in-window
+classes whole at the cap, and the run still reports itself untruncated
+and converged. That report hid the cause from the 1-rank rerun.</li>
+</ul>
+<h2 id="joint-plan-with-the-mixed-valence-and-multishell-plans">6. Joint
+plan with the mixed-valence and multishell plans</h2>
+<ul>
+<li><strong>MV:</strong>
+<code>doc/plans/mixed_valence_sector_ensemble.md</code> (rev. 2). It
+repurposes <code>mixed_valence</code> as the grand-canonical
+multi-sector switch and removes seed widening.</li>
+<li><strong>MS:</strong>
+<code>impmod_interface/doc/plans/multishell_cluster_support.md</code>,
+G4 (T4.1–T4.7). It adds the shell model, per-shell N0 and DC shifts on
+the active shells.</li>
+</ul>
+<p>Neither has landed (<code>shell_ls</code>, <code>frozen_groups</code>
+and <code>active_impurity_indices</code> do not exist in
+<code>src/</code>).</p>
+<p><strong>ID crosswalk</strong> <em>(r2)</em>. MV’s references use
+older numbering. It cites “<code>gs_redesign.md</code> P7”, but that doc
+has no P-IDs; it means this review’s P7.</p>
+<table>
+<thead>
+<tr>
+<th>this review</th>
+<th>MV</th>
+<th>MS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>§J1 (GS spec)</td>
+<td>T4.4 (<code>SolverBasis</code> keeps <code>shell_ls</code>/N0)</td>
+</tr>
+<tr>
+<td>P7, P11</td>
+<td>§J2, commit 2 (<code>SectorSearch.solved</code>)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>P5</td>
+<td>§J3</td>
+<td>—</td>
+</tr>
+<tr>
+<td>B8 (= R1)</td>
+<td>§J4 (DC ensemble reuse)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>P10</td>
+<td>§J5 (cap probe), D4 (GF cap)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>C4</td>
+<td>§J6 (plan store; “C5” there = C4 here)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>P9</td>
+<td>the plan itself</td>
+<td>—</td>
+</tr>
+<tr>
+<td>J1</td>
+<td>D3 “never ensemble across frozen” (moot)</td>
+<td>D3, T4.4, T4.6, F1</td>
+</tr>
+<tr>
+<td>J5</td>
+<td>—</td>
+<td>T4.7</td>
+</tr>
+<tr>
+<td>J8</td>
+<td>D6</td>
+<td>T4.5</td>
+</tr>
+</tbody>
+</table>
+<h3 id="where-the-plans-meet">6.1 Where the plans meet</h3>
+<p><strong>J1. What “frozen” means (decided by the user,
+2026-10-30).</strong> - <strong>Purpose.</strong>
+<code>frozen_occupations</code> exists for a shell whose projected local
+Hamiltonian carries <strong>no orbital energies</strong>: the X-ray
+core, whose only one-body term is the SOC. Without the pin the walk
+empties core orbitals (2p⁴d¹⁰ wins by ~23 eV on NiO). - <strong>A proper
+local Hamiltonian needs no freezing.</strong> RSPt’s h_dft carries the
+core energies (2p ≈ −60 Ry). Nothing is frozen on the self-energy/DC
+path. - <strong>The seed pin is exact for its purpose.</strong> The
+spectra U conserves N_core by construction (P1b), so CIPSI cannot leave
+the core-full span. The GF excited bases must <strong>not</strong> pin
+the core, because the XAS core hole is the excitation. That answers MS
+Q2: correct as is. - <strong>Consequences:</strong> - <strong>P1a is a
+bug.</strong> Delete the DC bath-less rule and its <code>:822</code>
+comment. Rewrite <code>test_fixed_dc.py:1918-2010</code> and
+<code>:2080ff</code>, which assert the bath-less set. The frozen
+handling in <code>_SectorContext.trial_occupation</code> becomes dead
+for DC. Bath-less valence shells (e.g. Hubbard-I 4f) should not be
+pinned either: energetics and DC set them, unless the user declares the
+shell frozen (O5). - <strong>Freeze only on explicit user
+request</strong> (O5, user): a shell the user declares core, as
+<code>get_spectra.py:392</code> already does. No automatic detection.
+Where a user-frozen shell has ‖[H, N_core]‖ ≠ 0 (possible on RSPt h_dft
+with one-body core–valence mixing; the MS T4.4 test itself uses a 1e-3
+p–d element), warn once with its size, because the seed-only pin then
+leaks. MS F1 freezes a shell only when the user declares it core. -
+<strong>MS edits:</strong> drop the frozen core from MS §1, §3
+(“DC/N0/frozen logic”), D3, T4.4 (<code>frozen_groups</code>), the T4.6
+<code>frozen_occupations</code> addition and excited-basis pin, the T4.6
+note, the test <code>frozen_groups == {p}</code>, T5.1 (“pinned at 6”)
+and §7.2 (“frozen = {}”). Mark Q2 answered. <strong>Keep</strong>
+<code>shell_has_bath</code> and <code>active_impurity_indices</code>
+from T4.4, since T4.7 and J5 need them. Keep
+“<code>calc_selfenergy</code> keeps Tr ρ_p = 6” as a check that h_dft
+holds the core. - <strong>Measure before J1 ships on multishell</strong>
+<em>(r2, physics; plausible)</em>. With an unfrozen deep core: -
+<code>generate_initial_basis</code> lets the core range over [0, 6], so
+core-hole determinants hundreds of eV up enter the seed; - in
+<code>seed_class_plan</code>, the penalty 2·max(width, window) grows to
+~10³ eV, and <code>scale = max|eig|</code> grows ~100×, loosening
+PARTNER_TOL/COUPLING_TOL; - seed growth heads towards
+<code>max_seed = 1000</code>, above which the sector silently becomes
+uncertified.</p>
+<pre><code>*(r2, UX)* The walk or dN scan may also open trial sectors with a core hole and run full CIPSI solves on them.
+Measure all of this on the MS 2p@−60 Ry fixture. If any effect shows, add a deep-shell seed/restriction
+**window**, which is not a freeze and stays consistent with J1, and restrict the walk to hybridizing shells. Σ on
+the core block adds about 6 removal GF units at −60 Ry, and the core Hartree term goes uncorrected by the
+active-shell DC (harmless for occupations).</code></pre>
+<p><strong>J2. Who decides the sector set: walk bound (P11/B1) vs
+ensemble membership (MV D3).</strong> - MV admits
+<code>E_s − err_s − E_min &lt; cut</code>, so every sector inside
+<code>cut + margin</code> needs a real error bar. B1 may stop a sector
+only <strong>beyond</strong> <code>cut + margin</code>. On 3 of 5
+workloads the expensive loser is inside (§3). - P11’s record and MV
+commit 2’s <code>SectorSearch.solved</code> are one structure:
+<code>(trial_N0, E, err, certified, cap_bound, truncation_report)</code>.
+- MV’s “guarantee ±1 neighbours” needs P7. It also needs S1, because a
+closed-shell neighbour may return an excited level.</p>
+<p><strong>J3. Refusal rules need truthful flags and τ-scaled
+thresholds.</strong> - <strong>Flags.</strong> MV D3 refuses a
+cap-bound, uncertified or high-residual member. M4 (spurious
+<code>memory_bound</code>), C2’, C7 and S1 (spurious
+<code>certified</code>) feed it false flags. All four go <strong>before
+MV 3</strong>. - <strong>Thresholds</strong> <em>(r2, physics)</em>.
+“Realised e0 moved by more than the tolerance” and a residual above c·τ
+fire on every cap-bound run: SMO 4-bath is 2000× over e_pt2_tol, yet
+that is only 0.002τ. - Express both in τ and weight: the weight error
+bar p(1−p)ΔN·err/τ, and |Δe0|/τ. - Refuse only when the weight error bar
+exceeds a threshold. - <strong><code>auto</code> never raises.</strong>
+It resolves to off plus the warning when a driver is unmigrated (MV D7),
+the reference is not Fermi (MV D3; legacy h0 loads as “unknown”), or a
+member fails the guard. Only an explicit <code>true</code> raises.
+Without this rule an RSPt DMFT run aborts mid-iteration.</p>
+<p><strong>J4. One spec object (A1 = MV §J1).</strong> Contents are in
+§4. Two deviations from MV §J1: - the ensemble switch is not in
+<code>solve_ground_state</code>’s signature; MV 5 adds it at the seam; -
+<code>shell_ls</code>/N0 stay in <code>SolverBasis</code>.</p>
+<p><strong>Before MV 1, a keyword-only commit</strong> <em>(r2,
+architecture)</em>. <code>mixed_valence</code> is <em>positional</em> in
+<code>build_basis_and_solver</code> (<code>groundstate.py:129</code>),
+<code>solve_sector</code> (<code>:193</code>) and
+<code>prepare_solver_basis</code>. Positional callers include
+<code>dc_criteria.py:577-584</code>, <code>:~1935</code>,
+<code>gs_connectivity.py:94</code>,
+<code>test/support/dc_weights.py:160</code>,
+<code>selfenergy.py:587</code> and <code>susceptibility.py:476</code>.
+Removing the parameter would silently shift <code>tau</code> into its
+slot. From MV 1 until MV 5, a non-zero
+<code>mixed_valence</code>/<code>mv</code> must raise, not be
+ignored.</p>
+<p><strong>J5. Plan store (C4, MV §J6).</strong> - MV 1 makes plan reuse
+unconditional, so C4 must land first. Today the exemption covers only
+formerly non-zero <code>mv</code> runs. - With MS T4.7, give
+<code>SectorPlanStore</code> the active-shell projector <strong>at
+construction</strong> (it belongs to the shift operator), not in the
+key. - The Hellmann-Feynman prediction in <code>jobs_at</code> is first
+order. Because E_N(μ) is concave, it is an upper bound, so a class
+predicted just outside the window can be inside. Add a χ-sized
+margin.</p>
+<p><strong>J6. Reusing the DC result in Σ (B8 = MV §J4).</strong> Needs
+A1 equality, the same dc, a caller-resolved cap (P10), the
+<code>calc_selfenergy</code> precomputed-GS input. Per O2: reuse the
+states when the DC tolerances are unset; with loosened DC tolerances,
+reuse the sector choice only. Deleting P1a removes today’s frozen
+mismatch. Under MV the reusable object is the DC’s final ensemble.</p>
+<p><strong>J7. Thermal re-solve per member.</strong> Each member runs
+<code>solve_sector(Within(...))</code> and inherits: - B2’s margin
+inflation (NiO 4.6× too big, <em>(r2)</em> not “13×”); - C7/S1’s missing
+states; - the GS-alone cap applied to a multi-state union, and with it
+S2’s symmetry breaking (SMO).</p>
+<p>The GS cost of K members is one more cap-bound re-solve per member
+(the N2 <code>Lowest</code> solves alone took 513–954 s). MV §J4’s
+“hours on SMO” covers DC trials plus the GF stage. S2 lands in step 3.
+Fix B2, C7 and the <code>Within</code> cap before MV 7.</p>
+<p><strong>J8. Warnings.</strong> One end-of-<code>calc_gs</code>
+summary (§4 UX), merging: - the review’s items; - MV D6’s dropped-weight
+warning, with <em>(r2, physics)</em> the tail estimated from window
+counts, because the per-state cut −τ ln 1e-4 ignores the density of
+states; - MS T4.5’s per-shell lines.</p>
+<p>The stderr tiers are in §4.</p>
+<p><strong>J9. MV §J items rev. 1 left open</strong> <em>(r2)</em>: -
+<strong>§J5, cap probe for the N±1 members.</strong> The probe measures
+the seed sector only. Resolve the cap per member, or for the
+<code>Within</code> union of the dominant member with headroom (P10). -
+<strong>§J7, default revisited after cost:</strong> O1,
+<code>auto</code> (user). - <strong>§J8, versioning.</strong> J8’s
+summary fields, MS’s archive datasets (<code>Spherical shell l</code>,
+per-shell N0), the reinterpreted <code>mv</code> token and the P10
+recorded cap all need a <code>schema_version</code> bump and
+<code>required_features</code> entries. RSPt’s
+<code>mixed_valence={0: mv}</code> (<code>lib.py:439</code>) is keyed on
+shell 0 and breaks under MS unless MV’s scalar tri-state lands first. -
+<strong>MV’s own inconsistencies to fix in that doc:</strong> - the
+header still says rev. 1; - D6, Verification and commit 13 still
+describe the <code>seed_valence_width</code> rename that the repurpose
+section dropped; - §J1 puts the flag in
+<code>solve_ground_state</code>’s signature; - D3’s frozen rule is
+moot.</p>
+<h3 id="which-plan-changes">6.2 Which plan changes</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>plan</th>
+<th>change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MS §1, §3, D3, T4.4, T4.6, T5.1, §7.2, tests, Q2</td>
+<td>Remove the frozen core (J1). Keep <code>shell_has_bath</code>,
+<code>active_impurity_indices</code>, and the Tr ρ_p = 6 test. Implement
+T4.4 without <code>frozen_groups</code>, rather than ship it and delete
+it.</td>
+</tr>
+<tr>
+<td>MS F1</td>
+<td>Freeze a shell only when the user declares it core (O5); otherwise
+check Tr ρ_core.</td>
+</tr>
+<tr>
+<td>MS T4.7</td>
+<td>Projector into <code>SectorPlanStore</code> at construction (J5).
+Until T4.7 lands, <code>dc_criteria</code> raises on
+<code>len(shell_ls) &gt; 1</code> (§6.3 step 7).</td>
+</tr>
+<tr>
+<td>MV header, D3, D6, D7, §J1, commit 13</td>
+<td>J3 thresholds in τ; <code>auto</code> never raises; the flag stays
+out of <code>solve_ground_state</code>; drop the rename remnants
+(J9).</td>
+</tr>
+<tr>
+<td>MV D3</td>
+<td>Depends on P7, S1, M4, C2’, C7 (J2, J3).</td>
+</tr>
+<tr>
+<td>MV commit 1</td>
+<td>Preceded by the keyword-only commit; non-zero values raise until MV
+5 (J4).</td>
+</tr>
+<tr>
+<td>MV commit 4</td>
+<td>Take its bit-identity baseline after MS T4.5: both edit
+<code>gs_report.py:183-248</code>.</td>
+</tr>
+<tr>
+<td>MV commit 5</td>
+<td>Consolidate the Boltzmann helpers; add the ensemble switch to the
+spec here.</td>
+</tr>
+<tr>
+<td>review P1</td>
+<td>Per J1.</td>
+</tr>
+<tr>
+<td>review B1</td>
+<td>Trajectory bound; only beyond <code>cut + margin</code> (J2).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="merged-order">6.3 Merged order</h3>
+<p>One concern per commit. <em>Steps</em> group commits. Each commit
+lists its repository when it is not impurityModel. Every step touching a
+collective runs <code>-n 1/2/3</code>.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>step</th>
+<th>commits</th>
+<th>collective?</th>
+<th>acceptance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 <strong>DONE 2026-10-31</strong> (commits <code>d6758b22</code>
+P7, <code>7b5059cd</code> S1, oracle
+<code>9f1b0609</code>/<code>7d4fb258</code>; gate -n 1/2/3 green). S1
+landed as widening by <em>single excitations</em>, not H|seed&gt;: H
+conserves the class, so its Krylov space never leaves it. Skipped (with
+a <code>widen_skipped</code> trace note) above
+<code>GS_CERTIFY_MAX_SEED</code>. Open from the oracle: seed 1 m0 (HF,
+sector N=2 0.008 high), seed 1 m8 (window one level short).</td>
+<td><strong>P7</strong> (delete both guards, canonicalise the split);
+<strong>S1</strong> (one-job plan ≠ certificate); <code>oracle.py</code>
+→ test (fix <code>n_found=None</code>, straddle tolerance; ~10 pinned
+models ~10 s, <code>use_hf_seed=False</code>, plus frozen-empty and
+two-group toys; full sweep under <code>-m benchmark</code>; compares
+every solved sector)</td>
+<td>yes: 1-det seeds hit empty ranks, so <strong>-n 3</strong></td>
+<td>pinned models exact; inject the old guard → test fails</td>
+</tr>
+<tr>
+<td>2 <strong>DONE 2026-10-31</strong> (commits <code>9d8e3ca2</code>
+bcast, <code>655ece90</code> frontier-fit + budget-presence check,
+<code>e73f3ed1</code> <code>config.assert_uniform</code>,
+<code>0e6cfb96</code> entries, <code>ca81a714</code> M5; gate -n 1/2/3
+see below). Every public entry (solve_ground_state, calc_selfenergy,
+run_spectra, susceptibility, RIXS maps on <code>basis.comm</code>, DC
+entries on COMM_WORLD) raises <code>NonUniformKnobError</code> on every
+rank when a knob differs; <code>GF_SECTOR_CACHE_DIR</code> is
+<code>uniform=False</code>. M5: RIXS probes the parent comm once. The GF
+budget’s None-ness is covered by the entry check, no extra bcast. Open:
+<code>IMPMOD_MATVEC_PROF</code> is unregistered (profiler, no
+collective); GF-side consumers outside an asserting entry would not be
+checked.</td>
+<td><strong>M1</strong> bcast <code>safety</code> + unconditional
+<code>_frontier_matrix_fits</code> allreduce;
+<code>config.assert_uniform(comm)</code> at every public entry;
+<strong>M5</strong> (<code>gf_shift_recycling</code> comm)</td>
+<td>yes</td>
+<td>MPMD knob-on-rank-1 test raises on all ranks; inject a rank-local
+knob read → test hangs or fails</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>S2</strong> (orbit-closed growth and truncation in the
+<code>Within</code> expand; SYM); <strong>S3</strong> (never drop an
+in-window class; record the union cut; <code>converged: False</code>);
+<strong>C2’</strong> (depth on complement; certified=False);
+<strong>C4</strong> (replace record, <code>only=None</code>);
+<strong>M4</strong> (<code>memory_bound</code> only on an actual
+lowering, accumulated); <strong>C7 detection</strong> (per-label window
+counts, trim warning)</td>
+<td>yes, -n 3 (orbit closure adds collectives)</td>
+<td>S2 acceptance (degenerate members equal to roundoff under a binding
+cap; SMO 4-bath quartet exact); S3: CrI3 keeps 4 states (or reports the
+cut); <code>c2_small</code> unit test; C4 call-site test; NiO -n 1 vs -n
+4 same flag; CrI3 flags its window</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>P8</strong> (level shift/DIIS, ±1 fallback, visible
+rejection); degenerate-split <strong>detection</strong> (rank 0 +
+bcast); <strong>J1/P1a</strong> (delete the DC bath-less rule, rewrite
+<code>test_fixed_dc</code>; spectra <code>[H, N_core]</code> warning on
+user-frozen shells)</td>
+<td>yes</td>
+<td>complex/SOC HF convergence target set before the change; detection
+fires on an injected orbit-breaking cut</td>
+</tr>
+<tr>
+<td>5</td>
+<td>keyword-only <code>mixed_valence</code>; <strong>MV 1</strong>
+(non-zero raises); <strong>MV 2 + P11</strong>
+(<code>SectorSearch.solved</code>, ±1 neighbours, one-sided HF
+check)</td>
+<td>MV 1 changes seeds: -n 3</td>
+<td><code>mixed_valence=1</code> fixtures re-baselined, noted in the
+commit</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>H3</strong> public degeneracy helper; <strong>M3</strong>
+(and the <code>rank=</code> callers); <strong>P4</strong></td>
+<td>no</td>
+<td>χ Curie term unchanged on fixtures</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>MS T4.1–T4.5</strong> (impurityModel side; impmod_interface
+G2 and rspt2spectra G3 in their repos); <code>dc_criteria</code> raises
+on multishell until T4.7; MS 2p@−60 Ry fixture measurements (J1); Tr ρ_p
+= 6 test and T5.1</td>
+<td>no</td>
+<td>single-shell archives bit-identical</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>A1</strong> series (a) plumbing, (b) P3 χ, P2 spectra+RIXS,
+P5, P6 one per commit, (c) <strong>P10</strong> caller-resolved cap
+(impmod_interface + archive attribute)</td>
+<td>(c) yes</td>
+<td>(a) bit-identical; (b) each with its A/B threshold written down
+first</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>B1</strong> (trajectory bound, beyond
+<code>cut + margin</code>); <strong>MV 3</strong> warning +
+<strong>J8</strong> summary and stderr tiers</td>
+<td>yes</td>
+<td>winners unchanged on all six profiled workloads; WARNING lines on
+SMO 4-bath ≤ the stated budget, each event once per channel</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>C7 fix</strong> (per-label window), <strong>B2</strong>
+(per-class margins), <strong>B3</strong>, the <code>Within</code> cap
+(O3)</td>
+<td>yes, -n 3</td>
+<td>NiO thermal basis ~135k with Σ unchanged within its tolerance; CrI3
+keeps the quartet</td>
+</tr>
+<tr>
+<td>11</td>
+<td><strong>MS T4.7</strong> (active projector, J5 store)</td>
+<td>yes</td>
+<td>single-shell DC numerics bit-identical (projector = I)</td>
+</tr>
+<tr>
+<td>12</td>
+<td><strong>MV 4</strong> (report split, baseline after T4.5),
+<strong>MV 5</strong> (seam, Boltzmann consolidation, spec switch),
+<strong>MV 6–8</strong> (GS report, Σ consumer, DC continuous). Then
+<strong>MV 9–13</strong> (χ, spectra, RIXS, KMS, docs)</td>
+<td>yes; consumers raise collectively (<code>_raise_together</code>,
+<code>selfenergy.py:62</code>)</td>
+<td>MV’s own verification list</td>
+</tr>
+<tr>
+<td>13</td>
+<td><strong>B4</strong> (after a production-budget re-measure),
+<strong>B5</strong> (geometric-tail rule), <strong>B6</strong>,
+<strong>B7</strong> (-n 4); <strong>B8</strong> (states reused with
+default DC tolerances, sector choice only when loosened)</td>
+<td>yes</td>
+<td>each gain measured on the change</td>
+</tr>
+<tr>
+<td>14</td>
+<td>hygiene</td>
+<td>no</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Steps 1–4 are independent of both plans and can ship first. The first
+point where the plans touch the same code is step 5 (MV 1).</p>
+<h2 id="order-without-the-other-plans">7. Order without the other
+plans</h2>
+<ol type="1">
+<li>P7 + S1 + oracle (step 1).</li>
+<li>M1 + M5 (step 2).</li>
+<li>S2, S3, C2’, C4, M4, C7 detection (step 3).</li>
+<li>P8, degenerate-split detection, P1a + spectra commutator warning
+(step 4).</li>
+<li>P11, H3, M3, P4, P9’s ΔE/τ warning, and the §4 UX summary.</li>
+<li>A1 series incl. P10.</li>
+<li>B1.</li>
+<li>C7 fix, B2, B3, <code>Within</code> cap.</li>
+<li>B4–B7; B8.</li>
+<li>Hygiene.</li>
+</ol>
+<h2 id="decisions">8. Decisions</h2>
+<ul>
+<li><strong>O1. <code>mixed_valence</code> default for RSPt/Σ/DC:
+<code>auto</code></strong> (user, 2026-10-30). The J3 rule applies:
+<code>auto</code> never raises.</li>
+<li><strong>O2. DC-only tolerance overrides: keep them</strong> (user,
+2026-10-30).
+<ul>
+<li><strong>Why they exist:</strong> a rough DC estimate, for cases
+where the DC search would otherwise burn enormous compute just finding
+the lowest sector.</li>
+<li><strong>When they can go:</strong> once no reasonably simple
+calculation can spend unreasonable time on that. Today one can: FCC Ni’s
+walk did not finish in 90 min, and the losing N2 sectors take 513–954 s.
+Revisit after S1, B1, B5 and B7 are measured.</li>
+<li><code>DC_E_PT2_TOL</code>/<code>DC_DE2_MIN</code> default to unset,
+which means the GS values (<code>config.py:897-973</code>). So they are
+opt-in, and DC→Σ reuse (B8) applies whenever they are unset.</li>
+<li>When the user loosens them, reuse only the DC’s <strong>sector
+choice</strong>: start the Σ walk at the DC winner, still checking its
+±1 neighbours. Do not reuse its states.</li>
+<li>The three DC tolerance rules (P5) still collapse to one precedence:
+DC knob if set, else the spec.</li>
+</ul></li>
+<li><strong>O3. Thermal re-solve below the walk’s quality: how it
+happens, and the rule (user: SYM, non-negotiable).</strong>
+<ul>
+<li><p><strong>Mechanism.</strong> The walk’s <code>Lowest</code> solve
+converges <em>one</em> state of the winning sector on its own basis: SMO
+3-bath 247,974 determinants. The thermal <code>Within</code> solve
+rebuilds from the seed and must hold the whole window in one basis. On
+SMO that is a 4-fold S=3/2 level whose S_z members live on disjoint
+determinant sets. The auto cap is sized “for the ground state alone”, so
+each member gets about a quarter of the walk’s room:</p>
+<table>
+<thead>
+<tr>
+<th>run</th>
+<th>thermal basis</th>
+<th>per member</th>
+<th>walk’s single state</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SMO 3-bath -n 4</td>
+<td>452,240</td>
+<td>~113k</td>
+<td>248k</td>
+</tr>
+<tr>
+<td>SMO 3-bath -n 1</td>
+<td>509,546</td>
+<td>~127k</td>
+<td>248k</td>
+</tr>
+<tr>
+<td>SMO 4-bath</td>
+<td>cap 440,512</td>
+<td>~110k</td>
+<td>the full 440,512</td>
+</tr>
+</tbody>
+</table></li>
+<li><p><strong>The energy deficit is acceptable; the symmetry breaking
+is not.</strong> A less converged but symmetric thermal manifold is the
+correct outcome under SYM. The defect is S2: once the cap binds, the
+expansion grows and cuts members unevenly, and the quartet
+splits.</p></li>
+<li><p><strong>Resolution:</strong></p>
+<ul>
+<li><ol type="1">
+<li>S2: symmetric (orbit-closed) growth and truncation in the
+<code>Within</code> expand, so a binding cap costs every member the same
+accuracy;</li>
+</ol></li>
+<li><ol start="2" type="1">
+<li>resolve the cap for the <code>Within</code> manifold (the winning
+level’s multiplicity × the walk’s per-state basis, bounded by memory)
+together with P10, so the symmetric solve is as accurate as memory
+allows;</li>
+</ol></li>
+<li><ol start="3" type="1">
+<li>no re-solve and no “never above the walk” floor: seeding from the
+walk’s single state would itself break the symmetry.</li>
+</ol></li>
+</ul>
+<p>A degenerate-level split beyond roundoff is reported as an
+error-level warning, because under SYM it can only mean a bug.</p></li>
+</ul></li>
+<li><strong>O4. χ and spectra read <code>mixed_valence</code> from the
+archive</strong> (user, 2026-10-30).
+<ul>
+<li>When the archive has it, use it. When it is missing, use the χ or
+spectra default (off).</li>
+<li>The archive records the <em>setting</em>
+(<code>auto</code>/<code>true</code>/<code>false</code>), not the
+resolved membership, so a replay re-decides membership on its own
+model.</li>
+<li>Archives written before MV hold <code>None</code> or 0, which map to
+the reading driver’s default as MV already specifies.</li>
+</ul></li>
+<li><strong>O5. Freeze only on explicit user request</strong> (user,
+2026-10-30), e.g. a shell declared <code>role = "core"</code>. No
+automatic detection.
+<ul>
+<li>Where the user freezes a shell, check ‖[H, N_core]‖ once and
+<strong>warn</strong> with its size if it is not zero. The seed-only pin
+then leaks, and the user should know.</li>
+<li>MS F1 freezes a shell only if the user declares it core, never on
+its own.</li>
+</ul></li>
+<li><strong>O6. Parameters still to choose:</strong> B1’s margin; the J3
+weight-error threshold; MV decision K (KMS); the J1/O5 commutator
+warning tolerance; the CI runtime budget of the promoted oracle.</li>
+</ul>
+</body>
+</html>

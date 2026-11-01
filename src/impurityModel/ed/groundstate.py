@@ -494,6 +494,25 @@ def solve_sector(
         return SectorSolve(es, psis, basis, solver)
 
 
+class SectorEnergy(NamedTuple):
+    """What a ``Lowest`` solve of one sector says about its energy: ``(energy, truncation_report, residual_pt2,
+    certified, cap_bound)``.
+
+    ``residual_pt2`` is the expansion's residual PT2 energy -- the error bar of ``energy`` (``None`` when no round
+    ran or the source does not know it) -- and ``certified`` is ``convergence_report["converged"]``: ``True`` when
+    that residual was measured on the final basis and is within ``e_pt2_tol``, ``False`` when it is not, ``None``
+    when unknown. ``cap_bound`` says the cap or the memory guard held the basis (``truncation_report`` is not
+    ``None``), which is also what a source that has no report to give (the double-counting search's cached
+    solves) can still tell. All five are rank-replicated.
+    """
+
+    energy: float
+    truncation_report: dict | None
+    residual_pt2: float | None = None
+    certified: bool | None = None
+    cap_bound: bool = False
+
+
 def calc_energy(
     h_op,
     impurity_indices,
@@ -514,13 +533,14 @@ def calc_energy(
     shift=0.0,
     spin_layout=None,
 ):
-    """The ground-state energy of one charge sector: ``(e0, truncation_report)``.
+    """The ground-state energy of one charge sector: a :class:`SectorEnergy`.
 
     :func:`solve_sector` for :class:`~impurityModel.ed.eigensolvers.Lowest`, reduced to its energy:
     one converged eigenpair, nothing about the level's degeneracy, and no basis or solver retained --
-    the occupation walk holds floats and nothing else. ``truncation_report`` is the expansion's
+    the occupation walk holds numbers and nothing else. ``truncation_report`` is the expansion's
     (``None`` when the cap never bound), so a caller can tell a cap-limited energy from a converged
-    one. Parameters are those of :func:`solve_sector`; ``N0`` is the nominal impurity occupation.
+    one; ``residual_pt2`` and ``certified`` say how far from converged it is. Parameters are those of
+    :func:`solve_sector`; ``N0`` is the nominal impurity occupation.
 
     ``e0`` is **broadcast**, not merely returned. A Lanczos eigenvalue is replicated across ranks
     only to roundoff, and every caller compares it against something: the occupation walk against
@@ -549,9 +569,18 @@ def calc_energy(
         shift=shift,
         spin_layout=spin_layout,
     )
-    e0 = float(np.min(es))
-    e0 = e0 if comm is None else comm.bcast(e0, root=0)
-    return e0, solver.truncation_report
+    convergence = getattr(solver, "convergence_report", None) or {}
+    residual = convergence.get("residual_pt2")
+    certified = convergence.get("converged")
+    detail = (
+        float(np.min(es)),
+        None if residual is None else float(residual),
+        None if certified is None else bool(certified),
+    )
+    # One broadcast carries all three: the residual and the verdict are replicated by construction (allreduced
+    # selection statistics), but the energy is replicated only to roundoff, and the pair is read together.
+    e0, residual, certified = detail if comm is None else comm.bcast(detail, root=0)
+    return SectorEnergy(e0, solver.truncation_report, residual, certified, solver.truncation_report is not None)
 
 
 def hartree_fock_seed_occupation(
@@ -611,19 +640,118 @@ def hartree_fock_seed_occupation(
     return winning_N0, converged
 
 
+class SectorRecord(NamedTuple):
+    """One charge sector the walk solved: ``(trial_N0, energy, residual_pt2, certified, cap_bound,
+    truncation_report)``.
+
+    ``trial_N0`` is the occupation the sector was first reached by (only its total is determined, see
+    :func:`sector_key`); the rest is that sector's :class:`SectorEnergy`.
+    """
+
+    trial_N0: dict
+    energy: float
+    residual_pt2: float | None
+    certified: bool | None
+    cap_bound: bool
+    truncation_report: dict | None
+
+    @property
+    def total(self):
+        """The whole-impurity occupation of the sector."""
+        return sum(self.trial_N0.values())
+
+
+class SectorDiagnostics(NamedTuple):
+    """How firmly the walk's winner beats the sectors next to it (review P11). Recorded, never acted on.
+
+    ``margin`` is the smallest, over the solved neighbours ``N +- 1``, of ``(E_nbr - E_win) / (err_win +
+    err_nbr)``, the gap in units of the two energies' error bars (``residual_pt2``): ``inf`` where both are exact,
+    negative where a neighbour is *lower*. Below 1 the order of the two is not established by the solves.
+    ``second_difference`` is ``E(N+1) - 2 E(N) + E(N-1)`` (``None`` unless both neighbours were solved); a negative
+    one means ``E(N)`` is not convex there, and the +-1 descent has no guarantee. ``unknown_error`` is set when a
+    sector involved reported no residual, so ``margin`` took its error as 0.
+    """
+
+    winner_total: int
+    neighbour_totals: tuple
+    margin: float | None
+    second_difference: float | None
+    unknown_error: bool
+
+    @property
+    def undecided(self):
+        """The neighbour is not separated from the winner beyond the truncation error."""
+        return self.margin is not None and self.margin < 1.0
+
+
+def sector_diagnostics(solved, winner_total):
+    """The :class:`SectorDiagnostics` of the winner among the ``solved`` :class:`SectorRecord`s (pure).
+
+    Only sectors of total ``winner_total +- 1`` are neighbours. Where none was solved, ``margin`` is ``None``.
+    """
+    by_total = {rec.total: rec for rec in solved}
+    winner = by_total.get(winner_total)
+    if winner is None:
+        return SectorDiagnostics(winner_total, (), None, None, False)
+    margins, totals, unknown = [], [], winner.residual_pt2 is None
+    for total in (winner_total - 1, winner_total + 1):
+        rec = by_total.get(total)
+        if rec is None or not np.isfinite(rec.energy):
+            continue
+        totals.append(total)
+        unknown = unknown or rec.residual_pt2 is None
+        error = (winner.residual_pt2 or 0.0) + (rec.residual_pt2 or 0.0)
+        gap = rec.energy - winner.energy
+        margins.append(np.inf if error <= 0.0 and gap >= 0.0 else (gap / error if error > 0.0 else -np.inf))
+    second = None
+    below, above = by_total.get(winner_total - 1), by_total.get(winner_total + 1)
+    if below is not None and above is not None and np.isfinite(below.energy) and np.isfinite(above.energy):
+        second = float(above.energy - 2.0 * winner.energy + below.energy)
+    return SectorDiagnostics(winner_total, tuple(totals), min(margins) if margins else None, second, bool(unknown))
+
+
 class SectorSearch(NamedTuple):
     """The result of the charge-sector walk.
 
     ``occupation`` is the winning nominal impurity occupation (per orbital set; only its total is
     determined, see :func:`sector_key`), ``energy`` its ground-state energy, ``truncation_report``
     the winning expansion's report (``None`` if the cap never bound it), ``cap_policy`` the resolved
-    cap the walk ran under. Nothing else is kept: the walk's bases and solvers are discarded.
+    cap the walk ran under. ``solved`` is every sector the walk solved, as :class:`SectorRecord`s in solve order
+    (replicated: every walk decision comes from broadcast energies), and ``diagnostics`` how firmly the winner beats
+    its ``N +- 1`` neighbours (:class:`SectorDiagnostics`). The walk's bases and solvers are discarded.
     """
 
     occupation: dict
     energy: float
     truncation_report: dict | None
     cap_policy: CapPolicy
+    solved: tuple = ()
+    diagnostics: SectorDiagnostics | None = None
+
+
+def _report_margin(diagnostics, winner, verbose):
+    """Print how firmly the winner beats its neighbours: one ``V_SUMMARY`` line, and at every verbosity when the
+    order is not established (``margin < 1``). Rank 0 only; nothing collective depends on it."""
+    if diagnostics.margin is None:
+        return
+    nbrs = "/".join(str(t) for t in diagnostics.neighbour_totals)
+    error = "" if diagnostics.unknown_error else f", winner residual PT2 {winner.residual_pt2:.2e}"
+    curv = "" if diagnostics.second_difference is None else f", second difference {diagnostics.second_difference:.4f}"
+    if diagnostics.undecided:
+        lower = diagnostics.margin < 0
+        print(
+            f"WARNING: sector N_imp = {diagnostics.winner_total} is "
+            + (
+                "not the lowest solved: a neighbour is lower"
+                if lower
+                else "not separated from its neighbour beyond the truncation error"
+            )
+            + f" (margin {diagnostics.margin:.2f} over N_imp = {nbrs}{error}{curv}). The comparison is not "
+            "established by the solves; raising the cap or tightening e_pt2_tol would decide it.",
+            flush=True,
+        )
+    elif verbose >= V_SUMMARY:
+        print(f"  margin to N_imp = {nbrs}: {diagnostics.margin:.3g}{error}{curv}", flush=True)
 
 
 def canonical_split(occupation, sizes, frozen_occupations=None):
@@ -692,8 +820,9 @@ def find_ground_state_sector(
     converging them is more expansion than the walk used to do. A search that visits a sector at
     many shifts should not pay it at every one.
 
-    ``sector_energy``, if given, replaces :func:`calc_energy`: ``trial_N0 -> (energy,
-    truncation_report)``, broadcast. The double-counting search passes its own cached sector solve,
+    ``sector_energy``, if given, replaces :func:`calc_energy`: ``trial_N0 -> SectorEnergy`` (energy,
+    truncation report, residual PT2, certified verdict, cap flag), broadcast. The double-counting search passes its
+    own cached sector solve,
     so the walk and the search's ``N +- 1`` solves at one shift are the same solves.
 
     use_hf_seed (default True): seed the nominal occupation with a cheap, memory-bounded
@@ -808,12 +937,12 @@ def find_ground_state_sector(
         key = sector_key(trial_N0, frozen_occupations)
         if key in energy_cache:
             solver_trace.note("sector_cache_hit", n0=key)
-            return energy_cache[key][0]
+            return energy_cache[key].energy
 
         if sector_energy is not None:
-            e_trial, report = sector_energy(trial_N0)
+            solved_sector = sector_energy(trial_N0)
         else:
-            e_trial, report = calc_energy(
+            solved_sector = calc_energy(
                 h_op,
                 impurity_orbitals,
                 bath_states,
@@ -834,8 +963,16 @@ def find_ground_state_sector(
                 shift=shift,
                 spin_layout=spin_layout,
             )
-        energy_cache[key] = (e_trial, report)
-        if best_cached_key is None or e_trial < energy_cache[best_cached_key][0]:
+        e_trial = solved_sector.energy
+        energy_cache[key] = SectorRecord(
+            dict(trial_N0),
+            e_trial,
+            solved_sector.residual_pt2,
+            solved_sector.certified,
+            solved_sector.cap_bound,
+            solved_sector.truncation_report,
+        )
+        if best_cached_key is None or e_trial < energy_cache[best_cached_key].energy:
             best_cached_key = key
         return e_trial
 
@@ -1002,6 +1139,16 @@ def find_ground_state_sector(
                     break
                 winning_impurity_occ[i] += dN_gs[i]
                 e_gs = e_trial
+        # The scan's winner is a minimum over its own candidates, and the extension above stops at the first sector
+        # that does not improve, so the winner's neighbours are not all solved. Solve the rest, to record how firmly
+        # the winner beats them (review P11). Recorded only: the winner is not revisited. A sector is its total, so
+        # one unfrozen group stands for them all; a cached sector is free.
+        movable = [i for i in keys if i not in frozen_occupations]
+        if movable:
+            for delta in (-1, 1):
+                trial_N0 = winning_impurity_occ.copy()
+                trial_N0[movable[0]] += delta
+                report_trial(trial_N0, get_energy(trial_N0))
 
     winning_impurity_occ = canonical_split(
         winning_impurity_occ,
@@ -1041,8 +1188,19 @@ def find_ground_state_sector(
         # The walk settled on a sector it never solved (every trial out of bounds, or a collapsed
         # search): solve the winner.
         get_energy(winning_impurity_occ)
-    e_gs, report = energy_cache[winning_key]
-    return SectorSearch(dict(winning_impurity_occ), e_gs, report, CapPolicy.coerce(truncation_threshold))
+    winner = energy_cache[winning_key]
+    e_gs, report = winner.energy, winner.truncation_report
+    solved = tuple(energy_cache.values())
+    # Decided on rank 0 and broadcast: every input is replicated, but the verdict steers a print and a caller's
+    # warning, and two ranks disagreeing on it would be a bug that only shows as a missing line.
+    diagnostics = sector_diagnostics(solved, winner.total)
+    if comm is not None:
+        diagnostics = comm.bcast(diagnostics, root=0)
+    if comm is None or comm.rank == 0:
+        _report_margin(diagnostics, winner, verbose)
+    return SectorSearch(
+        dict(winning_impurity_occ), e_gs, report, CapPolicy.coerce(truncation_threshold), solved, diagnostics
+    )
 
 
 class GroundState(NamedTuple):

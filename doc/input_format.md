@@ -334,7 +334,7 @@ How the many-body determinant basis is built. Named for the determinant basis sp
 | `e_pt2_tol` | energy | `None` | Residual Epstein-Nesbet PT2 energy the CIPSI expansion is converged to: the SUMMED PT2 contribution of every determinant left out, which is what the energy error follows (it predicted the true error to 2% against exact diagonalization). THE accuracy control. Here: the production ground state, and the default for the double-counting search. Absent is the solver's default, 1e-8 eV. Must be positive. |
 | `de2_min` | energy | `None` | Optional per-determinant PT2 floor: candidates below it are refused whatever the residual. It bounds each refused determinant, not their sum, so it LOOSENS a solve rather than converging one -- at 1e-8 alone it left SrMnO3 5.0e-5 above its converged energy. An expansion it stops short of e_pt2_tol warns with the residual it left. Here: the production ground state, and the default for the double-counting search. Absent is no floor. |
 | `dN` | count | `None` | Impurity occupation window (+-dN) for the excited bases. Note the sentinel means different things per driver: the spectroscopy path substitutes 2, the Green's-function path treats absent as NO window at all. |
-| `mixed_valence` | dimensionless | `None` | Reserved for the charge-sector ensemble. Only 0/false/unset is accepted for now; anything else raises. |
+| `mixed_valence` | dimensionless | `None` | Reserved for the charge-sector ensemble: only 0, false or unset is accepted for now. |
 
 ## `[rotation_to_spherical]`
 

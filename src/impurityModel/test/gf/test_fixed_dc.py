@@ -1259,7 +1259,7 @@ def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
         rot_to_spherical=kwargs["model"].rot_to_spherical,
         verbosity=0,
     )
-    energy, _ = calc_energy(
+    energy, *_ = calc_energy(
         sb.h,
         sb.impurity_orbitals,
         sb.bath_states,

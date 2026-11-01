@@ -1021,7 +1021,7 @@ _TABLE_LIST += [
                 "mixed_valence",
                 Kind.DIMENSIONLESS,
                 None,
-                "Reserved for the charge-sector ensemble. Only 0/false/unset is accepted for now; anything else raises.",
+                "Reserved for the charge-sector ensemble: only 0, false or unset is accepted for now.",
             ),
         ),
     ),

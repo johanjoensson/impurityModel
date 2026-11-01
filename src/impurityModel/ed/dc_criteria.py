@@ -373,6 +373,11 @@ class _SectorSolution:
     #: reached. On the SrMnO3 cubic gap-DC run that was the seed basis -- 10 to 252 determinants
     #: -- and the search still reported ``status = converged``.
     memory_bound: bool = False
+    #: The expansion's residual PT2 energy, the error bar of ``energy``, and whether it was certified converged
+    #: (``CIPSISolver.convergence_report``); ``None`` where the solve does not know. The walk's margin to its
+    #: neighbours is measured against these (review P11).
+    residual_pt2: float | None = None
+    certified: bool | None = None
 
 
 @dataclass
@@ -511,7 +516,7 @@ class _SectorContext:
             e_pt2_tol=self.e_pt2_tol,
             # The walk's trials are this search's own cached sector solves: the N +- 1 solves at this
             # shift are the same solves, at the same accuracy, and are never repeated.
-            sector_energy=lambda trial: (self._walk_energy(h_op, mu, trial), None),
+            sector_energy=lambda trial: self._walk_energy(h_op, mu, trial),
             spin_layout=self.spin_layout,
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
@@ -634,6 +639,8 @@ class _SectorContext:
             # in this constructor.
             cap_bound=bool(sector_solver.truncation_report is not None),
             memory_bound=bool((sector_solver.truncation_report or {}).get("memory_bound", False)),
+            residual_pt2=_float_or_none((getattr(sector_solver, "convergence_report", None) or {}).get("residual_pt2")),
+            certified=_bool_or_none((getattr(sector_solver, "convergence_report", None) or {}).get("converged")),
         )
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
@@ -648,9 +655,15 @@ class _SectorContext:
         return _per_group_occupation(int(n_trial), self.impurity_orbitals, self.h_solver_matrix)
 
     def _walk_energy(self, h_op, mu, trial):
-        """The occupation walk's energy of its trial ``trial``: :meth:`sector_solve`'s, ``inf`` where undefined."""
+        """The occupation walk's view of its trial ``trial``: a :class:`groundstate.SectorEnergy` built from
+        :meth:`sector_solve`'s, ``inf`` where undefined. The truncation report stays ``None`` (the solution keeps
+        only the ``cap_bound`` flag), the residual and the verdict are the cached solve's own."""
+        from impurityModel.ed.groundstate import SectorEnergy
+
         solution = self.sector_solve(h_op, mu, sum(trial.values()))
-        return np.inf if solution is None else solution.energy
+        if solution is None:
+            return SectorEnergy(np.inf, None)
+        return SectorEnergy(solution.energy, None, solution.residual_pt2, solution.certified, solution.cap_bound)
 
     def sector_energy(self, h_op, mu, n_trial):
         """``E[n_trial]`` at this shift, or ``None`` where the criterion is undefined."""
@@ -678,6 +691,14 @@ class _SectorContext:
         if solution is None:
             return None
         return solution.occupation
+
+
+def _float_or_none(x):
+    return None if x is None else float(x)
+
+
+def _bool_or_none(x):
+    return None if x is None else bool(x)
 
 
 def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None):

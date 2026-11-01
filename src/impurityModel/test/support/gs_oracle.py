@@ -20,6 +20,7 @@ from impurityModel.ed.interaction_models import kanamori_u4
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 
+
 def det(occ):
     chunk = 0
     for o in occ:
