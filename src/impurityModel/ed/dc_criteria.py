@@ -44,10 +44,12 @@ wrong charge state, which is worse than not fixing anything at all.
      ``calc_gs``; leaving the walk's ``tau/100`` in place made ``expand``'s
      ``de0_max = energy_cut(basis.tau)`` a hundred times narrower than the window ``calc_gs``
      expands into.
-   * ``find_ground_state_sector`` accepts ``frozen_occupations``, and the CLI populates it for
-     bath-less core shells (``get_spectra.py``: ``{i for i in nBaths if nBaths[i] == 0}``); both
-     criteria now derive the same set from :attr:`solver_basis.SolverBasis.sum_bath_states` and
-     pass it down, so a core shell can no longer drain in the double-counting search only.
+   * Nothing is frozen (review J1/P1a). Both criteria used to freeze every bath-less group,
+     "exactly as get_spectra pins it" -- but get_spectra pins the *declared* X-ray core, and
+     ``calc_selfenergy`` freezes nothing, so with a bath-less shell the double counting was
+     measured on a different state than the self-energy then solved (E0 -8.97 frozen vs -9.34
+     unfrozen on the review's toy). Freezing exists for a shell with no orbital energies (the
+     X-ray core); a proper local Hamiltonian, which every DC input is, needs none.
    * The determinant budget is derived at the **full** memory-safety fraction, as ``calc_gs``
      derives its own. The peak and gap criteria used to halve it, to pay for two ``N +- 1`` bases
      believed to be live alongside the centre search's -- they are not, the three solves are
@@ -382,7 +384,7 @@ class _SectorContext:
     difference for the peak, the symmetric one for the gap centre. Everything up to and
     including "solve one charge sector at this shift" is identical, and it is precisely the part
     where the DC/ground-state parity conventions live (the walk's ``tau / 100`` and
-    ``sqrt(slaterWeightMin)``, the frozen bath-less groups, the excitation-budget restriction
+    ``sqrt(slaterWeightMin)``, the excitation-budget restriction
     list, the memory-derived cap). Those had already drifted once between two open-coded copies;
     a second criterion sharing them by construction is the point of this class.
 
@@ -410,7 +412,6 @@ class _SectorContext:
     mixed_valence: dict
     h_solver_matrix: np.ndarray
     max_occ_total: int
-    frozen_occupations: set
     weighted_restrictions: object
     truncation_threshold: object
     tau: float
@@ -501,7 +502,6 @@ class _SectorContext:
             self.bath_states,
             self.N0,
             slaterWeightMin=self.slater_weight_min,
-            frozen_occupations=self.frozen_occupations,
             mixed_valence=self.mixed_valence,
             chain_restrict=self.chain_restrict,
             dense_cutoff=self.dense_cutoff,
@@ -589,7 +589,6 @@ class _SectorContext:
             truncation_threshold=_ctx_cap_policy(self),
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
-            frozen_occupations=self.frozen_occupations,
             # The accuracy the answer is quoted at: this energy is about to be *differenced*
             # against another sector's, and the residual truncation error does not cancel in a
             # difference. It is then amplified by 1 / |chi| on its way into `dc` -- a factor of 9 on
@@ -644,26 +643,15 @@ class _SectorContext:
         return solution
 
     def trial_occupation(self, n_trial):
-        """The per-group occupation of the walk's sector ``n_trial``, or ``None`` if it has none.
-
-        The walk never moves a frozen group, so its sector at total ``n_trial`` holds every frozen
-        group at its ``N0`` value and fills only the others, by energetic filling over *their*
-        orbitals. Filling over all of them moves a frozen group whenever its level lies between the
-        unfrozen ones, and the criterion then compared a sector the walk never meant.
-        """
-        pinned = {i: int(self.N0[i]) for i in self.frozen_occupations}
-        free = {i: blocks for i, blocks in self.impurity_orbitals.items() if i not in pinned}
-        rest = int(n_trial) - sum(pinned.values())
-        if not 0 <= rest <= sum(len(block) for blocks in free.values() for block in blocks):
+        """The per-group occupation of the walk's sector ``n_trial`` (energetic filling over every impurity
+        orbital), or ``None`` if it has none. Nothing is frozen on the DC path (review J1), so the split is a
+        basis-generation parameter only: the sector is its total."""
+        if not 0 <= int(n_trial) <= sum(len(block) for blocks in self.impurity_orbitals.values() for block in blocks):
             return None
-        filled = _per_group_occupation(rest, free, self.h_solver_matrix) if free else {}
-        return {i: pinned[i] if i in pinned else filled[i] for i in self.impurity_orbitals}
+        return _per_group_occupation(int(n_trial), self.impurity_orbitals, self.h_solver_matrix)
 
     def _walk_energy(self, h_op, mu, trial):
         """The occupation walk's energy of its trial ``trial``: :meth:`sector_solve`'s, ``inf`` where undefined."""
-        moved = {i for i in self.frozen_occupations if int(trial[i]) != int(self.N0[i])}
-        if moved:
-            raise ValueError(f"the walk moved the frozen groups {sorted(moved)}; sector_solve holds them at N0")
         solution = self.sector_solve(h_op, mu, sum(trial.values()))
         return np.inf if solution is None else solution.energy
 
@@ -819,9 +807,6 @@ def _prepare_sector_context(
         mixed_valence=sb.mixed_valence,
         h_solver_matrix=h_solver_matrix,
         max_occ_total=max_occ_total,
-        # A bath-less group pinned exactly as get_spectra.py pins it -- one of the three inputs
-        # that make this the same call calc_gs makes (see the module warning).
-        frozen_occupations={i for i in impurity_orbitals if sb.sum_bath_states[i] == 0},
         # Bath-only restriction (the reference "valence filled, conduction empty" occupation never
         # references N0), so the identical restriction list is valid for every sector -- the same
         # restrictions find_ground_state_sector applies to its own occupation-scan trials.
@@ -1844,7 +1829,7 @@ class _OccupationContext:
     """The mu-independent setup a fixed-occupation evaluation needs, shared between
     :func:`fixed_occupation_dc`'s search and the single-mu diagnostic
     :func:`occupation_and_energy_at_mu` (B2's convergence sweep,
-    ``test/support/dc_diagnostics.py``): the solver-basis layout, frozen shells, symmetry
+    ``test/support/dc_diagnostics.py``): the solver-basis layout, symmetry
     generators, the derived determinant cap, and the weighted restrictions. Building this once
     and evaluating many ``mu`` against it (the search) or one ``mu`` (the diagnostic) keeps both
     on the identical code path -- the diagnostic is not a reimplementation of the search's setup.
@@ -1855,7 +1840,6 @@ class _OccupationContext:
     impurity_orbitals: dict
     bath_states: dict
     N0: dict
-    frozen_occupations: set
     mixed_valence: dict
     tau: float
     chain_restrict: bool
@@ -1910,7 +1894,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     """Build the :class:`_OccupationContext` for a fixed-occupation evaluation.
 
     Verbatim extraction of the setup :func:`fixed_occupation_dc` used to build inline: the same
-    solver-basis derivation, frozen-shell/symmetry-generator computation, and determinant-cap
+    solver-basis derivation, symmetry-generator computation, and determinant-cap
     derivation :func:`groundstate.calc_gs` uses, so a fixed-mu diagnostic built on this context
     measures on exactly the variational space the production search would have used at that
     ``mu`` -- not an approximation of it.
@@ -1953,11 +1937,8 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
 
-    # The three inputs that make this the same call calc_gs makes (see the module warning):
-    # a bath-less group pinned exactly as get_spectra.py pins it, and
-    # the walk's tau divided by 100, restored to the full tau for everything solved at the sector
-    # the walk finds.
-    frozen_occupations = {i for i in impurity_orbitals if sb.sum_bath_states[i] == 0}
+    # Nothing is frozen: calc_selfenergy freezes nothing, and the dc must be measured on the state it
+    # solves (review J1; see the module warning).
 
     truncation_threshold = basis.truncation_threshold
     # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
@@ -1995,7 +1976,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=N0,
-        frozen_occupations=frozen_occupations,
         mixed_valence=mixed_valence,
         tau=tau,
         chain_restrict=chain_restrict,
@@ -2058,7 +2038,6 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             ctx.N0,
             tau=ctx.tau,
             slaterWeightMin=ctx.slaterWeightMin,
-            frozen_occupations=ctx.frozen_occupations,
             mixed_valence=ctx.mixed_valence,
             chain_restrict=ctx.chain_restrict,
             dense_cutoff=ctx.dense_cutoff,

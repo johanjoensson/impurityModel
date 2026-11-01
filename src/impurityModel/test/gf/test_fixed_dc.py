@@ -228,12 +228,12 @@ def spin_crossover_kwargs(u=8.0, j=1.0, delta=3.5, eps=-11.0, eps_bath=-25.0, v=
     ``-u > eps > 9j - 2 delta - 2u``, i.e. ``-14 < eps < -8`` at the defaults. ``eps = -11`` sits
     mid-window and puts the edges at ``omega_+ = +3`` and ``omega_- = -3``.
 
-    **Every impurity orbital gets its own bath partner, and that is load-bearing.**
-    :mod:`basis_generation` freezes any impurity group with no bath attached (the bath-less-core
-    pin), and a frozen group's occupation is pinned at its aufbau value -- which excludes the
-    high-spin configuration entirely. Hybridizing only the lowest orbital gave a 4-determinant
-    ``N + 1`` sector whose lowest state was the low-spin one, 0.5 above the true sector ground
-    state, silently. Confirmed against an independent exact diagonalization.
+    **Every impurity orbital gets its own bath partner.** When this fixture was written the DC
+    criteria froze any impurity group with no bath attached, pinning its occupation at its aufbau
+    value -- which excluded the high-spin configuration entirely: hybridizing only the lowest
+    orbital gave a 4-determinant ``N + 1`` sector whose lowest state was the low-spin one, 0.5
+    above the true sector ground state, silently. Nothing is frozen on the DC path any more
+    (review J1), but the fixture keeps the partners so it stays a plain, fully hybridized shell.
     """
     n_imp = 2 * CROSSOVER_N_ORB
     n_total = n_imp + 2 * CROSSOVER_N_ORB
@@ -1917,6 +1917,9 @@ def test_reference_is_gap_protected_not_nominal_total_matched():
 def _frozen_core_kwargs():
     """A three-group impurity: a bath-less core pair plus two bath-coupled valence pairs.
 
+    The core pair is *not* frozen (review J1): the DC criteria freeze nothing, as calc_selfenergy
+    freezes nothing. The name is historical.
+
     Six impurity spin-orbitals at three on-site energies -- a deep, uncoupled core doublet
     (``-5.0``) and the ``_split_block_kwargs`` valence doublets (``0.4``/``-0.4``) -- so
     ``prepare_solver_basis`` derives three orbital-symmetry groups, exactly one of which
@@ -1964,8 +1967,12 @@ def _bath_total(group, valence_baths, conduction_baths):
         ("fixed-gap", lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kw)),
     ],
 )
-def test_dc_criteria_pass_frozen_occupations_and_tau(monkeypatch, criterion, call):
+def test_dc_criteria_freeze_nothing_and_pass_no_tau(monkeypatch, criterion, call):
     """R1: the call-counter proof, not an outcome proof (the shim lesson).
+
+    Nothing reaches the walk frozen, even with a bath-less group in the model (review J1/P1a): the
+    criteria used to freeze every bath-less group, while calc_selfenergy freezes nothing, so the dc
+    was measured on a different state than the self-energy then solved.
 
     Asserting on the returned ``dc`` cannot distinguish "the three inputs reached
     ``find_ground_state_sector``" from "they didn't, and it happened not to matter" -- both
@@ -2000,10 +2007,10 @@ def test_dc_criteria_pass_frozen_occupations_and_tau(monkeypatch, criterion, cal
     for args, call_kwargs in calls:
         impurity_orbitals_arg = args[1]
         valence_baths, conduction_baths = args[2]
-        expected_frozen = {i for i in impurity_orbitals_arg if _bath_total(i, valence_baths, conduction_baths) == 0}
+        bath_less = {i for i in impurity_orbitals_arg if _bath_total(i, valence_baths, conduction_baths) == 0}
         # The fixture's core group must actually be bath-less, or this test proves nothing.
-        assert expected_frozen, f"{criterion}: fixture has no bath-less group to freeze"
-        assert call_kwargs["frozen_occupations"] == expected_frozen, (criterion, call_kwargs["frozen_occupations"])
+        assert bath_less, f"{criterion}: fixture has no bath-less group"
+        assert not call_kwargs.get("frozen_occupations"), (criterion, call_kwargs.get("frozen_occupations"))
         # The walk owns its conventions (it runs at sqrt(slaterWeightMin) itself), so every caller
         # hands it the full cutoff and no tau: a walk run four orders of magnitude tighter is a
         # different search and can settle on a different sector.
@@ -2077,20 +2084,17 @@ def test_occupation_and_energy_at_mu_ranks_agree():
     assert all(triple == other[0] for triple in other), other
 
 
-def test_a_sector_solve_holds_the_frozen_groups_where_the_walk_holds_them():
-    """``sector_solve(n)`` is the walk's sector ``n``: every frozen group at its ``N0`` value.
+def test_a_sector_solve_with_a_bath_less_group_is_the_unfrozen_sector():
+    """With a bath-less group, the DC's sector energy is the *unfrozen* sector's (review J1/P1a).
 
-    The walk never moves a frozen group, so its trial at total ``n`` is ``N0`` with the *unfrozen*
-    groups changed. The sector solve rebuilt the split from the total alone, by energetic filling
-    over every impurity orbital -- which moves a frozen group whenever its level lies between the
-    unfrozen ones. Here a bath-less doublet at ``-0.3`` sits between the valence doublets at
-    ``-0.4`` and ``0.4``: at ``N0 - 1`` filling takes the electron out of the frozen doublet, and
-    the walk compared that sector's energy as if it were its own.
+    A bath-less doublet at ``-0.3`` sits between the valence doublets at ``-0.4`` and ``0.4``. At
+    ``N0 - 1`` the unfrozen sector takes the electron out of that doublet; the old bath-less freeze
+    held it at 2 and took it from the ``-0.4`` doublet instead, 0.1 higher. calc_selfenergy freezes
+    nothing, so a frozen DC was measured on a state the self-energy never solves.
     """
     from impurityModel.ed.groundstate import calc_energy
 
     kwargs, _ = _frozen_core_kwargs()
-    model = kwargs["model"]
     h_imp = np.diag([-0.3, -0.3, 0.4, 0.4, -0.4, -0.4]).astype(complex)
     v = np.zeros((4, 6), dtype=complex)
     v[0, 2] = v[1, 3] = v[2, 4] = v[3, 5] = 0.2
@@ -2104,33 +2108,40 @@ def test_a_sector_solve_holds_the_frozen_groups_where_the_walk_holds_them():
         bath_valence_conduction=(list(range(6, 10)), []),
     )
     ctx = dc_criteria._prepare_sector_context(model, kwargs["basis"], kwargs["solver"], memory_label="test")
-    assert ctx.frozen_occupations, "fixture has no frozen group"
-    (core,) = ctx.frozen_occupations
+    sb_baths = {
+        i: sum(len(b) for b in ctx.bath_states[0][i]) + sum(len(b) for b in ctx.bath_states[1][i]) for i in ctx.N0
+    }
+    (core,) = [i for i, n in sb_baths.items() if n == 0]
     assert ctx.N0[core] == 2, ctx.N0
     trial = dict(ctx.N0)
-    donor = next(i for i in trial if i not in ctx.frozen_occupations and trial[i] > 0)
+    donor = next(i for i in trial if i != core and trial[i] > 0)
     trial[donor] -= 1
     h_op = ctx.shifted_h(0.0)
-    walk_energy, _ = calc_energy(
-        h_op,
-        ctx.impurity_orbitals,
-        ctx.bath_states,
-        trial,
-        ctx.mixed_valence,
-        ctx.chain_restrict,
-        ctx.dense_cutoff,
-        comm=MPI.COMM_WORLD,
-        verbose=False,
-        truncation_threshold=dc_criteria._ctx_cap_policy(ctx),
-        slaterWeightMin=ctx.slater_weight_min,
-        weighted_restrictions=ctx.weighted_restrictions,
-        frozen_occupations=ctx.frozen_occupations,
-        de2_min=ctx.de2_min,
-        e_pt2_tol=ctx.e_pt2_tol,
-    )
+
+    def walk_energy(frozen):
+        return calc_energy(
+            h_op,
+            ctx.impurity_orbitals,
+            ctx.bath_states,
+            trial,
+            ctx.mixed_valence,
+            ctx.chain_restrict,
+            ctx.dense_cutoff,
+            comm=MPI.COMM_WORLD,
+            verbose=False,
+            truncation_threshold=dc_criteria._ctx_cap_policy(ctx),
+            slaterWeightMin=ctx.slater_weight_min,
+            weighted_restrictions=ctx.weighted_restrictions,
+            frozen_occupations=frozen,
+            de2_min=ctx.de2_min,
+            e_pt2_tol=ctx.e_pt2_tol,
+        )[0]
+
+    unfrozen, frozen = walk_energy(None), walk_energy({core})
+    assert frozen - unfrozen > 0.05, "freezing the bath-less group no longer changes N0 - 1: the test lost its teeth"
     solution = ctx.sector_solve(h_op, 0.0, sum(trial.values()))
     assert solution is not None
-    assert solution.energy == pytest.approx(walk_energy, abs=1e-8)
+    assert solution.energy == pytest.approx(unfrozen, abs=1e-8)
 
 
 def test_fixed_occupation_dc_warns_when_sector_differs_from_nominal(capsys):
@@ -2138,7 +2149,7 @@ def test_fixed_occupation_dc_warns_when_sector_differs_from_nominal(capsys):
     branch exists to establish (DC <-> GS parity), and it must be surfaced when it disagrees with
     the nominal occupation, not silently discarded the way it was before ``sector_at`` existed.
 
-    ``_frozen_core_kwargs`` (nominal total 4: a frozen core of 4 plus two empty valence doublets)
+    ``_frozen_core_kwargs`` (nominal total 4: the bath-less core pair and the lower valence doublet)
     crosses to a sector total of 6 at mu=0.5 -- verified directly against
     ``occupation_and_energy_at_mu`` -- so requesting that achieved occupation drives
     ``fixed_occupation_dc`` onto the same non-nominal sector.

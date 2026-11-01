@@ -246,7 +246,6 @@ def test_the_lowest_and_the_thermal_manifold_agree_on_the_ground_state_energy():
         truncation_threshold=ctx.truncation_threshold,
         slaterWeightMin=ctx.slater_weight_min,
         weighted_restrictions=ctx.weighted_restrictions,
-        frozen_occupations=ctx.frozen_occupations,
     )
     args = (h_op, ctx.impurity_orbitals, ctx.bath_states, occ, ctx.mixed_valence)
     energy, _report = calc_energy(*args, ctx.chain_restrict, ctx.dense_cutoff, **common)
