@@ -302,9 +302,12 @@ def hartree_fock_density_matrix_diis(
     ``F(rho)`` reproduces ``rho`` to ``tol``. The returned density is that aufbau, so it is
     idempotent and a true fixed point, never a state only the extrapolation made stationary.
 
-    A virtual level shift was tried on top (0.5 and 2.0) and rescued none of the random models DIIS leaves
-    unconverged; those have (near-)degenerate levels at the Fermi energy, and fall to the occupation
-    walk's +-1 search.
+    What DIIS leaves unconverged (1-3% of random complex models) is DIIS stagnation, not a degenerate Fermi
+    level: Fock gaps 0.1-3 at the endpoints, ``cond(B)`` up to 4e10, coefficients up to 12. Neither a virtual
+    level shift (0.5, 2.0) nor restarting the history when ``B`` is ill-conditioned (cond > 1e8 or |c| > 5)
+    helped: the restart *lost* half the rescues, because a converging history is ill-conditioned too. Those
+    models fall to the occupation walk's +-1 search from the nominal ``N0``. Real coefficients
+    (``B = Re <e_i|e_j>``) give identical convergence counts; ``B`` is kept complex Hermitian.
 
     Parameters and returns as :func:`hartree_fock_density_matrix`, plus ``depth`` (the DIIS history).
     """

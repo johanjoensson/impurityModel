@@ -577,12 +577,12 @@ def hartree_fock_seed_occupation(
     **its impurity occupation is "the occupation corresponding to the lowest energy" at
     mean-field level**, obtained from a handful of small ``(n_orb x n_orb)`` dense
     diagonalisations. It is quick and hard-bounded in memory regardless of chain length. HF
-    is deterministic and its input (``h_op``) is replicated, so every rank computes the
-    identical ``N0`` with no communication.
+    runs on rank 0 and its result is broadcast, so every rank starts from the identical ``N0``
+    (bit-identity of a replicated computation is not relied on).
 
     The mean-field seed can miss the true integer sector by ``±1`` in strongly-correlated,
-    near-degenerate cases; the ``mixed_valence`` window of the subsequent accurate solve
-    absorbs such a miss.
+    near-degenerate cases (by 2-3 on some random models); the +-1 descent of
+    :func:`find_ground_state_sector` absorbs such a miss when ``E(N)`` is convex.
 
     Parameters
     ----------
@@ -591,7 +591,7 @@ def hartree_fock_seed_occupation(
         (conserved) particle number: ``sum_i N0[i]`` impurity electrons plus the nominally
         full valence baths.
     comm : MPI.Comm or None
-        Used only to gate the verbose print to rank 0; HF itself is uncommunicated.
+        The seed is broadcast from rank 0, where the verbose line is printed.
     verbose : bool, default False
 
     Returns
@@ -601,7 +601,7 @@ def hartree_fock_seed_occupation(
     converged : bool
         Whether the HF iteration converged. A non-converged seed is **not** an occupation: it
         is whatever the last iterate happened to be, and callers must not use it (see
-        :func:`find_ground_state_sector`, which falls back to the ``dN`` scan). Measured on the
+        :func:`find_ground_state_sector`, which then walks +-1 from the nominal ``N0``). Measured on the
         NiO L-edge workload, a non-converged seed returned ``{1: 4, 2: 10}`` -- a 3d10 impurity
         paid for by emptying the 2p core -- which, once the frozen core is restored, closes the
         shell, collapses the basis to a single determinant and zeroes every core-level spectrum.
