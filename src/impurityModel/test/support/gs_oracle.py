@@ -140,7 +140,6 @@ def check_model(h_op, imp, bath, N0, n_orb, *, comm=None, tau=0.05, spectra=None
         tau=tau,
         slaterWeightMin=1e-12,
         comm=comm,
-        rank=comm.rank if comm is not None else 0,
         verbose=0,
         truncation_threshold=np.inf,
         dense_cutoff=1000,
