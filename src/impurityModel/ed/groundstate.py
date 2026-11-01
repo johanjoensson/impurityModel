@@ -35,6 +35,7 @@ from impurityModel.ed.sector_solver import (
     window_overtake,
 )
 from impurityModel.ed.spin_pairs import spin_layout
+from impurityModel.ed.symmetries import PARITY_TERM_TOL
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
@@ -1065,6 +1066,27 @@ class GroundState(NamedTuple):
     walk_report: dict | None
 
 
+def frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations):
+    """``(largest, total)`` ``|coefficient|`` of the terms of ``h_op`` that change a frozen shell's electron count.
+
+    A freeze pins only the **seed** (:func:`basis_generation.generate_initial_basis` and :func:`sector_key`); the
+    restrictions bound the total impurity charge, not a shell's. So a frozen shell is held exactly only when ``H``
+    conserves its electron count, as the spectra Hamiltonian does for the X-ray core by construction (review P1b:
+    ``slater_condon_Uop`` builds F_cc, F_cv and G_cv only). A term whose creators and annihilators on the frozen
+    orbitals differ in number is ``[H, N_core]``; each is reported by its coefficient. Pure: ``h_op`` is replicated.
+    """
+    frozen = {orb for i in frozen_occupations or () for block in impurity_orbitals[i] for orb in block}
+    largest = total = 0.0
+    if not frozen:
+        return largest, total
+    for term, coeff in h_op.items():
+        moved = sum(1 if action == "c" else -1 for orb, action in term if orb in frozen)
+        if moved:
+            largest = max(largest, abs(coeff))
+            total += abs(coeff)
+    return largest, total
+
+
 def solve_ground_state(
     h_op,
     impurity_orbitals,
@@ -1123,6 +1145,20 @@ def solve_ground_state(
         ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
+    if frozen_occupations and (comm is None or comm.rank == 0):
+        # A freeze is only ever the user's (review O5), and it is exact only where H conserves the shell. Where it
+        # does not (RSPt h_dft with a one-body core-valence element, say), say so once, at every verbosity. Rank 0
+        # alone: a print, nothing collective depends on it.
+        largest, total = frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations)
+        scale = max((abs(c) for c in h_op.values()), default=0.0)
+        if largest > PARITY_TERM_TOL * scale:
+            print(
+                f"WARNING: H does not conserve the electron count of the frozen shell(s) {sorted(frozen_occupations)}: "
+                f"terms moving charge in or out of them reach {largest:.2e} (sum {total:.2e}). The freeze pins only "
+                "the seed, so the solve can leak charge out of the shell. Freeze only a shell H conserves (the X-ray "
+                "core of a spectra Hamiltonian), or leave it unfrozen.",
+                flush=True,
+            )
     if plan_store is None:
         plan_store = SectorPlanStore()
     search = find_ground_state_sector(

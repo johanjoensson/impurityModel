@@ -429,6 +429,56 @@ def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
     assert fell_back.energy == scanned.energy
 
 
+def _core_shell_toy(mix):
+    """A valence pair (0, 1) with its valence bath pair (4, 5), and a bath-less core pair (2, 3) at -5 with a
+    core-valence density-density repulsion: H conserves the core count, unless ``mix`` adds the one-body
+    element ``c_0^+ c_2 + h.c.`` (RSPt's h_dft can carry one; the MS T4.4 fixture uses 1e-3)."""
+    terms = {}
+    for o in (0, 1):
+        terms[((o, "c"), (o, "a"))] = -1.0
+        terms[((o + 4, "c"), (o + 4, "a"))] = -3.0
+        terms[((o, "c"), (o + 4, "a"))] = terms[((o + 4, "c"), (o, "a"))] = 0.5
+    for o in (2, 3):
+        terms[((o, "c"), (o, "a"))] = -5.0
+        for w in (0, 1):
+            terms[((o, "c"), (w, "c"), (w, "a"), (o, "a"))] = 1.0
+    if mix:
+        terms[((0, "c"), (2, "a"))] = terms[((2, "c"), (0, "a"))] = mix
+    impurity_orbitals = {0: [[0, 1]], 1: [[2, 3]]}
+    bath_states = ({0: [[4, 5]], 1: [[]]}, {0: [[]], 1: [[]]})
+    return ManyBodyOperator(terms), impurity_orbitals, bath_states, {0: 1, 1: 2}
+
+
+@pytest.mark.parametrize("mix", [0.0, 1e-3])
+def test_a_frozen_shell_h_does_not_conserve_is_reported(mix, capsys):
+    """A freeze pins only the seed, so it holds exactly only where H conserves the shell (review J1/O5). The
+    one-body core-valence element is ``[H, N_core]``: measured by its coefficient, and warned about once, at the
+    default verbosity. The conserved core (``mix = 0``) stays silent."""
+    from impurityModel.ed import groundstate
+
+    h_op, impurity_orbitals, bath_states, N0 = _core_shell_toy(mix)
+    largest, total = groundstate.frozen_shell_leak(h_op, impurity_orbitals, {1})
+    assert (largest, total) == (pytest.approx(mix), pytest.approx(2 * mix))
+    assert groundstate.frozen_shell_leak(h_op, impurity_orbitals, set()) == (0.0, 0.0)
+
+    capsys.readouterr()
+    groundstate.solve_ground_state(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        tau=0.01,
+        slaterWeightMin=1e-12,
+        frozen_occupations={1},
+        truncation_threshold=np.inf,
+        verbose=False,
+    )
+    out = capsys.readouterr().out
+    assert ("does not conserve the electron count of the frozen shell(s) [1]" in out) == bool(mix), out
+    if mix:
+        assert "1.00e-03" in out
+
+
 def _bytes6(occ):
     b = bytearray(1)
     for o in occ:
