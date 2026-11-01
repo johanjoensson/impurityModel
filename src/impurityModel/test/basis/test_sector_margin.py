@@ -94,7 +94,7 @@ ENERGIES = {0: 5.0, 1: -1.0, 2: -1.0005, 3: -0.2, 4: 3.0}
 
 @pytest.mark.parametrize("comm", COMMS)
 def test_the_walk_records_every_solved_sector_in_order_and_flags_the_close_neighbour(comm, capsys):
-    search = _walk(ENERGIES, {1: 1e-3, 2: 1e-3, 3: 1e-3}, comm=comm)
+    search = _walk(ENERGIES, {1: 1e-3, 2: 1e-3, 3: 1e-3}, comm=comm, verbose=1)
     assert sum(search.occupation.values()) == 2
     totals = [rec.total for rec in search.solved]
     assert totals == list(dict.fromkeys(totals)), "a sector is recorded once"
@@ -104,7 +104,7 @@ def test_the_walk_records_every_solved_sector_in_order_and_flags_the_close_neigh
     assert search.diagnostics.undecided
     assert search.diagnostics.margin == pytest.approx(0.25)
     out = capsys.readouterr().out
-    # printed on rank 0 only, at every verbosity (the order is not established)
+    # printed on rank 0 only (a double-counting search, which passes sector_energy, prints it from V_SUMMARY)
     assert ("not separated from its neighbour" in out) == (comm is None or comm.rank == 0)
 
 
@@ -134,3 +134,9 @@ def test_every_rank_holds_the_same_diagnostics():
     search = _walk(ENERGIES, {1: 1e-3, 2: 1e-3, 3: 1e-3}, comm=comm)
     gathered = comm.allgather((search.diagnostics, [rec.total for rec in search.solved]))
     assert all(g == gathered[0] for g in gathered)
+
+
+def test_a_search_with_its_own_sector_solves_is_quiet_at_the_default_verbosity(capsys):
+    """The double-counting search walks once per trial shift and sits at a crossover by construction."""
+    _walk(ENERGIES, {1: 1e-3, 2: 1e-3, 3: 1e-3}, verbose=0)
+    assert "WARNING" not in capsys.readouterr().out

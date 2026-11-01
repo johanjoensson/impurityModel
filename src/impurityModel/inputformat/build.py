@@ -27,6 +27,7 @@ from impurityModel.ed.atomic_physics import (
     exchange_array_length,
     octahedral_level_structure,
 )
+from impurityModel.ed.basis_generation import check_mixed_valence
 from impurityModel.ed.hamiltonian_io import cf_bath_blocks, cf_parameter_names
 from impurityModel.ed.memory_estimate import parse_truncation_threshold
 from impurityModel.inputformat.reader import InputError, shell_name
@@ -678,6 +679,7 @@ def _build_basis(resolved):
         nominal = {key: valence["nominal_occupation"]}
 
     mixed = table["mixed_valence"]
+    check_mixed_valence(mixed)  # a spectroscopy run does not forward it, so say it here rather than ignore it
     if mixed is not None and resolved.calculation != "spectroscopy":
         mixed = {valence["l"] if valence["l"] is not None else 0: mixed}
 

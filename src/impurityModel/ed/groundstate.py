@@ -299,8 +299,7 @@ def solve_sector(
         A search over a shift ``H - shift * N_imp`` (``h_op`` is already shifted) passes its store:
         a sector is then certified once, and at other shifts only the classes that can still be
         lowest are expanded (:class:`~impurityModel.ed.sector_solver.SectorPlanStore`). A record is
-        reused only at the seed size, accuracy and cap it was made with, and never for a
-        mixed-valence seed.
+        reused only at the seed size, accuracy and cap it was made with.
     """
     # One call is one *sector solve* -- the unit the occupation walk and the double-counting search
     # are both counted in. The nested timers say which of build / expand / diagonalize the cost
@@ -729,15 +728,17 @@ class SectorSearch(NamedTuple):
     diagnostics: SectorDiagnostics | None = None
 
 
-def _report_margin(diagnostics, winner, verbose):
+def _report_margin(diagnostics, winner, verbose, always=True):
     """Print how firmly the winner beats its neighbours: one ``V_SUMMARY`` line, and at every verbosity when the
-    order is not established (``margin < 1``). Rank 0 only; nothing collective depends on it."""
+    order is not established (``margin < 1``) - unless `always` is False (a double-counting search, which walks once per
+    trial shift and sits at a crossover by construction), when that too waits for `V_SUMMARY`. Rank 0 only; nothing
+    collective depends on it."""
     if diagnostics.margin is None:
         return
     nbrs = "/".join(str(t) for t in diagnostics.neighbour_totals)
     error = "" if diagnostics.unknown_error else f", winner residual PT2 {winner.residual_pt2:.2e}"
     curv = "" if diagnostics.second_difference is None else f", second difference {diagnostics.second_difference:.4f}"
-    if diagnostics.undecided:
+    if diagnostics.undecided and (always or verbose >= V_SUMMARY):
         lower = diagnostics.margin < 0
         print(
             f"WARNING: sector N_imp = {diagnostics.winner_total} is "
@@ -750,7 +751,7 @@ def _report_margin(diagnostics, winner, verbose):
             "established by the solves; raising the cap or tightening e_pt2_tol would decide it.",
             flush=True,
         )
-    elif verbose >= V_SUMMARY:
+    elif verbose >= V_SUMMARY and not diagnostics.undecided:
         print(f"  margin to N_imp = {nbrs}: {diagnostics.margin:.3g}{error}{curv}", flush=True)
 
 
@@ -1139,16 +1140,6 @@ def find_ground_state_sector(
                     break
                 winning_impurity_occ[i] += dN_gs[i]
                 e_gs = e_trial
-        # The scan's winner is a minimum over its own candidates, and the extension above stops at the first sector
-        # that does not improve, so the winner's neighbours are not all solved. Solve the rest, to record how firmly
-        # the winner beats them (review P11). Recorded only: the winner is not revisited. A sector is its total, so
-        # one unfrozen group stands for them all; a cached sector is free.
-        movable = [i for i in keys if i not in frozen_occupations]
-        if movable:
-            for delta in (-1, 1):
-                trial_N0 = winning_impurity_occ.copy()
-                trial_N0[movable[0]] += delta
-                report_trial(trial_N0, get_energy(trial_N0))
 
     winning_impurity_occ = canonical_split(
         winning_impurity_occ,
@@ -1191,13 +1182,13 @@ def find_ground_state_sector(
     winner = energy_cache[winning_key]
     e_gs, report = winner.energy, winner.truncation_report
     solved = tuple(energy_cache.values())
-    # Decided on rank 0 and broadcast: every input is replicated, but the verdict steers a print and a caller's
-    # warning, and two ranks disagreeing on it would be a bug that only shows as a missing line.
+    # Decided on rank 0 and broadcast: every input is replicated, but the verdict steers a print, and two ranks
+    # disagreeing on it would be a bug that only shows as a missing line.
     diagnostics = sector_diagnostics(solved, winner.total)
     if comm is not None:
         diagnostics = comm.bcast(diagnostics, root=0)
     if comm is None or comm.rank == 0:
-        _report_margin(diagnostics, winner, verbose)
+        _report_margin(diagnostics, winner, verbose, always=sector_energy is None)
     return SectorSearch(
         dict(winning_impurity_occ), e_gs, report, CapPolicy.coerce(truncation_threshold), solved, diagnostics
     )

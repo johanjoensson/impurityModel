@@ -1392,7 +1392,7 @@ class BasisOptions:
         Nominal impurity occupation. A dict keyed by the model's impurity groups, or a
         scalar/total that the solver distributes by energetic filling.
     mixed_valence : dict, int or None
-        Mixed-valence scalar, forwarded per group to the basis.
+        Reserved for the charge-sector ensemble: only None/False/0 is accepted for now.
     dN : int or None
         Allowed impurity occupation window (+-dN) for the Green's-function excited bases.
     truncation_threshold : int, float or None
