@@ -392,6 +392,26 @@ def test_unconverged_hf_seed_is_rejected(monkeypatch, capsys):
     assert "HF seed rejected (HF did not converge)" in capsys.readouterr().out
 
 
+@pytest.mark.xfail(
+    reason="review step 4 open item: with >= 2 groups and non-convex E(N) (attractive U) the +-1 descent stops in a "
+    "local minimum the scan's diagonal move escapes (2 eV high). Owned by review step 9 (MV 3's N+-2 extension).",
+    strict=True,
+)
+def test_pm1_descent_finds_the_scan_minimum_on_a_non_convex_two_group_model():
+    from impurityModel.ed import groundstate
+
+    op = _two_group_siam(e_imp=1.0, u=-4.0, v=0.05)
+    kwargs = dict(
+        impurity_orbitals={0: [[0, 1]], 1: [[2, 3]]},
+        bath_states=({0: [[4, 5]], 1: [[6, 7]]}, {0: [[]], 1: [[]]}),
+        N0={0: 1, 1: 1},
+        verbose=False,
+    )
+    scanned = groundstate.find_ground_state_sector(op, use_hf_seed=False, **kwargs)
+    walked = groundstate.find_ground_state_sector(op, **kwargs)
+    assert walked.energy == pytest.approx(scanned.energy, abs=1e-8)
+
+
 def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
     """HF is free to move charge into or out of a shell this calculation holds frozen, paying for
     it elsewhere. Re-freezing afterwards keeps HF's answer for the *unfrozen* shells but undoes the

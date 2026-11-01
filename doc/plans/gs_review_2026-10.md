@@ -483,6 +483,13 @@ step touching a collective runs `-n 1/2/3`.
 | 13 | **B4** (after a production-budget re-measure), **B5** (geometric-tail rule), **B6**, **B7** (-n 4); **B8** (states reused with default DC tolerances, sector choice only when loosened) | yes | each gain measured on the change |
 | 14 | hygiene | no | — |
 
+**Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
+-n 2 3975/17/7 (1211 s), -n 3 3983/9/7 (2230 s), every rank file green. The step-5 `test_orbits` -n 1 quartet-control
+flake did not reproduce: 40 isolated -n 1 runs, 10 runs of `test/symmetry/` at -n 1, 10 at -n 3, plus the gate (0 failures).
+Left unexplained; if it recurs, the control `np.ptp(split) > 1e-8` is the assertion that fails (a layout-dependent
+tie). Oracle CI budget (O6): the whole suite is 11.5 min at -n 1; the oracle adds no separate budget beyond that.
+`_two_group_siam(e_imp=1, u=-4, v=0.05)` is now a strict xfail in `test_sectorization.py`, owned by step 9.
+
 **Orphans from steps 1–6, placed (2026-11-01).** `test_orbits` -n 1 flake: step 0. Σ↑=Σ↓ acceptance, GF-side closure,
 `slaterWeightMin` audit: measured in 7′, fixed in 10c. `retain()` cost at production size and the stalled-budget case:
 measured in the 7′ profiles, fixed in 10b if they bind. HF off-by->1 misses, DIIS landing on a higher fixed point, the
