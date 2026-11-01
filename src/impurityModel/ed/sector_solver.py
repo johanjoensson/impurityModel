@@ -40,12 +40,13 @@ from mpi4py import MPI
 
 from impurityModel.ed import config, label_symmetries, seed_sectors, solver_trace
 from impurityModel.ed.basis_transcription import comm_support_filter
-from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.cipsi_solver import DEGENERACY_TOL, DEGENERACY_TOL_MARGIN, CIPSISolver, _degeneracy_tol
 from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.eigensolvers import Lowest, cold_vector
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.ed.memory_estimate import measured_phase
 from impurityModel.ed.observables import (
+    _group_degenerate,
     casimir_operator,
     casimir_to_quantum_number,
     make_spin_operators,
@@ -988,13 +989,7 @@ def manifold_deficit(plan, verdicts, es, psis, basis):
     level = np.flatnonzero(es - np.min(es) <= tol)
     multiplicity = 1
     if plan.su2 and plan.pairs:
-        ladders = make_spin_operators(plan.pairs)
-        for op in ladders:
-            op.set_restrictions(None)
-            op.set_weighted_restrictions(None)
-        s2 = casimir_operator(*ladders)
-        s2.set_restrictions(None)
-        s2.set_weighted_restrictions(None)
+        s2 = _total_spin_casimir(plan)
         # The level's columns only, and S^2 applied onto their own support: the matrix of S^2 on the
         # level is all that is read, and the rest of S^2 |n> is a transient as large as the window.
         block = basis.redistribute_block(psis.select([int(i) for i in level]))
@@ -1013,6 +1008,85 @@ def manifold_deficit(plan, verdicts, es, psis, basis):
         if comm is not None:
             multiplicity = comm.bcast(multiplicity, root=0)
     return len(level), len(labels) * multiplicity
+
+
+def _total_spin_casimir(plan):
+    """``S^2`` over the plan's spin pairs, unrestricted (it is applied to states, not used to build a basis)."""
+    ladders = make_spin_operators(plan.pairs)
+    for op in ladders:
+        op.set_restrictions(None)
+        op.set_weighted_restrictions(None)
+    s2 = casimir_operator(*ladders)
+    s2.set_restrictions(None)
+    s2.set_weighted_restrictions(None)
+    return s2
+
+
+def roundoff_tol(es, *, dense, slater_weight_min):
+    """How far apart two exactly degenerate eigenvalues of one solve can come back: its own accuracy.
+
+    A dense ``eigh`` is exact to rounding, ``DEGENERACY_TOL_MARGIN * eps * max|E|`` (floored at
+    :data:`~impurityModel.ed.cipsi_solver.DEGENERACY_TOL`); an iterative window solve to its residual,
+    :func:`~impurityModel.ed.cipsi_solver._degeneracy_tol`. Pure: the caller passes replicated ``es``.
+    """
+    if not dense:
+        return _degeneracy_tol(es, slater_weight_min)
+    e = np.real(np.asarray(es, dtype=complex))
+    scale = float(np.max(np.abs(e))) if e.size else 0.0
+    return max(DEGENERACY_TOL, DEGENERACY_TOL_MARGIN * float(np.finfo(float).eps) * scale)
+
+
+def multiplet_split(plan, verdicts, es, psis, basis, roundoff):
+    """The spin multiplets of the lowest level that the solve split, or ``None`` (review S2, detection).
+
+    Under requirement SYM the members of one ``2S + 1`` multiplet are degenerate to the solve's own accuracy
+    ``roundoff``, whatever the cap did: the selection and the cuts act on whole symmetry orbits. So group the
+    lowest level (the states within the winning class's error bar, as :func:`manifold_deficit`) into clusters
+    at ``roundoff``, read ``S`` of every state from ``S^2`` diagonalised on its cluster, and count: every cluster
+    holds a multiple of ``2S + 1`` states of each ``S``. A cluster that does not holds part of a multiplet whose
+    other members came back at another energy -- a split, which under SYM can only be a bug.
+
+    Only when total spin is a symmetry (``plan.su2``); without it (spin-orbit coupling, CrI3) nothing is
+    checked and ``None`` is returned. Returns ``{"two_s": [...], "spread": float, "roundoff": float}``:
+    the split ``2S`` values and the largest energy spread among the states of one split ``S``. Replicated:
+    decided on rank 0 and broadcast. Collective when ``plan.su2`` (the ``S^2`` evaluation reduces).
+    """
+    if not (plan.su2 and plan.pairs):
+        return None
+    comm = basis.comm if basis.is_distributed else None
+    finished = [v for v in verdicts if not v.stopped_early] or list(verdicts)
+    lowest = min(finished, key=lambda v: v.energy)
+    es = np.real(np.asarray(es, dtype=complex))
+    if comm is not None:
+        es = comm.bcast(es, root=0)
+    level = np.flatnonzero(es - np.min(es) <= _energy_error(lowest))
+    s2 = _total_spin_casimir(plan)
+    block = basis.redistribute_block(psis.select([int(i) for i in level]))
+    keep = comm_support_filter([block], comm)
+    values = manifold_observable_values(
+        block,
+        es[level],
+        lambda blk: s2.apply_block(blk, 0, keep),
+        degeneracy_tol=roundoff,
+        comm=comm,
+        redistribute=basis.redistribute_block if comm is not None else None,
+    )
+    split = None
+    if comm is None or comm.rank == 0:
+        energies = es[level]
+        two_s = np.array([round(2 * casimir_to_quantum_number(float(np.real(x)))) for x in values])
+        order = np.argsort(energies, kind="stable")
+        clusters = [order[c] for c in _group_degenerate(energies[order], roundoff)]
+        bad, spread = [], 0.0
+        for ts in sorted(set(two_s.tolist())):
+            if any(int(np.count_nonzero(two_s[c] == ts)) % (ts + 1) for c in clusters):
+                bad.append(int(ts))
+                spread = max(spread, float(np.ptp(energies[two_s == ts])))
+        if bad:
+            split = {"two_s": bad, "spread": spread, "roundoff": float(roundoff)}
+    if comm is not None:
+        split = comm.bcast(split, root=0)
+    return split
 
 
 def _record_union_cut(solver, union_cut, cap, retained):
@@ -1232,7 +1306,21 @@ def solve_certified(
         phase.dets = merged.size
     found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
     solver.manifold_check = {"found": found, "expected": expected}
-    es_all = es if basis.comm is None else basis.comm.bcast(es, root=0)
+    es_bcast = es if basis.comm is None else basis.comm.bcast(es, root=0)
+    roundoff = roundoff_tol(es_bcast, dense=merged.size < dense_cutoff, slater_weight_min=slater_weight_min)
+    split = multiplet_split(plan, verdicts, es, psis, merged, roundoff)
+    solver.manifold_check["multiplet_split"] = split
+    if split is not None and (basis.comm is None or basis.comm.rank == 0):
+        spins = ", ".join(f"S = {ts / 2:g}" for ts in split["two_s"])
+        print(
+            f"ERROR: the thermal manifold splits the {spins} multiplet(s) of its lowest level by "
+            f"{split['spread']:.2e}, above the solve's own accuracy {split['roundoff']:.1e}. The Hamiltonian has "
+            "total-spin symmetry, so its eigenstates cannot split this way: the basis selection or a truncation broke "
+            "the symmetry (a bug). Thermal averages and the Green's functions built on these states can carry a "
+            "spurious spin polarization.",
+            flush=True,
+        )
+    es_all = es_bcast
     in_window, in_window_expected = window_deficit(verdicts, es_all, float(manifold.max_energy), expected)
     solver.manifold_check.update(
         window_found=in_window, window_expected=in_window_expected, window_complete=in_window >= in_window_expected

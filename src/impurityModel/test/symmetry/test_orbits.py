@@ -198,9 +198,16 @@ def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_
     es = np.sort(np.real(closed.es))
     lowest = es[:4] if comm is None else np.sort(np.concatenate(comm.allgather(es)))[:4]
     assert np.ptp(lowest) < 1e-9, lowest
+    # The split detection (review S2) is silent on the symmetric solve ...
+    assert closed.solver.manifold_check["multiplet_split"] is None, closed.solver.manifold_check
     if comm is None:  # how a tie splits depends on the rank count: the control is the serial run
-        split = np.sort(np.real(_capped_cubic_d7(monkeypatch, cap, False).es))[:4]
+        broken = _capped_cubic_d7(monkeypatch, cap, False)
+        split = np.sort(np.real(broken.es))[:4]
         assert np.ptp(split) > 1e-8, "per-determinant selection no longer splits the quartet: the test lost its teeth"
+        # ... and fires on the orbit-breaking one: the S = 3/2 quartet came back at more than one energy.
+        check = broken.solver.manifold_check["multiplet_split"]
+        assert check is not None and check["two_s"] == [3], broken.solver.manifold_check
+        assert check["spread"] == pytest.approx(np.ptp(split)) and check["roundoff"] < 1e-8
 
 
 @pytest.mark.parametrize("cap", [200, 230])
