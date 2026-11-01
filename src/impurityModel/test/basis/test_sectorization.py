@@ -322,47 +322,74 @@ def test_hf_seeded_walk_finds_the_whole_fock_space_ground_state():
     assert seeded.energy == pytest.approx(scanned.energy, abs=1e-10)
 
 
-def test_unconverged_hf_seed_is_rejected(monkeypatch):
+def _two_group_siam(e_imp=-1.0, u=4.0, v=0.5, e_bath=-3.0):
+    """Two impurity orbital pairs (0,1) and (2,3), each with its own valence bath pair ((4,5), (6,7)), and a
+    Hubbard ``u`` within each pair: the smallest impurity whose two groups let the dN scan's diagonal move
+    reach a total the +-1 walk does not."""
+    terms = {}
+    for o in range(4):
+        terms[((o, "c"), (o, "a"))] = e_imp
+        terms[((o + 4, "c"), (o + 4, "a"))] = e_bath
+        terms[((o, "c"), (o + 4, "a"))] = v
+        terms[((o + 4, "c"), (o, "a"))] = v
+    for a in (0, 2):
+        terms[((a, "c"), (a + 1, "c"), (a + 1, "a"), (a, "a"))] = u
+    return ManyBodyOperator(terms)
+
+
+def test_unconverged_hf_seed_is_rejected(monkeypatch, capsys):
     """A non-converged HF seed must never be used: it is the last iterate, not a minimiser.
 
     Measured on the NiO L-edge workload, an unconverged seed returned a 3d10 impurity paid for by
     emptying the (frozen) 2p core. Re-freezing the core then left two electrons from nowhere, the
     shell closed, the basis collapsed to a single determinant and every core-level spectrum came
-    out identically zero -- while PES still looked healthy. find_ground_state_sector must fall back
-    to the dN scan instead.
+    out identically zero -- while PES still looked healthy.
+
+    find_ground_state_sector walks +-1 from the nominal N0 instead (review P8), and says so at the
+    default verbosity. It used to fall back to the 3^k dN scan. The impurity is split into two groups
+    so the two differ: the scan solves the diagonal move (+1, +1), total N0 + 2 = 4, which a descent
+    to the winner (total 1) never reaches.
     """
     from impurityModel.ed import groundstate
 
-    op = _siam_6()
-    impurity_orbitals = {0: [[0, 1]]}
-    bath_states = ({0: [[2, 3]]}, {0: [[4, 5]]})
-    N0 = {0: 2}
-
-    # The oracle: what the dN scan produces, i.e. what "falling back" has to mean.
-    scanned = groundstate.find_ground_state_sector(
-        op,
-        impurity_orbitals=impurity_orbitals,
-        bath_states=bath_states,
-        N0=N0,
+    op = _two_group_siam()
+    kwargs = dict(
+        impurity_orbitals={0: [[0, 1]], 1: [[2, 3]]},
+        bath_states=({0: [[4, 5]], 1: [[6, 7]]}, {0: [[]], 1: [[]]}),
+        N0={0: 1, 1: 1},
         verbose=False,
-        use_hf_seed=False,
     )
+    solved = []
+    calc_energy = groundstate.calc_energy
+
+    def spy(h_op, impurity_orbitals, bath_states, trial_N0, *args, **kw):
+        solved.append(sum(trial_N0.values()))
+        return calc_energy(h_op, impurity_orbitals, bath_states, trial_N0, *args, **kw)
+
+    monkeypatch.setattr(groundstate, "calc_energy", spy)
+
+    # The oracle: the dN scan, which also shows the model separates the two (it solves total 4).
+    scanned = groundstate.find_ground_state_sector(op, use_hf_seed=False, **kwargs)
+    assert 4 in solved, "the scan no longer visits N0 + 2: the test cannot tell the walk from it"
+    solved.clear()
 
     # Same problem, but HF now reports a garbage occupation and admits it did not converge.
     calls = []
     monkeypatch.setattr(
         groundstate,
         "hartree_fock_seed_occupation",
-        lambda *a, **k: (calls.append(1), ({0: 0}, False))[1],
+        lambda *a, **k: (calls.append(1), ({0: 0, 1: 0}, False))[1],
     )
-    fell_back = groundstate.find_ground_state_sector(
-        op, impurity_orbitals=impurity_orbitals, bath_states=bath_states, N0=N0, verbose=False
-    )
+    capsys.readouterr()
+    fell_back = groundstate.find_ground_state_sector(op, **kwargs)
 
     assert calls, "the seed should still be consulted"
-    # The rejected seed (impurity occupation 0) must not have been taken.
-    assert fell_back.occupation == scanned.occupation
-    assert fell_back.energy == scanned.energy
+    # The rejected seed (impurity occupation 0) must not have been taken: the walk starts at N0.
+    assert solved[0] == 2
+    assert 4 not in solved, f"the rejected seed fell back to the dN scan (solved totals {solved})"
+    assert sum(fell_back.occupation.values()) == sum(scanned.occupation.values()) == 2
+    assert fell_back.energy == pytest.approx(scanned.energy, abs=1e-12)
+    assert "HF seed rejected (HF did not converge)" in capsys.readouterr().out
 
 
 def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):

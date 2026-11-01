@@ -706,7 +706,10 @@ def find_ground_state_sector(
 
     use_hf_seed (default True): seed the nominal occupation with a cheap, memory-bounded
     unrestricted Hartree-Fock solve (the mean-field lowest-energy determinant), instead of
-    the O(3^k) accurate scan over every dN combination. Set False for the legacy scan.
+    the O(3^k) accurate scan over every dN combination, then descend on ``E(N)`` by +-1 steps.
+    A rejected seed (HF not converged, or a leak through the frozen shells) starts the same
+    descent from the nominal ``N0`` instead, and says so at every verbosity (review P8). Set
+    False for the legacy scan.
 
     verbose : int or bool
         Verbosity level (see ``impurityModel.ed.utils.V_SUMMARY``/``V_DETAIL``); the
@@ -914,7 +917,9 @@ def find_ground_state_sector(
         leaked = sum(refrozen.values()) != sum(seed_N0.values())
         if converged and not leaked:
             return refrozen
-        if verbose >= V_SUMMARY and (comm is None or comm.rank == 0):
+        # At every verbosity (V_RESULT): a rejected seed changes where the walk starts, and the user
+        # should see that (review P8). Rank 0 only, and nothing collective depends on it.
+        if comm is None or comm.rank == 0:
             why = (
                 "HF did not converge"
                 if not converged
@@ -923,18 +928,26 @@ def find_ground_state_sector(
                     f"{sum(seed_N0.values())} -> {sum(refrozen.values())}"
                 )
             )
-            print(f"HF seed rejected ({why}); falling back to the dN occupation scan.", flush=True)
+            print(
+                f"HF seed rejected ({why}); walking +-1 from the nominal occupation {sum(N0.values())} instead.",
+                flush=True,
+            )
         return None
 
-    hf_seed = _hf_seed() if use_hf_seed else None
-    if hf_seed is not None:
+    if use_hf_seed:
         # A cheap unrestricted Hartree-Fock solve locates the GS impurity occupation
         # (the mean-field lowest-energy determinant), replacing the O(3^k) dN scan; then a
         # single accurate solve at that occupation refines it. HF is quick and memory-bounded
         # (no broad-window CIPSI expansion), which matters for long bath chains.
-        winning_impurity_occ = hf_seed
+        #
+        # A rejected seed starts the same +-1 descent from the nominal N0 (review P8). It used to fall
+        # back to the 3^k scan, whose cost grows with the number of groups and which every wrong-sector
+        # failure of the review's oracle went through (P7). `hf_seed` is replicated (decided on rank 0
+        # and broadcast in hartree_fock_seed_occupation), so every rank starts at the same sector.
+        hf_seed = _hf_seed()
+        winning_impurity_occ = dict(N0) if hf_seed is None else hf_seed
         e_gs = get_energy(winning_impurity_occ)
-        report_trial(winning_impurity_occ, e_gs, note="HF seed")
+        report_trial(winning_impurity_occ, e_gs, note="nominal (HF seed rejected)" if hf_seed is None else "HF seed")
 
         # No diagonal (multi-group) probe: a sector is its total impurity occupation plus the frozen
         # groups (see sector_key), and frozen groups never move, so every combination move lands on
