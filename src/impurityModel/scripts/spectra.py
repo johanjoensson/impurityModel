@@ -99,8 +99,7 @@ def add_arguments(parser):
         help=(
             "Energy unit for every energy-valued parameter below (Fdd, Fpp, Fpd, Gpd, xi_2p, "
             "xi_3d, chargeTransferCorrection, hField, delta, deltaRIXS, deltaNIXS). Converted "
-            "to eV immediately after parsing; --T (Kelvin) and --energy_cut (a k_B*T "
-            "multiplier) are unaffected."
+            "to eV immediately after parsing; --T (Kelvin) is unaffected."
         ),
     )
     parser.add_argument(
@@ -126,9 +125,6 @@ def add_arguments(parser):
         "--hField", type=float, nargs="+", default=[0, 0, 0.0001], help="Magnetic field. (h_x, h_y, h_z)"
     )
     parser.add_argument("--T", type=float, default=300, help="Temperature (Kelvin).")
-    parser.add_argument(
-        "--energy_cut", type=float, default=10, help="How many k_B*T above lowest eigenenergy to consider."
-    )
     parser.add_argument("--delta", type=float, default=0.2, help="Smearing HWHM. Due to short core-hole lifetime (eV).")
     parser.add_argument(
         "--deltaRIXS",
@@ -268,7 +264,6 @@ def run(args):
         deltaRIXS=args.deltaRIXS,
         deltaNIXS=args.deltaNIXS,
         radial=radial,
-        energy_cut=args.energy_cut,
         auto_block_structure=args.auto_block_structure,
     )
     basis = BasisOptions(

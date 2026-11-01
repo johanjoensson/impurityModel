@@ -205,7 +205,7 @@ def _coerce(where, key, value, units, base_dir):
     """Convert one raw TOML value to its resolved form, according to ``key.kind``.
 
     This is the single place ``[units].energy`` is applied, and it is applied *by kind*. A
-    dimensionless multiplier (``energy_cut``), an electron count (``occupation``) and an
+    dimensionless multiplier (a ``k_B*T`` count), an electron count (``occupation``) and an
     inverse length (the NIXS ``q``) therefore cannot be scaled by 13.6 no matter what the
     file's unit is -- which the per-sub-command ``_ENERGY_FIELDS`` tuples could not promise,
     since a key added later was simply absent from them.

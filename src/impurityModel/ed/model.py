@@ -1735,8 +1735,6 @@ class SpectraOptions:
         Angular momenta of the final/initial orbitals in the NIXS excitation.
     radial : tuple or None
         ``(radial_mesh, Ri, Rj)`` for the NIXS radial integral. ``None`` skips NIXS.
-    energy_cut : float
-        How many ``k_B * T`` above the ground state to keep (thermal window).
     auto_block_structure : bool
         Derive the block structure (and the symmetry-adapted solver basis) from the
         hybridization-dressed impurity matrix instead of the hand-coded one.
@@ -1764,7 +1762,6 @@ class SpectraOptions:
     liNIXS: int = 2
     ljNIXS: int = 2
     radial: Any = None
-    energy_cut: float = 10.0
     auto_block_structure: bool = True
     XAS_projectors: Any = None
     RIXS_projectors: Any = None

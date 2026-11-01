@@ -82,7 +82,6 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config, dc_record, solver_trace
-from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.dc_reference import (
@@ -1868,7 +1867,6 @@ class _OccupationContext:
     cap_from_memory: bool
     weighted_restrictions: object
     impurity_indices: list
-    energy_cut: float
     identity: np.ndarray
     total_impurity_orbitals: int
     n0: float
@@ -2008,7 +2006,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
             slater_weight_min=slaterWeightMin,
         ),
         impurity_indices=impurity_indices,
-        energy_cut=boltzmann_energy_cut(tau),
         identity=np.identity(n_imp),
         total_impurity_orbitals=total_impurity_orbitals,
         n0=n0,
