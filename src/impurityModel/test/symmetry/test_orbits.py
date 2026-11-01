@@ -210,6 +210,48 @@ def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_
         assert check["spread"] == pytest.approx(np.ptp(split)) and check["roundoff"] < 1e-8
 
 
+def test_the_split_rule_tells_a_split_multiplet_from_an_incomplete_level():
+    """``split_multiplets`` on hand-made levels (roundoff 1e-9): a quartet at two energies is split; a quartet missing a
+    member, or 6 of two quartets in one cluster, is incomplete, not split; two exact quartets 1e-6 apart are fine;
+    the spread is the split's, not the distance to another exact multiplet of the same S."""
+    from impurityModel.ed.sector_solver import split_multiplets
+
+    tol = 1e-9
+    assert split_multiplets([0, 0, 2e-7, 2e-7], [3] * 4, tol)["two_s"] == [3]
+    assert split_multiplets([0, 0, 0], [3] * 3, tol) is None
+    assert split_multiplets([0] * 6, [3] * 6, tol) is None
+    assert split_multiplets([0] * 4 + [1e-6] * 4, [3] * 8, tol) is None
+    record = split_multiplets([0] * 4 + [1e-5, 1e-5, 1e-5 + 3e-7, 1e-5 + 3e-7], [3] * 8, tol)
+    assert record["two_s"] == [3] and record["spread"] == pytest.approx(3e-7)
+    # a singlet and a triplet sharing a cluster are a complete level
+    assert split_multiplets([0, 0, 0, 0], [0, 2, 2, 2], tol) is None
+
+
+@pytest.mark.mpi
+def test_an_unconverged_window_missing_copies_is_not_reported_as_a_split(monkeypatch):
+    """A window solve that stagnated (restart cap) returns 6 of the 8 degenerate states of cubic d7, on a symmetric
+    basis, all within one roundoff cluster. That is an incomplete level, not a split, and the solve is uncertified:
+    the split detection must stay silent (review of 1392f630: it used to print "a bug" here, at a spread below the
+    accuracy it quoted)."""
+    from impurityModel.ed import cipsi_solver
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    real = cipsi_solver.solve_window
+    monkeypatch.setattr(cipsi_solver, "solve_window", lambda *a, **k: real(*a, **{**k, "max_restarts": 0}))
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    monkeypatch.setenv("GS_ORBIT_CLOSURE", "1")
+    comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
+    result = solve_sector(
+        h_op, imp, baths, {0: 7}, None, 0, False, 10, manifold=Within(1e-6), comm=comm, verbose=False,
+        slaterWeightMin=1.5e-8, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=100000,
+    )  # fmt: skip
+    assert not result.solver.eig.certified, "the window solve converged: the test no longer exercises a stagnated one"
+    assert result.solver.manifold_check["multiplet_split"] is None, result.solver.manifold_check
+
+
 @pytest.mark.parametrize("cap", [200, 230])
 def test_the_thermal_union_under_a_cap_is_made_of_whole_orbits(monkeypatch, cap):
     """The basis the window solve starts on (seed and class union, cut to the cap) holds every member of every

@@ -1036,19 +1036,43 @@ def roundoff_tol(es, *, dense, slater_weight_min):
     return max(DEGENERACY_TOL, DEGENERACY_TOL_MARGIN * float(np.finfo(float).eps) * scale)
 
 
-def multiplet_split(plan, verdicts, es, psis, basis, roundoff):
+def split_multiplets(energies, two_s, roundoff):
+    """The decision of :func:`multiplet_split` on per-state energies and ``2S``: ``None`` or the split record. Pure.
+
+    Clusters at ``roundoff``; for each ``2S`` the *partial* clusters are those holding a count of that ``S`` that is
+    not a multiple of ``2S + 1``. One partial cluster is an incomplete level, two or more a split multiplet; the
+    spread is taken across the partial clusters of that ``S`` only.
+    """
+    energies = np.asarray(energies, dtype=float)
+    two_s = np.asarray(two_s, dtype=int)
+    order = np.argsort(energies, kind="stable")
+    clusters = [order[c] for c in _group_degenerate(energies[order], roundoff)]
+    bad, spread = [], 0.0
+    for ts in sorted(set(two_s.tolist())):
+        partial = [c for c in clusters if int(np.count_nonzero(two_s[c] == ts)) % (ts + 1)]
+        if len(partial) > 1:
+            bad.append(int(ts))
+            members = np.concatenate([c[two_s[c] == ts] for c in partial])
+            spread = max(spread, float(np.ptp(energies[members])))
+    return {"two_s": bad, "spread": spread, "roundoff": float(roundoff)} if bad else None
+
+
+def multiplet_split(plan, verdicts, es, psis, basis, roundoff, *, certified=True):
     """The spin multiplets of the lowest level that the solve split, or ``None`` (review S2, detection).
 
     Under requirement SYM the members of one ``2S + 1`` multiplet are degenerate to the solve's own accuracy
     ``roundoff``, whatever the cap did: the selection and the cuts act on whole symmetry orbits. So group the
     lowest level (the states within the winning class's error bar, as :func:`manifold_deficit`) into clusters
     at ``roundoff``, read ``S`` of every state from ``S^2`` diagonalised on its cluster, and count: every cluster
-    holds a multiple of ``2S + 1`` states of each ``S``. A cluster that does not holds part of a multiplet whose
-    other members came back at another energy -- a split, which under SYM can only be a bug.
+    holds a multiple of ``2S + 1`` states of each ``S``. One cluster that does not is an *incomplete* level (copies
+    missing: :func:`manifold_deficit`'s business, not a split); two or more that do not hold parts of a multiplet
+    that came back at different energies -- a split, which under SYM can only come from a symmetry-breaking basis.
+    An uncertified window solve (``certified=False``: stagnated above its tolerance, so ``roundoff`` overstates
+    its accuracy) is not judged. ``certified`` is read on rank 0 only; the ``S^2`` evaluation runs regardless.
 
     Only when total spin is a symmetry (``plan.su2``); without it (spin-orbit coupling, CrI3) nothing is
     checked and ``None`` is returned. Returns ``{"two_s": [...], "spread": float, "roundoff": float}``:
-    the split ``2S`` values and the largest energy spread among the states of one split ``S``. Replicated:
+    the split ``2S`` values and the largest energy spread across the partial clusters of one ``S``. Replicated:
     decided on rank 0 and broadcast. Collective when ``plan.su2`` (the ``S^2`` evaluation reduces).
     """
     if not (plan.su2 and plan.pairs):
@@ -1072,18 +1096,9 @@ def multiplet_split(plan, verdicts, es, psis, basis, roundoff):
         redistribute=basis.redistribute_block if comm is not None else None,
     )
     split = None
-    if comm is None or comm.rank == 0:
-        energies = es[level]
+    if (comm is None or comm.rank == 0) and certified:
         two_s = np.array([round(2 * casimir_to_quantum_number(float(np.real(x)))) for x in values])
-        order = np.argsort(energies, kind="stable")
-        clusters = [order[c] for c in _group_degenerate(energies[order], roundoff)]
-        bad, spread = [], 0.0
-        for ts in sorted(set(two_s.tolist())):
-            if any(int(np.count_nonzero(two_s[c] == ts)) % (ts + 1) for c in clusters):
-                bad.append(int(ts))
-                spread = max(spread, float(np.ptp(energies[two_s == ts])))
-        if bad:
-            split = {"two_s": bad, "spread": spread, "roundoff": float(roundoff)}
+        split = split_multiplets(es[level], two_s, roundoff)
     if comm is not None:
         split = comm.bcast(split, root=0)
     return split
@@ -1308,16 +1323,23 @@ def solve_certified(
     solver.manifold_check = {"found": found, "expected": expected}
     es_bcast = es if basis.comm is None else basis.comm.bcast(es, root=0)
     roundoff = roundoff_tol(es_bcast, dense=merged.size < dense_cutoff, slater_weight_min=slater_weight_min)
-    split = multiplet_split(plan, verdicts, es, psis, merged, roundoff)
+    eig = getattr(solver, "eig", None)
+    certified = merged.size < dense_cutoff or eig is None or bool(eig.certified)
+    split = multiplet_split(plan, verdicts, es, psis, merged, roundoff, certified=certified)
     solver.manifold_check["multiplet_split"] = split
     if split is not None and (basis.comm is None or basis.comm.rank == 0):
         spins = ", ".join(f"S = {ts / 2:g}" for ts in split["two_s"])
+        cause = (
+            "the selection or a truncation broke it (a bug: orbit closure is on)"
+            if orbits is not None
+            else "the selection or a truncation broke it (orbit-closed selection is off here: GS_ORBIT_CLOSURE=0, or "
+            "no symmetry orbits were built)"
+        )
         print(
             f"ERROR: the thermal manifold splits the {spins} multiplet(s) of its lowest level by "
             f"{split['spread']:.2e}, above the solve's own accuracy {split['roundoff']:.1e}. The Hamiltonian has "
-            "total-spin symmetry, so its eigenstates cannot split this way: the basis selection or a truncation broke "
-            "the symmetry (a bug). Thermal averages and the Green's functions built on these states can carry a "
-            "spurious spin polarization.",
+            f"total-spin symmetry, so its eigenstates cannot split this way: {cause}. Thermal averages and the "
+            "Green's functions built on these states can carry a spurious spin polarization.",
             flush=True,
         )
     es_all = es_bcast
