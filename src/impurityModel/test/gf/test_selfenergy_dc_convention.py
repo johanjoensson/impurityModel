@@ -140,7 +140,14 @@ def test_solver_basis_h_int_is_the_interaction_alone_and_built_lazily():
     """
     model = _model(imp_shift=0.8, dc_shift=0.8)
     sb = prepare_solver_basis(
-        model.h0, model.dc, model.u4, model.impurity_orbitals, {0: 1}, False, model.rot_to_spherical, 0
+        model.h0,
+        model.dc,
+        model.u4,
+        model.impurity_orbitals,
+        {0: 1},
+        mixed_valence=False,
+        rot_to_spherical=model.rot_to_spherical,
+        verbosity=0,
     )
     assert "h_int" not in vars(sb)
     h_int = sb.h_int

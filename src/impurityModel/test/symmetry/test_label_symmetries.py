@@ -105,9 +105,21 @@ def test_the_swap_maps_the_two_odd_parity_labels_onto_each_other():
 
 def _seed(h_op, comm):
     basis, _solver = build_basis_and_solver(
-        h_op, IMPURITY_ORBITALS, BATH_STATES, N0, None, 0, False, None, comm, False, None, None, 0,
+        h_op,
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        N0,
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        truncation_threshold=None,
+        comm=comm,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=0,
         manifold=Lowest(),
-    )  # fmt: skip
+    )
     return basis
 
 
@@ -170,9 +182,21 @@ def test_the_thermal_manifold_keeps_the_mirrored_labels_states(comm, monkeypatch
 
     def thermal():
         result = solve_sector(
-            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, N0, None, 0, False, 1000, manifold=Within(1e-6),
-            comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12,
-        )  # fmt: skip
+            _hamiltonian(),
+            IMPURITY_ORBITALS,
+            BATH_STATES,
+            N0,
+            mixed_valence=None,
+            tau=0,
+            chain_restrict=False,
+            dense_cutoff=1000,
+            manifold=Within(1e-6),
+            comm=comm,
+            verbose=False,
+            slaterWeightMin=0,
+            de2_min=0,
+            e_pt2_tol=1e-12,
+        )
         return np.sort(np.real(result.es))
 
     got = thermal()

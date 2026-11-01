@@ -92,9 +92,21 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
 
     start = time.perf_counter()
     basis, _solver = build_probe_seed(
-        h_op, impurity_orbitals, bath_states, nominal_occ, None, 0, True, None, None, False, None, None, 0,
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        nominal_occ,
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=True,
+        truncation_threshold=None,
+        comm=None,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=0,
         manifold=Lowest(),
-    )  # fmt: skip
+    )
     h_op.set_restrictions(basis.restrictions)
     try:
         seed = list(basis.local_basis)

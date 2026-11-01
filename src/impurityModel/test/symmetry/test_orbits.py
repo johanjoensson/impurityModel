@@ -180,9 +180,22 @@ def _capped_cubic_d7(monkeypatch, cap, closure, comm=None):
     monkeypatch.setenv("GS_ORBIT_CLOSURE", "1" if closure else "0")
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     return solve_sector(
-        h_op, imp, baths, {0: 7}, None, 0, False, 1000, manifold=Within(1e-6), comm=comm, verbose=False,
-        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=cap,
-    )  # fmt: skip
+        h_op,
+        imp,
+        baths,
+        {0: 7},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Within(1e-6),
+        comm=comm,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-8,
+        truncation_threshold=cap,
+    )
 
 
 @pytest.mark.mpi
@@ -245,9 +258,22 @@ def test_an_unconverged_window_missing_copies_is_not_reported_as_a_split(monkeyp
     comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     result = solve_sector(
-        h_op, imp, baths, {0: 7}, None, 0, False, 10, manifold=Within(1e-6), comm=comm, verbose=False,
-        slaterWeightMin=1.5e-8, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=100000,
-    )  # fmt: skip
+        h_op,
+        imp,
+        baths,
+        {0: 7},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=10,
+        manifold=Within(1e-6),
+        comm=comm,
+        verbose=False,
+        slaterWeightMin=1.5e-8,
+        de2_min=0,
+        e_pt2_tol=1e-8,
+        truncation_threshold=100000,
+    )
     assert not result.solver.eig.certified, "the window solve converged: the test no longer exercises a stagnated one"
     assert result.solver.manifold_check["multiplet_split"] is None, result.solver.manifold_check
 

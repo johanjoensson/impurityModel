@@ -27,9 +27,21 @@ EXPAND = dict(dense_cutoff=1000, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12)
 
 def _seed(h_op, comm):
     basis, _solver = build_basis_and_solver(
-        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, None, comm, False, None, None, 0,
+        h_op,
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        {0: 2},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        truncation_threshold=None,
+        comm=comm,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=0,
         manifold=Lowest(),
-    )  # fmt: skip
+    )
     return basis
 
 
@@ -85,9 +97,21 @@ def _solve_sector(h_op, comm, manifold):
     from impurityModel.ed.groundstate import solve_sector
 
     result = solve_sector(
-        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=manifold, comm=comm,
-        verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12,
-    )  # fmt: skip
+        h_op,
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        {0: 2},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=manifold,
+        comm=comm,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-12,
+    )
     e0 = float(np.min(np.real(result.es)))
     return (e0 if comm is None else comm.bcast(e0, root=0)), result
 
@@ -184,9 +208,23 @@ def test_a_second_shift_through_the_store_expands_fewer_classes_and_finds_the_sa
 
     def solve(mu, store):
         result = solve_sector(
-            _hamiltonian(mu=mu), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=Lowest(),
-            comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store, shift=mu,
-        )  # fmt: skip
+            _hamiltonian(mu=mu),
+            IMPURITY_ORBITALS,
+            BATH_STATES,
+            {0: 2},
+            mixed_valence=None,
+            tau=0,
+            chain_restrict=False,
+            dense_cutoff=1000,
+            manifold=Lowest(),
+            comm=comm,
+            verbose=False,
+            slaterWeightMin=0,
+            de2_min=0,
+            e_pt2_tol=1e-12,
+            plan_store=store,
+            shift=mu,
+        )
         e0 = float(np.min(np.real(result.es)))
         return e0 if comm is None else comm.bcast(e0, root=0)
 
@@ -223,10 +261,23 @@ def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_vale
     def solve(mu, store, e_pt2_tol=1e-12, mixed_valence=None):
         expansions["n"] = 0
         solve_sector(
-            _hamiltonian(mu=mu), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, mixed_valence, 0, False, 1000,
-            manifold=Lowest(), comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=e_pt2_tol,
-            plan_store=store, shift=mu,
-        )  # fmt: skip
+            _hamiltonian(mu=mu),
+            IMPURITY_ORBITALS,
+            BATH_STATES,
+            {0: 2},
+            mixed_valence=mixed_valence,
+            tau=0,
+            chain_restrict=False,
+            dense_cutoff=1000,
+            manifold=Lowest(),
+            comm=comm,
+            verbose=False,
+            slaterWeightMin=0,
+            de2_min=0,
+            e_pt2_tol=e_pt2_tol,
+            plan_store=store,
+            shift=mu,
+        )
         return expansions["n"]
 
     store = SectorPlanStore()
@@ -250,9 +301,22 @@ def test_a_sector_too_large_to_certify_is_counted_as_uncertified(comm, monkeypat
 
     def solve(store):
         solve_sector(
-            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=Lowest(),
-            comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store,
-        )  # fmt: skip
+            _hamiltonian(),
+            IMPURITY_ORBITALS,
+            BATH_STATES,
+            {0: 2},
+            mixed_valence=None,
+            tau=0,
+            chain_restrict=False,
+            dense_cutoff=1000,
+            manifold=Lowest(),
+            comm=comm,
+            verbose=False,
+            slaterWeightMin=0,
+            de2_min=0,
+            e_pt2_tol=1e-12,
+            plan_store=store,
+        )
         counts = store.summary()
         return {key: counts[key] for key in ("certified_sectors", "uncertified_sectors", "recertified_sectors")}
 
@@ -283,7 +347,20 @@ def test_with_spin_orbit_coupling_neither_spin_label_is_assumed_and_the_answer_i
     h_op.set_weighted_restrictions(None)
     exact = float(np.linalg.eigvalsh(build_dense_matrix(Basis(imp, baths, initial_basis=dets, verbose=False), h_op))[0])
     basis, _solver = build_basis_and_solver(
-        h_op, imp, baths, {0: n_imp_el}, None, 0, False, None, None, False, None, None, 1e-12, manifold=Lowest()
+        h_op,
+        imp,
+        baths,
+        {0: n_imp_el},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        truncation_threshold=None,
+        comm=None,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=1e-12,
+        manifold=Lowest(),
     )
     plan = certification_plan(h_op, basis)
     # A per-determinant floor, not a residual target: 29 class expansions, seconds rather than minutes.
@@ -331,9 +408,21 @@ def test_a_spin_and_orbitally_degenerate_thermal_level_comes_back_whole(monkeypa
     assert multiplicity == 8 and exact[multiplicity] - exact[0] > 0.1
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     result = solve_sector(
-        h_op, imp, baths, {0: n_imp_el}, None, 0, False, 1000, manifold=Within(1e-6), comm=None, verbose=False,
-        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8,
-    )  # fmt: skip
+        h_op,
+        imp,
+        baths,
+        {0: n_imp_el},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Within(1e-6),
+        comm=None,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-8,
+    )
     got = np.sort(np.real(result.es))
     assert len(got) == multiplicity
     np.testing.assert_allclose(got, exact[:multiplicity], atol=1e-6)
@@ -360,9 +449,21 @@ def test_a_thermal_manifold_short_of_its_level_is_reported(monkeypatch, capsys):
     monkeypatch.setattr(sector_solver, "manifold_deficit", keep)
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     solve_sector(
-        h_op, imp, baths, {0: 7}, None, 0, False, 1000, manifold=Within(1e-6), comm=None, verbose=False,
-        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8,
-    )  # fmt: skip
+        h_op,
+        imp,
+        baths,
+        {0: 7},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Within(1e-6),
+        comm=None,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-8,
+    )
     order = np.argsort(np.real(seen["es"]))[:5]
     short = real(
         seen["plan"], seen["verdicts"], np.asarray(seen["es"])[order], seen["psis"].select(list(order)), seen["basis"]
@@ -394,9 +495,21 @@ def test_labels_with_equal_seed_spectra_but_different_baths_are_both_expanded(ep
     exact = _exact_ground_energy(hamiltonian(), n_electrons=5)
     h_op = hamiltonian()
     basis, _solver = build_basis_and_solver(
-        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 1}, None, 0, False, None, None, False, None, None, 0,
+        h_op,
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        {0: 1},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        truncation_threshold=None,
+        comm=None,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=0,
         manifold=Lowest(),
-    )  # fmt: skip
+    )
     plan = certification_plan(h_op, basis)
     es, *_rest = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
     assert abs(float(np.min(es)) - exact) < 1e-8
@@ -437,9 +550,23 @@ def test_a_tangent_violation_replaces_the_stored_record_and_is_a_full_certificat
 
     def solve(shift):
         return groundstate.solve_sector(
-            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=Lowest(),
-            comm=None, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store, shift=shift,
-        )  # fmt: skip
+            _hamiltonian(),
+            IMPURITY_ORBITALS,
+            BATH_STATES,
+            {0: 2},
+            mixed_valence=None,
+            tau=0,
+            chain_restrict=False,
+            dense_cutoff=1000,
+            manifold=Lowest(),
+            comm=None,
+            verbose=False,
+            slaterWeightMin=0,
+            de2_min=0,
+            e_pt2_tol=1e-12,
+            plan_store=store,
+            shift=shift,
+        )
 
     solve(0.0)
     (key,) = store.records
@@ -698,9 +825,22 @@ def _union_size_at_the_window_solve(monkeypatch, cap, capsys=None):
     monkeypatch.setattr(sector_solver, "CIPSISolver", Spy)
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     result = solve_sector(
-        h_op, imp, baths, {0: 7}, None, 0, False, 1000, manifold=Within(1e-6), comm=None, verbose=False,
-        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=cap,
-    )  # fmt: skip
+        h_op,
+        imp,
+        baths,
+        {0: 7},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Within(1e-6),
+        comm=None,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-8,
+        truncation_threshold=cap,
+    )
     return sizes, result
 
 
@@ -801,9 +941,20 @@ def test_a_closed_shell_seed_is_widened_so_the_other_symmetry_class_is_expanded(
 
     monkeypatch.setattr(groundstate, "certification_plan", spy)
     result = groundstate.solve_sector(
-        h_op, imp, bath, {0: 4}, {0: 0}, 0, False, 1000, manifold=Lowest(), comm=comm, verbose=False,
-        truncation_threshold=np.inf, plan_store=sector_solver.SectorPlanStore(),
-    )  # fmt: skip
+        h_op,
+        imp,
+        bath,
+        {0: 4},
+        mixed_valence={0: 0},
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Lowest(),
+        comm=comm,
+        verbose=False,
+        truncation_threshold=np.inf,
+        plan_store=sector_solver.SectorPlanStore(),
+    )
     exact = gs_oracle.exact_spectra(h_op, n_orb)[4 + n_val][0]
     assert len(plans) == 2 and len(plans[0].jobs) == 1 and len(plans[1].jobs) > 1
     assert float(np.min(np.real(result.es))) == pytest.approx(exact, abs=1e-6)
@@ -821,9 +972,20 @@ def test_a_closed_shell_seed_whose_widening_is_too_big_is_counted_as_uncertified
     h_op, imp, bath, _N0, _n_orb, _n_val, _ = gs_oracle.pinned_model(11, 77)
     store = sector_solver.SectorPlanStore()
     groundstate.solve_sector(
-        h_op, imp, bath, {0: 4}, {0: 0}, 0, False, 1000, manifold=Lowest(), comm=comm, verbose=False,
-        truncation_threshold=np.inf, plan_store=store,
-    )  # fmt: skip
+        h_op,
+        imp,
+        bath,
+        {0: 4},
+        mixed_valence={0: 0},
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Lowest(),
+        comm=comm,
+        verbose=False,
+        truncation_threshold=np.inf,
+        plan_store=store,
+    )
     assert len(store.uncertified) == 1 and not store.records
 
 

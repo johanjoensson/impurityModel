@@ -136,7 +136,7 @@ def _per_group_scalar(value, impurity_orbitals, default=0):
 
 
 def prepare_solver_basis(
-    h0, dc, u, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=0, *, comm=None
+    h0, dc, u, impurity_orbitals, nominal_occ, *, mixed_valence, rot_to_spherical, verbosity, rank=0, comm=None
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 

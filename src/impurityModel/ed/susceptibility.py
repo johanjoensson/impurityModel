@@ -477,7 +477,16 @@ def calc_susceptibility_workflow(
 
     rank = comm.rank if comm is not None else 0
     sb = prepare_solver_basis(
-        h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank, comm=comm
+        h0,
+        dc,
+        u4,
+        impurity_orbitals,
+        nominal_occ,
+        mixed_valence=mixed_valence,
+        rot_to_spherical=rot_to_spherical,
+        verbosity=verbosity,
+        rank=rank,
+        comm=comm,
     )
     # Sized on the ground-state path alone, like every driver (see selfenergy.py).
     cap_policy, _ = resolve_cap_policy(

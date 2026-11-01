@@ -77,10 +77,10 @@ def _sector_energy(h_op, manifold=None):
         IMPURITY_ORBITALS,
         BATH_STATES,
         {0: 2},
-        None,
-        0,
-        False,
-        1000,
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
         manifold=Lowest() if manifold is None else manifold,
         comm=MPI.COMM_WORLD,
         verbose=False,
@@ -91,9 +91,21 @@ def _sector_energy(h_op, manifold=None):
 
 def _plan(h_op):
     basis, _solver = build_basis_and_solver(
-        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, None, MPI.COMM_WORLD, False, None, None, 0,
+        h_op,
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        {0: 2},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        truncation_threshold=None,
+        comm=MPI.COMM_WORLD,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=0,
         manifold=Lowest(),
-    )  # fmt: skip
+    )
     return seed_class_plan(h_op, basis)
 
 
@@ -204,9 +216,19 @@ def _three_orbital_hole(onsite_c):
 def test_degenerate_but_differently_hybridized_classes_are_not_partners(onsite_c):
     h_op, imp, bath = _three_orbital_hole(onsite_c)
     result = solve_sector(
-        h_op, imp, bath, {0: 5}, None, 0, False, 1000, manifold=Lowest(), comm=MPI.COMM_WORLD, verbose=False,
+        h_op,
+        imp,
+        bath,
+        {0: 5},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Lowest(),
+        comm=MPI.COMM_WORLD,
+        verbose=False,
         slaterWeightMin=0,
-    )  # fmt: skip
+    )
     assert float(np.min(np.real(result.es))) == pytest.approx(_exact_ground_energy(h_op, 12, 11), abs=1e-8)
 
 
@@ -222,8 +244,18 @@ def test_the_thermal_manifold_holds_every_copy_of_a_degenerate_ground_multiplet(
             h[i, i + N_IMP] = h[i + N_IMP, i] = hopping
     h_op = tensors_to_operator(h) + ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(kanamori_u4(2, 4.0, 0.8)))
     result = solve_sector(
-        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=Within(1e-3),
-        comm=MPI.COMM_WORLD, verbose=False, slaterWeightMin=0,
-    )  # fmt: skip
+        h_op,
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        {0: 2},
+        mixed_valence=None,
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Within(1e-3),
+        comm=MPI.COMM_WORLD,
+        verbose=False,
+        slaterWeightMin=0,
+    )
     assert len(result.es) == 3  # the S = 1 triplet
     np.testing.assert_allclose(result.es, _exact_ground_energy(h_op), atol=1e-8)

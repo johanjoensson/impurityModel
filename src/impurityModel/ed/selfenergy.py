@@ -586,7 +586,16 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     report = Reporter(verbosity, rank)
 
     sb = prepare_solver_basis(
-        h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank, comm=comm
+        h0,
+        dc,
+        u4,
+        impurity_orbitals,
+        nominal_occ,
+        mixed_valence=mixed_valence,
+        rot_to_spherical=rot_to_spherical,
+        verbosity=verbosity,
+        rank=rank,
+        comm=comm,
     )
     h = sb.h
     h0_solve = sb.h0_solve

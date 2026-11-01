@@ -490,9 +490,9 @@ def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
         model.u4,
         model.impurity_orbitals,
         basis_opts.nominal_occ,
-        basis_opts.mixed_valence,
-        model.rot_to_spherical,
-        0,
+        mixed_valence=basis_opts.mixed_valence,
+        rot_to_spherical=model.rot_to_spherical,
+        verbosity=0,
     )
     imp_idx = [o for blocks in sb.impurity_orbitals.values() for block in blocks for o in block]
     gs = solve_ground_state(
@@ -1256,18 +1256,18 @@ def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
         kwargs["model"].u4,
         kwargs["model"].impurity_orbitals,
         kwargs["basis"].nominal_occ,
-        kwargs["basis"].mixed_valence,
-        kwargs["model"].rot_to_spherical,
-        0,
+        mixed_valence=kwargs["basis"].mixed_valence,
+        rot_to_spherical=kwargs["model"].rot_to_spherical,
+        verbosity=0,
     )
     energy, _ = calc_energy(
         sb.h,
         sb.impurity_orbitals,
         sb.bath_states,
         sb.nominal_occ,
-        sb.mixed_valence,
-        kwargs["basis"].chain_restrict,
-        kwargs["solver"].dense_cutoff,
+        mixed_valence=sb.mixed_valence,
+        chain_restrict=kwargs["basis"].chain_restrict,
+        dense_cutoff=kwargs["solver"].dense_cutoff,
         comm=comm,
         verbose=False,
     )
@@ -1692,9 +1692,9 @@ def test_dc_search_applies_weighted_restrictions(monkeypatch):
         model.u4,
         model.impurity_orbitals,
         basis.nominal_occ,
-        basis.mixed_valence,
-        model.rot_to_spherical,
-        0,
+        mixed_valence=basis.mixed_valence,
+        rot_to_spherical=model.rot_to_spherical,
+        verbosity=0,
     )
     expected = build_weighted_restrictions(sb.bath_states, 2)
     assert captured and all(b.weighted_restrictions == expected for b in captured)
@@ -1777,9 +1777,9 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
         model.u4,
         model.impurity_orbitals,
         basis_opts.nominal_occ,
-        basis_opts.mixed_valence,
-        model.rot_to_spherical,
-        0,
+        mixed_valence=basis_opts.mixed_valence,
+        rot_to_spherical=model.rot_to_spherical,
+        verbosity=0,
     )
     impurity_indices = [orb for blocks in sb.impurity_orbitals.values() for block in blocks for orb in block]
     gs = solve_ground_state(
@@ -2124,9 +2124,9 @@ def test_a_sector_solve_with_a_bath_less_group_is_the_unfrozen_sector():
             ctx.impurity_orbitals,
             ctx.bath_states,
             trial,
-            ctx.mixed_valence,
-            ctx.chain_restrict,
-            ctx.dense_cutoff,
+            mixed_valence=ctx.mixed_valence,
+            chain_restrict=ctx.chain_restrict,
+            dense_cutoff=ctx.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=False,
             truncation_threshold=dc_criteria._ctx_cap_policy(ctx),

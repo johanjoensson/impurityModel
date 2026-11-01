@@ -112,9 +112,9 @@ def build_ground_state(
         atomic_physics.getUop_from_rspt_u4(wl["u4"]),
         wl["impurity_orbitals"],
         wl["nominal_occ"],
-        wl["mixed_valence"],
-        wl["rot_to_spherical"],
-        verbosity,
+        mixed_valence=wl["mixed_valence"],
+        rot_to_spherical=wl["rot_to_spherical"],
+        verbosity=verbosity,
     )
     weighted_restrictions = None
     if excitation_budget is not None:
@@ -545,9 +545,9 @@ def window_diff(archive, iterations, swms=(1e-8, 1e-10), cluster=None):
             atomic_physics.getUop_from_rspt_u4(wl["u4"]),
             wl["impurity_orbitals"],
             wl["nominal_occ"],
-            wl["mixed_valence"],
-            wl["rot_to_spherical"],
-            0,
+            mixed_valence=wl["mixed_valence"],
+            rot_to_spherical=wl["rot_to_spherical"],
+            verbosity=0,
         )
         basis = Basis(
             sb.impurity_orbitals,

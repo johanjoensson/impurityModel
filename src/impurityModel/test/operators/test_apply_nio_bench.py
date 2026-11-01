@@ -64,9 +64,9 @@ def _solver_basis():
         model.u4,
         model.impurity_orbitals,
         basis.nominal_occ,
-        basis.mixed_valence,
-        model.rot_to_spherical,
-        0,
+        mixed_valence=basis.mixed_valence,
+        rot_to_spherical=model.rot_to_spherical,
+        verbosity=0,
     )
     return model, sb
 
