@@ -140,3 +140,17 @@ def test_a_search_with_its_own_sector_solves_is_quiet_at_the_default_verbosity(c
     """The double-counting search walks once per trial shift and sits at a crossover by construction."""
     _walk(ENERGIES, {1: 1e-3, 2: 1e-3, 3: 1e-3}, verbose=0)
     assert "WARNING" not in capsys.readouterr().out
+
+
+def _undecided():
+    solved = [_rec(1, -1.0, 1e-3), _rec(2, -1.0005, 1e-3)]
+    return sector_diagnostics(solved, 2), solved[1]
+
+
+@pytest.mark.parametrize("always, verbose, printed", [(True, 0, True), (False, 0, False), (False, 1, True)])
+def test_report_margin_warns_at_every_verbosity_only_for_the_production_walk(always, verbose, printed, capsys):
+    from impurityModel.ed.groundstate import _report_margin
+
+    diagnostics, winner = _undecided()
+    _report_margin(diagnostics, winner, verbose, always=always)
+    assert ("not separated" in capsys.readouterr().out) == printed

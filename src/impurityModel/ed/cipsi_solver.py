@@ -346,7 +346,7 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     Returns ``(indices, need_more_states)``. ``need_more_states`` is True when *every* computed
     eigenstate was kept: the solver never produced a state beyond the cut, so there is no evidence
     that the boundary manifold is complete (or even that the cut was reached). Only a computed
-    state lying strictly outside -- and not degenerate with the last kept one -- certifies that.
+    state lying strictly outside -- and not chained to the last kept one by gaps within ``tol`` -- certifies that.
 
     ``tol`` defaults to the :data:`DEGENERACY_TOL` floor for
     testability and production callers must pass :func:`_degeneracy_tol`; grouping below the
@@ -359,7 +359,7 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     e_sorted = e[order]
 
     n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
-    # Never split a manifold: absorb any state degenerate with the last kept one.
+    # Never split a manifold: absorb the run of states chained to the last kept one.
     n_keep = absorb_degenerate_tail(e_sorted, n_keep, tol)
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 

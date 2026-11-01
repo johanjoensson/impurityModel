@@ -1,9 +1,8 @@
 """``ed.degeneracy``: the one answer to "which levels are one manifold".
 
-The reference functions below are the rules as they stood in their five homes before the move (CIPSI's
-CIPSI's degenerate-groups helper, the eigensolvers' copy, the observables' grouping, the last-kept loop of
-``_energy_cut_indices`` and the chain loop of the TRLM window); the module must reproduce each exactly on the
-inputs that matter, including levels sitting exactly ``tol`` apart and drifting runs.
+The chain rule is the default and the first-level anchor is kept for the two callers that ask whether levels differ;
+references are written independently of the module, and the inputs include levels exactly ``tol`` apart and
+drifting runs.
 """
 
 import numpy as np
@@ -65,3 +64,21 @@ def test_empty_and_single_inputs():
 
 def test_the_levels_may_be_complex_with_a_real_part():
     assert degenerate_groups(np.array([0.0 + 1e-3j, 0.5 - 1e-3j, 3.0]), 1.0) == [[0, 1], [2]]
+
+
+def test_the_first_level_anchor_cuts_a_creeping_run_where_it_leaves_tol():
+    e = np.array([0.0, 0.8, 1.6, 2.4, 10.0])
+    assert degenerate_groups(e, 1.0, anchor="first") == [[0, 1], [2, 3], [4]]
+
+
+def test_the_split_multiplet_case_the_chain_would_hide():
+    """Levels 0, 0, 0.9r, 1.8r: with an interleaved level the chain merges all four, the first anchor keeps the
+    last one apart - which is what ``split_multiplets`` needs to see a partial multiplet."""
+    e = np.array([0.0, 0.0, 0.9, 1.8])
+    assert degenerate_groups(e, 1.0) == [[0, 1, 2, 3]]
+    assert degenerate_groups(e, 1.0, anchor="first") == [[0, 1, 2], [3]]
+
+
+def test_an_unknown_anchor_raises():
+    with pytest.raises(ValueError, match="anchor"):
+        degenerate_groups([0.0], 1.0, anchor="last")

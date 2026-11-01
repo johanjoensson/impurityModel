@@ -11,7 +11,6 @@ import pytest
 
 from impurityModel.ed import groundstate
 from impurityModel.ed.lie_algebra import tensors_to_operator
-
 from impurityModel.test.support import gs_oracle
 from impurityModel.test.support.comms import COMMS
 

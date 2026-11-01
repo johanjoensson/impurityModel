@@ -1679,7 +1679,7 @@ def manifold_observable_values(
 
     order = np.argsort(energies, kind="stable")
     values = np.empty(n)
-    for block in degenerate_groups(energies[order], degeneracy_tol):
+    for block in degenerate_groups(energies[order], degeneracy_tol, anchor="first"):
         idx = order[block]
         sub = o_matrix[np.ix_(idx, idx)]
         evals = np.linalg.eigvalsh(sub)
@@ -1761,7 +1761,7 @@ def is_j_sharp(j_values, es, degeneracy_tol=DEGENERACY_TOL, term_tol=TERM_SYMBOL
     es = np.asarray(es, dtype=float)
     j_values = np.asarray(j_values, dtype=float)
     order = np.argsort(es, kind="stable")
-    ground_block = degenerate_groups(es[order], degeneracy_tol)[0]
+    ground_block = degenerate_groups(es[order], degeneracy_tol, anchor="first")[0]
     ground_j = j_values[order[ground_block]]
     return bool(np.max(ground_j) - np.min(ground_j) <= 2 * term_tol)
 

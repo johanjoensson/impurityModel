@@ -1046,7 +1046,7 @@ def split_multiplets(energies, two_s, roundoff):
     energies = np.asarray(energies, dtype=float)
     two_s = np.asarray(two_s, dtype=int)
     order = np.argsort(energies, kind="stable")
-    clusters = [order[c] for c in degenerate_groups(energies[order], roundoff)]
+    clusters = [order[c] for c in degenerate_groups(energies[order], roundoff, anchor="first")]
     bad, spread = [], 0.0
     for ts in sorted(set(two_s.tolist())):
         partial = [c for c in clusters if int(np.count_nonzero(two_s[c] == ts)) % (ts + 1)]

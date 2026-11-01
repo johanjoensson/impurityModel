@@ -13,8 +13,7 @@ import itertools
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics
-from impurityModel.ed import groundstate
+from impurityModel.ed import atomic_physics, groundstate
 from impurityModel.ed.average import energy_cut
 from impurityModel.ed.interaction_models import kanamori_u4
 from impurityModel.ed.lie_algebra import tensors_to_operator

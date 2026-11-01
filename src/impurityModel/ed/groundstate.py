@@ -15,8 +15,6 @@ from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
-from impurityModel.ed.seed_sectors import _images as seed_images
-from impurityModel.ed.seed_sectors import gather_seed
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -35,6 +33,8 @@ from impurityModel.ed.sector_solver import (
     solve_certified,
     window_overtake,
 )
+from impurityModel.ed.seed_sectors import _images as seed_images
+from impurityModel.ed.seed_sectors import gather_seed
 from impurityModel.ed.spin_pairs import spin_layout
 from impurityModel.ed.symmetries import PARITY_TERM_TOL
 from impurityModel.ed.utils import (
