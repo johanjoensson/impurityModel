@@ -1032,3 +1032,20 @@ def test_the_window_check_counts_the_levels_above_the_lowest_one():
     far = _verdict(3, -0.5, 8.0)[1]
     _job, leaked = _verdict(4, -0.985, 8.0, stopped=True)
     assert window_deficit([*verdicts, far, leaked], np.array([-1.0, -0.99, -0.98]), 0.05, 1) == (3, 3)
+
+
+def test_a_class_is_in_the_window_by_its_own_error_bar_not_the_largest_residual_of_another(monkeypatch):
+    """Review B2: the window's membership is ``E - E_min <= within + own error``; a loose class elsewhere used to
+    widen the margin of every class (``within + max residual``) and admit a class the window does not contain."""
+    from impurityModel.ed.sector_solver import EXPANSION_ENERGY_FLOOR, _classes_in_window
+
+    verdict_of = {}
+    for k, (energy, residual) in enumerate([(0.0, 1e-2), (0.2, 1e-9), (0.3, 0.4), (5e-4, 1e-9)]):
+        verdict_of[k] = _verdict(k, energy, 4, residual)[1]
+    keys = {k: object() for k in verdict_of}
+    inside = _classes_in_window(verdict_of, keys, 0.0, 1e-3)
+    # 0: the winner. 3: 5e-4 <= 1e-3. 2: 0.3 <= within + its own 0.4. 1: 0.2 > 1e-3 + 1e-9 + floor, although the
+    # largest residual (0.4) in the sector would have admitted it.
+    assert inside == [0, 3, 2]
+    assert 0.2 > 1e-3 + 1e-9 + EXPANSION_ENERGY_FLOOR
+    assert _classes_in_window(verdict_of, {0: keys[0], 1: keys[1]}, 0.0, 1e-3) == [0]

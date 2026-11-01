@@ -601,11 +601,7 @@ def certify_sector(
     kept = None
     if within is not None:
         floor = e_min()
-        margin = within + max(v.residual_pt2 for v in verdicts)
-        inside = sorted(
-            (k for k, v in verdict_of.items() if v.energy - floor <= margin and k in keys),
-            key=lambda k: verdict_of[k].energy,
-        )
+        inside = _classes_in_window(verdict_of, keys, floor, within)
         winner = best[1]
         # The mirror labels' rows of the window's states are the images of their sources' rows: without
         # them the window solve would hold the representative's half of a degenerate level only. Each
@@ -645,6 +641,18 @@ def certify_sector(
     if within is not None:
         return es, psis, class_basis, solver, verdicts, kept
     return es, psis, class_basis, solver, verdicts
+
+
+def _classes_in_window(verdict_of, keys, floor, within):
+    """The job indices, lowest energy first, of the classes inside the thermal window that still hold keys.
+
+    A class is inside by its *own* error bar (``within`` plus :func:`_energy_error`): the largest residual of
+    any other class does not widen it (review B2), as that admitted classes the window does not contain.
+    """
+    return sorted(
+        (k for k, v in verdict_of.items() if v.energy - floor <= within + _energy_error(v) and k in keys),
+        key=lambda k: verdict_of[k].energy,
+    )
 
 
 class KeptClasses(list):
