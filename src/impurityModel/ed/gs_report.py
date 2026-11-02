@@ -6,7 +6,7 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 :mod:`impurityModel.ed.groundstate`, which only decides *which* state is the ground state.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 import sys
 import numpy as np
@@ -104,6 +104,64 @@ def degraded_warnings(convergence):
     if diag.get("undecided"):
         out.append(f"the N_imp={diag.get('winner_total')} sector choice is undecided (margin < 1)")
     return out
+
+
+@dataclass(frozen=True)
+class SectorMeasurement:
+    """One charge sector's thermal manifold, as ``measure_ground_state`` hands it to ``finalize_ground_state``.
+
+    ``es`` are *absolute* energies (never shifted per member), so the scale-independent thermal weights
+    taken over the concatenated manifolds are exactly the merge ``c_s ~ Z_s exp(-(e0_s - e0)/tau)``.
+    ``total`` is the member's impurity electron count (``None`` for a lone, untagged member).
+    """
+
+    basis: object
+    es: np.ndarray
+    psis: object
+    total: object = None
+
+
+def measure_ground_state(ground_state_basis, es, psis, *, total=None):
+    """Capture one sector's ``(basis, es, psis)`` for :func:`finalize_ground_state`.
+
+    Pure bookkeeping, no collective and no copy: every observable is evaluated once, over all members
+    together, because the thermal manifolds of different charge sectors have disjoint determinant
+    supports and one block holds them side by side.  Holding only the thermal eigenvectors (not the
+    Krylov store) is what a member costs while the next one is solved.
+    """
+    return SectorMeasurement(ground_state_basis, es, psis, total)
+
+
+def merge_measurements(measurements):
+    """``(basis, es, psis)`` of the union of the members' thermal manifolds, dominant member first.
+
+    One member is returned untouched (same objects), which is what makes the single-sector report
+    bit-identical.  With several, ``es`` are concatenated unshifted and ``psis`` become one list of
+    states; the first member (lowest walk energy) supplies the basis, whose only roles downstream are
+    the orbital layout, the communicator and the hash routing, all shared by the members.
+    """
+    measurements = list(measurements)
+    if not measurements:
+        raise ValueError("merge_measurements needs at least one member")
+    first = measurements[0]
+    if len(measurements) == 1:
+        return first.basis, first.es, first.psis
+    es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
+    states = []
+    for m in measurements:
+        states.extend(m.psis.to_states() if isinstance(m.psis, ManyBodyState) else list(m.psis))
+    if len(states) != len(es):
+        raise ValueError(f"{len(states)} states for {len(es)} energies across the ensemble members")
+    return first.basis, es, states
+
+
+def finalize_ground_state(Hop, measurements, tau, *args, **kwargs):
+    """:func:`report_ground_state` over the merged members; ``args`` follow ``tau`` there (``block_structure`` ...).
+
+    Collective on the members' (shared) communicator.  With one member this *is* ``report_ground_state``.
+    """
+    basis, es, psis = merge_measurements(measurements)
+    return report_ground_state(Hop, basis, es, psis, tau, *args, **kwargs)
 
 
 def report_ground_state(
