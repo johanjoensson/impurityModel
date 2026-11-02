@@ -502,7 +502,7 @@ def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=
     return [psis[i] for i in keep], kept_es, dropped
 
 
-def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster"):
+def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster", cap_ledger=None):
     """Calculate the self energy of the impurity.
 
     Parameters
@@ -530,6 +530,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         Verbosity level.
     cluster_label : str, optional
         Label for the cluster.
+    cap_ledger : impurityModel.ed.memory_estimate.CapLedger, optional
+        Carries an auto ground-state cap between calls (P10): its ``ceiling`` lowers this call's auto cap and
+        ``resolved`` receives the cap used. A cap the user set is never touched.
 
     Returns
     -------
@@ -623,6 +626,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         verbose=verbosity > 0,
         label=cluster_label,
         connectivity=solver_basis_connectivity(sb, comm),
+        ledger=cap_ledger,
     )
     # What decides which state is found, explicit (A1): this driver's values.
     gs_spec = GroundStateSpec(

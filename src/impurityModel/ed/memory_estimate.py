@@ -259,6 +259,21 @@ class CapPolicy:
         return "auto"
 
 
+class CapLedger:
+    """Carries one resolved auto cap between the calls of a calculation (P10).
+
+    An auto cap is sized from free memory *now*, so the double-counting search, the self-energy it
+    feeds and each DMFT iteration used to run at different caps. The caller keeps one ledger per
+    calculation: ``ceiling`` is what an earlier call resolved (it can only lower a later auto cap), and
+    ``resolved`` is what this call resolved, to be stored and replayed as the next call's ceiling.
+    Neither touches a cap the user set.
+    """
+
+    def __init__(self, ceiling=None):
+        self.ceiling = ceiling
+        self.resolved = None
+
+
 #: The words a user may write for ``truncation_threshold`` besides a positive integer.
 CAP_AUTO_WORDS = ("auto",)
 CAP_UNLIMITED_WORDS = ("unlimited", "inf", "none")
@@ -1377,6 +1392,7 @@ def resolve_cap_policy(
     log="always",
     safety=DEFAULT_MEMORY_SAFETY,
     connectivity=None,
+    ledger=None,
 ):
     """Resolve a driver's ``truncation_threshold`` into a :class:`CapPolicy`, and log it.
 
@@ -1410,6 +1426,9 @@ def resolve_cap_policy(
         a zero-argument callable is called, collectively, only if the cap is sized or logged here),
         which every driver measures on the same solver basis so that the double-counting search and the
         self-energy size the same cap. ``None`` falls back to the SrMnO3 constants and the log says so.
+    ledger : CapLedger, optional
+        Only an auto cap is affected: it is lowered to ``ledger.ceiling`` when that is smaller (the ceiling is
+        rank 0's, broadcast), and the cap resolved here is stored in ``ledger.resolved``.
 
     Returns
     -------
@@ -1432,6 +1451,11 @@ def resolve_cap_policy(
         connectivity = None
     if unresolved:
         gs = suggest_gs_truncation_threshold(n_spin_orbitals, comm=comm, safety=safety, connectivity=connectivity)
+        if ledger is not None:
+            ceiling = ledger.ceiling if comm is None else comm.bcast(ledger.ceiling, root=0)
+            if ceiling is not None:
+                gs = min(gs, int(ceiling))
+            ledger.resolved = gs
     budget = None
     if log == "always" or (log == "derived" and unresolved):
         budget = log_memory_budget(

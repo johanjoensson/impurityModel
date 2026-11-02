@@ -824,3 +824,26 @@ def test_the_window_phase_reproduces_the_measured_nio_cost_per_determinant(monke
     n = 20_000
     predicted = me.estimate_gs_peak_bytes(n, 102, 4, 1, 16.7, selection_fanout=4.3, window_states=3) / n / 1024
     assert 0.7 * 9.4 <= predicted <= 2.0 * 9.4, predicted
+
+
+def test_a_cap_ledger_ceiling_lowers_an_auto_cap_and_records_what_was_resolved():
+    """P10: the auto cap is re-derived from live free memory on every call, so the DC search and the
+    self-energy it feeds ran at different caps. A ledger carries the first call's cap to the later ones."""
+    auto, _ = me.resolve_cap_policy(None, 58, comm=None, log="never")
+    first = me.CapLedger()
+    me.resolve_cap_policy(None, 58, comm=None, log="never", ledger=first)
+    assert first.resolved == auto.gs
+    lowered = me.CapLedger(ceiling=auto.gs // 2)
+    policy, _ = me.resolve_cap_policy(None, 58, comm=None, log="never", ledger=lowered)
+    assert policy.gs == auto.gs // 2 and lowered.resolved == auto.gs // 2
+    # a ceiling above what memory allows now never raises the cap
+    roomy = me.CapLedger(ceiling=auto.gs * 10)
+    policy, _ = me.resolve_cap_policy(None, 58, comm=None, log="never", ledger=roomy)
+    assert policy.gs == auto.gs
+
+
+def test_a_cap_ledger_leaves_a_user_cap_alone():
+    ledger = me.CapLedger(ceiling=10)
+    policy, _ = me.resolve_cap_policy(5000, 58, comm=None, log="never", ledger=ledger)
+    assert policy.gs == 5000 and not policy.from_memory
+    assert ledger.resolved is None

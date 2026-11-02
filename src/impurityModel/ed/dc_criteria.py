@@ -103,7 +103,7 @@ from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
+from impurityModel.ed.memory_estimate import CapLedger, CapPolicy, resolve_cap_policy
 from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
@@ -759,6 +759,7 @@ def _prepare_sector_context(
     memory_label,
     de2_min=None,
     e_pt2_tol=None,
+    cap_ledger=None,
 ):
     """Build the setup :class:`_SectorContext` holds, from the grouped option objects.
 
@@ -806,7 +807,7 @@ def _prepare_sector_context(
     # for a reason. One bool against a CIPSI expansion is a cheap place to honour it.
     # Recalibration (the cap ladder) is only for a cap the caller left to memory; `unlimited` and
     # a set number are instructions. Broadcast, though derived from a replicated input.
-    cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
+    cap_from_memory = MPI.COMM_WORLD.bcast(CapPolicy.coerce(truncation_threshold).from_memory, root=0)
     # The one resolver every driver uses: the same ground-state-only sizing, safety and
     # GS_NUM_WANTED as calc_selfenergy, so the dc is found at the determinant budget the
     # self-energy then solves with; it prints the `determinant cap:` line and starts a new
@@ -819,6 +820,7 @@ def _prepare_sector_context(
         label=memory_label,
         log="derived",
         connectivity=solver_basis_connectivity(sb, MPI.COMM_WORLD),
+        ledger=cap_ledger,
     )
     truncation_threshold = policy.gs
     memory_cap = policy.gs
@@ -877,6 +879,7 @@ def fixed_peak_dc(
     report=None,
     de2_min=None,
     e_pt2_tol=None,
+    cap_ledger=None,
 ):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
@@ -995,6 +998,7 @@ def fixed_peak_dc(
             memory_label="fixed-peak dc",
             de2_min=de2_min,
             e_pt2_tol=e_pt2_tol,
+            cap_ledger=cap_ledger,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -1377,6 +1381,7 @@ def fixed_gap_dc(
     report=None,
     de2_min=None,
     e_pt2_tol=None,
+    cap_ledger=None,
 ):
     r"""Double counting from the **centre of the charge gap** -- after Karolak's insulator
     prescription.
@@ -1580,6 +1585,7 @@ def fixed_gap_dc(
             memory_label="fixed-gap dc",
             de2_min=de2_min,
             e_pt2_tol=e_pt2_tol,
+            cap_ledger=cap_ledger,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -1918,7 +1924,7 @@ class _OccupationContext:
             self.plan_store = SectorPlanStore()
 
 
-def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
+def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, cap_ledger=None):
     """Build the :class:`_OccupationContext` for a fixed-occupation evaluation.
 
     Verbatim extraction of the setup :func:`fixed_occupation_dc` used to build inline: the same
@@ -1972,7 +1978,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
     # Recalibration (the cap ladder) is only for a cap the caller left to memory; `unlimited` and
     # a set number are instructions. Broadcast, though derived from a replicated input.
-    cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
+    cap_from_memory = MPI.COMM_WORLD.bcast(CapPolicy.coerce(truncation_threshold).from_memory, root=0)
     # The one resolver every driver uses: the same ground-state-only sizing, safety and
     # GS_NUM_WANTED as calc_selfenergy, so the dc is found at the determinant budget the
     # self-energy then solves with; it prints the `determinant cap:` line and starts a new
@@ -1985,6 +1991,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         label="fixed-occupation dc",
         log="derived",
         connectivity=solver_basis_connectivity(sb, MPI.COMM_WORLD),
+        ledger=cap_ledger,
     )
     truncation_threshold = policy.gs
     memory_cap = policy.gs
@@ -2133,7 +2140,7 @@ def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosit
     config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
-    ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
+    ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity, cap_ledger=cap_ledger)
     return _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
 
 
@@ -2150,6 +2157,7 @@ def fixed_occupation_dc(
     max_shift=20.0,
     return_sector=False,
     report=None,
+    cap_ledger=None,
 ):
     r"""
     Calculate the double counting correction using a fixed (or self-consistent) impurity
@@ -2245,7 +2253,7 @@ def fixed_occupation_dc(
         rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
         verbose = verbosity > 0
 
-        ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
+        ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity, cap_ledger=cap_ledger)
 
         self_consistent = occupation is None
         if self_consistent:

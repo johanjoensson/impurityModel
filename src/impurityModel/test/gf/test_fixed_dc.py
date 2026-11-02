@@ -470,6 +470,28 @@ def test_fixed_peak_dc_runs_on_split_block_impurity():
     np.testing.assert_allclose(shift, shift[0, 0] * np.identity(4), atol=1e-12)
 
 
+def test_the_dc_search_records_its_auto_cap_and_obeys_a_ceiling():
+    """P10: an auto cap is re-derived from live free memory per call. The DC entry fills the ledger it is
+    given with the cap it resolved, and a ledger ceiling below the auto cap lowers it; a cap the user set is
+    left alone and leaves the ledger empty."""
+    import dataclasses
+
+    from impurityModel.ed.memory_estimate import CapLedger
+
+    kwargs, _ = _split_block_kwargs()
+    auto = dataclasses.replace(kwargs["basis"], truncation_threshold=None)
+    first = CapLedger()
+    fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, cap_ledger=first, **{**kwargs, "basis": auto})
+    assert first.resolved is not None and first.resolved > 1
+    ceiling = max(first.resolved // 4, 2000)
+    again = CapLedger(ceiling=ceiling)
+    fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, cap_ledger=again, **{**kwargs, "basis": auto})
+    assert again.resolved == min(first.resolved, ceiling)
+    user = CapLedger(ceiling=2000)
+    fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, cap_ledger=user, **kwargs)
+    assert user.resolved is None
+
+
 def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
     """``solve_ground_state`` returns a basis that mixes impurity occupations, not a pure sector.
 
