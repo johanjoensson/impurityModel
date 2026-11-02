@@ -14,6 +14,7 @@ Layering: this is a bottom-layer module. It imports only ``atomic_physics``,
 without pulling in the many-body machinery.
 """
 
+import ast
 import math
 import os
 import warnings
@@ -1167,6 +1168,29 @@ def _archive_attr(attrs, key, default=None):
     return value
 
 
+def _archive_mixed_valence(attrs):
+    """The archive's ``mv``: ``None`` (unset), a tri-state word, or a legacy int / ``{group: int}`` rendering.
+
+    Old archives stored the interface's integer (``0``), a numpy scalar, or the text of a dict; a tri-state
+    archive stores ``"auto"``/``"on"``/``"off"``. The result is what
+    :func:`~impurityModel.ed.sector_ensemble.resolve_mixed_valence` accepts, so reading never decides the mode.
+    """
+    value = _archive_attr(attrs, "mv")
+    if isinstance(value, bytes):
+        value = value.decode()
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in ("auto", "on", "off", "true", "false"):
+            return text.lower()
+        try:
+            return ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return text
+    if hasattr(value, "item"):  # numpy scalar
+        return value.item()
+    return value
+
+
 _MISSING = object()
 
 
@@ -1282,7 +1306,7 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "w_mesh": w_mesh if w_mesh.size else None,
         "nominal_occ": nominal_occ,
         "shell_ls": shell_ls,
-        "mixed_valence": _archive_attr(attrs, "mv"),
+        "mixed_valence": _archive_mixed_valence(attrs),
         "tau": float(attrs["tau"]),
         "delta": float(attrs["delta"]),
         "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", config.GS_DENSE_CUTOFF)),
@@ -1431,8 +1455,10 @@ class BasisOptions:
         scalar/total that the solver distributes by energetic filling. For a multi-shell model
         (``ImpurityModel.shell_ls``) the keys are shell indices ``a`` and the values the nominal
         occupation of shell ``a``.
-    mixed_valence : dict, int or None
-        Reserved for the charge-sector ensemble: only None/False/0 is accepted for now.
+    mixed_valence : None, bool, int, str or dict
+        The charge-sector ensemble switch: ``"auto"``, ``"on"``/``True`` or ``"off"``/``False`` (``None`` takes
+        the driver's default). A legacy int / ``{group: int}`` is read as off (0) or on. See
+        :func:`~impurityModel.ed.sector_ensemble.resolve_mixed_valence`.
     dN : int or None
         Allowed impurity occupation window (+-dN) for the Green's-function excited bases.
     truncation_threshold : int, float or None

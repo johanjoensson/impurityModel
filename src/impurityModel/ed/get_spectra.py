@@ -13,7 +13,7 @@ import numpy as np
 from impurityModel.ed import config, spectra
 
 # Local stuff
-from impurityModel.ed.basis_generation import check_mixed_valence
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -266,7 +266,9 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         ``None`` -> ``V_RESULT`` (0), the terse default.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
-    check_mixed_valence(basis.mixed_valence)  # never forwarded on this path: say so rather than ignore it
+    reject_unmigrated_ensemble(
+        basis.mixed_valence, driver="get_spectra"
+    )  # never forwarded on this path: say so rather than ignore it
     rank = comm.rank if comm is not None else 0
     if verbosity is None:
         verbosity = V_RESULT

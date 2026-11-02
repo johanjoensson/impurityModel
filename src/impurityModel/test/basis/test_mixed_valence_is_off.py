@@ -1,9 +1,9 @@
-"""``mixed_valence`` no longer widens the seed; a non-zero value raises, identically on every rank.
+"""``mixed_valence`` no longer widens the seed; an explicit ``on`` raises where no driver forms the ensemble yet.
 
-The option is reserved for the charge-sector ensemble (``doc/plans/mixed_valence_sector_ensemble.md``).
-Until that exists, honouring a non-zero value is impossible and ignoring it would hand a single-sector answer to
-a caller who asked for a mixed-valence one, so it raises -- from replicated input, before any collective, so every
-rank raises together instead of one rank leaving the others in a collective.
+The option is the charge-sector ensemble switch (``doc/plans/mixed_valence_sector_ensemble.md``). Until a driver is
+migrated, honouring ``on`` is impossible and ignoring it would hand a single-sector answer to a caller who asked
+for a mixed-valence one, so it raises -- from replicated input, before any collective, so every rank raises together
+instead of one rank leaving the others in a collective. ``auto`` and ``off`` run the winning sector.
 """
 
 import numpy as np
@@ -11,8 +11,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import groundstate
-from impurityModel.ed.basis_generation import check_mixed_valence
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble, resolve_mixed_valence
 from impurityModel.test.support.comms import COMMS
 
 IMPURITY = {0: [[0, 1]]}
@@ -27,15 +27,46 @@ def _model():
     return ManyBodyOperator(terms)
 
 
-@pytest.mark.parametrize("off", [None, False, 0, {0: 0}, {0: False}, {0: None}])
+@pytest.mark.parametrize("off", [None, False, 0, "off", "OFF", "false", {0: 0}, {0: False}, {0: None}, np.int64(0)])
 def test_the_off_spellings_pass(off):
-    check_mixed_valence(off)
+    assert reject_unmigrated_ensemble(off, driver="x") == "off"
 
 
-@pytest.mark.parametrize("on", [1, True, 2, {0: 1}, {0: 0, 1: 2}, -1])
-def test_a_non_zero_value_raises(on):
+def test_auto_runs_the_winning_sector_and_never_raises():
+    assert reject_unmigrated_ensemble("auto", driver="x") == "auto"
+    assert reject_unmigrated_ensemble(None, driver="x", driver_default="auto") == "auto"
+
+
+@pytest.mark.parametrize("on", [1, True, 2, "on", "True", b"on", {0: 1}, {0: 0, 1: 2}, np.int64(3)])
+def test_an_explicit_on_raises(on):
     with pytest.raises(ValueError, match="charge-sector ensemble"):
-        check_mixed_valence(on)
+        reject_unmigrated_ensemble(on, driver="x")
+
+
+@pytest.mark.parametrize(
+    "value, default, mode, noted",
+    [
+        (None, "auto", "auto", False),
+        (None, "off", "off", False),
+        ("auto", "off", "auto", False),
+        (True, "off", "on", False),
+        ("on", "off", "on", False),
+        (False, "auto", "off", False),
+        (0, "auto", "off", False),
+        (2, "off", "on", True),
+        ({0: 0}, "auto", "off", False),
+        ({0: 1}, "auto", "on", True),
+    ],
+)
+def test_the_resolver_mapping_table(value, default, mode, noted):
+    got, note = resolve_mixed_valence(value, driver_default=default)
+    assert got == mode and (note is not None) == noted
+
+
+@pytest.mark.parametrize("bad", [-1, "maybe", 1.5, {0: "auto"}, [1]])
+def test_the_resolver_refuses_nonsense(bad):
+    with pytest.raises(ValueError):
+        resolve_mixed_valence(bad, driver_default="off")
 
 
 @pytest.mark.mpi

@@ -861,7 +861,13 @@ class _NumpyEncoder(json.JSONEncoder):
         return super().default(o)
 
 
+#: Version of the JSON layout. 2: ``schema_version`` itself, and the optional ``charge_sector_ensemble`` block
+#: (members, weights, global e0) with ``sector`` tags on ``per_state`` entries when ``mixed_valence`` formed an
+#: ensemble. A file without the key is version 1.
+GS_STATISTICS_SCHEMA_VERSION = 2
+
+
 def save_gs_statistics(stats, path):
-    """Write ``stats`` to ``path`` as JSON (rank-0 caller's responsibility)."""
+    """Write ``stats`` to ``path`` as JSON (rank-0 caller's responsibility), stamped with ``schema_version``."""
     with open(path, "w") as fh:
-        json.dump(stats, fh, indent=2, cls=_NumpyEncoder)
+        json.dump({"schema_version": GS_STATISTICS_SCHEMA_VERSION, **stats}, fh, indent=2, cls=_NumpyEncoder)

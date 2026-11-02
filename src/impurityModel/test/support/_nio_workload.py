@@ -94,7 +94,7 @@ def build_selfenergy_inputs(
     # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
     # orbitals and derives the bath orbitals + valence/conduction split from the Hamiltonian.
     impurity_orbitals = {ls: list(range(n_imp))}
-    mixed_valence = {ls: 0}
+    mixed_valence = "off"
     nominal_occ = {ls: n0imp}
 
     if rot_to_spherical is None:

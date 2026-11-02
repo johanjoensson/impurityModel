@@ -5,7 +5,8 @@ from typing import Optional, cast
 
 import numpy as np
 
-from impurityModel.ed.basis_generation import SeedWindow, check_mixed_valence
+from impurityModel.ed.basis_generation import SeedWindow
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.observables import resolve_shell_ls, shell_index_of_orbitals
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
@@ -161,15 +162,15 @@ def prepare_solver_basis(
     :attr:`SolverBasis.spin_layout`, made when ``comm`` is given (unconditionally, on every rank of
     it); without a ``comm`` the layout is resolved rank-locally.
 
-    ``mixed_valence`` only has to be off (``None``/``False``/``0``): see
-    :func:`~impurityModel.ed.basis_generation.check_mixed_valence`. It is checked first, before any collective.
+    ``mixed_valence`` must not be an explicit ``"on"``: see
+    :func:`~impurityModel.ed.sector_ensemble.reject_unmigrated_ensemble`. It is checked first, before any collective.
 
     ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) marks a multi-shell impurity.
     The symmetry-adapted rotation is then kept only if it maps every orbital into a single shell (otherwise
     the input basis is solved in), every orbital group must lie in one shell, and ``nominal_occ`` may be keyed
     by shell. ``None`` (or one shell) is the single-shell path, unchanged.
     """
-    check_mixed_valence(mixed_valence)
+    reject_unmigrated_ensemble(mixed_valence, driver="prepare_solver_basis")
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
     # The *non-interacting part of the Hamiltonian actually diagonalised* -- h0 with the double

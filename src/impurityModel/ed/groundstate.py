@@ -5,7 +5,8 @@ from typing import NamedTuple, Optional
 import numpy as np
 
 from impurityModel.ed import config, solver_trace
-from impurityModel.ed.basis_generation import SeedWindow, check_mixed_valence
+from impurityModel.ed.basis_generation import SeedWindow
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
@@ -883,11 +884,11 @@ def find_ground_state_sector(
     (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
 
-    mixed_valence : None, False or 0
-        Must be off; anything else raises (see
-        :func:`~impurityModel.ed.basis_generation.check_mixed_valence`). Checked before any collective.
+    mixed_valence : None, bool, int, str or dict
+        Must not resolve to ``"on"`` (see
+        :func:`~impurityModel.ed.sector_ensemble.reject_unmigrated_ensemble`). Checked before any collective.
     """
-    check_mixed_valence(mixed_valence)
+    reject_unmigrated_ensemble(mixed_valence, driver="solve_ground_state")
     # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
     # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
     # re-resolving it would reprint the cap line and restart the warning counts on every trial of
@@ -1336,7 +1337,9 @@ def solve_ground_state(
         ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
-    check_mixed_valence(mixed_valence)  # replicated input: every rank raises together, before a collective
+    reject_unmigrated_ensemble(
+        mixed_valence, driver="find_ground_state_sector"
+    )  # replicated input: every rank raises together, before a collective
     if _hard_frozen(frozen_occupations) and (comm is None or comm.rank == 0):
         # A freeze is only ever the user's (review O5), and it is exact only where H conserves the shell. Where it
         # does not (RSPt h_dft with a one-body core-valence element, say), say so once, at every verbosity. Rank 0

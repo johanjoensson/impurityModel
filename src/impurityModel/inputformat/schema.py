@@ -116,6 +116,8 @@ class Kind(Enum):
     ENUM = "enum"
     #: A boolean.
     BOOL = "bool"
+    #: ``"auto"``, ``"on"`` or ``"off"``; a boolean (and a legacy integer) is accepted and read as on/off.
+    TRISTATE = "auto/on/off"
     #: A frequency mesh: ``{min, max, n}``, ``{values = [...]}`` or ``{file = "..."}``.
     MESH = "mesh"
     #: A matrix: ``{shape, real, imag}``, ``{identity}``, ``{diagonal}``, ``{scalar}`` or
@@ -1019,9 +1021,13 @@ _TABLE_LIST += [
             ),
             Key(
                 "mixed_valence",
-                Kind.DIMENSIONLESS,
+                Kind.TRISTATE,
                 None,
-                "Reserved for the charge-sector ensemble: only 0, false or unset is accepted for now.",
+                "Grand-canonical multi-sector (charge-sector ensemble) switch: 'auto', true/'on' or false/'off'. "
+                "Unset takes the driver's default ('auto' for the self-energy and double counting, off for "
+                "spectra, RIXS and susceptibility). 'auto' never raises: where the ensemble cannot be formed it "
+                "falls back to the winning sector with a warning; 'on' raises instead. A legacy integer is read "
+                "as off (0) or on (non-zero); it no longer widens the seed.",
             ),
         ),
     ),
@@ -1321,7 +1327,7 @@ _TABLE_LIST += [
             Key("cluster", Kind.STRING, "cluster", "Cluster label used in the output filenames."),
             Key("output", Kind.OUTPUT_PATH, None, "Output archive; default selfenergy-<cluster>.h5."),
         ),
-        overrides={"temperature": {"tau": 0.002}, "many_body_basis": {"mixed_valence": 0}},
+        overrides={"temperature": {"tau": 0.002}, "many_body_basis": {"mixed_valence": "off"}},
     ),
     Table(
         "selfenergy.real_axis",
@@ -1347,7 +1353,7 @@ _TABLE_LIST += [
             Key("cluster", Kind.STRING, "cluster", "Cluster label used in the output."),
             Key("output", Kind.OUTPUT_PATH, "chi.h5", "Output archive, relative to [run].outdir."),
         ),
-        overrides={"temperature": {"tau": 0.002}, "many_body_basis": {"mixed_valence": 0}},
+        overrides={"temperature": {"tau": 0.002}, "many_body_basis": {"mixed_valence": "off"}},
     ),
     Table(
         "susceptibility.real_axis",

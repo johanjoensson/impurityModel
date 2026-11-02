@@ -248,6 +248,17 @@ def _coerce(where, key, value, units, base_dir):
         if not isinstance(value, bool):
             raise InputError(f"[{where}]: expected true or false, got {value!r}")
         return value
+    if kind is Kind.TRISTATE:
+        if isinstance(value, bool):
+            return "on" if value else "off"
+        if isinstance(value, int):
+            if value < 0:
+                raise InputError(f"[{where}]: must not be negative, got {value}")
+            return "on" if value else "off"
+        text = {"true": "on", "false": "off"}.get(str(value).strip().lower(), str(value).strip().lower())
+        if text not in ("auto", "on", "off"):
+            raise InputError(f"[{where}]: expected 'auto', true/'on' or false/'off', got {value!r}")
+        return text
     if kind is Kind.PATH:
         # Rebased onto the input file's directory: an input is part of what the file
         # describes, so the file and its data travel together (and the launcher scripts'
@@ -348,6 +359,7 @@ SUPPORTED_FEATURES = frozenset(
         "bath_deduction",
         "double_counting",
         "environment",
+        "mixed_valence_tristate",
     }
 )
 

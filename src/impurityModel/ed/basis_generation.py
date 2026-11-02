@@ -22,29 +22,6 @@ def _bounds(patterns: list[tuple[int, int, int]], slot: int) -> tuple[int, int]:
     return min(values), max(values)
 
 
-def check_mixed_valence(mixed_valence) -> None:
-    """Reject a non-zero ``mixed_valence``: it now names the charge-sector ensemble, not a seed widening.
-
-    ``None``, ``False``, ``0`` and a dict of zeros mean *off*. Anything else raises, because the option used to
-    widen the seed's impurity window (removed: it never reached the sectors that matter) and is reserved for the
-    multi-sector ensemble, which is not implemented yet. Silently running with the option ignored would hand back
-    a single-sector answer to a caller who asked for a mixed-valence one.
-
-    The value is replicated input, so every rank raises together; call it before any collective.
-
-    Raises
-    ------
-    ValueError
-        If any entry is truthy.
-    """
-    values = mixed_valence.values() if isinstance(mixed_valence, dict) else [mixed_valence]
-    if any(v is not None and v is not False and v != 0 for v in values):
-        raise ValueError(
-            f"mixed_valence={mixed_valence!r}: mixed_valence now selects the charge-sector ensemble, which is not "
-            "implemented yet; the old seed widening is gone. Use None, False or 0."
-        )
-
-
 #: Half-width, in electrons, of the seed window of a bath-less shell beside a correlated one
 #: (:class:`SeedWindow`). One is the least that lets the seed hold a core hole (``p5 d+1``), so the
 #: expansion is never handed a basis that already excludes it.
