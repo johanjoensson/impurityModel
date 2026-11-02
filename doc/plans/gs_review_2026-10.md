@@ -568,9 +568,15 @@ far above the winner shows pass 2 dominating.
 note), `a6c6a8b2` (P9 neighbour-in-window warning with ΔE/τ), `fb03064b` + test (J8: unset-`GS_MAX_BLOCK_WIDTH` nag dropped, plural fix),
 and the review fixes (warning off for the DC search via `warn_neighbours=False`; infinite margin stored as null so the
 statistics file is strict JSON; negative gap worded "BELOW"). Gate: -n 1 3911 / -n 2 4018 / -n 3 4026 passed, 9 xfailed, rank files
-green. Opus review: no MPI hazard; three findings, all fixed. **Not built, still open:** B1 (measured, deferred above), the J8
-end-of-`calc_gs` summary, stderr tiers and heartbeat, MV 3's N±2 extension, the one-sided E_N(μ) check and `get_energy` as an
-object, and the HF off-by->1 / DIIS / oracle seed-1 m0 items. Steps 11–14 not started.
+green. Opus review: no MPI hazard; three findings, all fixed. **Step 9 finish (2026-11-02), J8:** `convergence_summary` (one end-of-`calc_gs` line: PT2 residual vs tolerance, limiter, winning
+sector and margin), `degraded_warnings` (stderr copy, rank 0 once, only for an unconverged expansion or an undecided sector),
+and `utils.Heartbeat` (rank-local, no collective, 300 s rate limit) in the CIPSI cycle loop. **MV 3 N±2:** investigated and
+deliberately not built: at a ±1 descent end the second difference is positive (attractive-U zigzag, measured on 14 models), so a
+convexity trigger is vacuous, and the margin<1 trigger does not fire for exact solves; only an unconditional N±2 probe or a physics
+signal would catch it. The u=-4 case stays a strict xfail with that reason. **Not built, still open:** B1 (measured, deferred above),
+the "solving sector N=…" start line, the thermal-regression-beyond-error-bars and memory-bound-withheld-mass stderr events,
+MV 3's one-sided E_N(μ) ≤ E_N(0) − μ n_N(0) check (needs n_N at a second shift: a DC-consumer item) and `get_energy` as an
+object (a refactor with no consumer yet), and the HF off-by->1 / DIIS / oracle seed-1 m0 items. Steps 11–14 not started.
 
 
 **Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
