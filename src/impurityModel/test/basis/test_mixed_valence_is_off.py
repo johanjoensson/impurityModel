@@ -68,3 +68,14 @@ def test_prepare_solver_basis_raises_before_its_collective():
     except ValueError as err:
         raised = "charge-sector ensemble" in str(err)
     assert all(MPI.COMM_WORLD.allgather(raised))
+
+
+@pytest.mark.mpi
+def test_the_convergence_report_carries_the_sector_diagnostics():
+    """MV 3: how firmly the winner beat its neighbours reaches ``convergence_report``, which the JSON reads."""
+    gs = groundstate.solve_ground_state(
+        _model(), IMPURITY, BATHS, {0: 1}, tau=0.1, slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False
+    )
+    d = gs.solver.convergence_report["sector_diagnostics"]
+    assert set(d) == {"winner_total", "neighbour_totals", "margin", "second_difference", "undecided"}
+    assert d["undecided"] is False and isinstance(d["neighbour_totals"], list)

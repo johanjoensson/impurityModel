@@ -1374,6 +1374,17 @@ def solve_ground_state(
                 "cover the rest.",
                 flush=True,
             )
+    if report is not None and search.diagnostics is not None:
+        # How firmly the winning sector beat its N +- 1 neighbours (MV 3): in the convergence record, so the
+        # ground-state JSON and the self-energy's info carry it next to the WARNING. Replicated (broadcast above).
+        d = search.diagnostics
+        report["sector_diagnostics"] = {
+            "winner_total": d.winner_total,
+            "neighbour_totals": list(d.neighbour_totals),
+            "margin": d.margin,
+            "second_difference": d.second_difference,
+            "undecided": bool(d.undecided),
+        }
     return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
 
 
