@@ -6,6 +6,7 @@ moves nothing the criterion measures.
 """
 
 import numpy as np
+import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import dc_criteria
@@ -158,3 +159,11 @@ def test_the_solver_hamiltonian_is_shifted_on_the_active_block_only():
     terms = {k: v for k, v in dict(diff).items() if abs(v) > 1e-12}
     ps = {orb for key in terms for (orb, _t) in key}
     assert ps and ps <= set(D_ORBS)
+
+
+def test_a_multishell_model_without_a_hybridising_shell_is_refused_up_front():
+    from types import SimpleNamespace
+
+    sb = SimpleNamespace(active_impurity_indices=[])
+    with pytest.raises(ValueError, match="no shell to act on"):
+        dc_criteria._check_active_shells(sb, 0, 1)

@@ -126,6 +126,11 @@ def _check_active_shells(sb, rank, verbosity):
     """
     if sb.active_impurity_indices is None:
         return
+    if not sb.active_impurity_indices:
+        raise ValueError(
+            "the DC shift has no shell to act on: no shell of the impurity has bath orbitals, so nothing the "
+            "criterion measures responds to it. Give the correlated shell a bath."
+        )
     active = set(sb.active_impurity_indices)
     inactive = sorted(o for o in sb.impurity_shell_index if o not in active)
     names = {a: f"l={sb.shell_ls[a]}" for a in sb.shell_has_bath}

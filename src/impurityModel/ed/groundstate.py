@@ -354,8 +354,10 @@ def solve_sector(
 
             def acquire(seed_basis):
                 # A record holds for the seed and the accuracy it was certified at, so both are in its
-                # key (every component replicated). The seed is of one impurity occupation, so the shift is
-                # a constant on it and the plan is the same at every shift.
+                # key (every component replicated). The seed is a function of the key (the sector and, with a
+                # seed window, the window's fixed groups) and the plan is the same at every shift, which is
+                # shell-diagonal. The shift's slope is not constant on the seed; the store measures it per
+                # class over its active orbitals.
                 key = (
                     sector_key(N0, frozen_occupations),
                     len(seed_basis),
@@ -1080,6 +1082,19 @@ def find_ground_state_sector(
             verbose=verbose,
         )
         refrozen = {i: N0[i] if i in _hard_frozen(frozen_occupations) else seed_N0[i] for i in N0}
+        if isinstance(frozen_occupations, SeedWindow) and (comm is None or comm.rank == 0):
+            # The window is centred on HF's filling of its groups, not on the nominal: nothing else can
+            # correct it, so say when HF put it elsewhere (a large DC shift can push the d levels below a
+            # shallow bath-less shell). Rank 0 only; nothing collective depends on it.
+            hf_window = sum(seed_N0[i] for i in frozen_occupations)
+            nominal_window = sum(N0[i] for i in frozen_occupations)
+            if hf_window != nominal_window:
+                print(
+                    f"WARNING: Hartree-Fock fills the bath-less shell(s) {sorted(frozen_occupations)} with "
+                    f"{hf_window} electrons, not the nominal {nominal_window}: the ground-state seed window is "
+                    "centred on the HF count. Check the nominal occupation and the double counting.",
+                    flush=True,
+                )
         leaked = sum(refrozen.values()) != sum(seed_N0.values())
         if converged and not leaked:
             return refrozen

@@ -1481,9 +1481,13 @@ class SectorPlanStore:
     """Certify each sector of a search once; at other shifts expand only the classes that can win.
 
     A search over a shift ``mu`` (``H(mu) = H - mu N_imp``) solves the same sectors again and again.
-    The certification plan of a sector does not depend on the shift: the seed holds one impurity
-    occupation, so the shift is a constant on it. And a class's lowest energy moves with the shift
-    by ``-<N_imp>`` of its state (Hellmann-Feynman), so from the certified energies the classes that
+    The certification plan of a sector does not depend on the shift: it is the symmetry labels of ``H``
+    and the partition of the seed into classes, and the shift ``-mu P`` is diagonal in the orbitals and
+    the same on every orbital of a shell, so it commutes with every label that respects the shells. (It
+    is not a constant on the seed: a :class:`~basis_generation.SeedWindow` seed holds determinants with
+    different active-shell counts, and a single-shell seed too once the sector's charge is not fixed.
+    The slope below is therefore measured per class, never assumed.) A class's lowest energy moves
+    with the shift by ``-<N_active>`` of its state (Hellmann-Feynman), so from the certified energies the classes that
     can still be lowest at another shift are known: those whose predicted energy is within
     ``|mu - mu_c| * (spread of <N_imp> + N_IMP_SPREAD_SAFETY)``, plus the classes' error bar, of the
     leader's. The margin widens with the distance from the certified shift, so a far shift expands

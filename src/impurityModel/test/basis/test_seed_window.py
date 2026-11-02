@@ -63,7 +63,7 @@ def test_default_width():
     assert SeedWindow({0}).width == DEEP_SEED_WIDTH == 1
 
 
-def _deep_p_plus_d_sb():
+def _deep_p_plus_d_sb(nominal=None):
     from impurityModel.ed.lie_algebra import tensors_to_operator
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
@@ -84,7 +84,7 @@ def _deep_p_plus_d_sb():
         {},
         {},
         {0: list(range(16))},
-        {0: 6, 1: 2},
+        nominal or {0: 6, 1: 2},
         rot_to_spherical=np.eye(16, dtype=complex),
         verbosity=0,
         shell_ls=(1, 2),
@@ -153,3 +153,30 @@ def test_calc_gs_with_the_seed_window_keeps_the_deep_shell_full(tmp_path):
     assert np.isfinite(es[0])
     n_p = np.trace(np.asarray(rho)[:6, :6]).real
     assert n_p == pytest.approx(6.0, abs=1e-6)
+
+
+def test_hf_that_refills_the_deep_shell_is_reported(tmp_path, capsys):
+    """Nominal p5 d3 against an energy that fills p6: the window is centred on HF's count, and says so."""
+    import numpy as np
+
+    from impurityModel.ed.groundstate import calc_gs
+
+    sb = _deep_p_plus_d_sb({0: 5, 1: 3})
+    assert sb.seed_window is not None
+    basis_information = {
+        "impurity_orbitals": sb.impurity_orbitals,
+        "bath_states": sb.bath_states,
+        "N0": sb.nominal_occ,
+        "tau": 0.002,
+        "chain_restrict": False,
+        "dense_cutoff": 1000,
+        "comm": None,
+        "spin_layout": sb.spin_layout,
+        "truncation_threshold": np.inf,
+        "frozen_occupations": sb.seed_window,
+    }
+    calc_gs(
+        sb.h, basis_information, sb.block_structure, sb.rot_to_spherical, 0,
+        stats_path=str(tmp_path / "gs.json"), shell_ls=sb.shell_ls,
+    )  # fmt: skip
+    assert "Hartree-Fock fills the bath-less shell(s)" in capsys.readouterr().out
