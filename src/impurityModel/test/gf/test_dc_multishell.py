@@ -6,7 +6,6 @@ moves nothing the criterion measures.
 """
 
 import numpy as np
-import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import dc_criteria

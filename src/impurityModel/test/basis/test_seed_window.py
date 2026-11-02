@@ -118,7 +118,6 @@ def test_seed_window_bounds_the_seed_of_the_deep_shell():
 
     free, windowed = seed(None), seed(sb.seed_window)
     assert len(windowed) < len(free) and len(windowed) < 1000
-    p_orbs = set(range(6))
     for det in windowed:
         n_p = sum(1 for o in range(6) if (bytes(det.to_bytearray())[o // 8] >> (7 - o % 8)) & 1)
         assert abs(n_p - 6) <= DEEP_SEED_WIDTH
@@ -142,7 +141,7 @@ def test_calc_gs_with_the_seed_window_keeps_the_deep_shell_full(tmp_path):
         "truncation_threshold": np.inf,
         "frozen_occupations": sb.seed_window,
     }
-    psis, es, basis, rho, _info = calc_gs(
+    _psis, es, _basis, rho, _info = calc_gs(
         sb.h,
         basis_information,
         sb.block_structure,

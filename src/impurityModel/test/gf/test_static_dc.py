@@ -302,7 +302,7 @@ def _two_shell_model():
 )
 def test_the_closed_form_schemes_refuse_a_multishell_model(scheme, kwargs):
     # One N and one (U, J) over a deep bath-less shell plus a correlated one is not a double counting.
-    with pytest.raises(NotImplementedError, match="multi-shell.*sigma_inf_dc"):
+    with pytest.raises(NotImplementedError, match=r"multi-shell.*sigma_inf_dc"):
         scheme(_two_shell_model(), **kwargs)
 
 
