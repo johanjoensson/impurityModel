@@ -10,7 +10,7 @@ import numpy as np
 
 # Local imports
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.observables import _single_particle_lsj_matrices, make_spin_operators
+from impurityModel.ed.observables import _single_particle_lsj_matrices, make_spin_operators, shell_column_slices
 from impurityModel.ed.symmetries import PARITY_TERM_TOL, bath_chains, conserves_sz, extract_tensors
 
 #: Largest ``max |[H, S_+]|`` coefficient, relative to the largest coefficient of ``H``, for which
@@ -98,7 +98,16 @@ def _pairs_from_rotated_splus(orbs, rot, tol=1e-6):
     if rot.shape[0] != n_so:
         return None
     _, _, _, _, sp_m, _ = _single_particle_lsj_matrices(shell_l)
-    sp_comp = rot @ sp_m @ rot.conj().T  # S_+ in the computational basis
+    return _pairs_from_splus_matrix(orbs, rot @ sp_m @ rot.conj().T)  # S_+ in the computational basis
+
+
+def _pairs_from_splus_matrix(orbs, sp_comp):
+    """``(dn, up)`` global pairs from ``S_+`` in the computational basis (rows/columns ordered as ``orbs``).
+
+    ``None`` unless every column holds at most one entry of modulus 1 and the entries form a perfect
+    dn -> up matching of ``orbs``.
+    """
+    n_so = len(orbs)
     downs = {}  # local down index -> local up index
     for j in range(n_so):
         rows = [i for i in range(n_so) if abs(sp_comp[i, j]) > 0.5]
@@ -132,7 +141,7 @@ def _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol=1e-6)
     return imp_pairs
 
 
-def _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol=1e-6):
+def _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol=1e-6, shell_ls=None):
     r"""Impurity ``(dn, up)`` pairs when the impurity is a single l-shell split into manifolds.
 
     The partitions (crystal-field sub-manifolds such as eg / t2g) are not individually l-shells,
@@ -141,10 +150,22 @@ def _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol=1e-6):
     :func:`impurity_block_structure` / ``rot_to_spherical``). The full-shell ``S_+`` then yields
     the pairing across all manifolds at once. Returns ``None`` for a per-partition (dict)
     rotation or when the union is not a clean single l-shell.
+
+    With ``shell_ls`` (several consecutive column blocks of an ndarray rotation) the spin ladder is
+    ``S_+ = sum_a R_a S_+(l_a) R_a^dagger``; a partial shell breaks the clean pairing and gives ``None``.
     """
     if isinstance(rot_to_spherical, dict):
         return None
     orbs = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+    if shell_ls is not None and len(shell_ls) > 1:
+        rot = np.asarray(rot_to_spherical, dtype=complex)
+        if rot.shape != (len(orbs), sum(2 * (2 * l + 1) for l in shell_ls)):
+            return None
+        sp_comp = np.zeros((len(orbs), len(orbs)), dtype=complex)
+        for l_a, cols in zip(shell_ls, shell_column_slices(shell_ls)):
+            R_a = rot[:, cols]
+            sp_comp += R_a @ _single_particle_lsj_matrices(l_a)[4] @ R_a.conj().T
+        return _pairs_from_splus_matrix(orbs, sp_comp)
     return _pairs_from_rotated_splus(orbs, rot_to_spherical, tol)
 
 
@@ -318,13 +339,13 @@ def _invalid_pairs(pairs, orbitals, cover):
     return None
 
 
-def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol):
+def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls=None):
     """``[(pairs, source)]`` in order of trust, and the reasons candidates were dropped."""
     imp_orbs = {orb for blocks in impurity_orbitals.values() for block in blocks for orb in block}
     index = impurity_spin_pairs(impurity_orbitals)
     rotation = _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol)
     if rotation is None:
-        rotation = _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol)
+        rotation = _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol, shell_ls)
     rejected, candidates = [], []
     index_bad = _invalid_pairs(index, imp_orbs, True)
     if rotation is not None:
@@ -360,7 +381,9 @@ def _bath_pairs_positional(h, imp_pairs, impurity, n_orb, cut):
     return sorted(up_of.items()), None
 
 
-def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None):
+def spin_layout(
+    h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None, shell_ls=None
+):
     r"""Resolve the ``(dn, up)`` pairing of impurity and bath and grade how much of it ``H`` verifies.
 
     Total: always returns a :class:`SpinLayout`. With a ``comm`` the layout is resolved on rank 0
@@ -391,20 +414,22 @@ def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, t
         Tolerance of the structural matching and of the impurity commutation test.
     comm : MPI communicator, optional
         Resolve on its rank 0 and broadcast.
+    shell_ls : tuple of int, optional
+        ``l`` of each column block of an ndarray ``rot_to_spherical`` holding several shells.
 
     Returns
     -------
     SpinLayout
     """
     layout = (
-        _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol)
+        _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol, shell_ls)
         if comm is None or comm.rank == 0
         else None
     )
     return layout if comm is None else comm.bcast(layout, root=0)
 
 
-def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol):
+def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol, shell_ls=None):
     if not hasattr(h_op, "commutator"):
         h_op = ManyBodyOperator(dict(h_op))
     h = extract_tensors(h_op, n_orb=n_orb, two_body=False)[0]
@@ -412,7 +437,7 @@ def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, 
     impurity = sorted(impurity_orbs)
     scale = max((abs(v) for v in h_op.values()), default=0.0)
     cut = PARITY_TERM_TOL * scale
-    candidates, rejected = _impurity_candidates(impurity_orbitals, rot_to_spherical, tol)
+    candidates, rejected = _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls)
     for imp_pairs, imp_source in candidates:
         if not imp_pairs:
             continue

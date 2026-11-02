@@ -174,3 +174,17 @@ def test_archive_reads_per_shell_l_and_occupation_when_present_and_not_otherwise
     assert single["shell_ls"] is None and single["nominal_occ"] == {0: 8}
     multi = _read_archive_group(tmp_path / "b.h5", with_options=False)
     assert multi["shell_ls"] == (1, 2) and multi["nominal_occ"] == {0: 6, 1: 8}
+
+
+def test_whole_shell_spin_pairs_cover_every_shell_of_a_multishell_rotation():
+    from impurityModel.ed.spin_pairs import _impurity_candidates, _impurity_pairs_whole_shell
+
+    imp = {0: [list(range(16))]}
+    rot = np.eye(16, dtype=complex)
+    want = [(0, 3), (1, 4), (2, 5)] + [(6 + i, 11 + i) for i in range(5)]
+    assert _impurity_pairs_whole_shell(imp, rot) is None  # without shell_ls: not one l-shell
+    assert sorted(_impurity_pairs_whole_shell(imp, rot, shell_ls=(1, 2))) == want
+    candidates, _ = _impurity_candidates(imp, rot, 1e-6, shell_ls=(1, 2))
+    assert sorted(candidates[0][0]) == want
+    # a partial d shell (two rows dropped) is no clean pairing
+    assert _impurity_pairs_whole_shell({0: [list(range(14))]}, rot[:14], shell_ls=(1, 2)) is None
