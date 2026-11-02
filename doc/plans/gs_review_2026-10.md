@@ -483,6 +483,22 @@ step touching a collective runs `-n 1/2/3`.
 | 13 | **B4** (after a production-budget re-measure), **B5** (geometric-tail rule), **B6**, **B7** (-n 4); **B8** (states reused with default DC tolerances, sector choice only when loosened) | yes | each gain measured on the change |
 | 14 | hygiene | no | — |
 
+**Step 7 (2026-11-02), MS T4.1-T4.5 DONE, remainder open.** Commits `8a3eae49`..`9c32a7e1` (shell helpers, `impurity_shell_rhos` /
+Casimir `shell_ls`, `ImpurityModel.shell_ls`, `spin_pairs`, `prepare_solver_basis`, callers + `dc_criteria` guard, reporters),
+then `4a08bf47` (guard reads the declared `shell_ls`: the full -n 1/-n 2 gates each failed one test, `eye(4)` rotation),
+`19eb680f`/`48b38a73`/`2d3e848d` (Opus review: Casimir operators used group-dict order instead of sorted rotation rows; a
+shell-keyed `nominal_occ` was read as group-keyed when the keys coincided; both fixed with tests, bug-injection fails them).
+Gate: -n 1 3890 passed + 1 failed, -n 2 3998 passed + 1 failed (same test, fixed in `4a08bf47`), -n 3 4007 passed (with that
+fix); after the review fixes only targeted runs (symmetry + `test_fixed_dc`) at -n 1/2/3, all green. No full re-gate yet.
+`make check`: 61 ruff findings (baseline 62). `shell_ls=None` stays the single-shell path.
+- **Open:** 2p@-60 Ry fixture measurements (J1), Tr rho_p = 6 test and T5.1, `get_spectra._resolve_shell_roles` explicit
+  roles, impmod_interface G2 / rspt2spectra G3 (needs the user before touching impmod_interface).
+- **Open (review, low):** `gs_report` "skipped (partial shell)" text prints whenever per-shell ops are `None`, even if both builds
+  failed for another reason; `ImpurityModel.resolved_shell_ls` still raises on a non-shell column count (no production caller);
+  a single partial shell collapses to `SolverBasis.shell_ls=None`; `_per_group_occupation` falls back silently to total-based
+  filling when a shell owns no group; the per-shell Casimir block moved out of the totals `try`, so a degraded legacy path now
+  also runs it (numerics unchanged).
+
 **Step 7′ (2026-11-02), DONE with open items.** Commits `4d5dbae1` (B2 per-verdict margin), `28aa0889` (C7 counting:
 `ClassVerdict.levels`, `window_deficit` expects the per-class sum), `b456415e` (GF-side SYM measurement). Gate: -n 1
 3871 passed, -n 2 3979, -n 3 3987, 9 xfailed, every rank file green (`debug/gs_review_2026-10/step7p/`).
