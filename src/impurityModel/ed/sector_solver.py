@@ -153,7 +153,9 @@ class ClassVerdict:
     ranked: bool = False
     lower: float = float("nan")
     #: The class basis's energies inside the thermal window above its lowest (:func:`_class_window_levels`), when
-    #: it was asked for them; empty otherwise. ``energy`` is the first.
+    #: it was asked for them (pass 2 only: a class that converges unranked in pass 1 keeps it empty and counts as one
+    #: state, a weaker but sound bound); empty otherwise. They are the class's penalised Ritz values, measured from
+    #: its own penalised lowest, not from ``energy``.
     levels: tuple = ()
 
 
@@ -1217,7 +1219,8 @@ def window_deficit(verdicts, es, within, lowest_expected):
     expected = max(expected, sum(per_label.values()))
     es = np.sort(np.real(np.asarray(es, dtype=complex)))
     top = lowest.energy + within + max((_energy_error(v) for v in inside), default=0.0)
-    found = int(np.count_nonzero(es - es[0] <= top - lowest.energy)) if len(es) else 0
+    # The same absolute edge `expected` counts to: `es[0]` can sit below `lowest.energy` once the union is solved.
+    found = int(np.count_nonzero(es <= top)) if len(es) else 0
     return found, expected
 
 

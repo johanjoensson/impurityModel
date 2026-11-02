@@ -17,14 +17,12 @@ from impurityModel.test.support.aim_fixtures import build_semicircle_siam
 from impurityModel.test.support.comms import COMMS
 
 NB = 7  # 16 spin-orbitals, a 4,900-determinant singlet; the removal/addition sectors hold 3,920
-CAP = 3000  # below the 3,920 each unit reaches: every unit freezes at the cap
+CAP = 2500  # below the 3,920 each unit reaches: every unit freezes, and G moves ~5e-5 (3000 moves it 8e-11)
 
 
-@pytest.mark.parametrize("comm", COMMS)
-@pytest.mark.parametrize("method", ["lanczos"])
-def test_spin_partner_units_cut_at_the_cap_give_equal_green_functions(comm, method):
+def _green(comm, cap, method):
     aim = build_semicircle_siam(NB)
-    basis = aim.basis(sorted(aim.gs.keys()), truncation_threshold=CAP, comm=comm)
+    basis = aim.basis(sorted(aim.gs.keys()), truncation_threshold=cap, comm=comm)
     gs = ManyBodyState(dict(aim.gs.items()) if comm is None or comm.rank == 0 else {}, width=1)
     if comm is not None:
         gs = basis.redistribute_psis(gs)[0]
@@ -49,9 +47,20 @@ def test_spin_partner_units_cut_at_the_cap_give_equal_green_functions(comm, meth
         sparse=True,
         gf_method=method,
     )
-    # Only the ranks that assemble the answer hold it; the pairing is checked where it is.
-    if mat is None or mat[0] is None or mat[1] is None:
+    return mat, real
+
+
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("method", ["lanczos"])
+def test_spin_partner_units_cut_at_the_cap_give_equal_green_functions(comm, method):
+    mat, real = _green(comm, CAP, method)
+    full, _ = _green(comm, np.inf, method)  # collective: every rank, before any early return
+    # Only the ranks that assemble the answer hold it; on those, a missing block is a failure.
+    if comm is not None and comm.rank != 0:
         return
+    assert mat is not None and mat[0] is not None and mat[1] is not None
+    tol = 1e-7 * max(np.abs(mat[0]).max(), 1e-300)
     for up, dn in ((mat[0], mat[1]), (real[0], real[1])):
-        scale = max(np.abs(up).max(), 1e-300)
-        assert np.abs(up[:, 0, 0] - dn[:, 0, 0]).max() < 1e-7 * scale
+        assert np.abs(up[:, 0, 0] - dn[:, 0, 0]).max() < tol
+    # The test is only sensitive if the cut moves G far above the tolerance: a cut of one spin alone would show.
+    assert max(np.abs(mat[s][:, 0, 0] - full[s][:, 0, 0]).max() for s in (0, 1)) > 100 * tol

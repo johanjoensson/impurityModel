@@ -497,6 +497,10 @@ step touching a collective runs `-n 1/2/3`.
 - GF-side SYM: **holds.** G_up = G_down to ~1e-15 with all four units cut to 3,000 of 3,920 dets, at -n 1/2/3
   (`test_gf_spin_symmetry_under_caps.py`; injecting a unit-dependent cut fails it). Suggests 10c may be unnecessary; the
   fixture is a unique singlet with no exact boundary ties, so this is not proof for degenerate manifolds.
+- Opus review fixes: `found` now counts to the same absolute window edge as `expected`; the SYM test uses CAP 2500 with a
+  sensitivity guard (capped G must differ from uncapped by > 100x the tolerance). Open: the levels solve runs in pass 2 only
+  and is untested end to end; its cost on dense low spectra (SMO regime) is unmeasured; `expected = max(...)` drops
+  cross-label information (still a sound bound).
 - `make check`: 62 ruff errors repo-wide, pre-existing; none new in the files this step touched except one fixed.
 
 
