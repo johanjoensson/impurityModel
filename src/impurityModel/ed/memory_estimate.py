@@ -1249,13 +1249,7 @@ def log_memory_budget(
             )
         if not uncapped:
             print(f"{prefix}{connectivity.describe()}.", flush=True)
-        if config.GS_MAX_BLOCK_WIDTH.get() is None and not uncapped:
-            print(
-                f"{prefix}GS_MAX_BLOCK_WIDTH is unset, so the ground-state peak above assumes a placeholder "
-                f"block width of {block_width}; set it (and GS_NUM_WANTED) for an estimate of the real solve.",
-                flush=True,
-            )
-        elif gs_num_wanted is None and not uncapped:
+        if config.GS_MAX_BLOCK_WIDTH.get() is not None and gs_num_wanted is None and not uncapped:
             print(
                 f"{prefix}GS_MAX_BLOCK_WIDTH is set but gs_num_wanted was not supplied (GS_NUM_WANTED): the "
                 f"ground-state Krylov term assumes {_GS_COUPLED_NUM_WANTED_RATIO}*block_width eigenstates, which "

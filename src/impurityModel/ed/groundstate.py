@@ -1413,9 +1413,9 @@ def solve_ground_state(
         if near and (comm is None or comm.rank == 0):
             where = ", ".join(f"N_imp = {n}: {g:.2f} tau" for n, g in sorted(near.items()))
             print(
-                f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies within "
-                f"the thermal window ({where} above it, tau = {tau:.4g}); its Boltzmann weight (> 1e-4) is not in "
-                "the ground state.",
+                f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies "
+                f"within the thermal window ({where} above it, tau = {tau:.4g}); its Boltzmann "
+                "weight (> 1e-4) is not in the ground state.",
                 flush=True,
             )
     return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)

@@ -67,7 +67,8 @@ class GsConnectivity:
             )
         return (
             f"measured on this model: raw connectivity {self.nnz_per_state:.1f} rows/det, selection fan-out "
-            f"{self.selection_fanout:.1f}, {self.window_states} states in the lowest level "
+            f"{self.selection_fanout:.1f}, {self.window_states} state{'' if self.window_states == 1 else 's'} "
+            "in the lowest level "
             f"(probe {self.probe_dets:,} dets from a {self.seed_dets:,}-det seed, {self.seconds:.1f} s)"
         )
 
