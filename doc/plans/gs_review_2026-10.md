@@ -553,6 +553,26 @@ unless a machine with more RAM per rank shows the auto cap binding first. **B3 d
 window-class keys holds distributed key arrays across the DC walk, raising peak memory exactly where memory is the binding resource,
 and needs a new store design (the store holds replicated scalars only; its key includes the cap).
 
+**Step 11 (2026-11-02), started: 11.0 measured, 11.1 and 11.2 landed; the guard stays until 11.0b.** *Decision (user):* the DC
+shift acts on the **hybridising shells** (`SolverBasis.active_impurity_indices`, the rule of `HYB_WEIGHT_REL_TOL`), "for now".
+RSPt sends shell structure and a complete `u4` but no core flag, so U cannot carry a role; hybridisation is the de facto
+declaration. 11.4 must make it visible (a log line naming covered and excluded shells) and raise if an excluded shell has levels
+near E_F. An explicit solver-line role (option 2) is deferred. **11.0 (J1 measurement, `calc_gs` on a 2p + 3d + 4-bath fixture,
+p at -60, guard bypassed, nothing frozen, d-d U 0.5, p-d U 0.6):** the unfrozen deep shell **does** change the search, three ways.
+(1) The seed is the whole `N_imp` combinatorial space over p+d, not the d shell: C(16,8) = 12,870 determinants at the nominal
+sector (11,440 at 7 and 9, 8,008 at 6, 4,368 at 5), against C(10,2) = 45 for the d block alone (arithmetic, not run), so every
+sector exceeds `GS_CERTIFY_MAX_SEED` = 1,000 and is solved by one expansion, **not certified**; `seed_class_plan` returns `None`
+above `max_seed`, so no penalty or scale exists to report. (2) The occupation walk visits N_imp = 7, 9, 6, 5, i.e. sectors whose
+change is a p<->d charge move as often as a bath one. (3) The seed spans N_active = 0..N, so the plan store's
+"shift is constant on the seed" premise fails once P is active-only. The GS still keeps Tr rho_p = 6 (natural occupations
+1.0000 x6), from the -60 level and not from a constraint, as J1 intends. **Consequence:** lifting the guard (11.4) needs
+**11.0b** first: a *seed-only* per-shell window for the bath-less shell (width >= 1 so CIPSI can still reach core-hole
+determinants; not a freeze) built in `generate_initial_basis`, plumbed through `ManyBodyBasis`/`sector_key`, and the walk and
+`SectorPlanStore` counting N over the active shells (11.3). **Landed:** 11.1 `4ccb4d9a` (`fll`/`amf`/`nominal` refuse a declared
+multi-shell model; `sigma_inf_dc` is the multi-shell scheme), 11.2 (`shift_input`/`shift_solver`/`active_indices` in the two
+DC contexts, exact `np.identity` and `None` on a single shell; `test_dc_multishell.py`, bug-injected with `P = I`).
+Not done: 11.0b, 11.3-11.6.
+
 
 **Step 9 (2026-11-02), started: MV 3 field landed, B1 deferred with a measurement.** `solve_ground_state` now puts the walk's
 `SectorDiagnostics` into `convergence_report["sector_diagnostics"]` (`3c726664`; `-n 1/2/3`, bug-injected). **B1 (O6 gate):**
