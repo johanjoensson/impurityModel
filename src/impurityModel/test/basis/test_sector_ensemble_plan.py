@@ -97,3 +97,43 @@ def test_the_weights_reproduce_the_grand_canonical_average_on_an_exact_spectrum(
     wrong = np.array([0.5, 0.5])
     assert abs(wrong @ np.array([8.0, 9.0]) - exact) > 1e-3
     assert abs(sector_weights(np.zeros(2), z, TAU) @ np.array([8.0, 9.0]) - exact) > 1e-3
+
+
+# --- the walk's extension hook, on the toy model of test_mixed_valence_is_off (collective) ---------------------
+from mpi4py import MPI  # noqa: E402
+
+from impurityModel.ed import groundstate  # noqa: E402
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator  # noqa: E402
+from impurityModel.test.support.comms import COMMS  # noqa: E402
+
+IMPURITY = {0: [[0, 1]]}
+BATHS = ({0: [[2, 3]]}, {0: [[4, 5]]})
+
+
+def _toy():
+    terms = {}
+    for s in (0, 1):
+        for orbital, energy in ((s, 0.9), (2 + s, -1.2), (4 + s, 1.0)):
+            terms[((orbital, "c"), (orbital, "a"))] = energy
+    return ManyBodyOperator(terms)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_walk_solves_the_totals_the_plan_asks_for_and_every_rank_agrees(comm):
+    kw = dict(slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False, comm=comm)
+    tau = 0.4  # window 3.7: N_imp = 1 (0.9 above) and N_imp = 2 (1.8 above) are inside
+    plain = groundstate.find_ground_state_sector(_toy(), IMPURITY, BATHS, {0: 0}, **kw)
+    assert sorted(r.total for r in plain.solved) == [0, 1]  # the plain walk stops at the winner's neighbours
+
+    def extend(solved):
+        return plan_ensemble(solved, tau, "on", attainable=lambda t: 0 <= t <= 2, max_error=1e9).needs
+
+    wide = groundstate.find_ground_state_sector(_toy(), IMPURITY, BATHS, {0: 0}, extend_sectors=extend, **kw)
+    assert sorted(r.total for r in wide.solved) == [0, 1, 2]
+    plan = plan_ensemble(wide.solved, tau, "on", attainable=lambda t: 0 <= t <= 2, max_error=1e9)
+    assert plan.needs == () and [m.total for m in plan.members] == [0, 1, 2]
+    totals = (comm or MPI.COMM_SELF).allgather([m.total for m in plan.members])
+    assert all(t == totals[0] for t in totals)
+    # the walk's winner and energy do not depend on the hook
+    assert wide.energy == plain.energy and wide.occupation == plain.occupation

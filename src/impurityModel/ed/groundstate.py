@@ -841,6 +841,7 @@ def find_ground_state_sector(
     plan_store=None,
     shift=0.0,
     spin_layout=None,
+    extend_sectors=None,
 ):
     """
     Find the charge sector with the lowest energy, compare N0 - 1, N0 and N0 + 1: :class:`SectorSearch`.
@@ -1233,6 +1234,23 @@ def find_ground_state_sector(
     winner = energy_cache[winning_key]
     e_gs, report = winner.energy, winner.truncation_report
     solved = tuple(energy_cache.values())
+    if extend_sectors is not None:
+        # Solve further totals the caller (the charge-sector ensemble) asks for. `extend_sectors` must be a pure
+        # function of the replicated `solved`, so every rank asks for the same totals and the collective
+        # `get_energy` solves stay matched. A total already tried (or unattainable: `get_energy` stores nothing
+        # for it) is never asked for twice, so the loop ends.
+        tried = {r.total for r in solved}
+        movable = [i for i in keys if i not in _hard_frozen(frozen_occupations)]
+        while movable:
+            wanted = [t for t in extend_sectors(solved) if t not in tried]
+            if not wanted:
+                break
+            for t in wanted:
+                tried.add(t)
+                trial = dict(winning_impurity_occ)
+                trial[movable[0]] += t - sum(trial.values())
+                get_energy(trial)
+            solved = tuple(energy_cache.values())
     # Decided on rank 0 and broadcast: every input is replicated, but the verdict steers a print, and two ranks
     # disagreeing on it would be a bug that only shows as a missing line.
     diagnostics = sector_diagnostics(solved, winner.total)
