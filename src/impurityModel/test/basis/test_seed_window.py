@@ -123,7 +123,10 @@ def test_seed_window_bounds_the_seed_of_the_deep_shell():
         assert abs(n_p - 6) <= DEEP_SEED_WIDTH
 
 
-def test_calc_gs_with_the_seed_window_keeps_the_deep_shell_full(tmp_path):
+def test_calc_gs_accepts_the_seed_window_and_returns_the_full_deep_shell(tmp_path):
+    """A plumbing check, not a discriminating one: the -60 level fills the p shell whatever the window does
+    (review J1 measured the same with nothing frozen). What the window changes is the seed, which
+    ``test_seed_window_bounds_the_seed_of_the_deep_shell`` asserts."""
     import numpy as np
 
     from impurityModel.ed.groundstate import calc_gs
@@ -180,3 +183,47 @@ def test_hf_that_refills_the_deep_shell_is_reported(tmp_path, capsys):
         stats_path=str(tmp_path / "gs.json"), shell_ls=sb.shell_ls,
     )  # fmt: skip
     assert "Hartree-Fock fills the bath-less shell(s)" in capsys.readouterr().out
+
+
+def test_hard_frozen_is_empty_for_a_window_and_the_set_itself_otherwise():
+    from impurityModel.ed.groundstate import _hard_frozen
+
+    assert _hard_frozen(SeedWindow({0, 3})) == set()
+    assert _hard_frozen({0, 3}) == {0, 3}
+    assert _hard_frozen(None) == set()
+
+
+@pytest.mark.parametrize("as_window", [True, False])
+def test_hartree_fock_is_pinned_by_a_plain_freeze_and_not_by_a_window(tmp_path, monkeypatch, as_window):
+    import numpy as np
+
+    from impurityModel.ed import groundstate
+
+    sb = _deep_p_plus_d_sb()
+    groups = set(sb.seed_window)
+    frozen = sb.seed_window if as_window else set(groups)
+    seen = []
+    real = groundstate.hartree_fock_seed_occupation
+
+    def spy(*args, **kwargs):
+        seen.append(set(kwargs["frozen_occupations"]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(groundstate, "hartree_fock_seed_occupation", spy)
+    basis_information = {
+        "impurity_orbitals": sb.impurity_orbitals,
+        "bath_states": sb.bath_states,
+        "N0": sb.nominal_occ,
+        "tau": 0.002,
+        "chain_restrict": False,
+        "dense_cutoff": 1000,
+        "comm": None,
+        "spin_layout": sb.spin_layout,
+        "truncation_threshold": np.inf,
+        "frozen_occupations": frozen,
+    }
+    groundstate.calc_gs(
+        sb.h, basis_information, sb.block_structure, sb.rot_to_spherical, 0,
+        stats_path=str(tmp_path / "gs.json"), shell_ls=sb.shell_ls,
+    )  # fmt: skip
+    assert seen and all(s == (set() if as_window else groups) for s in seen), seen

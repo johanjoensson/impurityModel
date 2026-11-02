@@ -1,6 +1,7 @@
 r"""The root find both double-counting criteria share, and its cost accounting.
 
-The double counting is parametrized as a uniform shift, ``dc(mu) = dc_guess + mu * identity``;
+The double counting is parametrized as a uniform shift of the hybridising shells,
+``dc(mu) = dc_guess + mu * P`` (``P`` the identity on a single shell);
 :func:`_solve_dc_shift` drives a caller-supplied scalar observable of ``mu`` onto a target with a
 sector-first bracketing and safeguarded secant/bisection refinement. Nothing here knows what the
 observable is -- :mod:`dc_criteria` supplies a peak position or an impurity occupation -- so this
@@ -427,7 +428,8 @@ def _solve_dc_shift(
     r"""Find the uniform shift ``mu`` that drives a scalar observable onto ``target``.
 
     Generic root-finder shared by :func:`fixed_peak_dc` and :func:`fixed_occupation_dc`. The
-    double counting is parametrized as ``dc(mu) = dc_guess + mu * identity``; the caller passes an
+    double counting is parametrized as ``dc(mu) = dc_guess + mu * P`` (``P`` the identity on a single shell,
+    the projector onto the hybridising shells on several); the caller passes an
     ``observable(mu)`` closure that builds ``dc(mu)``, solves the model and returns the scalar to
     control (the peak position or the impurity occupation).
 

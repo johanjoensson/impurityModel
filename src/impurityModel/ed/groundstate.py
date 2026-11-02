@@ -1105,7 +1105,7 @@ def find_ground_state_sector(
                 "HF did not converge"
                 if not converged
                 else (
-                    f"re-freezing {sorted(frozen_occupations)} changed the impurity count "
+                    f"re-freezing {sorted(_hard_frozen(frozen_occupations))} changed the impurity count "
                     f"{sum(seed_N0.values())} -> {sum(refrozen.values())}"
                 )
             )

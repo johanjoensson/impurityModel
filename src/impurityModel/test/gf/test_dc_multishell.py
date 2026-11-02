@@ -16,7 +16,7 @@ P_ORBS = list(range(6))
 D_ORBS = list(range(6, 16))
 
 
-def _p_plus_d(p_level=-60.0, u=0.0):
+def _p_plus_d(p_level=-60.0, u=0.0, d_rotation=None):
     h = np.zeros((20, 20), dtype=complex)
     for o in P_ORBS:
         h[o, o] = p_level
@@ -31,12 +31,22 @@ def _p_plus_d(p_level=-60.0, u=0.0):
         for j in D_ORBS:
             if i != j:
                 u4[i, j, i, j] = u
+    rot = np.eye(16, dtype=complex)
+    if d_rotation is not None:
+        # the model as the caller states it: the d shell in a rotated (non-spherical) basis
+        big = np.eye(20, dtype=complex)
+        big[6:16, 6:16] = d_rotation
+        h = big @ h @ big.conj().T
+        u4 = np.einsum(
+            "ia,jb,kc,ld,abcd->ijkl", big[:16, :16], big[:16, :16], big[:16, :16].conj(), big[:16, :16].conj(), u4
+        )
+        rot = big[:16, :16].conj().T
     model = ImpurityModel.from_solver_matrix(
         h,
         16,
         dc=np.zeros((16, 16), dtype=complex),
         u4=u4,
-        rot_to_spherical=np.eye(16, dtype=complex),
+        rot_to_spherical=rot,
         bath_valence_conduction=([16, 17], [18, 19]),
         shell_ls=(1, 2),
     )
@@ -164,6 +174,47 @@ def test_the_solver_hamiltonian_is_shifted_on_the_active_block_only():
 def test_a_multishell_model_without_a_hybridising_shell_is_refused_up_front():
     from types import SimpleNamespace
 
-    sb = SimpleNamespace(active_impurity_indices=[])
+    sb = SimpleNamespace(
+        active_impurity_indices=[],
+        impurity_shell_index={o: 0 if o < 6 else 1 for o in range(16)},
+        shell_ls=(1, 2),
+        shell_has_bath={0: False, 1: False},
+    )
     with pytest.raises(ValueError, match="no shell to act on"):
         dc_criteria._check_active_shells(sb, 0, 1)
+
+
+def _assert_only_the_d_block_moved(dc):
+    np.testing.assert_array_equal(dc[:6, :6], np.zeros((6, 6)))
+    d_block = dc[6:, 6:]
+    np.testing.assert_allclose(d_block, d_block[0, 0] * np.identity(10), atol=1e-12)
+    assert abs(d_block[0, 0]) > 1e-3
+
+
+def test_fixed_gap_dc_shifts_only_the_hybridising_shell():
+    model, basis, solver = _p_plus_d(u=3.0)
+    dc, sector = dc_criteria.fixed_gap_dc(model, basis, solver, comm=MPI.COMM_WORLD, return_sector=True)
+    _assert_only_the_d_block_moved(dc)
+    assert sector == 8  # the p shell stays full: nominal 6 + 2
+
+
+def test_fixed_peak_dc_shifts_only_the_hybridising_shell():
+    model, basis, solver = _p_plus_d(u=3.0)
+    dc, _sector = dc_criteria.fixed_peak_dc(
+        model, basis, solver, peak_position=2.0, comm=MPI.COMM_WORLD, return_sector=True, allow_charge_state_change=True
+    )
+    _assert_only_the_d_block_moved(dc)
+
+
+def test_a_rotated_d_shell_keeps_the_shift_on_the_d_orbitals_in_both_bases():
+    """The DC matrix lives in the caller's (rotated) basis, ``sb.h`` in the solver's; ``prepare_solver_basis``
+    keeps only rotations inside a shell, so both shifts must still select exactly the d orbitals."""
+    q, _ = np.linalg.qr(np.random.default_rng(3).normal(size=(10, 10)))
+    model, basis, solver = _p_plus_d(u=3.0, d_rotation=q)
+    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    want = np.diag([0.0] * 6 + [1.0] * 10)
+    np.testing.assert_array_equal(ctx.shift_input, want)
+    np.testing.assert_array_equal(ctx.shift_solver, want)
+    assert ctx.active_indices == D_ORBS
+    np.testing.assert_array_equal(ctx.dc(0.7)[:6, :6], np.zeros((6, 6)))
+    np.testing.assert_allclose(ctx.dc(0.7)[6:, 6:], 0.7 * np.identity(10))

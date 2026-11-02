@@ -166,6 +166,7 @@ def generate_initial_basis(
     total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
     # The impurity-charge window admits both the caller's own ``delta_impurity_occ`` and the total-charge slack;
     # only the latter loosens the electron-count filter at the DFS leaf, which stays the binding constraint.
+    # ``frozen_occupations`` (not ``pinned_groups``): a seed window's groups are held out of the walk too.
     total_slack = total_charge_slack + max(
         (abs(delta_impurity_occ[i]) for i in valence_baths if i not in frozen_occupations),
         default=0,

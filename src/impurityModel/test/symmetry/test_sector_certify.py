@@ -1079,3 +1079,52 @@ def test_the_window_warning_names_the_memory_guard_when_it_held_a_class():
     free = _raise_cap_advice([SimpleNamespace(memory_bound=False)], widen="x")
     assert "memory guard" in held and "will not help" in held
     assert "Raise the determinant cap" in free and "memory guard" not in free
+
+
+def test_the_verdict_occupation_is_counted_over_the_orbitals_it_is_asked_for():
+    """``occupation_orbitals`` sets what ``ClassVerdict.n_imp`` counts (the energy's slope in a shift that acts on
+    those orbitals only); ``None`` is the whole impurity."""
+    h_op = _hamiltonian()
+    basis = _seed(h_op, None)
+    plan = certification_plan(h_op, basis)
+
+    def n_imp(orbitals):
+        *_, verdicts = certify_sector(
+            h_op,
+            basis,
+            plan,
+            expand_kwargs=EXPAND,
+            dense_cutoff=1000,
+            slater_weight_min=0,
+            occupation_orbitals=orbitals,
+        )
+        return [v.n_imp for v in verdicts]
+
+    whole, one = n_imp(None), n_imp([0])
+    assert min(whole) > 2.0 and max(one) <= 1.0 + 1e-9
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_solve_sector_counts_the_plan_stores_active_orbitals(comm, monkeypatch):
+    """The store's ``active_orbitals`` reach ``solve_certified`` on the certification and, when a class
+    contradicts its record, on the recertification: drop either and the slope is counted over the wrong orbitals."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.sector_solver import SectorPlanStore
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    seen = []
+    real = groundstate.solve_certified
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("occupation_orbitals", "missing"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(groundstate, "solve_certified", spy)
+    store = SectorPlanStore(active_orbitals=[0, 1])
+    for mu in (0.0, 0.01):
+        groundstate.solve_sector(
+            _hamiltonian(mu=mu), IMPURITY_ORBITALS, BATH_STATES, {0: 2},
+            tau=0, chain_restrict=False, dense_cutoff=1000, manifold=Lowest(), comm=comm, verbose=False,
+            slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store, shift=mu,
+        )  # fmt: skip
+    assert seen and all(o == (0, 1) for o in seen), seen

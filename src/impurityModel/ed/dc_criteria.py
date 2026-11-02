@@ -118,34 +118,40 @@ from impurityModel.ed.utils import matrix_print
 DC_INACTIVE_SHELL_EF_WINDOW = 1.0
 
 
-def _check_active_shells(sb, rank, verbosity):
+def _check_active_shells(sb, rank, verbosity, comm=None):
     """Say which shells the DC shift acts on and refuse an excluded shell that is not a core (MS T4.7).
 
     Single shell (``sb.active_impurity_indices is None``): nothing to decide. The decision reads the
-    replicated ``h0``, so every rank raises or none does, before any collective.
+    replicated ``h0``, and rank 0's verdict is broadcast on ``comm`` (a boundary level on heterogeneous
+    nodes must not split the ranks), so every rank raises or none does, before any other collective.
     """
     if sb.active_impurity_indices is None:
         return
-    if not sb.active_impurity_indices:
-        raise ValueError(
-            "the DC shift has no shell to act on: no shell of the impurity has bath orbitals, so nothing the "
-            "criterion measures responds to it. Give the correlated shell a bath."
-        )
     active = set(sb.active_impurity_indices)
     inactive = sorted(o for o in sb.impurity_shell_index if o not in active)
     names = {a: f"l={sb.shell_ls[a]}" for a in sb.shell_has_bath}
     hybridising = [names[a] for a, has in sb.shell_has_bath.items() if has]
     excluded = [names[a] for a, has in sb.shell_has_bath.items() if not has]
-    if inactive:
+    refusal = None
+    if not active:
+        refusal = (
+            "the DC shift has no shell to act on: no shell of the impurity has bath orbitals, so nothing the "
+            "criterion measures responds to it. Give the correlated shell a bath."
+        )
+    elif inactive:
         block = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0][np.ix_(inactive, inactive)]
         closest = float(np.min(np.abs(np.linalg.eigvalsh(block))))
         if closest < DC_INACTIVE_SHELL_EF_WINDOW:
-            raise ValueError(
+            refusal = (
                 f"the DC shift skips the shell(s) {', '.join(excluded)} (no bath orbitals), but a level of it lies "
                 f"{closest:.3g} from the Fermi level (< {DC_INACTIVE_SHELL_EF_WINDOW}): that is a valence shell the "
                 "hybridization cut dropped, not a core. Give it bath orbitals, or declare its role explicitly "
                 "(not yet supported)."
             )
+    if comm is not None and comm.size > 1:
+        refusal = comm.bcast(refusal, root=0)
+    if refusal is not None:
+        raise ValueError(refusal)
     if verbosity > 0 and rank == 0:
         print(
             f"DC shift acts on shell(s) {', '.join(hybridising)} (hybridizing); excluded: "
@@ -889,7 +895,7 @@ def _prepare_sector_context(
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
     )
-    _check_active_shells(sb, rank, verbosity)
+    _check_active_shells(sb, rank, verbosity, comm if comm is not None else MPI.COMM_WORLD)
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     shift_input, shift_solver, active_indices = _active_shift(model, sb, dc_guess.shape[0])
@@ -2063,7 +2069,8 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
 
     # Derive the same solver-basis layout calc_selfenergy uses (the DC search must measure its
     # observable on the same sector/basis the downstream selfenergy solve will use, or "fixed"
-    # does not mean what it says). The mu shift is a uniform impurity shift (-mu * identity),
+    # does not mean what it says). The mu shift is a uniform impurity shift (-mu * P, the projector onto the
+    # hybridising shells; the identity on a single shell),
     # which commutes with the impurity block and hence with any rotation prepare_solver_basis
     # applies, so the layout derived once here at the guess dc is valid for every trial mu.
     sb = prepare_solver_basis(
@@ -2079,7 +2086,12 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
     )
-    _check_active_shells(sb, comm.rank if comm is not None else MPI.COMM_WORLD.rank, verbosity)
+    _check_active_shells(
+        sb,
+        comm.rank if comm is not None else MPI.COMM_WORLD.rank,
+        verbosity,
+        comm if comm is not None else MPI.COMM_WORLD,
+    )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     shift_input, shift_solver, active_indices = _active_shift(model, sb, n_imp)
@@ -2284,7 +2296,9 @@ def fixed_occupation_dc(
     occupation criterion.
 
     With an explicit ``occupation``, choose the double counting so that the interacting thermal
-    impurity occupation equals the requested value, :math:`\mathrm{Tr}\,\rho_{imp} = N_{target}`.
+    occupation of the hybridising shells equals the requested value, :math:`\mathrm{Tr}\,\rho_{act} =
+    N_{target}` (the whole impurity on a single shell; a deep bath-less shell is not counted, and a target
+    outside ``[0, number of active orbitals]`` is refused).
 
     With ``occupation=None``, pin it to the DFT reference occupation instead: :math:`N(\mu) =
     N_0`, where :math:`N_0` is the Fermi filling of the *raw* non-interacting ``h0`` at
@@ -2299,7 +2313,8 @@ def fixed_occupation_dc(
     instead.
 
     The double counting is parametrized as a uniform shift of the guess, ``dc(mu) = dc_guess +
-    mu * identity``, coupling to the impurity occupation as :math:`-\mu \hat N_{imp}`, so the
+    mu * P``, coupling to the occupation of the shifted (hybridising) shells as :math:`-\mu \hat N_{act}`
+    (``P`` is the identity on a single shell, so :math:`N_{act} = N_{imp}`), so the
     residual :math:`N(\mu) - N_{target}` is monotone in ``mu`` for either target and is driven
     to zero by the search :func:`_solve_dc_shift`. At low temperature and weak
     hybridization the occupation approaches a staircase in ``mu``; if the requested (fractional)
