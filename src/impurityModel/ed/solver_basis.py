@@ -304,7 +304,7 @@ def prepare_solver_basis(
                 f" {nominal_occ[i]:>7}"
             )
     if multishell:
-        shell_has_bath = {a: False for a in range(len(shell_ls))}
+        shell_has_bath = dict.fromkeys(range(len(shell_ls)), False)
         for k in impurity_orbitals:
             if sum_bath_states.get(k, 0) > 0:
                 shell_has_bath[impurity_shell_index[next(o for block in impurity_orbitals[k] for o in block)]] = True

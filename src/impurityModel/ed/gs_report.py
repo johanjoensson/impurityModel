@@ -272,7 +272,7 @@ def report_ground_state(
         for a, l_a in enumerate(shell_ls):
             if a not in (per_shell_ops or {}):
                 print(
-                    f"Shell {a} (l={l_a}): S^2/L^2/J^2 skipped (partial shell: not all of its orbitals are in the model)"
+                    f"Shell {a} (l={l_a}): S^2/L^2/J^2 skipped (partial shell: some orbitals are not in the model)"
                 )
     # Kondo impurity-bath spin correlation <S_imp . S_bath>. The (dn, up) pairing is the run's
     # spin layout (spin_pairs.spin_layout): impurity pairs from the rotated S_+ or the index

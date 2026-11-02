@@ -928,8 +928,8 @@ def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls,
     """``make_impurity_casimir_operators`` for an ndarray rotation holding several shells (or one partial shell).
 
     Every operator lives on all impurity orbitals; shell ``a`` contributes ``R_a M R_a^dagger`` with
-    ``R_a = R[:, cols_a]``. The totals exist only if every shell is complete (isometric ``R_a``: ``R_a^dagger R_a = 1``): a partial
-    shell's ``L``/``S`` is not an operator of the kept space, so the totals are then ``None`` and only the
+    ``R_a = R[:, cols_a]``. The totals exist only if every shell is complete (isometric ``R_a``);
+    a partial shell's ``L``/``S`` is not an operator of the kept space, so the totals are then ``None`` and only the
     complete shells' operators (keyed by shell index; a partial shell is absent) are returned, with
     ``per_shell=True``; otherwise ``ValueError``.
     """

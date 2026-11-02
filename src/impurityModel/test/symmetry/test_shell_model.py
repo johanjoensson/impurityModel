@@ -123,7 +123,7 @@ def test_multishell_casimir_ops_match_the_dict_path_shell_by_shell():
 def test_a_partial_shell_gives_per_shell_ops_but_no_totals():
     from impurityModel.ed.observables import make_impurity_casimir_operators
 
-    impurity_orbitals, _, rot_array, _ = _dict_and_array_two_shell()
+    _, _, rot_array, _ = _dict_and_array_two_shell()
     kept = {0: [list(range(6)) + list(range(6, 14))]}
     rot = rot_array[:14, :]  # drop two rows of the d shell: its R_a is rectangular
     with pytest.raises(ValueError):
@@ -221,7 +221,7 @@ def test_prepare_solver_basis_multishell_records_shells_bath_and_per_shell_occup
     assert {sb.impurity_shell_index[o] for o in range(6, 16)} == {1}
     assert sb.shell_has_bath == {0: False, 1: True}
     assert sb.active_impurity_indices == list(range(6, 16))
-    per_shell = {a: 0 for a in (0, 1)}
+    per_shell = dict.fromkeys((0, 1), 0)
     for k, n_k in sb.nominal_occ.items():
         orb = next(o for block in sb.impurity_orbitals[k] for o in block)
         per_shell[sb.impurity_shell_index[orb]] += n_k
@@ -248,7 +248,7 @@ def test_a_bath_component_hopping_to_two_shells_is_refused():
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     h0, rot = _p_plus_d_model(couple_p=True)
-    with pytest.raises(ValueError, match="spans shells|straddle"):
+    with pytest.raises(ValueError, match=r"spans shells|straddle"):
         prepare_solver_basis(
             h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
         )

@@ -104,7 +104,7 @@ def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=Non
 
     ``spin_layout`` is the run's :class:`~impurityModel.ed.spin_pairs.SpinLayout`; ``None`` resolves
     it from ``hOp`` (collective on ``basis.comm`` when it is distributed). ``shell_ls`` marks a multi-shell
-    ndarray ``rot_to_spherical``: ``S_z``/``L_z`` are then the sums over the shells, or unavailable if a shell is partial.
+    ndarray ``rot_to_spherical``: ``S_z``/``L_z`` sum over the shells (unavailable if one is partial).
 
     Returns
     -------
