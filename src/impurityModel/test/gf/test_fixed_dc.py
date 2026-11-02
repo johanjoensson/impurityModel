@@ -2616,7 +2616,7 @@ def test_dc_sector_solve_reads_the_resolved_threshold_not_a_constant():
     from impurityModel.ed import dc_criteria
 
     src = inspect.getsource(dc_criteria)
-    assert "de2_min=self.de2_min," in src
+    assert "_ctx_spec(self)" in src and "de2_min=ctx.de2_min," in inspect.getsource(dc_criteria._ctx_spec)
     assert "de2_min=GS_DE2_MIN," not in src, "the unconditional constant must be gone"
 
 
@@ -2681,7 +2681,8 @@ def test_the_energy_difference_criteria_carry_e_pt2_tol_to_their_sector_solves(c
         kwargs["model"], basis, kwargs["solver"], memory_label="test", e_pt2_tol=1e-5
     )
     assert ctx.e_pt2_tol == 1e-5
-    assert "e_pt2_tol=self.e_pt2_tol," in inspect.getsource(dc_criteria._SectorContext.sector_solve)
+    assert "_ctx_spec(self)" in inspect.getsource(dc_criteria._SectorContext.sector_solve)
+    assert "e_pt2_tol=ctx.e_pt2_tol," in inspect.getsource(dc_criteria._ctx_spec)
 
 
 def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override(monkeypatch):
@@ -2704,7 +2705,9 @@ def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override(mon
     assert ctx.e_pt2_tol == 1e-6
     assert ctx.de2_min == 1e-9, "the DC knob must not reach the production-path criterion"
     src = inspect.getsource(dc_criteria._evaluate_occupation_and_energy_at_mu)
-    assert "e_pt2_tol=ctx.e_pt2_tol," in src and "de2_min=ctx.de2_min," in src
+    assert "_ctx_spec(ctx)" in src
+    spec_src = inspect.getsource(dc_criteria._ctx_spec)
+    assert "e_pt2_tol=ctx.e_pt2_tol," in spec_src and "de2_min=ctx.de2_min," in spec_src
 
 
 def test_dc_criteria_accept_de2_min_and_carry_it_to_the_context():

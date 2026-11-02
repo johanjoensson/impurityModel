@@ -122,6 +122,24 @@ def _require_single_shell(model):
         )
 
 
+def _ctx_spec(ctx):
+    """What decides which state a DC context's solves find, as a :class:`~groundstate.GroundStateSpec`.
+
+    Built at each solve (like :func:`_ctx_cap_policy`, which it carries) because the cap ladder moves
+    ``ctx.truncation_threshold``. The weighted restrictions are the context's built list, passed beside it.
+    """
+    from impurityModel.ed.groundstate import GroundStateSpec
+
+    return GroundStateSpec(
+        tau=ctx.tau,
+        chain_restrict=ctx.chain_restrict,
+        dense_cutoff=ctx.dense_cutoff,
+        e_pt2_tol=ctx.e_pt2_tol,
+        de2_min=ctx.de2_min,
+        truncation_threshold=_ctx_cap_policy(ctx),
+    )
+
+
 def _ctx_cap_policy(ctx):
     """The :class:`CapPolicy` a DC context's sector solves run under.
 
@@ -518,14 +536,12 @@ class _SectorContext:
             self.bath_states,
             self.N0,
             slaterWeightMin=self.slater_weight_min,
-            chain_restrict=self.chain_restrict,
-            dense_cutoff=self.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
-            truncation_threshold=_ctx_cap_policy(self),
             weighted_restrictions=self.weighted_restrictions,
-            de2_min=self.de2_min,
-            e_pt2_tol=self.e_pt2_tol,
+            **_ctx_spec(self).solve_kwargs(
+                "chain_restrict", "dense_cutoff", "truncation_threshold", "de2_min", "e_pt2_tol"
+            ),
             # The walk's trials are this search's own cached sector solves: the N +- 1 solves at this
             # shift are the same solves, at the same accuracy, and are never repeated.
             sector_energy=lambda trial: self._walk_energy(h_op, mu, trial),
@@ -594,13 +610,9 @@ class _SectorContext:
             self.impurity_orbitals,
             self.bath_states,
             occ_trial,
-            tau=self.tau,
-            chain_restrict=self.chain_restrict,
-            dense_cutoff=self.dense_cutoff,
             manifold=Lowest(),
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
-            truncation_threshold=_ctx_cap_policy(self),
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
             # The accuracy the answer is quoted at: this energy is about to be *differenced*
@@ -610,10 +622,11 @@ class _SectorContext:
             # Resolved once in `_prepare_sector_context` (RSPt line > DC_DE2_MIN > GS_DE2_MIN,
             # DC_E_PT2_TOL > GS_E_PT2_TOL), so every sector of a search shares one convergence
             # criterion and the record can report it.
-            de2_min=self.de2_min,
-            e_pt2_tol=self.e_pt2_tol,
             plan_store=self.plan_store,
             shift=mu,
+            **_ctx_spec(self).solve_kwargs(
+                "tau", "chain_restrict", "dense_cutoff", "truncation_threshold", "de2_min", "e_pt2_tol"
+            ),
             spin_layout=self.spin_layout,
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
@@ -2069,16 +2082,11 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             ctx.impurity_orbitals,
             ctx.bath_states,
             ctx.N0,
-            tau=ctx.tau,
             slaterWeightMin=ctx.slaterWeightMin,
-            chain_restrict=ctx.chain_restrict,
-            dense_cutoff=ctx.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=verbose,
-            truncation_threshold=_ctx_cap_policy(ctx),
             weighted_restrictions=ctx.weighted_restrictions,
-            e_pt2_tol=ctx.e_pt2_tol,
-            de2_min=ctx.de2_min,
+            **_ctx_spec(ctx).solve_kwargs(),
             plan_store=ctx.plan_store,
             shift=mu,
             spin_layout=ctx.spin_layout,
@@ -2140,7 +2148,7 @@ def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosit
     config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
-    ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity, cap_ledger=cap_ledger)
+    ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
     return _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
 
 

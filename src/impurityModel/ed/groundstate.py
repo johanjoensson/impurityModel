@@ -1432,9 +1432,13 @@ class GroundStateSpec:
     cost_budget: Optional[float] = None
     restriction_slater_weight_min: Optional[float] = None
 
-    def solve_kwargs(self):
-        """The ``solve_ground_state`` keywords this spec decides."""
-        return {
+    def solve_kwargs(self, *names):
+        """The ``solve_ground_state`` keywords this spec decides (only ``names`` when given).
+
+        A narrower entry (``find_ground_state_sector``, ``solve_sector``) takes a subset; naming it keeps
+        the value in one place without handing a keyword to a function that does not have it.
+        """
+        kwargs = {
             "tau": self.tau,
             "chain_restrict": self.chain_restrict,
             "dense_cutoff": self.dense_cutoff,
@@ -1443,6 +1447,12 @@ class GroundStateSpec:
             "de2_min": self.de2_min,
             "truncation_threshold": self.truncation_threshold,
         }
+        if names:
+            unknown = sorted(set(names) - set(kwargs))
+            if unknown:
+                raise KeyError(f"GroundStateSpec decides no {unknown}")
+            kwargs = {name: kwargs[name] for name in names}
+        return kwargs
 
     def weighted_restrictions(self, bath_states, h_op, impurity_orbitals):
         """The weighted restrictions for ``h_op`` (``None`` when no budget is requested)."""
