@@ -1297,6 +1297,110 @@ def frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations):
     return largest, total
 
 
+def _thermal_state(
+    search,
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    *,
+    tau,
+    chain_restrict,
+    dense_cutoff,
+    comm,
+    verbose,
+    slaterWeightMin,
+    weighted_restrictions,
+    frozen_occupations,
+    de2_min,
+    e_pt2_tol,
+    plan_store,
+    shift,
+    spin_layout,
+    warn_neighbours,
+):
+    """The thermal manifold of the sector ``search.occupation`` (the second step of :func:`solve_ground_state`).
+
+    Shared by the single-sector path and by every member of a charge-sector ensemble, which passes the walk's
+    ``search`` with ``occupation`` (and ``truncation_report``) replaced by the member's.
+    """
+    es, psis, basis, solver = solve_sector(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        search.occupation,
+        tau=tau,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        manifold=Within.thermal(tau),
+        comm=comm,
+        verbose=verbose >= V_DETAIL,
+        # The resolved policy, not what the caller passed: the walk announced it once.
+        truncation_threshold=search.cap_policy,
+        slaterWeightMin=slaterWeightMin,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
+        spin_layout=spin_layout,
+    )
+    # The sector this search settled on. It cannot be recovered from the basis: the CIPSI expansion
+    # widened the impurity occupation window (build_excited_restrictions is called with
+    # imp_change=None, i.e. unconstrained), so its determinants span several impurity occupations --
+    # measured {1, 2, 3} on a split-block toy whose winning sector is 2.
+    basis.ground_state_occupation = dict(search.occupation)
+    # The resolved cap policy, read-only and immutable, for the Green's-function stage to size its
+    # unit bases from (gf_units.gf_cap). Deliberately not `basis.truncation_threshold`: the memory
+    # guard may lower that one for the ground state, and a GF unit must not inherit it.
+    basis.cap_policy = search.cap_policy
+
+    # The residual in `solver.convergence_report` covers the reference states `expand` carried: the
+    # states the last selection round scored, not `solver.psi_refs` -- a capped expansion returns the
+    # block of an eigensolve that ran after that round and may be wider.
+    n_references = int((solver.last_selection or {}).get("n_references", 0))
+    widened = len(es) > n_references
+    if basis.is_distributed:
+        widened = basis.comm.bcast(widened, root=0)
+    report = getattr(solver, "convergence_report", None)
+    if widened and report is not None and report.get("converged"):
+        report["converged"] = False
+        report["limited_by"] = "manifold_widened"
+        if comm is None or comm.rank == 0:
+            print(
+                f"WARNING: the thermal manifold ({len(es)} states) is wider than the {n_references} "
+                "reference states the CIPSI expansion converged; the residual PT2 energy does not "
+                "cover the rest.",
+                flush=True,
+            )
+    if report is not None and search.diagnostics is not None:
+        # How firmly the winning sector beat its N +- 1 neighbours (MV 3): in the convergence record, so the
+        # ground-state JSON and the self-energy's info carry it next to the WARNING. Replicated (broadcast above).
+        d = search.diagnostics
+        report["sector_diagnostics"] = {
+            "winner_total": d.winner_total,
+            "neighbour_totals": list(d.neighbour_totals),
+            # null where the comparison is exact (inf) or a neighbour is lower at zero error (-inf): strict JSON.
+            "margin": d.margin if d.margin is not None and np.isfinite(d.margin) else None,
+            "second_difference": d.second_difference,
+            "undecided": bool(d.undecided),
+        }
+        gaps = neighbour_gaps(search.solved, d.winner_total, tau)
+        report["sector_diagnostics"]["neighbour_gaps_tau"] = {str(n): g for n, g in gaps.items()}
+        near = {n: g for n, g in gaps.items() if g < NEIGHBOUR_GAP_WARN}
+        if warn_neighbours and near and (comm is None or comm.rank == 0):
+            where = ", ".join(
+                f"N_imp = {n}: {abs(g):.2f} tau {'above' if g >= 0 else 'BELOW'}" for n, g in sorted(near.items())
+            )
+            print(
+                f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies "
+                f"within the thermal window ({where} it, tau = {tau:.4g}); its Boltzmann "
+                "weight (> 1e-4) is not in the ground state.",
+                flush=True,
+            )
+    return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
+
+
 def solve_ground_state(
     h_op,
     impurity_orbitals,
@@ -1395,19 +1499,16 @@ def solve_ground_state(
         shift=shift,
         spin_layout=spin_layout,
     )
-    es, psis, basis, solver = solve_sector(
+    return _thermal_state(
+        search,
         h_op,
         impurity_orbitals,
         bath_states,
-        search.occupation,
         tau=tau,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
-        manifold=Within.thermal(tau),
         comm=comm,
-        verbose=verbose >= V_DETAIL,
-        # The resolved policy, not what the caller passed: the walk announced it once.
-        truncation_threshold=search.cap_policy,
+        verbose=verbose,
         slaterWeightMin=slaterWeightMin,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
@@ -1416,61 +1517,8 @@ def solve_ground_state(
         plan_store=plan_store,
         shift=shift,
         spin_layout=spin_layout,
+        warn_neighbours=warn_neighbours,
     )
-    # The sector this search settled on. It cannot be recovered from the basis: the CIPSI expansion
-    # widened the impurity occupation window (build_excited_restrictions is called with
-    # imp_change=None, i.e. unconstrained), so its determinants span several impurity occupations --
-    # measured {1, 2, 3} on a split-block toy whose winning sector is 2.
-    basis.ground_state_occupation = dict(search.occupation)
-    # The resolved cap policy, read-only and immutable, for the Green's-function stage to size its
-    # unit bases from (gf_units.gf_cap). Deliberately not `basis.truncation_threshold`: the memory
-    # guard may lower that one for the ground state, and a GF unit must not inherit it.
-    basis.cap_policy = search.cap_policy
-
-    # The residual in `solver.convergence_report` covers the reference states `expand` carried: the
-    # states the last selection round scored, not `solver.psi_refs` -- a capped expansion returns the
-    # block of an eigensolve that ran after that round and may be wider.
-    n_references = int((solver.last_selection or {}).get("n_references", 0))
-    widened = len(es) > n_references
-    if basis.is_distributed:
-        widened = basis.comm.bcast(widened, root=0)
-    report = getattr(solver, "convergence_report", None)
-    if widened and report is not None and report.get("converged"):
-        report["converged"] = False
-        report["limited_by"] = "manifold_widened"
-        if comm is None or comm.rank == 0:
-            print(
-                f"WARNING: the thermal manifold ({len(es)} states) is wider than the {n_references} "
-                "reference states the CIPSI expansion converged; the residual PT2 energy does not "
-                "cover the rest.",
-                flush=True,
-            )
-    if report is not None and search.diagnostics is not None:
-        # How firmly the winning sector beat its N +- 1 neighbours (MV 3): in the convergence record, so the
-        # ground-state JSON and the self-energy's info carry it next to the WARNING. Replicated (broadcast above).
-        d = search.diagnostics
-        report["sector_diagnostics"] = {
-            "winner_total": d.winner_total,
-            "neighbour_totals": list(d.neighbour_totals),
-            # null where the comparison is exact (inf) or a neighbour is lower at zero error (-inf): strict JSON.
-            "margin": d.margin if d.margin is not None and np.isfinite(d.margin) else None,
-            "second_difference": d.second_difference,
-            "undecided": bool(d.undecided),
-        }
-        gaps = neighbour_gaps(search.solved, d.winner_total, tau)
-        report["sector_diagnostics"]["neighbour_gaps_tau"] = {str(n): g for n, g in gaps.items()}
-        near = {n: g for n, g in gaps.items() if g < NEIGHBOUR_GAP_WARN}
-        if warn_neighbours and near and (comm is None or comm.rank == 0):
-            where = ", ".join(
-                f"N_imp = {n}: {abs(g):.2f} tau {'above' if g >= 0 else 'BELOW'}" for n, g in sorted(near.items())
-            )
-            print(
-                f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies "
-                f"within the thermal window ({where} it, tau = {tau:.4g}); its Boltzmann "
-                "weight (> 1e-4) is not in the ground state.",
-                flush=True,
-            )
-    return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
 
 
 def refined_truncation_report(solver, walk_report):
