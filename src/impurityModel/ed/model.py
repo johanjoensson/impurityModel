@@ -178,6 +178,11 @@ class ImpurityModel:
         and re-deriving it from the bath counts ("the core shell is the bath-less one") is
         only true of the models RSPt happens to produce. ``None`` on the self-energy path,
         which has a single correlated shell and no core shell.
+    shell_ls : tuple of int or None, optional
+        ``l`` of each consecutive spherical column block of an ndarray ``rot_to_spherical``
+        (block ``a`` is ``2(2 l_a + 1)`` wide; a partial shell has a rectangular block). ``None``
+        means a single shell inferred from the column count, bit-identical to the pre-multishell
+        behaviour. Same-``l`` shells are never merged.
     """
 
     h0: dict
@@ -189,12 +194,22 @@ class ImpurityModel:
     n_spin_orbitals: int = field(default=0)
     valence_l: Optional[int] = None
     core_l: Optional[int] = None
+    shell_ls: Optional[tuple] = None
 
     def __post_init__(self):
         # Derive the spin-orbital count from h0 when the caller did not supply it. h0 is a
         # frozen field, so set the derived value through object.__setattr__.
         if not self.n_spin_orbitals:
             object.__setattr__(self, "n_spin_orbitals", _count_spin_orbitals(self.h0))
+
+    @property
+    def resolved_shell_ls(self) -> Optional[tuple]:
+        """The shells of an ndarray ``rot_to_spherical`` (``shell_ls`` or one inferred shell); ``None`` for a dict."""
+        if isinstance(self.rot_to_spherical, dict):
+            return None
+        from impurityModel.ed.observables import resolve_shell_ls
+
+        return tuple(resolve_shell_ls(self.rot_to_spherical, self.shell_ls))
 
     @property
     def impurity_indices(self) -> list:
@@ -756,6 +771,7 @@ class ImpurityModel:
             impurity_orbitals=raw["impurity_orbitals"],
             rot_to_spherical=raw["rot_to_spherical"],
             n_spin_orbitals=raw["n_spin_orbitals"],
+            shell_ls=raw["shell_ls"],
         )
 
     @classmethod
@@ -768,6 +784,7 @@ class ImpurityModel:
         u4: Optional[np.ndarray] = None,
         rot_to_spherical,
         bath_valence_conduction=None,
+        shell_ls=None,
     ) -> "ImpurityModel":
         """Build a model from the full one-particle solver matrix ``H`` (impurity block first).
 
@@ -792,6 +809,9 @@ class ImpurityModel:
             ``(valence_indices, conduction_indices)`` classifying the bath spin-orbitals; when
             given it populates :attr:`bath_states`. The self-energy path re-derives its own split
             from ``h0`` and ignores this; the double-counting and spectra paths require it.
+        shell_ls : tuple of int, optional
+            ``l`` of each spherical column block of an ndarray ``rot_to_spherical`` (multi-shell
+            impurity); ``None`` is a single shell inferred from the column count.
 
         Returns
         -------
@@ -811,6 +831,7 @@ class ImpurityModel:
             rot_to_spherical=rot_to_spherical,
             bath_states=bath_states,
             n_spin_orbitals=H.shape[0],
+            shell_ls=tuple(int(l) for l in shell_ls) if shell_ls is not None else None,
         )
 
     @classmethod
@@ -824,6 +845,7 @@ class ImpurityModel:
         u4: Optional[np.ndarray] = None,
         rot_to_spherical,
         bath_valence_conduction=None,
+        shell_ls=None,
     ) -> "ImpurityModel":
         """Build a model from the impurity / hybridization / bath blocks.
 
@@ -842,7 +864,7 @@ class ImpurityModel:
             ``assemble_h0`` returns ``v_solver``).
         H_bath : numpy.ndarray
             Bath block, ``(n_bath, n_bath)``.
-        dc, u4, rot_to_spherical, bath_valence_conduction
+        dc, u4, rot_to_spherical, bath_valence_conduction, shell_ls
             As in :meth:`from_solver_matrix`.
 
         Returns
@@ -866,6 +888,7 @@ class ImpurityModel:
             u4=u4,
             rot_to_spherical=rot_to_spherical,
             bath_valence_conduction=bath_valence_conduction,
+            shell_ls=shell_ls,
         )
 
 
@@ -1202,6 +1225,19 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         w_mesh = np.asarray(g["Real frequency mesh"])
         rot_to_spherical = np.asarray(g["Rot to spherical"])
         impurity_indices = [int(i) for i in np.asarray(g["Impurity orbitals"])]
+        # Multi-shell archives only; absent means one shell inferred from the column count.
+        _shell_l = g["Spherical shell l"] if "Spherical shell l" in g else attrs.get("Spherical shell l")
+        shell_ls = tuple(int(l) for l in np.atleast_1d(np.asarray(_shell_l))) if _shell_l is not None else None
+        _occ_shell = (
+            g["nominal occupation per shell"]
+            if "nominal occupation per shell" in g
+            else attrs.get("nominal occupation per shell")
+        )
+        nominal_occ = (
+            {a: int(n) for a, n in enumerate(np.atleast_1d(np.asarray(_occ_shell)))}
+            if _occ_shell is not None
+            else {0: int(attrs["nominal occupation"])}
+        )
 
     # The interface hands calc_selfenergy the Hamiltonian as a second-quantized operator.
     h0 = _operator_from_matrix(h_solver)
@@ -1244,7 +1280,8 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # Meshes are stored real-valued; the Matsubara mesh is z = i * nu (see Meshes.iw).
         "iw_mesh": iw_mesh if iw_mesh.size else None,
         "w_mesh": w_mesh if w_mesh.size else None,
-        "nominal_occ": {0: int(attrs["nominal occupation"])},
+        "nominal_occ": nominal_occ,
+        "shell_ls": shell_ls,
         "mixed_valence": _archive_attr(attrs, "mv"),
         "tau": float(attrs["tau"]),
         "delta": float(attrs["delta"]),
@@ -1312,6 +1349,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         impurity_orbitals=raw["impurity_orbitals"],
         rot_to_spherical=raw["rot_to_spherical"],
         n_spin_orbitals=raw["n_spin_orbitals"],
+        shell_ls=raw["shell_ls"],
     )
     meshes = Meshes(
         iw=1j * raw["iw_mesh"] if raw["iw_mesh"] is not None else None,
@@ -1390,7 +1428,9 @@ class BasisOptions:
     ----------
     nominal_occ : dict or int
         Nominal impurity occupation. A dict keyed by the model's impurity groups, or a
-        scalar/total that the solver distributes by energetic filling.
+        scalar/total that the solver distributes by energetic filling. For a multi-shell model
+        (``ImpurityModel.shell_ls``) the keys are shell indices ``a`` and the values the nominal
+        occupation of shell ``a``.
     mixed_valence : dict, int or None
         Reserved for the charge-sector ensemble: only None/False/0 is accepted for now.
     dN : int or None

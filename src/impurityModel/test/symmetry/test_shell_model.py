@@ -131,3 +131,46 @@ def test_a_partial_shell_gives_per_shell_ops_but_no_totals():
     l, s, j, per = make_impurity_casimir_operators(kept, rot, per_shell=True, shell_ls=(1, 2))
     assert l is s is j is None
     assert set(per) == {0, 1}
+
+
+def test_model_shell_ls_defaults_to_one_inferred_shell_and_survives_the_constructors():
+    from impurityModel.ed.model import ImpurityModel
+
+    h = np.zeros((20, 20))
+    one = ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical=np.eye(10))
+    assert one.shell_ls is None and one.resolved_shell_ls == (2,)
+    two = ImpurityModel.from_solver_matrix(h, 16, rot_to_spherical=np.eye(16), shell_ls=[1, 2])
+    assert two.shell_ls == (1, 2) and two.resolved_shell_ls == (1, 2)
+    blocks = ImpurityModel.from_blocks(
+        np.zeros((16, 16)), np.zeros((4, 16)), np.zeros((4, 4)), rot_to_spherical=np.eye(16), shell_ls=(1, 2)
+    )
+    assert blocks.resolved_shell_ls == (1, 2)
+    assert ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical={2: np.eye(10)}).resolved_shell_ls is None
+
+
+def test_archive_reads_per_shell_l_and_occupation_when_present_and_not_otherwise(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    from impurityModel.ed.model import _read_archive_group
+
+    def write(path, multi):
+        with h5py.File(path, "w") as f:
+            f.attrs["last iteration"] = 1
+            g = f.create_group("X 1")
+            n = 16 if multi else 10
+            g["H solver"] = np.zeros((n + 2, n + 2))
+            g["U"] = np.zeros((n,) * 4)
+            g["Rot to spherical"] = np.eye(n)
+            g["Impurity orbitals"] = np.arange(n)
+            g["Matsubara frequency mesh"] = np.zeros(0)
+            g["Real frequency mesh"] = np.zeros(0)
+            g.attrs.update({"nominal occupation": 8, "tau": 0.1, "delta": 0.1, "mv": 0})
+            if multi:
+                g["Spherical shell l"] = np.array([1, 2])
+                g["nominal occupation per shell"] = np.array([6, 8])
+
+    write(tmp_path / "a.h5", False)
+    write(tmp_path / "b.h5", True)
+    single = _read_archive_group(tmp_path / "a.h5", with_options=False)
+    assert single["shell_ls"] is None and single["nominal_occ"] == {0: 8}
+    multi = _read_archive_group(tmp_path / "b.h5", with_options=False)
+    assert multi["shell_ls"] == (1, 2) and multi["nominal_occ"] == {0: 6, 1: 8}
