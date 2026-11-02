@@ -26,7 +26,7 @@ from impurityModel.ed.memory_estimate import (
     resolve_cap_policy,
 )
 from impurityModel.ed.orbits import build_orbits
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
+from impurityModel.ed.sector_ensemble import plan_ensemble, reject_unmigrated_ensemble
 from impurityModel.ed.sector_solver import (
     WINDOW_OVERTAKE_WARN,
     SectorPlanStore,
@@ -1297,6 +1297,24 @@ def frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations):
     return largest, total
 
 
+def _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm):
+    """Say once, on rank 0, when ``H`` does not conserve a frozen shell (the freeze then pins only the seed)."""
+    if _hard_frozen(frozen_occupations) and (comm is None or comm.rank == 0):
+        # A freeze is only ever the user's (review O5), and it is exact only where H conserves the shell. Where it
+        # does not (RSPt h_dft with a one-body core-valence element, say), say so once, at every verbosity. Rank 0
+        # alone: a print, nothing collective depends on it.
+        largest, total = frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations)
+        scale = max((abs(c) for c in h_op.values()), default=0.0)
+        if largest > PARITY_TERM_TOL * scale:
+            print(
+                f"WARNING: H does not conserve the electron count of the frozen shell(s) {sorted(frozen_occupations)}: "
+                f"terms moving charge in or out of them reach {largest:.2e} (sum {total:.2e}). The freeze pins only "
+                "the seed, so the solve can leak charge out of the shell. Freeze only a shell H conserves (the X-ray "
+                "core of a spectra Hamiltonian), or leave it unfrozen.",
+                flush=True,
+            )
+
+
 def _thermal_state(
     search,
     h_op,
@@ -1462,20 +1480,7 @@ def solve_ground_state(
     reject_unmigrated_ensemble(
         mixed_valence, driver="find_ground_state_sector"
     )  # replicated input: every rank raises together, before a collective
-    if _hard_frozen(frozen_occupations) and (comm is None or comm.rank == 0):
-        # A freeze is only ever the user's (review O5), and it is exact only where H conserves the shell. Where it
-        # does not (RSPt h_dft with a one-body core-valence element, say), say so once, at every verbosity. Rank 0
-        # alone: a print, nothing collective depends on it.
-        largest, total = frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations)
-        scale = max((abs(c) for c in h_op.values()), default=0.0)
-        if largest > PARITY_TERM_TOL * scale:
-            print(
-                f"WARNING: H does not conserve the electron count of the frozen shell(s) {sorted(frozen_occupations)}: "
-                f"terms moving charge in or out of them reach {largest:.2e} (sum {total:.2e}). The freeze pins only "
-                "the seed, so the solve can leak charge out of the shell. Freeze only a shell H conserves (the X-ray "
-                "core of a spectra Hamiltonian), or leave it unfrozen.",
-                flush=True,
-            )
+    _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
     if plan_store is None:
         plan_store = SectorPlanStore()
     search = find_ground_state_sector(
@@ -1519,6 +1524,151 @@ def solve_ground_state(
         spin_layout=spin_layout,
         warn_neighbours=warn_neighbours,
     )
+
+
+def _agree_on_mode(mode, comm):
+    """Raise on every rank if the resolved ``mixed_valence`` differs between ranks (env knobs are checked elsewhere)."""
+    if comm is not None and comm.size > 1:
+        modes = comm.allgather(mode)
+        if len(set(modes)) != 1:
+            raise RuntimeError(f"mixed_valence resolved differently on different ranks: {modes}")
+
+
+def solve_ground_state_ensemble(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    *,
+    mode,
+    consume,
+    tau,
+    slaterWeightMin,
+    frozen_occupations=None,
+    chain_restrict=False,
+    dense_cutoff=config.GS_DENSE_CUTOFF,
+    comm=None,
+    verbose=False,
+    truncation_threshold=None,
+    weighted_restrictions=None,
+    use_hf_seed=True,
+    de2_min=GS_DE2_MIN,
+    e_pt2_tol=GS_E_PT2_TOL,
+    plan_store=None,
+    shift=0.0,
+    spin_layout=None,
+):
+    """The grand-canonical thermal ground state: every charge sector inside the thermal window, one at a time.
+
+    ``mode`` is the resolved ``mixed_valence`` (``"auto"`` or ``"on"``). The sector walk runs as in
+    :func:`solve_ground_state`, then :func:`~impurityModel.ed.sector_ensemble.plan_ensemble` decides the members
+    (solving an admitted edge member's outer neighbour first, collectively, until the edge is not admitted).
+    Each member is solved for ``Within.thermal(tau)`` in turn and handed to ``consume(member, ground_state)``; the
+    ground state is dropped before the next member is built, so the peak is one member plus whatever ``consume``
+    keeps.  When the plan is refused (a member is cap-bound, uncertified, or the weights are not fixed to
+    ``ENSEMBLE_WEIGHT_ERROR_MAX``) the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on
+    every rank.
+
+    Returns
+    -------
+    plan : EnsemblePlan
+    results : list
+        ``consume``'s return value per member, dominant (lowest walk energy) first.
+    realised : list of float
+        The lowest energy each member's thermal solve actually found.
+    """
+    if mode not in ("auto", "on"):
+        raise ValueError(f"solve_ground_state_ensemble needs mode 'auto' or 'on', got {mode!r}")
+    config.assert_uniform(comm)
+    _agree_on_mode(mode, comm)
+    _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
+    if plan_store is None:
+        plan_store = SectorPlanStore()
+    max_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
+
+    def attainable(total):
+        return 0 <= total <= max_total
+
+    search = find_ground_state_sector(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        frozen_occupations=frozen_occupations,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        slaterWeightMin=slaterWeightMin,
+        use_hf_seed=use_hf_seed,
+        weighted_restrictions=weighted_restrictions,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
+        spin_layout=spin_layout,
+        extend_sectors=lambda solved: plan_ensemble(solved, tau, mode, attainable=attainable).needs,
+    )
+    plan = plan_ensemble(search.solved, tau, mode, attainable=attainable)
+    if plan.refused_reason is not None:
+        if mode == "on":
+            raise ValueError(
+                f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {plan.refused_reason}"
+            )
+        if comm is None or comm.rank == 0:
+            print(
+                f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {sum(search.occupation.values())} "
+                f"sector: {plan.refused_reason}.",
+                flush=True,
+            )
+    records = {r.total: r for r in search.solved}
+    kw = dict(
+        tau=tau,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        slaterWeightMin=slaterWeightMin,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
+        spin_layout=spin_layout,
+    )
+    results, realised = [], []
+    single = len(plan.members) == 1
+    for i, member in enumerate(plan.members):
+        if i == 0:
+            member_search = search
+        else:
+            member_search = search._replace(
+                occupation=dict(member.trial_N0),
+                truncation_report=records[member.total].truncation_report,
+                diagnostics=None,
+            )
+        ground_state = _thermal_state(member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single, **kw)
+        realised.append(float(np.min(ground_state.es)))
+        results.append(consume(member, ground_state))
+        del ground_state
+    # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. If the thermal
+    # solves find another member lowest, the dominant member -- and so the sector the caller's basis, psis and
+    # report are keyed to -- was mis-ranked. Decided on rank 0 and broadcast.
+    moved = int(np.argmin(realised)) != 0
+    if comm is not None:
+        moved = comm.bcast(moved, root=0)
+    if moved:
+        msg = (
+            "the thermal solves rank the charge sectors differently from the walk "
+            f"(realised lowest energies {['%.6f' % e for e in realised]} for totals {[m.total for m in plan.members]})"
+        )
+        if mode == "on":
+            raise ValueError(f"mixed_valence = 'on': {msg}")
+        if comm is None or comm.rank == 0:
+            print(f"WARNING: {msg}; the ensemble weights are still merged on the realised energies.", flush=True)
+    return plan, results, realised
 
 
 def refined_truncation_report(solver, walk_report):

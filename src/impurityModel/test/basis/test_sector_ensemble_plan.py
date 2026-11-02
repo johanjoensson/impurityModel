@@ -137,3 +137,50 @@ def test_the_walk_solves_the_totals_the_plan_asks_for_and_every_rank_agrees(comm
     assert all(t == totals[0] for t in totals)
     # the walk's winner and energy do not depend on the hook
     assert wide.energy == plain.energy and wide.occupation == plain.occupation
+
+
+def _exact_member_weights(spectra, n_val, tau, totals):
+    """Exact weight of each member by dense diagonalisation: a member is a total-electron-number sector.
+
+    A member's thermal states have several N_imp (the bath hybridises the impurity) but one electron count
+    ``n_val + total`` (bath valence filled, conduction empty).  Its weight is ``Z_s / sum Z`` over the members.
+    """
+    z = np.array([np.exp(-spectra[n_val + t] / tau).sum() for t in totals])
+    return z / z.sum(), z.sum()
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("index, expected", [(3, [1, 2]), (33, [0, 1]), (10, [0, 1, 2])])
+def test_the_ensemble_weights_are_the_exact_grand_canonical_sector_weights_and_every_rank_agrees(comm, index, expected):
+    from impurityModel.test.support.gs_oracle import exact_spectra, pinned_model
+
+    tau = 0.15
+    h_op, imp, bath, N0, n_orb, n_val, _ = pinned_model(20261016, index)
+    spectra = exact_spectra(h_op, n_orb)
+    kw = dict(slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False, comm=comm, tau=tau)
+    kept = []
+
+    def consume(member, gs):
+        kept.append((member.total, np.array(gs.es)))
+        return member.total
+
+    plan, results, realised = groundstate.solve_ground_state_ensemble(
+        h_op, imp, bath, N0, mode="on", consume=consume, **kw
+    )
+    assert results == [m.total for m in plan.members] == [m for m, _ in kept]
+    assert sorted(results) == expected
+    totals = [t for t, _ in kept]
+    e0 = np.array([e.min() for _, e in kept])
+    z = np.array([np.exp(-(e - e.min()) / tau).sum() for _, e in kept])
+    c = sector_weights(e0, z, tau)
+    exact, norm = _exact_member_weights(spectra, n_val, tau, totals)
+    assert c == pytest.approx(exact, abs=2e-3)
+    # the unshifted union is the partition function of the members (to each window's truncation)
+    assert sum(np.exp(-e / tau).sum() for _, e in kept) == pytest.approx(norm, rel=2e-3)
+    # mutation: the winner alone (weight 1) or equal weights must NOT reproduce the sector weights
+    assert np.abs(exact - 1 / len(exact)).max() > 0.02
+    if exact.min() > 0.1:
+        assert abs(1.0 - exact.max()) > 0.1
+    agree = (comm or MPI.COMM_SELF).allgather([float(x) for x in realised])
+    assert all(a == agree[0] for a in agree)
