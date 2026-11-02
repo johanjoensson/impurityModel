@@ -923,7 +923,53 @@ def make_orbital_angular_momentum_operators(channels):
     return ManyBodyOperator(l_plus), ManyBodyOperator(l_minus), ManyBodyOperator(l_z)
 
 
-def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_shell=False):
+def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls, per_shell):
+    """``make_impurity_casimir_operators`` for an ndarray rotation holding several shells (or one partial shell).
+
+    Every operator lives on all impurity orbitals; shell ``a`` contributes ``R_a M R_a^dagger`` with
+    ``R_a = R[:, cols_a]``. The totals exist only if every shell is complete (isometric ``R_a``: ``R_a^dagger R_a = 1``): a partial
+    shell's ``L``/``S`` is not an operator of the kept space, so the totals are then ``None`` and only the
+    per-shell operators (keyed by shell index) are returned, with ``per_shell=True``; otherwise ``ValueError``.
+    """
+    orbs = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
+    rot = np.asarray(rot_to_spherical, dtype=complex)
+    if rot.shape[0] != len(orbs):
+        raise ValueError(f"rotation has {rot.shape[0]} rows for {len(orbs)} impurity orbitals")
+    per_shell_ops, complete, totals = {}, True, [ManyBodyOperator() for _ in range(6)]
+    for a, (l_a, cols) in enumerate(zip(shell_ls, shell_column_slices(shell_ls))):
+        R_a = rot[:, cols]
+        if not np.allclose(R_a.conj().T @ R_a, np.eye(R_a.shape[1]), atol=1e-8):  # columns lost weight: partial
+            complete = False
+        shell = []
+        for matrix in _single_particle_lsj_matrices(l_a):
+            comp = R_a @ matrix @ R_a.conj().T
+            shell.append(
+                ManyBodyOperator(
+                    {
+                        ((orbs[i], "c"), (orbs[j], "a")): comp[i, j]
+                        for i in range(len(orbs))
+                        for j in range(len(orbs))
+                        if abs(comp[i, j]) > 1e-12
+                    }
+                )
+            )
+        if per_shell:
+            l_ops, s_ops = (shell[1], shell[2], shell[0]), (shell[4], shell[5], shell[3])
+            j_ops = tuple(x + y for x, y in zip(l_ops, s_ops))
+            per_shell_ops[a] = (l_a, l_ops, s_ops, j_ops)
+        for k in range(6):
+            totals[k] += shell[k]
+    if not complete:
+        if not per_shell:
+            raise ValueError("a partial shell has no L/S/J operator on the kept space; pass per_shell=True")
+        return None, None, None, per_shell_ops
+    l_ops = (totals[1], totals[2], totals[0])
+    s_ops = (totals[4], totals[5], totals[3])
+    j_ops = tuple(x + y for x, y in zip(l_ops, s_ops))
+    return (l_ops, s_ops, j_ops, per_shell_ops) if per_shell else (l_ops, s_ops, j_ops)
+
+
+def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_shell=False, shell_ls=None):
     r"""Build the total impurity ``(L, S, J)`` ladder/Cartan operators in the
     **computational** basis.
 
@@ -961,9 +1007,17 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_she
         the same ``(plus, minus, z)`` layout as the totals above -- e.g. ``L`` and ``S``
         for one shell, summed, reproduce that shell's contribution to the totals exactly
         (the total is a plain sum over shells, since they address disjoint orbitals).
+    shell_ls : tuple of int, optional
+        ``l`` of each consecutive column block of an ndarray ``rot_to_spherical`` (multi-shell impurity block,
+        or a single partial shell). ``None`` keeps the single-shell behaviour. Per-shell operators are then
+        keyed by shell index; the totals are ``None`` if any shell is partial.
     """
     # One operator per component, accumulated over the shells with the operator algebra
     # (the shells address disjoint orbitals, so this is a plain direct sum).
+    if shell_ls is not None and not isinstance(rot_to_spherical, dict):
+        shells = resolve_shell_ls(rot_to_spherical, shell_ls)
+        if len(shells) > 1 or not shell_is_complete(np.asarray(rot_to_spherical)):
+            return _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shells, per_shell)
     l_plus, l_minus, l_z = ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()
     s_plus, s_minus, s_z = ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()
     per_shell_ops = {}

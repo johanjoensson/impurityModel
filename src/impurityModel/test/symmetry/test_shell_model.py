@@ -106,3 +106,28 @@ def test_a_partial_second_shell_gives_a_rank_limited_block():
     (l0, _, r0), (l1, _, r1) = impurity_shell_rhos(rho, R, shell_ls=(1, 2))
     assert (l0, l1) == (1, 2) and r0.shape == (6, 6) and r1.shape == (10, 10)
     assert np.linalg.matrix_rank(r1) == 6 and np.trace(r1).real == pytest.approx(6.0)
+
+
+def test_multishell_casimir_ops_match_the_dict_path_shell_by_shell():
+    from impurityModel.ed.observables import make_impurity_casimir_operators
+
+    impurity_orbitals, rot_dict, rot_array, _ = _dict_and_array_two_shell()
+    want = make_impurity_casimir_operators(impurity_orbitals, rot_dict, per_shell=True)
+    got = make_impurity_casimir_operators(impurity_orbitals, rot_array, per_shell=True, shell_ls=(1, 2))
+    for k in range(3):  # totals: L, S, J
+        for g, w in zip(got[k], want[k]):
+            assert g.approx_equal(w, 1e-12)
+    assert sorted(l for l, *_ in got[3].values()) == sorted(l for l, *_ in want[3].values()) == [1, 2]
+
+
+def test_a_partial_shell_gives_per_shell_ops_but_no_totals():
+    from impurityModel.ed.observables import make_impurity_casimir_operators
+
+    impurity_orbitals, _, rot_array, _ = _dict_and_array_two_shell()
+    kept = {0: [list(range(6)) + list(range(6, 14))]}
+    rot = rot_array[:14, :]  # drop two rows of the d shell: its R_a is rectangular
+    with pytest.raises(ValueError):
+        make_impurity_casimir_operators(kept, rot, shell_ls=(1, 2))
+    l, s, j, per = make_impurity_casimir_operators(kept, rot, per_shell=True, shell_ls=(1, 2))
+    assert l is s is j is None
+    assert set(per) == {0, 1}
