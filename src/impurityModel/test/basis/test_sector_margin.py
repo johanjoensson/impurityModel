@@ -165,3 +165,22 @@ def test_neighbour_gaps_are_in_units_of_tau():
     assert gaps == pytest.approx({3: 2.0, 5: 100.0}) and set(gaps) == {3, 5}
     assert gaps[3] < NEIGHBOUR_GAP_WARN < gaps[5]
     assert neighbour_gaps(solved, 4, 0.0) == {} and neighbour_gaps(solved, 9, 0.005) == {}
+
+
+def test_convergence_summary_names_residual_limit_and_margin():
+    from impurityModel.ed.gs_report import convergence_summary
+
+    assert convergence_summary(None) == "convergence: not recorded"
+    line = convergence_summary(
+        {
+            "converged": False,
+            "residual_pt2": 3e-6,
+            "e_pt2_tol": 1e-8,
+            "limited_by": "cap",
+            "sector_diagnostics": {"winner_total": 8, "margin": 0.5, "undecided": True},
+        }
+    )
+    assert "NOT converged" in line and "3.00e-06" in line and "limited by cap" in line
+    assert "N_imp=8 (undecided)" in line
+    ok = convergence_summary({"converged": True, "residual_pt2": 0.0, "e_pt2_tol": 1e-8})
+    assert ok.startswith("convergence: converged;") and "limited" not in ok

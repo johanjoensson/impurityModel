@@ -61,6 +61,30 @@ from impurityModel.ed.utils import (
 )
 
 
+def convergence_summary(convergence):
+    """One line on how well the ground state is determined, from a ``convergence_report`` (or ``None``).
+
+    Pure: reads only the replicated report dict, so it is safe on any rank and takes no collective.
+    Names the PT2 residual against its tolerance, what limited the expansion, and -- when the sector
+    walk recorded one -- the winning sector's margin over its nearest neighbour.
+    """
+    if not convergence:
+        return "convergence: not recorded"
+    res = convergence.get("residual_pt2")
+    tol = convergence.get("e_pt2_tol")
+    parts = ["converged" if convergence.get("converged") else "NOT converged"]
+    if res is not None and tol is not None:
+        parts.append(f"residual PT2 {res:.2e} (tol {tol:.0e})")
+    if convergence.get("limited_by"):
+        parts.append(f"limited by {convergence['limited_by']}")
+    diag = convergence.get("sector_diagnostics")
+    if diag and diag.get("winner_total") is not None:
+        margin = diag.get("margin")
+        tail = "undecided" if diag.get("undecided") else ("margin n/a" if margin is None else f"margin {margin:.2g}")
+        parts.append(f"sector N_imp={diag['winner_total']} ({tail})")
+    return "convergence: " + "; ".join(parts)
+
+
 def report_ground_state(
     Hop,
     ground_state_basis,
@@ -497,6 +521,7 @@ def report_ground_state(
         occ_str = f"; ground-state impurity occupation: {sum(gs_occ.values())}" if gs_occ else ""
         print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
         print(f"{len(ground_state_basis):,} Slater determinants{occ_str}")
+        print(convergence_summary(gs_convergence_report))
         if not report.enabled(V_SUMMARY):
             note = f"; statistics saved to {stats_path}" if (gs_stats is not None and stats_path is not None) else ""
             print(f"(full report: -v{note})")
