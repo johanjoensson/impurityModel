@@ -573,6 +573,14 @@ multi-shell model; `sigma_inf_dc` is the multi-shell scheme), 11.2 (`shift_input
 DC contexts, exact `np.identity` and `None` on a single shell; `test_dc_multishell.py`, bug-injected with `P = I`).
 Not done: 11.0b, 11.3-11.6.
 
+**11.0b landed (2026-11-02).** `basis_generation.SeedWindow` (a `set` subclass passed as `frozen_occupations`) seeds the
+groups of a bath-less *shell* (decided per shell: a hybridising shell has bath-less groups too) as a window: each group
+ranges freely, the total over the window stays within `DEEP_SEED_WIDTH = 1` of nominal, and the other groups move to
+compensate. It is not a freeze: HF does not pin it, the report does not call it frozen, the leak warning skips it, and
+CIPSI may leave the window. `SolverBasis.seed_window` is `None` on a single shell (bit-identical) and `selfenergy`
+passes it. Measured on the J1 fixture (2p + 3d + 4 baths): seed 765 determinants (was 12,870, over
+`GS_CERTIFY_MAX_SEED`), `calc_gs` Tr rho_p = 6. Still to do: pass it from the DC search (11.4).
+
 
 **Step 9 (2026-11-02), started: MV 3 field landed, B1 deferred with a measurement.** `solve_ground_state` now puts the walk's
 `SectorDiagnostics` into `convergence_report["sector_diagnostics"]` (`3c726664`; `-n 1/2/3`, bug-injected). **B1 (O6 gate):**
