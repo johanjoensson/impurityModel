@@ -6,9 +6,9 @@ from typing import Optional, cast
 import numpy as np
 
 from impurityModel.ed.basis_generation import SeedWindow
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.observables import resolve_shell_ls, shell_index_of_orbitals
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,

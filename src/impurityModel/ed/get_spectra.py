@@ -11,13 +11,13 @@ import h5py
 import numpy as np
 
 from impurityModel.ed import config, spectra
-
-# Local stuff
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
+
+# Local stuff
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.symmetries import (
     extract_tensors,
     impurity_block_structure,

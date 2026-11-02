@@ -6,7 +6,6 @@ import numpy as np
 
 from impurityModel.ed import config, solver_trace
 from impurityModel.ed.basis_generation import SeedWindow
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
@@ -27,6 +26,7 @@ from impurityModel.ed.memory_estimate import (
     resolve_cap_policy,
 )
 from impurityModel.ed.orbits import build_orbits
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.sector_solver import (
     WINDOW_OVERTAKE_WARN,
     SectorPlanStore,

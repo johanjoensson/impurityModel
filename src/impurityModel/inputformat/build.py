@@ -27,9 +27,9 @@ from impurityModel.ed.atomic_physics import (
     exchange_array_length,
     octahedral_level_structure,
 )
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.hamiltonian_io import cf_bath_blocks, cf_parameter_names
 from impurityModel.ed.memory_estimate import parse_truncation_threshold
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.inputformat.reader import InputError, shell_name
 
 __all__ = ["NO_ZEEMAN", "Built", "build", "deduce_bath_counts", "read_h0_header"]
