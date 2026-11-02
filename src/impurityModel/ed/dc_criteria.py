@@ -726,7 +726,7 @@ def _bool_or_none(x):
     return None if x is None else bool(x)
 
 
-def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None):
+def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None, *, honour_dc_knob=True):
     """The PT2 admission floor a double-counting sector solve should use.
 
     Precedence: the criterion's own argument (which the RSPt double-counting line and the TOML
@@ -734,29 +734,34 @@ def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None):
     own ``BasisOptions.de2_min`` (the floor the production ground state runs at), which beats
     :data:`groundstate.GS_DE2_MIN`. Input files are the intended way to set this; the knob stays
     for experiments and for sweeping a value without editing an input.
+
+    ``honour_dc_knob=False`` is the production-path criterion (``fixed_occupation_dc``): it must find the
+    state the self-energy finds, so the opt-in rough-DC knob does not reach it. One precedence, one
+    function (P5); that switch is the only difference between the DC paths.
     """
     from impurityModel.ed.groundstate import GS_DE2_MIN
 
     if de2_min is not None:
         return float(de2_min)
-    knob = config.DC_DE2_MIN.get()
+    knob = config.DC_DE2_MIN.get() if honour_dc_knob else None
     if knob:
         return knob
     return GS_DE2_MIN if basis_de2_min is None else float(basis_de2_min)
 
 
-def _resolve_dc_e_pt2_tol(e_pt2_tol, basis_e_pt2_tol):
+def _resolve_dc_e_pt2_tol(e_pt2_tol, basis_e_pt2_tol, *, honour_dc_knob=True):
     """The residual PT2 energy a double-counting ground-state solve converges to.
 
     Precedence: the criterion's own argument (the RSPt double-counting line's ``e_pt2 X``), then
     the ``DC_E_PT2_TOL`` environment knob, then the solver's own ``BasisOptions.e_pt2_tol`` (the
     solver line's ``e_pt2 X``) -- so by default the double counting is measured on a space
     converged as far as the self-energy run's ground state -- and finally
-    :data:`groundstate.GS_E_PT2_TOL`.
+    :data:`groundstate.GS_E_PT2_TOL`. ``honour_dc_knob=False`` as in :func:`_resolve_dc_de2_min`.
     """
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
-    for value in (e_pt2_tol, config.DC_E_PT2_TOL.get(), basis_e_pt2_tol):
+    knob = config.DC_E_PT2_TOL.get() if honour_dc_knob else None
+    for value in (e_pt2_tol, knob, basis_e_pt2_tol):
         if value is not None:
             return float(value)
     return GS_E_PT2_TOL
@@ -2015,9 +2020,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     # evaluated in the model's input basis).
     n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
 
-    # Imported here, not at module scope: groundstate imports back into this module.
-    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
-
     return _OccupationContext(
         h0_op=h0_op,
         h_op_i=h_op_i,
@@ -2044,8 +2046,8 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         identity=np.identity(n_imp),
         total_impurity_orbitals=total_impurity_orbitals,
         n0=n0,
-        e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else float(basis.e_pt2_tol),
-        de2_min=GS_DE2_MIN if basis.de2_min is None else float(basis.de2_min),
+        e_pt2_tol=_resolve_dc_e_pt2_tol(None, basis.e_pt2_tol, honour_dc_knob=False),
+        de2_min=_resolve_dc_de2_min(None, basis.de2_min, honour_dc_knob=False),
     )
 
 

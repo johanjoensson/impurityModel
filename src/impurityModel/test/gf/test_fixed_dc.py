@@ -2752,3 +2752,20 @@ def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
     assert report_default["de2_min"] == GS_DE2_MIN, "unset must reproduce the historical floor"
     assert report_loose["de2_min"] == 1e-5, "the criterion's argument must reach the context"
     np.testing.assert_allclose(np.diag(dc_default).real, np.diag(dc_loose).real, atol=5e-3)
+
+
+def test_the_dc_tolerance_resolvers_differ_only_in_the_dc_knob(monkeypatch):
+    """P5: one precedence for every DC path; the production-path criterion switches the opt-in knob off."""
+    from impurityModel.ed import dc_criteria
+    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
+
+    assert dc_criteria._resolve_dc_e_pt2_tol(None, None) == GS_E_PT2_TOL
+    assert dc_criteria._resolve_dc_de2_min(None, None) == GS_DE2_MIN
+    monkeypatch.setenv("DC_E_PT2_TOL", "1e-3")
+    monkeypatch.setenv("DC_DE2_MIN", "1e-4")
+    assert dc_criteria._resolve_dc_e_pt2_tol(None, 1e-6) == 1e-3
+    assert dc_criteria._resolve_dc_e_pt2_tol(5e-5, 1e-6) == 5e-5
+    assert dc_criteria._resolve_dc_e_pt2_tol(None, 1e-6, honour_dc_knob=False) == 1e-6
+    assert dc_criteria._resolve_dc_de2_min(None, 1e-9) == 1e-4
+    assert dc_criteria._resolve_dc_de2_min(None, 1e-9, honour_dc_knob=False) == 1e-9
+    assert dc_criteria._resolve_dc_e_pt2_tol(None, None, honour_dc_knob=False) == GS_E_PT2_TOL
