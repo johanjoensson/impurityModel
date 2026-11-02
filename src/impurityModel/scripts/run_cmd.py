@@ -161,7 +161,15 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
         from impurityModel.ed.get_spectra import run_spectra
 
         target = str(Path(outdir, output or "spectra.h5"))
-        run_spectra(built.model, built.spectra, built.basis, comm, verbosity=verbosity, output_filename=target)
+        run_spectra(
+            built.model,
+            built.spectra,
+            built.basis,
+            comm,
+            verbosity=verbosity,
+            output_filename=target,
+            solver=built.solver,
+        )
         return target
 
     if resolved.calculation == "selfenergy":

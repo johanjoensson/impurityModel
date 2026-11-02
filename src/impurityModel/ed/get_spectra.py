@@ -15,7 +15,7 @@ from impurityModel.ed import config, spectra
 # Local stuff
 from impurityModel.ed.basis_generation import check_mixed_valence
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.groundstate import GroundStateSpec, calc_gs
+from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
 from impurityModel.ed.symmetries import (
@@ -231,7 +231,7 @@ def _resolve_shell_roles(nBaths):
     )
 
 
-def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_filename="spectra.h5"):
+def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_filename="spectra.h5", solver=None):
     """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
 
     Extracted verbatim from the historical ``get_spectra.main``: builds the many-body ground
@@ -384,10 +384,15 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     report("Creating the many-body basis ...", level=V_RESULT, flush=True)
     tau = basis.tau
     # What decides which state is found, explicit (A1). Spectra solves at the calc_gs default Slater weight
-    # (0) but builds its restrictions at basis.slater_weight_min, and uses the solver defaults for
-    # chain_restrict/dense_cutoff/e_pt2_tol (P2 unifies this, with a spectrum A/B).
+    # (0) but builds its restrictions at basis.slater_weight_min. dense_cutoff and the CIPSI tolerances take
+    # the values the self-energy takes (P2); chain_restrict stays False on purpose: the chain restriction
+    # truncates the initial multiplet and spectra needs it complete (symmetry over energy).
     gs_spec = GroundStateSpec(
         tau=tau,
+        chain_restrict=False,
+        dense_cutoff=config.GS_DENSE_CUTOFF if solver is None else solver.dense_cutoff,
+        e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
+        de2_min=GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
         # None = "as many determinants as fit in RAM", resolved against the per-rank available memory inside
         # find_ground_state_sector (see memory_estimate).
         truncation_threshold=basis.truncation_threshold,
