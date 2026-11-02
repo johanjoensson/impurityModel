@@ -199,10 +199,14 @@ def _capped_cubic_d7(monkeypatch, cap, closure, comm=None):
 
 @pytest.mark.mpi
 def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_splits_it_without(monkeypatch):
-    """Cubic d7 at a cap of 160 (the uncapped union is 240): the cap binds, and the lowest four states --
+    """Cubic d7 at a cap of 150 (the uncapped union is 240): the cap binds, and the lowest four states --
     one degenerate level -- agree to roundoff when selection and truncation act on whole orbits, where
-    per-determinant selection splits them by ~1e-7 (review S2)."""
-    cap = 160
+    per-determinant selection splits them by ~1e-7 (review S2).
+
+    The cap is 150, not 160: at 160 the serial control run stopped splitting (the test lost its teeth); 150 and
+    170 still split it.
+    """
+    cap = 150
     comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
     closed = _capped_cubic_d7(monkeypatch, cap, True, comm)
     report = closed.solver.truncation_report
