@@ -5,7 +5,7 @@ from typing import NamedTuple, Optional
 import numpy as np
 
 from impurityModel.ed import config, solver_trace
-from impurityModel.ed.basis_generation import check_mixed_valence
+from impurityModel.ed.basis_generation import SeedWindow, check_mixed_valence
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
@@ -57,6 +57,16 @@ GS_E_PT2_TOL = DEFAULT_E_PT2_TOL
 #: energy left below it (``doc/plans/dc_smo_memory.md``). Callers may still pass a floor to
 #: loosen a solve deliberately; :data:`GS_E_PT2_TOL` is what converges it.
 GS_DE2_MIN = 0.0
+
+
+def _hard_frozen(frozen_occupations):
+    """The groups a freeze really pins: none for a :class:`~basis_generation.SeedWindow`.
+
+    A seed window holds its groups out of the walk (they stay in the sector key, the bounds check and the
+    move list) but is not a statement about the physics: Hartree-Fock finds their filling by energy, the
+    report does not call them frozen, and the leak warning does not apply.
+    """
+    return set() if isinstance(frozen_occupations, SeedWindow) else (frozen_occupations or set())
 
 
 def sector_key(trial_N0, frozen_occupations=None):
@@ -1003,7 +1013,7 @@ def find_ground_state_sector(
     keys = list(N0.keys())
     # One report for every branch of the walk (HF seed, the axis walk and the legacy dN scan), so
     # the search reads as a single table however it was reached.
-    frozen_keys = sorted(i for i in keys if i in frozen_occupations)
+    frozen_keys = sorted(i for i in keys if i in _hard_frozen(frozen_occupations))
     reported_sectors: set = set()
 
     def report_trial(trial, energy, note=""):
@@ -1063,11 +1073,11 @@ def find_ground_state_sector(
             impurity_orbitals,
             bath_states,
             N0,
-            frozen_occupations=frozen_occupations,
+            frozen_occupations=_hard_frozen(frozen_occupations),
             comm=comm,
             verbose=verbose,
         )
-        refrozen = {i: N0[i] if i in frozen_occupations else seed_N0[i] for i in N0}
+        refrozen = {i: N0[i] if i in _hard_frozen(frozen_occupations) else seed_N0[i] for i in N0}
         leaked = sum(refrozen.values()) != sum(seed_N0.values())
         if converged and not leaked:
             return refrozen
@@ -1310,7 +1320,7 @@ def solve_ground_state(
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     check_mixed_valence(mixed_valence)  # replicated input: every rank raises together, before a collective
-    if frozen_occupations and (comm is None or comm.rank == 0):
+    if _hard_frozen(frozen_occupations) and (comm is None or comm.rank == 0):
         # A freeze is only ever the user's (review O5), and it is exact only where H conserves the shell. Where it
         # does not (RSPt h_dft with a one-body core-valence element, say), say so once, at every verbosity. Rank 0
         # alone: a print, nothing collective depends on it.

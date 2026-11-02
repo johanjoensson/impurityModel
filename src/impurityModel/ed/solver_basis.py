@@ -5,7 +5,7 @@ from typing import Optional, cast
 
 import numpy as np
 
-from impurityModel.ed.basis_generation import check_mixed_valence
+from impurityModel.ed.basis_generation import SeedWindow, check_mixed_valence
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.observables import resolve_shell_ls, shell_index_of_orbitals
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
@@ -61,6 +61,10 @@ class SolverBasis:
     impurity_shell_index: Optional[dict] = None
     shell_has_bath: Optional[dict] = None
     active_impurity_indices: Optional[list] = None
+    #: Multi-shell models with a bath-less shell only (``None`` otherwise, so a single shell is untouched): the
+    #: impurity groups of the shells without bath, as a :class:`~basis_generation.SeedWindow`. Pass it as
+    #: ``frozen_occupations`` to seed those shells as a window rather than let the seed span them freely.
+    seed_window: Optional[SeedWindow] = None
 
     @functools.cached_property
     def h_int(self) -> ManyBodyOperator:
@@ -311,6 +315,16 @@ def prepare_solver_basis(
             if sum_bath_states.get(k, 0) > 0:
                 shell_has_bath[impurity_shell_index[next(o for block in impurity_orbitals[k] for o in block)]] = True
         active_impurity_indices = sorted(o for o, a in impurity_shell_index.items() if shell_has_bath[a])
+    seed_window = None
+    if multishell:
+        # Per *shell*, not per group: a hybridising shell has bath-less groups too (the d orbitals no bath hops to).
+        deep_groups = [
+            k
+            for k in impurity_orbitals
+            if not shell_has_bath[impurity_shell_index[next(o for block in impurity_orbitals[k] for o in block)]]
+        ]
+        if deep_groups and len(deep_groups) < len(impurity_orbitals):
+            seed_window = SeedWindow(deep_groups)
     spin_layout = resolve_spin_layout(
         h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm, shell_ls=shell_ls
     )
@@ -332,6 +346,7 @@ def prepare_solver_basis(
         impurity_shell_index=impurity_shell_index,
         shell_has_bath=shell_has_bath,
         active_impurity_indices=active_impurity_indices,
+        seed_window=seed_window,
     )
 
 

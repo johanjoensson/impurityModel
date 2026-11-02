@@ -651,6 +651,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "comm": comm,
         "spin_layout": sb.spin_layout,
     }
+    if sb.seed_window is not None:
+        # A bath-less shell beside a correlated one: its seed is a window, not the whole shell (review J1).
+        basis_information["frozen_occupations"] = sb.seed_window
     # The thermal ground state and the interacting Green's function. The ground-state solve returns
     # every eigenstate inside the thermal window, certified complete (or says it could not), so the
     # ensemble is never re-requested with a larger count.
