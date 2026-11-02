@@ -114,7 +114,7 @@ def _require_single_shell(model):
 
     Raised before any collective. Multi-shell DC (the active-shell projector) is MS T4.7.
     """
-    shells = model.resolved_shell_ls
+    shells = model.shell_ls  # only an explicit declaration: an inferred single shell is the legacy path
     if shells is not None and len(shells) > 1:
         raise NotImplementedError(
             f"the double-counting search does not support a multi-shell impurity yet (shell_ls={shells}); "
