@@ -149,6 +149,14 @@ def _check_active_shells(sb, rank, verbosity):
         )
 
 
+def _active_nominal(sb):
+    """Nominal electron count of the groups the shift acts on (the whole impurity on a single shell)."""
+    if sb.active_impurity_indices is None:
+        return sum(sb.nominal_occ.values())
+    active = set(sb.active_impurity_indices)
+    return sum(n for g, n in sb.nominal_occ.items() if sb.impurity_orbitals[g][0][0] in active)
+
+
 def _active_shift(model, sb, n_imp):
     """The matrices the DC shift ``mu`` multiplies, and the orbitals whose occupation it moves.
 
@@ -1972,6 +1980,7 @@ class _OccupationContext:
     impurity_orbitals: dict
     bath_states: dict
     N0: dict
+    nominal_active: float
     tau: float
     chain_restrict: bool
     dense_cutoff: int
@@ -2115,6 +2124,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=N0,
+        nominal_active=_active_nominal(sb),
         tau=tau,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
@@ -2375,9 +2385,7 @@ def fixed_occupation_dc(
             if not _warn_if_reference_saturated(
                 ctx.n0, ctx.total_impurity_orbitals, _SATURATION_ADVICE["search"], occ_tol=occ_tol, rank=rank
             ):
-                _warn_if_reference_far_from_nominal(
-                    ctx.n0, sum(ctx.N0.values()), _SATURATION_ADVICE["search"], rank=rank
-                )
+                _warn_if_reference_far_from_nominal(ctx.n0, ctx.nominal_active, _SATURATION_ADVICE["search"], rank=rank)
         # Tolerance absorbs the roundoff of a target derived elsewhere the same way
         # _noninteracting_impurity_occupation is (a sum of Fermi occupations, each in [0, 1]).
         if not -1e-9 <= occupation <= ctx.total_impurity_orbitals + 1e-9:

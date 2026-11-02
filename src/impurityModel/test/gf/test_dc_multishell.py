@@ -141,3 +141,20 @@ def test_the_dc_search_says_which_shells_the_shift_covers(capsys):
     )  # fmt: skip
     _check_active_shells(sb, 0, 1)
     assert "DC shift acts on shell(s) l=2 (hybridizing); excluded: l=1 (no bath)" in capsys.readouterr().out
+
+
+def test_the_nominal_the_reference_is_compared_with_counts_the_active_shell_only():
+    """n0 counts the active d shell, so it is compared with the active nominal (2), not the p+d total (8)."""
+    model, basis, solver = _p_plus_d(u=3.0)
+    ctx = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
+    assert ctx.nominal_active == 2
+    assert sum(ctx.N0.values()) == 8
+
+
+def test_the_solver_hamiltonian_is_shifted_on_the_active_block_only():
+    model, basis, solver = _p_plus_d()
+    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    diff = ctx.shifted_h(0.7) - ctx.shifted_h(0.0)
+    terms = {k: v for k, v in dict(diff).items() if abs(v) > 1e-12}
+    ps = {orb for key in terms for (orb, _t) in key}
+    assert ps and ps <= set(D_ORBS)
