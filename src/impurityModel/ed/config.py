@@ -24,6 +24,13 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
+#: The matrix size below which an eigensolve is dense -- owned here, once per role (P6). ``DEFAULT_DENSE_CUTOFF`` is
+#: what a user-facing entry gets when nothing is set (``SolverOptions``, the input schema, which mirrors it as a leaf
+#: module -- a test holds them equal); ``GS_DENSE_CUTOFF`` is the library-level fallback of the ground-state functions
+#: and of an archive that records none. They differ for historical reasons; changing either changes the bases.
+DEFAULT_DENSE_CUTOFF = 500
+GS_DENSE_CUTOFF = 1000
+
 __all__ = ["KNOBS", "Knob", "NonUniformKnobError", "assert_uniform", "dump"]
 
 

@@ -474,3 +474,20 @@ def test_calc_gs_refuses_a_key_set_by_both_the_dict_and_the_spec(monkeypatch):
         _capture_solve_kwargs(
             monkeypatch, basis_setup={**common, "dense_cutoff": 5}, spec=GroundStateSpec(tau=0.01, dense_cutoff=7)
         )
+
+
+def test_every_dense_cutoff_default_has_one_owner():
+    """P6: four places used to hold a literal. The user-facing default is ``config.DEFAULT_DENSE_CUTOFF`` (the
+    input schema mirrors it as a leaf module), the library fallback is ``config.GS_DENSE_CUTOFF``."""
+    import inspect
+
+    from impurityModel.ed import config, groundstate
+    from impurityModel.ed.model import SolverOptions
+
+    assert SolverOptions().dense_cutoff == config.DEFAULT_DENSE_CUTOFF == 500
+    assert config.GS_DENSE_CUTOFF == 1000
+    assert groundstate.GroundStateSpec(tau=0.01).dense_cutoff == config.GS_DENSE_CUTOFF
+    for fn in (groundstate.find_ground_state_sector, groundstate.solve_ground_state):
+        assert inspect.signature(fn).parameters["dense_cutoff"].default == config.GS_DENSE_CUTOFF
+    text = inspect.getsource(__import__("impurityModel.inputformat.schema", fromlist=["x"]))
+    assert f'Key("dense_cutoff", Kind.COUNT, {config.DEFAULT_DENSE_CUTOFF},' in text

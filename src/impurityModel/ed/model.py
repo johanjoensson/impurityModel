@@ -1285,7 +1285,7 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "mixed_valence": _archive_attr(attrs, "mv"),
         "tau": float(attrs["tau"]),
         "delta": float(attrs["delta"]),
-        "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", 1000)),
+        "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", config.GS_DENSE_CUTOFF)),
         "chain_restrict": bool(_archive_attr(attrs, "chain_restrict", False)),
         "occ_cutoff": float(_archive_attr(attrs, "occ_cutoff", 1e-6)),
         "truncation_threshold": truncation_threshold,
@@ -1606,7 +1606,7 @@ class SolverOptions:
         Dyson estimator exists today; the field is the extension point, not yet a user knob.
     """
 
-    dense_cutoff: int = 500
+    dense_cutoff: int = config.DEFAULT_DENSE_CUTOFF
     sparse_green: bool = True
     gf_method: str = "lanczos"
     sigma_method: str = "dyson"

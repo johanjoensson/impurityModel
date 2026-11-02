@@ -154,7 +154,7 @@ def build_basis_and_solver(
     slaterWeightMin,
     total_charge_slack=0,
     manifold,
-    dense_cutoff=1e3,
+    dense_cutoff=config.GS_DENSE_CUTOFF,
 ):
     basis = Basis(
         impurity_indices,
@@ -791,7 +791,7 @@ def find_ground_state_sector(
     *,
     mixed_valence=False,
     chain_restrict=False,
-    dense_cutoff=1000,
+    dense_cutoff=config.GS_DENSE_CUTOFF,
     comm=None,
     truncation_threshold=None,
     verbose=0,
@@ -1240,7 +1240,7 @@ def solve_ground_state(
     frozen_occupations=None,
     mixed_valence=None,
     chain_restrict=False,
-    dense_cutoff=1000,
+    dense_cutoff=config.GS_DENSE_CUTOFF,
     comm=None,
     verbose=False,
     truncation_threshold=None,
@@ -1423,7 +1423,7 @@ class GroundStateSpec:
 
     tau: float
     chain_restrict: bool = False
-    dense_cutoff: int = 1000
+    dense_cutoff: int = config.GS_DENSE_CUTOFF
     use_hf_seed: bool = True
     e_pt2_tol: float = GS_E_PT2_TOL
     de2_min: float = GS_DE2_MIN
