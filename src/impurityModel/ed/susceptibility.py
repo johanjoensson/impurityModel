@@ -92,7 +92,7 @@ def _group_manifolds(es, degeneracy_tol):
     return [manifold_of[i] for i in range(len(es))]
 
 
-def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=None):
+def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=None, shell_ls=None):
     """Impurity susceptibility operators ``name -> (A_plus, A_minus)``.
 
     ``charge`` (:math:`N_\\mathrm{imp}`) always works. ``spin_z`` / ``orb_z`` use the
@@ -103,7 +103,8 @@ def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=Non
     pairing is a modelling choice, and ``S_+`` here is impurity-only).
 
     ``spin_layout`` is the run's :class:`~impurityModel.ed.spin_pairs.SpinLayout`; ``None`` resolves
-    it from ``hOp`` (collective on ``basis.comm`` when it is distributed).
+    it from ``hOp`` (collective on ``basis.comm`` when it is distributed). ``shell_ls`` marks a multi-shell
+    ndarray ``rot_to_spherical``: ``S_z``/``L_z`` are then the sums over the shells, or unavailable if a shell is partial.
 
     Returns
     -------
@@ -120,11 +121,13 @@ def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=Non
 
     l_ops = None
     try:
-        l_ops, s_ops, _ = make_impurity_casimir_operators(basis.impurity_orbitals, rot_to_spherical)
+        l_ops, s_ops, _ = make_impurity_casimir_operators(basis.impurity_orbitals, rot_to_spherical, shell_ls=shell_ls)
     except ValueError:
         if not isinstance(rot_to_spherical, dict):
             try:
-                l_ops, s_ops, _ = make_impurity_casimir_operators({0: [impurity_indices]}, rot_to_spherical)
+                l_ops, s_ops, _ = make_impurity_casimir_operators(
+                    {0: [impurity_indices]}, rot_to_spherical, shell_ls=shell_ls
+                )
             except ValueError:
                 l_ops = None
 
@@ -137,6 +140,7 @@ def build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout=Non
             rot_to_spherical,
             basis.num_spin_orbitals,
             comm=basis.comm if basis.is_distributed else None,
+            shell_ls=shell_ls,
         )
     if l_ops is not None:
         ops["spin_z"] = (s_ops[2], s_ops[2])
@@ -185,6 +189,7 @@ def calc_susceptibility(
     verbose=False,
     degeneracy_tol=DEGENERACY_TOL,
     spin_layout=None,
+    shell_ls=None,
 ):
     r"""Compute the dynamical impurity susceptibilities ``chi(w + i delta)`` (+ Matsubara).
 
@@ -233,7 +238,7 @@ def calc_susceptibility(
     rank = comm.rank if comm is not None else 0
     skipped, notes = {}, {}
     if operators is None:
-        operators, skipped, notes = build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout)
+        operators, skipped, notes = build_susceptibility_operators(hOp, basis, rot_to_spherical, spin_layout, shell_ls)
 
     es = np.asarray(es, dtype=float)
     boltzmann = ThermalEnsemble(es, tau).probabilities
@@ -516,6 +521,7 @@ def calc_susceptibility_workflow(
         sb.rot_to_spherical,
         verbosity,
         slaterWeightMin=slaterWeightMin,
+        shell_ls=sb.shell_ls,
     )
     matsubara_mesh = bosonic_matsubara_mesh(tau, n_matsubara) if n_matsubara > 0 else None
     result = calc_susceptibility(
@@ -532,6 +538,7 @@ def calc_susceptibility_workflow(
         slaterWeightMin=slaterWeightMin,
         verbose=verbosity >= 1,
         spin_layout=sb.spin_layout,
+        shell_ls=sb.shell_ls,
     )
     if rank == 0 and result is not None:
         print_susceptibility_summary(result)

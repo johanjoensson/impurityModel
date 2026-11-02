@@ -74,6 +74,7 @@ def report_ground_state(
     gs_truncation_report,
     gs_convergence_report,
     spin_layout=None,
+    shell_ls=None,
 ):
     """Observables of the thermal ground manifold ``(es, psis)``, and the report that prints them.
 
@@ -83,6 +84,8 @@ def report_ground_state(
 
     ``spin_layout`` is the :class:`~impurityModel.ed.spin_pairs.SpinLayout` of the solver basis
     (``calc_gs`` passes the one it solved with); ``None`` resolves it here from ``Hop``.
+    ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) makes every shell-aware
+    observable and the per-shell Casimirs treat a multi-shell impurity shell by shell; ``None`` is one shell.
     """
     # Redistribute onto the basis as it stands; do not first collapse it onto the support of
     # `psis`. The basis is also the seed space for the excited/Green's-function expansion
@@ -188,7 +191,7 @@ def report_ground_state(
     shell_casimir = {}
     try:
         l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
-            ground_state_basis.impurity_orbitals, rot_to_spherical, per_shell=True
+            ground_state_basis.impurity_orbitals, rot_to_spherical, per_shell=True, shell_ls=shell_ls
         )
     except ValueError:
         # The impurity is grouped into orbital-symmetry manifolds (e.g. eg / t2g), none of
@@ -202,7 +205,7 @@ def report_ground_state(
         if not isinstance(rot_to_spherical, dict):
             try:
                 l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
-                    {0: [impurity_indices]}, rot_to_spherical, per_shell=True
+                    {0: [impurity_indices]}, rot_to_spherical, per_shell=True, shell_ls=shell_ls
                 )
             except ValueError:
                 # Genuinely not a spin-doubled l-shell: skip the Casimirs
@@ -236,20 +239,6 @@ def report_ground_state(
             # is_j_sharp's docstring). Gate the printed/persisted term/g_J/mu_eff on
             # this rather than reporting a single J that isn't actually well-defined.
             j_sharp = is_j_sharp(j_values, es)
-            if per_shell_ops is not None and len(per_shell_ops) > 1:
-                for partition, (shell_l, shell_l_ops, shell_s_ops, shell_j_ops) in per_shell_ops.items():
-                    entry = {"l": shell_l}
-                    for name, ops in (("s2", shell_s_ops), ("l2", shell_l_ops), ("j2", shell_j_ops)):
-                        op2 = casimir_operator(*ops)
-                        vals = manifold_observable_values(
-                            psis_blk,
-                            es,
-                            lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep),
-                            comm=mov_comm,
-                            redistribute=mov_redistribute,
-                        )
-                        entry[f"{name}_thermal"] = thermal_observable_value(vals, es, tau)
-                    shell_casimir[partition] = entry
         except Exception as exc:
             if rank == 0:
                 print(f"S^2/L^2/J^2 not reported: {exc}")
@@ -257,6 +246,34 @@ def report_ground_state(
             s2_thermal = l2_thermal = j2_thermal = None
             j_sharp = True
             shell_casimir = {}
+    # Per-shell Casimirs run whenever there is a per-shell operator to evaluate, not only when the totals exist: a
+    # partial shell has no L/S/J of its own (and so no total), but its complete neighbours still do.
+    multi_shell = shell_ls is not None and len(shell_ls) > 1
+    if per_shell_ops and (multi_shell or len(per_shell_ops) > 1):
+        try:
+            for partition, (shell_l, shell_l_ops, shell_s_ops, shell_j_ops) in per_shell_ops.items():
+                entry = {"l": shell_l}
+                for name, ops in (("s2", shell_s_ops), ("l2", shell_l_ops), ("j2", shell_j_ops)):
+                    op2 = casimir_operator(*ops)
+                    vals = manifold_observable_values(
+                        psis_blk,
+                        es,
+                        lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep),
+                        comm=mov_comm,
+                        redistribute=mov_redistribute,
+                    )
+                    entry[f"{name}_thermal"] = thermal_observable_value(vals, es, tau)
+                shell_casimir[partition] = entry
+        except Exception as exc:
+            if rank == 0:
+                print(f"per-shell S^2/L^2/J^2 not reported: {exc}")
+            shell_casimir = {}
+    if multi_shell and rank == 0:
+        for a, l_a in enumerate(shell_ls):
+            if a not in (per_shell_ops or {}):
+                print(
+                    f"Shell {a} (l={l_a}): S^2/L^2/J^2 skipped (partial shell: not all of its orbitals are in the model)"
+                )
     # Kondo impurity-bath spin correlation <S_imp . S_bath>. The (dn, up) pairing is the run's
     # spin layout (spin_pairs.spin_layout): impurity pairs from the rotated S_+ or the index
     # convention, bath pairs from the index convention, equal-energy matching or chain position,
@@ -284,6 +301,7 @@ def report_ground_state(
                 rot_to_spherical,
                 n_orb,
                 comm=mov_comm,
+                shell_ls=shell_ls,
             )
         sisb_pairing_approx = not layout.su2
         sisb_pairing_note = layout.sisb_note()
@@ -432,6 +450,7 @@ def report_ground_state(
             j_values,
             entanglement,
             impurity_orbitals=ground_state_basis.impurity_orbitals,
+            shell_ls=shell_ls,
         )
     except Exception as exc:
         state_summary = None
@@ -447,6 +466,7 @@ def report_ground_state(
                 j2_thermal,
                 impurity_orbitals=ground_state_basis.impurity_orbitals,
                 j_sharp=j_sharp,
+                shell_ls=shell_ls,
             )
         except Exception as exc:
             magnetic_summary = None
@@ -535,6 +555,7 @@ def report_ground_state(
                 impurity_orbitals=ground_state_basis.impurity_orbitals,
                 shell_casimir=shell_casimir,
                 j_sharp=j_sharp,
+                shell_ls=shell_ls,
             )
             report_rule("Eigenstates")
             print_expectation_values(
@@ -548,6 +569,7 @@ def report_ground_state(
                 sisb_values=sisb_values,
                 sisb_z_values=sisb_z_values,
                 impurity_orbitals=ground_state_basis.impurity_orbitals,
+                shell_ls=shell_ls,
             )
             if state_summary is not None:
                 print_state_summary(state_summary)

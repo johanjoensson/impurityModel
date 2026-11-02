@@ -132,6 +132,7 @@ def print_expectation_values(
     sisb_values=None,
     sisb_z_values=None,
     impurity_orbitals=None,
+    shell_ls=None,
 ):
     """
     print several expectation values, e.g. E, N, L^2.
@@ -187,7 +188,7 @@ def print_expectation_values(
         block_occ_string_formatted = ["" for _ in block_occs]
         for ib, b_occ in enumerate(block_occs):
             block_occ_string_formatted[ib] = f"{np.real(b_occ):>{block_N_widths[ib]}.5f}"
-        totals = compute_shell_observables(rho, rot_to_spherical, impurity_orbitals)["total"]
+        totals = compute_shell_observables(rho, rot_to_spherical, impurity_orbitals, shell_ls=shell_ls)["total"]
         N, Ndn, Nup = totals["n"], totals["n_dn"], totals["n_up"]
         Lz, Sz, LS = totals["lz"], totals["sz"], totals["l_dot_s"]
         extra_fields = "".join(f"  {vals[i]: 8.6f}" for _, vals in extra)
@@ -929,7 +930,8 @@ def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls,
     Every operator lives on all impurity orbitals; shell ``a`` contributes ``R_a M R_a^dagger`` with
     ``R_a = R[:, cols_a]``. The totals exist only if every shell is complete (isometric ``R_a``: ``R_a^dagger R_a = 1``): a partial
     shell's ``L``/``S`` is not an operator of the kept space, so the totals are then ``None`` and only the
-    per-shell operators (keyed by shell index) are returned, with ``per_shell=True``; otherwise ``ValueError``.
+    complete shells' operators (keyed by shell index; a partial shell is absent) are returned, with
+    ``per_shell=True``; otherwise ``ValueError``.
     """
     orbs = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
     rot = np.asarray(rot_to_spherical, dtype=complex)
@@ -938,8 +940,8 @@ def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls,
     per_shell_ops, complete, totals = {}, True, [ManyBodyOperator() for _ in range(6)]
     for a, (l_a, cols) in enumerate(zip(shell_ls, shell_column_slices(shell_ls))):
         R_a = rot[:, cols]
-        if not np.allclose(R_a.conj().T @ R_a, np.eye(R_a.shape[1]), atol=1e-8):  # columns lost weight: partial
-            complete = False
+        shell_complete = np.allclose(R_a.conj().T @ R_a, np.eye(R_a.shape[1]), atol=1e-8)
+        complete = complete and shell_complete
         shell = []
         for matrix in _single_particle_lsj_matrices(l_a):
             comp = R_a @ matrix @ R_a.conj().T
@@ -953,7 +955,7 @@ def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls,
                     }
                 )
             )
-        if per_shell:
+        if per_shell and shell_complete:  # a partial shell's L/S is not an operator of the kept space
             l_ops, s_ops = (shell[1], shell[2], shell[0]), (shell[4], shell[5], shell[3])
             j_ops = tuple(x + y for x, y in zip(l_ops, s_ops))
             per_shell_ops[a] = (l_a, l_ops, s_ops, j_ops)
@@ -1577,7 +1579,7 @@ def print_screening_diagnostics(scr, file=None):
 
 
 def compute_magnetic_summary(
-    rho_imp, rot_to_spherical, s2=None, l2=None, j2=None, impurity_orbitals=None, j_sharp=True
+    rho_imp, rot_to_spherical, s2=None, l2=None, j2=None, impurity_orbitals=None, j_sharp=True, shell_ls=None
 ):
     r"""JSON-able summary of the magnetism/multiplet observables (A-bundle).
 
@@ -1607,7 +1609,7 @@ def compute_magnetic_summary(
     -------
     dict
     """
-    totals = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)["total"]
+    totals = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals, shell_ls=shell_ls)["total"]
     out = {
         "lz": float(totals["lz"]),
         "sz": float(totals["sz"]),
@@ -1634,7 +1636,15 @@ def compute_magnetic_summary(
 
 
 def compute_state_summary(
-    rhos, es, rot_to_spherical, s_values=None, l_values=None, j_values=None, entanglement=None, impurity_orbitals=None
+    rhos,
+    es,
+    rot_to_spherical,
+    s_values=None,
+    l_values=None,
+    j_values=None,
+    entanglement=None,
+    impurity_orbitals=None,
+    shell_ls=None,
 ):
     r"""Compact per-eigenstate summary rows (term symbol, moments, entanglement).
 
@@ -1674,7 +1684,7 @@ def compute_state_summary(
     ent_values = entanglement["per_state_entropy"] if entanglement is not None else None
     rows = []
     for i, (e, rho) in enumerate(zip(es, rhos)):
-        totals = compute_shell_observables(rho, rot_to_spherical, impurity_orbitals)["total"]
+        totals = compute_shell_observables(rho, rot_to_spherical, impurity_orbitals, shell_ls=shell_ls)["total"]
         m_z, j_z = totals["m_z"], totals["j_z"]
         row = {"state": i, "energy_rel": float(e - e0), "m_z": m_z, "j_z": j_z}
         if have_term:
@@ -1982,6 +1992,7 @@ def print_thermal_expectation_values(
     impurity_orbitals=None,
     shell_casimir=None,
     j_sharp=True,
+    shell_ls=None,
 ):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
@@ -2024,7 +2035,7 @@ def print_thermal_expectation_values(
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     block_labels, _ = block_group_labels(equivalent_blocks, block_structure, impurity_orbitals)
-    shell_observables = compute_shell_observables(rho_thermal, rot_to_spherical, impurity_orbitals)
+    shell_observables = compute_shell_observables(rho_thermal, rot_to_spherical, impurity_orbitals, shell_ls=shell_ls)
     totals = shell_observables["total"]
     N, Ndn, Nup = totals["n"], totals["n_dn"], totals["n_up"]
 

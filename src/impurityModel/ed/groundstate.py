@@ -1402,6 +1402,7 @@ def calc_gs(
     verbose,
     slaterWeightMin=0,
     stats_path: str = "ground_state_statistics.json",
+    shell_ls=None,
     **kwargs,
 ):
     """
@@ -1430,6 +1431,9 @@ def calc_gs(
         density matrices (a summary prints below that) and CIPSI-round chatter. A plain
         ``bool`` degrades gracefully (``True`` behaves like ``V_SUMMARY``, an int
         subclass in Python).
+    shell_ls : tuple of int, optional
+        ``l`` of each column block of an ndarray ``rot_to_spherical`` for a multi-shell impurity (reporting
+        only); ``None`` is a single shell.
     slaterWeightMin : float
         Minimum weight threshold for determinants in the basis.
 
@@ -1470,6 +1474,7 @@ def calc_gs(
             rot_to_spherical,
             n_orb,
             comm=basis_setup.get("comm"),
+            shell_ls=shell_ls,
         )
         basis_setup["spin_layout"] = layout
     note = layout.provenance_note()
@@ -1504,4 +1509,5 @@ def calc_gs(
         gs_truncation_report,
         gs_convergence_report,
         spin_layout=layout,
+        shell_ls=shell_ls,
     )

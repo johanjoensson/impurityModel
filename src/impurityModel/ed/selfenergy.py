@@ -661,6 +661,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         rot_to_spherical,
         verbosity,
         slaterWeightMin=slaterWeightMin,
+        shell_ls=sb.shell_ls,
     )
     _report_phase_time(report, "ground state", t_phase)
     restrictions = ground_state_basis.restrictions

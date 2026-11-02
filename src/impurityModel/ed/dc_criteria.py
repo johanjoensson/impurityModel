@@ -109,7 +109,6 @@ from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_
 from impurityModel.ed.utils import matrix_print
 
 
-
 def _require_single_shell(model):
     """The double-counting search measures one correlated shell: refuse a multi-shell model on every rank.
 

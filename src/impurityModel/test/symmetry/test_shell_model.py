@@ -130,7 +130,7 @@ def test_a_partial_shell_gives_per_shell_ops_but_no_totals():
         make_impurity_casimir_operators(kept, rot, shell_ls=(1, 2))
     l, s, j, per = make_impurity_casimir_operators(kept, rot, per_shell=True, shell_ls=(1, 2))
     assert l is s is j is None
-    assert set(per) == {0, 1}
+    assert set(per) == {0}  # the complete p shell only; the partial d shell has no operator
 
 
 def test_model_shell_ls_defaults_to_one_inferred_shell_and_survives_the_constructors():
@@ -263,3 +263,42 @@ def test_the_dc_search_refuses_a_multishell_model_before_any_collective():
     _require_single_shell(ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical={2: np.eye(10)}))
     with pytest.raises(NotImplementedError, match="multi-shell"):
         _require_single_shell(ImpurityModel.from_solver_matrix(h, 16, rot_to_spherical=np.eye(16), shell_ls=(1, 2)))
+
+
+def _solve_p_plus_d(tmp_path, shell_ls):
+    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    h0, rot = _p_plus_d_model()
+    sb = prepare_solver_basis(
+        h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=shell_ls
+    )
+    basis_information = {
+        "impurity_orbitals": sb.impurity_orbitals,
+        "bath_states": sb.bath_states,
+        "N0": sb.nominal_occ,
+        "tau": 0.002,
+        "chain_restrict": False,
+        "dense_cutoff": 1000,
+        "comm": None,
+        "spin_layout": sb.spin_layout,
+        "truncation_threshold": np.inf,
+    }
+    return calc_gs(
+        sb.h,
+        basis_information,
+        sb.block_structure,
+        sb.rot_to_spherical,
+        2,
+        stats_path=str(tmp_path / "gs.json"),
+        shell_ls=sb.shell_ls,
+    )
+
+
+def test_calc_gs_reports_a_two_shell_impurity_shell_by_shell(tmp_path, capsys):
+    _solve_p_plus_d(tmp_path, (1, 2))
+    out = capsys.readouterr().out
+    assert "Per-shell impurity observables" in out
+    assert "not reported" not in out and "skipped" not in out
+    rows = out.split("Per-shell impurity observables")[1].splitlines()
+    assert [r.split()[0] for r in rows[2:4]] == ["l=1", "l=2"]  # one row per shell, p then d
