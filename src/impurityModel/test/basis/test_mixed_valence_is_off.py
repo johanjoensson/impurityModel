@@ -94,3 +94,16 @@ def test_a_neighbour_inside_the_thermal_window_is_warned_about(capsys):
     capsys.readouterr()
     groundstate.solve_ground_state(_model(), IMPURITY, BATHS, {0: 1}, tau=1e-3, **kw)
     assert "lies within the thermal window" not in capsys.readouterr().out
+
+
+@pytest.mark.mpi
+def test_the_warning_can_be_silenced_and_the_report_is_strict_json(capsys):
+    """The DC search turns the P9 warning off; an infinite margin is stored as null so the file parses strictly."""
+    import json
+
+    kw = dict(slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False)
+    capsys.readouterr()
+    gs = groundstate.solve_ground_state(_model(), IMPURITY, BATHS, {0: 1}, tau=1.0, warn_neighbours=False, **kw)
+    assert "lies within the thermal window" not in capsys.readouterr().out
+    d = gs.solver.convergence_report["sector_diagnostics"]
+    json.dumps(d, allow_nan=False)

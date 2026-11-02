@@ -103,7 +103,7 @@ from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.memory_estimate import CapLedger, CapPolicy, resolve_cap_policy
+from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
 from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
@@ -2097,6 +2097,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             comm=MPI.COMM_WORLD,
             verbose=verbose,
             weighted_restrictions=ctx.weighted_restrictions,
+            warn_neighbours=False,
             **_ctx_spec(ctx).solve_kwargs(),
             plan_store=ctx.plan_store,
             shift=mu,

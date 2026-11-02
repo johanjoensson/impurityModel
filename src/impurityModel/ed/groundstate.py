@@ -1273,6 +1273,7 @@ def solve_ground_state(
     plan_store=None,
     shift=0.0,
     spin_layout=None,
+    warn_neighbours=True,
 ):
     """Find the thermal ground state: a sector walk, then one complete solve of the winning sector.
 
@@ -1403,18 +1404,21 @@ def solve_ground_state(
         report["sector_diagnostics"] = {
             "winner_total": d.winner_total,
             "neighbour_totals": list(d.neighbour_totals),
-            "margin": d.margin,
+            # null where the comparison is exact (inf) or a neighbour is lower at zero error (-inf): strict JSON.
+            "margin": d.margin if d.margin is not None and np.isfinite(d.margin) else None,
             "second_difference": d.second_difference,
             "undecided": bool(d.undecided),
         }
         gaps = neighbour_gaps(search.solved, d.winner_total, tau)
         report["sector_diagnostics"]["neighbour_gaps_tau"] = {str(n): g for n, g in gaps.items()}
         near = {n: g for n, g in gaps.items() if g < NEIGHBOUR_GAP_WARN}
-        if near and (comm is None or comm.rank == 0):
-            where = ", ".join(f"N_imp = {n}: {g:.2f} tau" for n, g in sorted(near.items()))
+        if warn_neighbours and near and (comm is None or comm.rank == 0):
+            where = ", ".join(
+                f"N_imp = {n}: {abs(g):.2f} tau {'above' if g >= 0 else 'BELOW'}" for n, g in sorted(near.items())
+            )
             print(
                 f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies "
-                f"within the thermal window ({where} above it, tau = {tau:.4g}); its Boltzmann "
+                f"within the thermal window ({where} it, tau = {tau:.4g}); its Boltzmann "
                 "weight (> 1e-4) is not in the ground state.",
                 flush=True,
             )

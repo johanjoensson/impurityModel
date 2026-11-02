@@ -564,6 +564,14 @@ touch it. **B1 is not built**: at most tens of seconds of 2149 s, against a new 
 sector energies leaking into `neighbour_totals`/`margin`, and the store/DC guard. Revisit if a workload whose first sector is
 far above the winner shows pass 2 dominating.
 
+**Step 9 DONE (2026-11-02), partial.** Commits: `3c726664` (MV 3 `sector_diagnostics` in the convergence report), `4d38c514` (B1
+note), `a6c6a8b2` (P9 neighbour-in-window warning with ΔE/τ), `fb03064b` + test (J8: unset-`GS_MAX_BLOCK_WIDTH` nag dropped, plural fix),
+and the review fixes (warning off for the DC search via `warn_neighbours=False`; infinite margin stored as null so the
+statistics file is strict JSON; negative gap worded "BELOW"). Gate: -n 1 3911 / -n 2 4018 / -n 3 4026 passed, 9 xfailed, rank files
+green. Opus review: no MPI hazard; three findings, all fixed. **Not built, still open:** B1 (measured, deferred above), the J8
+end-of-`calc_gs` summary, stderr tiers and heartbeat, MV 3's N±2 extension, the one-sided E_N(μ) check and `get_energy` as an
+object, and the HF off-by->1 / DIIS / oracle seed-1 m0 items. Steps 11–14 not started.
+
 
 **Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
 -n 2 3975/17/7 (1211 s), -n 3 3983/9/7 (2230 s), every rank file green. The step-5 `test_orbits` -n 1 quartet-control
