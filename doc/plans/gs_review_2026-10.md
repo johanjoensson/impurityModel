@@ -581,6 +581,23 @@ CIPSI may leave the window. `SolverBasis.seed_window` is `None` on a single shel
 passes it. Measured on the J1 fixture (2p + 3d + 4 baths): seed 765 determinants (was 12,870, over
 `GS_CERTIFY_MAX_SEED`), `calc_gs` Tr rho_p = 6. Still to do: pass it from the DC search (11.4).
 
+**Step 11 DONE (2026-11-02): MS T4.7, multi-shell double counting.** Commits 11.1–11.4 plus 11.0b. The DC search accepts a
+multi-shell model. *Rule (user decision, option 1, "for now"):* the shift, the occupation target and the DFT reference act on the
+hybridizing shells (`SolverBasis.active_impurity_indices`, the rule `HYB_WEIGHT_REL_TOL` uses); rank 0 logs "DC shift acts on
+shell(s) l=… (hybridizing); excluded: l=… (no bath)". A skipped bath-less shell with a level within
+`dc_criteria.DC_INACTIVE_SHELL_EF_WINDOW` (1.0, units of `h0`) of E_F raises `ValueError` on every rank before any collective: that
+is a valence shell the hybridization cut dropped, not a core. An explicit solver-line role (option 2) stays deferred.
+`SectorPlanStore(active_orbitals=…)` is fixed at construction and the class `n_imp` (the energy's slope in the shift) is read over
+those orbitals (J5); the existing `N_IMP_SPREAD_SAFETY` margin plus `violated()` recertification is the χ-sized margin, no second
+one was added. The deep shell reaches the solves as `SeedWindow` (11.0b), in the walk, the sector solves and the final ground
+state. `dc_static` `fll/amf/nominal` refuse a multi-shell model; `sigma_inf_dc` is the scheme. Totals (`nominal_total`,
+`max_occ_total`) stay whole-impurity on purpose: the deep shell is held out of the walk, so every sector carries the same p count.
+Measured: `fixed_occupation_dc` on p(6)+d with U=3, target 1.0, gives dc = 0 on p and 1.5 on d, sector 7; 13 evaluations, one sector
+seed above `GS_CERTIFY_MAX_SEED` (solved uncertified). `-n 1/2/3` green on the new tests; bug injection (P = I) fails four of them.
+Single shell: `seed_window` and `active_impurity_indices` are `None`, the projector is the identity object, nothing changed.
+Open: which sector is the uncertified one (not looked at); the interface-side MS T4.7 text (impmod_interface repo, doc only, not
+touched here).
+
 
 **Step 9 (2026-11-02), started: MV 3 field landed, B1 deferred with a measurement.** `solve_ground_state` now puts the walk's
 `SectorDiagnostics` into `convergence_report["sector_diagnostics"]` (`3c726664`; `-n 1/2/3`, bug-injected). **B1 (O6 gate):**
