@@ -256,6 +256,11 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         and unsafe under MPI where every rank shares the interpreter's working directory.
         Mirrors the keyword :func:`impurityModel.ed.susceptibility.calc_susceptibility_workflow`
         already had.
+    solver : SolverOptions, optional
+        Supplies ``dense_cutoff`` to the ground-state solve, as it does for the self-energy. ``None``
+        (the library default for callers without a solver, e.g. ``scripts/spectra.py``) uses
+        ``config.GS_DENSE_CUTOFF``; the TOML front end passes its solver, whose default
+        (``config.DEFAULT_DENSE_CUTOFF``) is lower. Both are exact solves of the same Hamiltonian.
     verbosity : int, optional
         Printing level (rank-uniform; printing itself is gated on rank downstream).
         ``None`` -> ``V_RESULT`` (0), the terse default.
