@@ -2794,3 +2794,22 @@ def test_an_unlimited_cap_never_runs_the_cap_ladder(monkeypatch, which):
         kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=np.inf)
         fixed_gap_dc(offset=-0.4, **kwargs)
     assert not calls
+
+
+def test_the_ledger_records_the_cap_the_ladder_settled_on(monkeypatch):
+    """The interface stamps ``ledger.resolved`` for the self-energy: it must be the cap the DC solved at,
+    not the one sized before the ladder lowered it (review of 8816783e)."""
+    import impurityModel.ed.dc_criteria as dc_module
+    from impurityModel.ed.memory_estimate import CapLedger
+
+    def fake(quantity, tol, **kwargs):
+        quantity(7)
+        return 7, 0.0, 1, "memory_retreat"
+
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake)
+    monkeypatch.setattr(dc_module, "_any_cap_bound", lambda ctx: True)
+    ledger = CapLedger()
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    fixed_occupation_dc(occupation=1.0, cap_ledger=ledger, **kwargs)
+    assert ledger.resolved == 7

@@ -333,6 +333,8 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
         comm=MPI.COMM_WORLD,
     )
     ctx.truncation_threshold = cap
+    if ctx.cap_ledger is not None:
+        ctx.cap_ledger.resolved = cap
     dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
     dc_rec["dc_cap_parity"] = ctx.memory_cap
     # Which exit produced `cap` (unbound / cap_bound / memory_retreat). Taken from the search rather than
@@ -462,6 +464,9 @@ class _SectorContext:
     #: to second-guess.
     memory_cap: object = None
     cap_from_memory: bool = False
+    #: The calculation's :class:`~impurityModel.ed.memory_estimate.CapLedger`; the cap ladder records the cap it
+    #: settled on, which is what a later call may not exceed (P10).
+    cap_ledger: object = None
     n_center_at: dict | None = None
     #: ``(mu, n_trial) -> _SectorSolution | None``. Filled by :meth:`sector_solve`, which never
     #: solves the same sector at the same shift twice. Two floats per entry, not eigenvectors --
@@ -871,6 +876,7 @@ def _prepare_sector_context(
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
+        cap_ledger=cap_ledger,
         spin_layout=sb.spin_layout,
         tau=basis.tau,
         slater_weight_min=basis.slater_weight_min,
@@ -1932,6 +1938,8 @@ class _OccupationContext:
     plan_store: object = None
     #: The (dn, up) pairing of the solver basis, as on :class:`_SectorContext`.
     spin_layout: object = None
+    #: As :class:`_SectorContext`: where the cap ladder records the cap it settled on (P10).
+    cap_ledger: object = None
 
     def __post_init__(self):
         if self.cap_bound_at is None:
@@ -2033,6 +2041,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
+        cap_ledger=cap_ledger,
         spin_layout=sb.spin_layout,
         weighted_restrictions=build_weighted_restrictions(
             bath_states,
