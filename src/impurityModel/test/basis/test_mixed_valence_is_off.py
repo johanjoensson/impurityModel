@@ -77,5 +77,20 @@ def test_the_convergence_report_carries_the_sector_diagnostics():
         _model(), IMPURITY, BATHS, {0: 1}, tau=0.1, slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False
     )
     d = gs.solver.convergence_report["sector_diagnostics"]
-    assert set(d) == {"winner_total", "neighbour_totals", "margin", "second_difference", "undecided"}
+    assert set(d) == {"winner_total", "neighbour_totals", "margin", "second_difference", "undecided", "neighbour_gaps_tau"}
     assert d["undecided"] is False and isinstance(d["neighbour_totals"], list)
+
+
+@pytest.mark.mpi
+def test_a_neighbour_inside_the_thermal_window_is_warned_about(capsys):
+    """P9: the toy's N_imp = 0 winner has an N_imp = 1 neighbour 0.9 above; a tau of 1 puts it in the window."""
+    kw = dict(slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False)
+    capsys.readouterr()
+    gs = groundstate.solve_ground_state(_model(), IMPURITY, BATHS, {0: 1}, tau=1.0, **kw)
+    out = capsys.readouterr().out
+    gaps = gs.solver.convergence_report["sector_diagnostics"]["neighbour_gaps_tau"]
+    assert gaps and min(gaps.values()) < groundstate.NEIGHBOUR_GAP_WARN
+    assert "lies within the thermal window" in out  # comm=None: each rank is its own solve
+    capsys.readouterr()
+    groundstate.solve_ground_state(_model(), IMPURITY, BATHS, {0: 1}, tau=1e-3, **kw)
+    assert "lies within the thermal window" not in capsys.readouterr().out

@@ -756,6 +756,28 @@ def _report_margin(diagnostics, winner, verbose, always=True):
         print(f"  margin to N_imp = {nbrs}: {diagnostics.margin:.3g}{error}{curv}", flush=True)
 
 
+def neighbour_gaps(solved, winner_total, tau):
+    """``{N: (E_N - E_win) / tau}`` for the solved sectors ``N = winner_total +- 1`` (pure; review P9).
+
+    The Boltzmann weight a fixed-N thermal state silently drops is ``exp(-gap)`` of the neighbour's lowest level,
+    so a gap below :data:`NEIGHBOUR_GAP_WARN` is thermal weight the ground state does not hold. Empty without a
+    positive ``tau`` or a solved winner.
+    """
+    by_total = {rec.total: rec for rec in solved}
+    winner = by_total.get(winner_total)
+    if winner is None or not tau > 0.0:
+        return {}
+    return {
+        total: float((by_total[total].energy - winner.energy) / tau)
+        for total in (winner_total - 1, winner_total + 1)
+        if total in by_total and np.isfinite(by_total[total].energy)
+    }
+
+
+#: ``ln(1e4)``: a neighbour sector whose lowest level carries a Boltzmann weight above 1e-4 of the winner's.
+NEIGHBOUR_GAP_WARN = float(np.log(1e4))
+
+
 def canonical_split(occupation, sizes, frozen_occupations=None):
     """The per-group split of an occupation total, clipped to ``[0, size]``: a new dict.
 
@@ -1385,6 +1407,17 @@ def solve_ground_state(
             "second_difference": d.second_difference,
             "undecided": bool(d.undecided),
         }
+        gaps = neighbour_gaps(search.solved, d.winner_total, tau)
+        report["sector_diagnostics"]["neighbour_gaps_tau"] = {str(n): g for n, g in gaps.items()}
+        near = {n: g for n, g in gaps.items() if g < NEIGHBOUR_GAP_WARN}
+        if near and (comm is None or comm.rank == 0):
+            where = ", ".join(f"N_imp = {n}: {g:.2f} tau" for n, g in sorted(near.items()))
+            print(
+                f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies within "
+                f"the thermal window ({where} above it, tau = {tau:.4g}); its Boltzmann weight (> 1e-4) is not in "
+                "the ground state.",
+                flush=True,
+            )
     return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
 
 

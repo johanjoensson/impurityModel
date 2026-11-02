@@ -154,3 +154,14 @@ def test_report_margin_warns_at_every_verbosity_only_for_the_production_walk(alw
     diagnostics, winner = _undecided()
     _report_margin(diagnostics, winner, verbose, always=always)
     assert ("not separated" in capsys.readouterr().out) == printed
+
+
+def test_neighbour_gaps_are_in_units_of_tau():
+    """P9: the gap to N +- 1 in tau, only for solved neighbours, empty without a positive tau."""
+    from impurityModel.ed.groundstate import NEIGHBOUR_GAP_WARN, neighbour_gaps
+
+    solved = [_rec(4, -1.0), _rec(3, -0.99), _rec(5, -0.5), _rec(6, 0.0)]
+    gaps = neighbour_gaps(solved, 4, 0.005)
+    assert gaps == pytest.approx({3: 2.0, 5: 100.0}) and set(gaps) == {3, 5}
+    assert gaps[3] < NEIGHBOUR_GAP_WARN < gaps[5]
+    assert neighbour_gaps(solved, 4, 0.0) == {} and neighbour_gaps(solved, 9, 0.005) == {}
