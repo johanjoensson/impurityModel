@@ -2769,3 +2769,28 @@ def test_the_dc_tolerance_resolvers_differ_only_in_the_dc_knob(monkeypatch):
     assert dc_criteria._resolve_dc_de2_min(None, 1e-9) == 1e-4
     assert dc_criteria._resolve_dc_de2_min(None, 1e-9, honour_dc_knob=False) == 1e-9
     assert dc_criteria._resolve_dc_e_pt2_tol(None, None, honour_dc_knob=False) == GS_E_PT2_TOL
+
+
+@pytest.mark.parametrize("which", ["occupation", "gap"])
+def test_an_unlimited_cap_never_runs_the_cap_ladder(monkeypatch, which):
+    """``inf`` is an instruction, not a request to size from memory: the ladder halves a finite cap, so an
+    infinite one reaching it would raise OverflowError (review of 8816783e)."""
+    import impurityModel.ed.dc_criteria as dc_module
+
+    calls = []
+    real = dc_module.resolve_cap_at_max
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("memory_cap"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", spy)
+    if which == "occupation":
+        kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+        kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=np.inf)
+        fixed_occupation_dc(occupation=1.0, **kwargs)
+    else:
+        kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+        kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=np.inf)
+        fixed_gap_dc(offset=-0.4, **kwargs)
+    assert not calls

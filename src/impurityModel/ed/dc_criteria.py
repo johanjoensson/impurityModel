@@ -825,7 +825,7 @@ def _prepare_sector_context(
     # for a reason. One bool against a CIPSI expansion is a cheap place to honour it.
     # Recalibration (the cap ladder) is only for a cap the caller left to memory; `unlimited` and
     # a set number are instructions. Broadcast, though derived from a replicated input.
-    cap_from_memory = MPI.COMM_WORLD.bcast(CapPolicy.coerce(truncation_threshold).from_memory, root=0)
+    cap_from_memory = MPI.COMM_WORLD.bcast(CapPolicy.coerce(truncation_threshold).source == "auto", root=0)
     # The one resolver every driver uses: the same ground-state-only sizing, safety and
     # GS_NUM_WANTED as calc_selfenergy, so the dc is found at the determinant budget the
     # self-energy then solves with; it prints the `determinant cap:` line and starts a new
@@ -1996,7 +1996,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
     # Recalibration (the cap ladder) is only for a cap the caller left to memory; `unlimited` and
     # a set number are instructions. Broadcast, though derived from a replicated input.
-    cap_from_memory = MPI.COMM_WORLD.bcast(CapPolicy.coerce(truncation_threshold).from_memory, root=0)
+    cap_from_memory = MPI.COMM_WORLD.bcast(CapPolicy.coerce(truncation_threshold).source == "auto", root=0)
     # The one resolver every driver uses: the same ground-state-only sizing, safety and
     # GS_NUM_WANTED as calc_selfenergy, so the dc is found at the determinant budget the
     # self-energy then solves with; it prints the `determinant cap:` line and starts a new
