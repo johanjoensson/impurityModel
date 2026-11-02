@@ -519,6 +519,26 @@ fix); after the review fixes only targeted runs (symmetry + `test_fixed_dc`) at 
   cross-label information (still a sound bound).
 - `make check`: 62 ruff errors repo-wide, pre-existing; none new in the files this step touched except one fixed.
 
+**Step 8 (2026-11-02), A1/P10 DONE with open items.** Commits `32d6ac5b` (A1 a, GroundStateSpec), `8816783e`+`91332395` (P10 CapLedger,
+`CapLedger` exported), `c99e4c3d` (A1 a for the DC entries), `3987988b` (P5), `0b3b8670` (P6), `f6f70abb` (P3), `f2c1ec69` (P2),
+`429fde12`, `170cc323`, `d14922bc` (review fixes). Gate: -n 1 / 2 / 3 green on every rank file (4011-4020 passed, 9 xfailed); the
+-n 2 run ended by killing the idle PMIx-finalize hang after all tests had passed. Targeted DC/memory tests re-run at -n 1/2/3 after
+the last two fixes. impmod_interface (not pushed, by instruction): `ffddb20` writes the attribute `"DC ground state cap"`.
+- A1 a, P5, P6: bit-identical with the knobs unset. P3 (Curie 0.2412685545777933 within 1e-8) and P2 change defaults, see below.
+- P10: `CapLedger(ceiling)` lowers an auto cap to the ceiling (rank 0's, broadcast) and records the resolved cap; the cap ladder
+  re-records the cap it settled on (`170cc323`). A user-set cap is never touched. Carries DC -> Σ within one iteration only.
+- **Decisions (user, 2026-11-02): keep the unified defaults.** (1) χ now takes `BasisOptions.chain_restrict` (default True), so every
+  default χ run changes from False. The Curie A/B (SIAM fixture, no cap binding) cannot see this; the review argues the
+  distance-based freeze is symmetric, unverified. P2 keeps spectra at `chain_restrict=False` for the complete multiplet, so the
+  two now disagree. (2) TOML spectroscopy takes `solver.dense_cutoff` (500, was 1000); `scripts/spectra.py` and the end-to-end tests
+  still use 1000. No spectrum/RIXS A/B was run for P2 (tests are source-text checks plus the suite).
+- Review (Opus) fixed: unlimited cap ran the ladder (`OverflowError` risk) `429fde12`; ledger recorded the pre-ladder cap `170cc323`.
+  Open: the ledger-ceiling test compares three live `MemAvailable` reads (may flake); the `determinant cap:` log line ignores the
+  ceiling; intermediate commits `8816783e`/`91332395` were red (NameError, fixed in `c99e4c3d`); source-text tests do not catch a
+  dropped name in an explicit `solve_kwargs` subset; ceiling `bcast` is gated on the argument `ledger is not None` (uniform at
+  every caller); no `schema_version`/`required_features` bump or archive reader for the recorded cap.
+- `make check`: ruff reports 22 errors under `src` and more in untracked dirs, not re-triaged; files touched here pass ruff.
+
 
 **Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
 -n 2 3975/17/7 (1211 s), -n 3 3983/9/7 (2230 s), every rank file green. The step-5 `test_orbits` -n 1 quartet-control
