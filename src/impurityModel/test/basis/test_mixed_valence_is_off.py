@@ -77,7 +77,14 @@ def test_the_convergence_report_carries_the_sector_diagnostics():
         _model(), IMPURITY, BATHS, {0: 1}, tau=0.1, slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False
     )
     d = gs.solver.convergence_report["sector_diagnostics"]
-    assert set(d) == {"winner_total", "neighbour_totals", "margin", "second_difference", "undecided", "neighbour_gaps_tau"}
+    assert set(d) == {
+        "winner_total",
+        "neighbour_totals",
+        "margin",
+        "second_difference",
+        "undecided",
+        "neighbour_gaps_tau",
+    }
     assert d["undecided"] is False and isinstance(d["neighbour_totals"], list)
 
 

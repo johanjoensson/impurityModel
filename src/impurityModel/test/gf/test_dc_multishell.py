@@ -16,7 +16,7 @@ P_ORBS = list(range(6))
 D_ORBS = list(range(6, 16))
 
 
-def _p_plus_d(p_level=-60.0):
+def _p_plus_d(p_level=-60.0, u=0.0):
     h = np.zeros((20, 20), dtype=complex)
     for o in P_ORBS:
         h[o, o] = p_level
@@ -26,11 +26,16 @@ def _p_plus_d(p_level=-60.0):
         h[b, b] = e
     for o, b in ((6, 16), (11, 17), (7, 18), (12, 19)):
         h[o, b] = h[b, o] = 0.3
+    u4 = np.zeros((16,) * 4, dtype=complex)
+    for i in D_ORBS:
+        for j in D_ORBS:
+            if i != j:
+                u4[i, j, i, j] = u
     model = ImpurityModel.from_solver_matrix(
         h,
         16,
         dc=np.zeros((16, 16), dtype=complex),
-        u4=np.zeros((16,) * 4, dtype=complex),
+        u4=u4,
         rot_to_spherical=np.eye(16, dtype=complex),
         bath_valence_conduction=([16, 17], [18, 19]),
         shell_ls=(1, 2),
@@ -45,13 +50,7 @@ def _p_plus_d(p_level=-60.0):
     return model, basis, SolverOptions(dense_cutoff=1000)
 
 
-@pytest.fixture
-def guard_lifted(monkeypatch):
-    # 11.2 builds the projector behind the guard; 11.4 lifts the guard itself.
-    monkeypatch.setattr(dc_criteria, "_require_single_shell", lambda model: None)
-
-
-def test_the_occupation_context_shifts_and_counts_only_the_hybridising_shell(guard_lifted):
+def test_the_occupation_context_shifts_and_counts_only_the_hybridising_shell():
     model, basis, solver = _p_plus_d()
     ctx = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
     want = np.diag([0.0] * 6 + [1.0] * 10)
@@ -62,7 +61,7 @@ def test_the_occupation_context_shifts_and_counts_only_the_hybridising_shell(gua
     assert ctx.n0 < 1.0
 
 
-def test_the_sector_context_shift_leaves_the_p_block_of_the_dc_untouched(guard_lifted):
+def test_the_sector_context_shift_leaves_the_p_block_of_the_dc_untouched():
     model, basis, solver = _p_plus_d()
     ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     dc = ctx.dc(0.7)
@@ -83,7 +82,7 @@ def test_a_single_shell_model_keeps_the_exact_identity_and_the_full_index_list()
     assert ctx.shift_solver is ctx.shift_input  # the one object, as before: never rebuilt as u^dagger I u
 
 
-def test_the_plan_store_measures_the_class_occupation_over_the_active_shell(guard_lifted):
+def test_the_plan_store_measures_the_class_occupation_over_the_active_shell():
     model, basis, solver = _p_plus_d()
     sector = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     occupation = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
@@ -91,7 +90,7 @@ def test_the_plan_store_measures_the_class_occupation_over_the_active_shell(guar
     assert occupation.plan_store.active_orbitals == tuple(D_ORBS)
 
 
-def test_a_single_shell_plan_store_keeps_the_whole_impurity(guard_lifted):
+def test_a_single_shell_plan_store_keeps_the_whole_impurity():
     h = np.zeros((12, 12), dtype=complex)
     for o in range(10):
         h[o, o] = 1.0
@@ -115,3 +114,31 @@ def test_a_single_shell_plan_store_keeps_the_whole_impurity(guard_lifted):
     )
     ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     assert ctx.plan_store.active_orbitals is None
+
+
+def test_fixed_occupation_dc_shifts_only_the_hybridising_shell():
+    """p(6) + d with U: the DC search moves the d block, leaves the deep p block at its guess, and the
+    charge state it settles on keeps the p shell full (the sector total is 6 + the target d occupation)."""
+    model, basis, solver = _p_plus_d(u=3.0)
+    dc, sector = dc_criteria.fixed_occupation_dc(
+        model, basis, solver, occupation=1.0, comm=MPI.COMM_WORLD, return_sector=True
+    )
+    np.testing.assert_array_equal(dc[:6, :6], np.zeros((6, 6)))
+    d_block = dc[6:, 6:]
+    np.testing.assert_allclose(d_block, d_block[0, 0] * np.identity(10), atol=1e-12)
+    # the d occupation is 1 on the plateau mu in (1, 4) of E(n) = n (1 - mu) + 3 n (n - 1) / 2
+    assert 1.0 < d_block[0, 0].real < 4.0
+    assert sector == 7
+
+
+def test_the_dc_search_says_which_shells_the_shift_covers(capsys):
+    from impurityModel.ed.dc_criteria import _check_active_shells
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    model, basis, _solver = _p_plus_d()
+    sb = prepare_solver_basis(
+        model.h0, model.dc, model.u4, model.impurity_orbitals, basis.nominal_occ,
+        rot_to_spherical=model.rot_to_spherical, verbosity=0, shell_ls=model.shell_ls,
+    )  # fmt: skip
+    _check_active_shells(sb, 0, 1)
+    assert "DC shift acts on shell(s) l=2 (hybridizing); excluded: l=1 (no bath)" in capsys.readouterr().out

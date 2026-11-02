@@ -110,17 +110,42 @@ from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
+#: A bath-less shell the DC shift skips must lie at least this far (in the units of ``h0``) from the Fermi level.
+#: The shift acts on the hybridising shells (:attr:`solver_basis.SolverBasis.active_impurity_indices`), the rule
+#: the fitter and the RSPt interface use; RSPt sends no core/valence flag. A skipped shell with a level inside
+#: this window is a valence shell the hybridisation cut dropped, not a core: the search raises on every rank,
+#: before any collective, and the way out is to declare its role (not yet available) or give it a bath.
+DC_INACTIVE_SHELL_EF_WINDOW = 1.0
 
-def _require_single_shell(model):
-    """The double-counting search measures one correlated shell: refuse a multi-shell model on every rank.
 
-    Raised before any collective. Multi-shell DC (the active-shell projector) is MS T4.7.
+def _check_active_shells(sb, rank, verbosity):
+    """Say which shells the DC shift acts on and refuse an excluded shell that is not a core (MS T4.7).
+
+    Single shell (``sb.active_impurity_indices is None``): nothing to decide. The decision reads the
+    replicated ``h0``, so every rank raises or none does, before any collective.
     """
-    shells = model.shell_ls  # only an explicit declaration: an inferred single shell is the legacy path
-    if shells is not None and len(shells) > 1:
-        raise NotImplementedError(
-            f"the double-counting search does not support a multi-shell impurity yet (shell_ls={shells}); "
-            "it needs the active-shell projector (MS T4.7)."
+    if sb.active_impurity_indices is None:
+        return
+    active = set(sb.active_impurity_indices)
+    inactive = sorted(o for o in sb.impurity_shell_index if o not in active)
+    names = {a: f"l={sb.shell_ls[a]}" for a in sb.shell_has_bath}
+    hybridising = [names[a] for a, has in sb.shell_has_bath.items() if has]
+    excluded = [names[a] for a, has in sb.shell_has_bath.items() if not has]
+    if inactive:
+        block = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0][np.ix_(inactive, inactive)]
+        closest = float(np.min(np.abs(np.linalg.eigvalsh(block))))
+        if closest < DC_INACTIVE_SHELL_EF_WINDOW:
+            raise ValueError(
+                f"the DC shift skips the shell(s) {', '.join(excluded)} (no bath orbitals), but a level of it lies "
+                f"{closest:.3g} from the Fermi level (< {DC_INACTIVE_SHELL_EF_WINDOW}): that is a valence shell the "
+                "hybridization cut dropped, not a core. Give it bath orbitals, or declare its role explicitly "
+                "(not yet supported)."
+            )
+    if verbosity > 0 and rank == 0:
+        print(
+            f"DC shift acts on shell(s) {', '.join(hybridising)} (hybridizing); excluded: "
+            f"{', '.join(excluded) or 'none'} (no bath)",
+            flush=True,
         )
 
 
@@ -524,6 +549,9 @@ class _SectorContext:
     #: The (dn, up) pairing of the solver basis (:attr:`solver_basis.SolverBasis.spin_layout`): the
     #: ``-mu`` shift commutes with ``S_z`` and ``S_+``, so one layout serves every shift.
     spin_layout: object = None
+    #: A bath-less shell's seed window (:attr:`solver_basis.SolverBasis.seed_window`), ``None`` on a single shell.
+    #: Passed as ``frozen_occupations`` to every solve, so the deep shell is seeded as a window, never spanned.
+    seed_window: object = None
 
     def __post_init__(self):
         if self.de2_min is None:
@@ -584,6 +612,7 @@ class _SectorContext:
             # shift are the same solves, at the same accuracy, and are never repeated.
             sector_energy=lambda trial: self._walk_energy(h_op, mu, trial),
             spin_layout=self.spin_layout,
+            frozen_occupations=self.seed_window,
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
         # eigenvector support of an expansion whose impurity occupation window was widened
@@ -666,6 +695,7 @@ class _SectorContext:
                 "tau", "chain_restrict", "dense_cutoff", "truncation_threshold", "de2_min", "e_pt2_tol"
             ),
             spin_layout=self.spin_layout,
+            frozen_occupations=self.seed_window,
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
@@ -714,7 +744,8 @@ class _SectorContext:
     def trial_occupation(self, n_trial):
         """The per-group occupation of the walk's sector ``n_trial`` (energetic filling over every impurity
         orbital), or ``None`` if it has none. Nothing is frozen on the DC path (review J1), so the split is a
-        basis-generation parameter only: the sector is its total."""
+        basis-generation parameter only: the sector is its total. A bath-less shell beside a correlated one is
+        held out of the walk and seeded as a window (:attr:`seed_window`), not frozen."""
         if not 0 <= int(n_trial) <= sum(len(block) for blocks in self.impurity_orbitals.values() for block in blocks):
             return None
         return _per_group_occupation(int(n_trial), self.impurity_orbitals, self.h_solver_matrix)
@@ -832,7 +863,6 @@ def _prepare_sector_context(
     # Derive the same solver-basis layout calc_selfenergy uses (root cause 3 of the original
     # DC<->GS mismatch: the fit valence/conduction split model.bath_states carries is not
     # necessarily the split calc_selfenergy re-derives from the sign of the bath on-site energy).
-    _require_single_shell(model)
     sb = prepare_solver_basis(
         model.h0,
         model.dc,
@@ -846,6 +876,7 @@ def _prepare_sector_context(
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
     )
+    _check_active_shells(sb, rank, verbosity)
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     shift_input, shift_solver, active_indices = _active_shift(model, sb, dc_guess.shape[0])
@@ -918,6 +949,7 @@ def _prepare_sector_context(
         cap_ledger=cap_ledger,
         spin_layout=sb.spin_layout,
         plan_store=SectorPlanStore(active_orbitals=sb.active_impurity_indices),
+        seed_window=sb.seed_window,
         tau=basis.tau,
         slater_weight_min=basis.slater_weight_min,
         chain_restrict=basis.chain_restrict,
@@ -1980,6 +2012,8 @@ class _OccupationContext:
     plan_store: object = None
     #: The (dn, up) pairing of the solver basis, as on :class:`_SectorContext`.
     spin_layout: object = None
+    #: As :class:`_SectorContext`.
+    seed_window: object = None
     #: As :class:`_SectorContext`: where the cap ladder records the cap it settled on (P10).
     cap_ledger: object = None
 
@@ -2018,7 +2052,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     # does not mean what it says). The mu shift is a uniform impurity shift (-mu * identity),
     # which commutes with the impurity block and hence with any rotation prepare_solver_basis
     # applies, so the layout derived once here at the guess dc is valid for every trial mu.
-    _require_single_shell(model)
     sb = prepare_solver_basis(
         h0_op,
         model.dc,
@@ -2032,6 +2065,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
     )
+    _check_active_shells(sb, comm.rank if comm is not None else MPI.COMM_WORLD.rank, verbosity)
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     shift_input, shift_solver, active_indices = _active_shift(model, sb, n_imp)
@@ -2091,6 +2125,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         cap_ledger=cap_ledger,
         spin_layout=sb.spin_layout,
         plan_store=SectorPlanStore(active_orbitals=sb.active_impurity_indices),
+        seed_window=sb.seed_window,
         weighted_restrictions=build_weighted_restrictions(
             bath_states,
             excitation_budget,
@@ -2151,6 +2186,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             plan_store=ctx.plan_store,
             shift=mu,
             spin_layout=ctx.spin_layout,
+            frozen_occupations=ctx.seed_window,
         )
     mb_basis, mb_solver, es, psis = ground_state[:4]
 

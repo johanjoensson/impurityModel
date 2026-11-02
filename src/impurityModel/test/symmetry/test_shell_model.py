@@ -254,15 +254,24 @@ def test_a_bath_component_hopping_to_two_shells_is_refused():
         )
 
 
-def test_the_dc_search_refuses_a_multishell_model_before_any_collective():
-    from impurityModel.ed.dc_criteria import _require_single_shell
-    from impurityModel.ed.model import ImpurityModel
+def test_a_skipped_bath_less_shell_near_the_fermi_level_is_refused_by_the_dc_search():
+    from impurityModel.ed.dc_criteria import DC_INACTIVE_SHELL_EF_WINDOW, _check_active_shells
+    from impurityModel.ed.solver_basis import prepare_solver_basis
 
-    h = np.zeros((20, 20))
-    _require_single_shell(ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical=np.eye(10)))
-    _require_single_shell(ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical={2: np.eye(10)}))
-    with pytest.raises(NotImplementedError, match="multi-shell"):
-        _require_single_shell(ImpurityModel.from_solver_matrix(h, 16, rot_to_spherical=np.eye(16), shell_ls=(1, 2)))
+    h0, rot = _p_plus_d_model()  # p at +5: far from E_F, a core-like shell
+    sb = prepare_solver_basis(
+        h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+    )
+    _check_active_shells(sb, 0, 0)
+    assert DC_INACTIVE_SHELL_EF_WINDOW < 5.0
+    near = dict(h0)
+    for o in range(6):
+        near[((o, "c"), (o, "a"))] = 0.2 * (o % 2) + 0.1
+    sb = prepare_solver_basis(
+        near, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+    )
+    with pytest.raises(ValueError, match="valence shell"):
+        _check_active_shells(sb, 0, 0)
 
 
 def _solve_p_plus_d(tmp_path, shell_ls):
