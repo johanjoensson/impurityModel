@@ -89,6 +89,22 @@ def _model_uj(model):
     return uj_from_u4(u4_spherical)
 
 
+def _require_single_shell_scheme(model, scheme):
+    """Refuse a closed-form scheme on a declared multi-shell model, on every rank, before any work.
+
+    ``fll``/``amf``/``nominal`` spread one occupation ``N`` and one ``(U, J)`` over every impurity
+    orbital. Over a deep, bath-less shell next to a correlated one that is not a double counting at
+    all. :func:`sigma_inf_dc` (``Sigma_static(u4, rho)``) is the multi-shell scheme: it takes the
+    inter-shell ``F^k/G^k`` from ``u4`` and each shell's own density from ``rho``.
+    """
+    shells = model.shell_ls  # only an explicit declaration: an inferred single shell is the legacy path
+    if shells is not None and len(shells) > 1:
+        raise NotImplementedError(
+            f"{scheme} double counting is not defined for a multi-shell impurity (shell_ls={shells}); "
+            "use sigma_inf_dc, which takes the inter-shell terms from u4 and each shell's density from rho."
+        )
+
+
 def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
     r"""Fully Localized Limit double counting, ``dc = [U(N - 1/2) - (J/2)(N - 1)] I``.
 
@@ -126,6 +142,7 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
+    _require_single_shell_scheme(model, "fll")
     with dc_record.recording("fll") as record:
         return _fll(model, record, tau=tau, n=n, u=u, j=j)
 
@@ -175,6 +192,7 @@ def amf_dc(model, *, tau=0.002, n=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
+    _require_single_shell_scheme(model, "amf")
     with dc_record.recording("amf") as record:
         n_imp = len(model.impurity_indices)
         u4_dense = _model_u4_dense(model)
@@ -215,6 +233,7 @@ def nominal_dc(model, nominal_occupation, *, u=None, j=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
+    _require_single_shell_scheme(model, "nominal")
     with dc_record.recording("nominal") as record:
         # Same key, different provenance: `n_ref` here is the integer charge state the model was
         # set up for, not a filling read off the bath fit. The two are not comparable across

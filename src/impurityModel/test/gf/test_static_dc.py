@@ -276,3 +276,38 @@ def test_nominal_dc_accepts_explicit_u_j_without_u4():
     )
     dc = nominal_dc(model_no_u4, 2.0, u=U, j=0.0)
     assert np.allclose(dc, 4.5 * np.eye(2))
+
+
+def _two_shell_model():
+    h = np.zeros((20, 20), dtype=complex)
+    for o in range(6):
+        h[o, o] = -60.0
+    for o in range(6, 16):
+        h[o, o] = -1.0
+    for b in range(4):
+        h[16 + b, 16 + b] = -4.0
+    u4 = np.zeros((16, 16, 16, 16), dtype=complex)
+    u4[6, 7, 6, 7] = u4[7, 6, 7, 6] = 3.0
+    return ImpurityModel.from_solver_matrix(h, 16, u4=u4, rot_to_spherical=np.eye(16), shell_ls=(1, 2))
+
+
+@pytest.mark.parametrize(
+    "scheme, kwargs",
+    [
+        (fll_dc, {}),
+        (fll_dc, {"n": 2.0, "u": 3.0, "j": 0.5}),
+        (amf_dc, {"n": 2.0}),
+        (nominal_dc, {"nominal_occupation": 8}),
+    ],
+)
+def test_the_closed_form_schemes_refuse_a_multishell_model(scheme, kwargs):
+    # One N and one (U, J) over a deep bath-less shell plus a correlated one is not a double counting.
+    with pytest.raises(NotImplementedError, match="multi-shell.*sigma_inf_dc"):
+        scheme(_two_shell_model(), **kwargs)
+
+
+def test_sigma_inf_dc_is_the_multishell_scheme_and_returns_the_full_matrix():
+    rho = np.zeros((16, 16), dtype=complex)
+    rho[np.arange(6), np.arange(6)] = 1.0
+    dc = sigma_inf_dc(_two_shell_model(), rho=rho)
+    assert dc.shape == (16, 16)
