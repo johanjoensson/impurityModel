@@ -95,7 +95,9 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None, impurity_shell
         shell_of_group = {
             k: impurity_shell_index[next(o for block in impurity_orbitals[k] for o in block)] for k in keys
         }
-        if set(nominal_occ) == set(shell_of_group.values()) and set(nominal_occ) != set(keys):
+        # In a multi-shell model a dict covering exactly the shells is shell-keyed, even when its keys also
+        # happen to be the group keys (group k is not shell k: groups follow orbital index).
+        if set(nominal_occ) == set(shell_of_group.values()):
             out = {}
             for a, n_a in nominal_occ.items():
                 sub = {k: impurity_orbitals[k] for k in keys if shell_of_group[k] == a}
