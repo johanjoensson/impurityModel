@@ -599,7 +599,7 @@ def shell_is_complete(R_a, tol=1e-8):
     return R_a.shape[0] == R_a.shape[1] and np.allclose(R_a.conj().T @ R_a, np.eye(R_a.shape[1]), atol=tol)
 
 
-def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None):
+def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None, shell_ls=None):
     r"""Split the impurity density matrix into one spherical-basis block per l-shell.
 
     The ``get_*_from_rho_spherical`` helpers above are single-shell primitives: each
@@ -652,6 +652,12 @@ def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None):
         uses to build ``rho_imp`` itself (``sorted(impurity_indices)``) -- *not* ascending
         ``l``; nothing requires the lower-``l`` shell to hold the lower orbital indices.
     """
+    if not isinstance(rot_to_spherical, dict) and shell_ls is not None and len(shell_ls) > 1:
+        R = np.asarray(rot_to_spherical)
+        shell_ls = resolve_shell_ls(R, shell_ls)
+        for a, (l, cols) in enumerate(zip(shell_ls, shell_column_slices(shell_ls))):
+            yield l, a, rotate_matrix(rho_imp, R[:, cols])
+        return
     if not isinstance(rot_to_spherical, dict) or impurity_orbitals is None:
         yield None, None, rotate_matrix(rho_imp, rot_to_spherical)
         return
@@ -690,7 +696,7 @@ def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None):
         yield l, key, rotate_matrix(rho_shell_computational, rot_to_spherical[key])
 
 
-def compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals=None):
+def compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals=None, shell_ls=None):
     r"""Per-shell (and total) one-body impurity observables, from the density matrix.
 
     Splits ``rho_imp`` into per-shell spherical-basis blocks with
@@ -725,7 +731,7 @@ def compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals=None)
         shells is not itself a shell), each the plain sum of that key over ``"shells"``.
     """
     shells = []
-    for l, partition, rho_sph in impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals):
+    for l, partition, rho_sph in impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals, shell_ls):
         n, n_dn, n_up = get_occupations_from_rho_spherical(rho_sph)
         lz = get_Lz_from_rho_spherical(rho_sph, l)
         sz = get_Sz_from_rho_spherical(rho_sph, l)

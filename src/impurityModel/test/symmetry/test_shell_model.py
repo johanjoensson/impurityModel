@@ -56,3 +56,53 @@ def test_a_partial_shell_is_not_complete():
     assert shell_is_complete(np.eye(6))
     assert not shell_is_complete(np.eye(10)[:, :6].T)  # 6 rows of 10 columns
     assert not shell_is_complete(np.diag([1.0, 1.0, 0.5]))
+
+
+def _dict_and_array_two_shell():
+    from impurityModel.test.symmetry.test_symmetry_observables import _two_shell_fixture
+
+    impurity_orbitals, rot_dict, rho_imp, _ = _two_shell_fixture()
+    return impurity_orbitals, rot_dict, np.eye(16, dtype=complex), rho_imp
+
+
+def test_the_ndarray_twin_of_the_two_shell_fixture_gives_the_same_shell_rhos():
+    from impurityModel.ed.observables import compute_shell_observables, impurity_shell_rhos
+
+    impurity_orbitals, rot_dict, rot_array, rho_imp = _dict_and_array_two_shell()
+    want = list(impurity_shell_rhos(rho_imp, rot_dict, impurity_orbitals))
+    got = list(impurity_shell_rhos(rho_imp, rot_array, shell_ls=(1, 2)))
+    assert [g[0] for g in got] == [w[0] for w in want] == [1, 2]
+    for (_, _, a), (_, _, b) in zip(got, want):
+        np.testing.assert_allclose(a, b, atol=1e-14)
+    obs_dict = compute_shell_observables(rho_imp, rot_dict, impurity_orbitals)
+    obs_array = compute_shell_observables(rho_imp, rot_array, shell_ls=(1, 2))
+    for sd, sa in zip(obs_dict["shells"], obs_array["shells"]):
+        for key in ("n", "lz", "sz", "m_z", "j_z", "l_dot_s", "t_z"):
+            assert sa[key] == pytest.approx(sd[key], abs=1e-12)
+
+
+def test_shell_rhos_are_unchanged_by_a_block_diagonal_rotation_of_the_input_basis():
+    from scipy.stats import unitary_group
+
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    _, _, rot_array, rho_imp = _dict_and_array_two_shell()
+    u = np.zeros((16, 16), dtype=complex)
+    u[:6, :6] = unitary_group.rvs(6, random_state=1)
+    u[6:, 6:] = unitary_group.rvs(10, random_state=2)
+    # input basis rotated: rho -> u^dag rho u, R -> u^dag R keeps R^dag rho R fixed
+    want = [r for _, _, r in impurity_shell_rhos(rho_imp, rot_array, shell_ls=(1, 2))]
+    got = [r for _, _, r in impurity_shell_rhos(u.conj().T @ rho_imp @ u, u.conj().T @ rot_array, shell_ls=(1, 2))]
+    for a, b in zip(got, want):
+        np.testing.assert_allclose(a, b, atol=1e-12)
+
+
+def test_a_partial_second_shell_gives_a_rank_limited_block():
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    R = np.zeros((12, 16), dtype=complex)
+    R[np.arange(12), np.arange(12)] = 1  # full p (0..5) + six d columns
+    rho = np.eye(12, dtype=complex)
+    (l0, _, r0), (l1, _, r1) = impurity_shell_rhos(rho, R, shell_ls=(1, 2))
+    assert (l0, l1) == (1, 2) and r0.shape == (6, 6) and r1.shape == (10, 10)
+    assert np.linalg.matrix_rank(r1) == 6 and np.trace(r1).real == pytest.approx(6.0)
