@@ -11,7 +11,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.gs_connectivity import measure_gs_connectivity
-from impurityModel.ed.gs_report import report_ground_state
+from impurityModel.ed.gs_report import finalize_ground_state, measure_ground_state, report_ground_state
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
@@ -26,7 +26,12 @@ from impurityModel.ed.memory_estimate import (
     resolve_cap_policy,
 )
 from impurityModel.ed.orbits import build_orbits
-from impurityModel.ed.sector_ensemble import plan_ensemble, reject_unmigrated_ensemble
+from impurityModel.ed.sector_ensemble import (
+    plan_ensemble,
+    reject_unmigrated_ensemble,
+    resolve_mixed_valence,
+    sector_weights,
+)
 from impurityModel.ed.sector_solver import (
     WINDOW_OVERTAKE_WARN,
     SectorPlanStore,
@@ -1725,6 +1730,7 @@ class GroundStateSpec:
     excitation_budget: Optional[int] = None
     cost_budget: Optional[float] = None
     restriction_slater_weight_min: Optional[float] = None
+    mixed_valence: object = None
 
     def solve_kwargs(self, *names):
         """The ``solve_ground_state`` keywords this spec decides (only ``names`` when given).
@@ -1758,6 +1764,87 @@ class GroundStateSpec:
             impurity_orbitals=impurity_orbitals,
             slater_weight_min=self.restriction_slater_weight_min,
         )
+
+
+def _calc_gs_ensemble(
+    Hop, basis_setup, mode, block_structure, rot_to_spherical, verbose, slaterWeightMin, stats_path, layout, shell_ls
+):
+    """``calc_gs`` for a resolved ``mixed_valence`` of ``auto``/``on``: every member's thermal manifold, one report.
+
+    The members are solved one at a time (:func:`solve_ground_state_ensemble`); only each member's eigenpairs are
+    kept.  The report then runs once over their union (absolute energies, so the thermal weights *are* the merge
+    ``c_s ~ Z_s exp(-(e0_s - e0)/tau)``).  Returns the contract of ``calc_gs`` for the dominant member --
+    ``(psis, es, basis)`` -- with the merged ``thermal_rho`` and ``gs_info["ensemble"]``.
+    """
+    kept = []  # (member, SectorMeasurement-args, truncation report, convergence report)
+
+    def consume(member, gs):
+        keep_basis = gs.basis if not kept else None  # the dominant member's basis carries the report
+        kept.append(
+            (
+                member,
+                measure_ground_state(keep_basis, np.array(gs.es), gs.psis, total=member.total),
+                refined_truncation_report(gs.solver, gs.walk_report),
+                getattr(gs.solver, "convergence_report", None),
+            )
+        )
+
+    kwargs = {k: v for k, v in basis_setup.items() if k not in ("use_hf_seed", "warn_neighbours", "mixed_valence")}
+    kwargs["use_hf_seed"] = basis_setup.get("use_hf_seed", True)
+    plan, _, realised = solve_ground_state_ensemble(
+        Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, mode=mode, consume=consume, **kwargs
+    )
+    tau = basis_setup["tau"]
+    measurements = [k[1] for k in kept]
+    z = np.array([np.exp(-(m.es - m.es.min()) / tau).sum() for m in measurements])
+    c = sector_weights(np.array(realised), z, tau)
+    converged = [bool((k[3] or {}).get("converged", True)) for k in kept]
+    conv = dict(kept[0][3]) if kept[0][3] is not None else None
+    if conv is not None and not all(converged):
+        conv["converged"] = False
+        conv.setdefault("limited_by", None)
+        if conv["limited_by"] is None:
+            bad = [k[0].total for k, ok in zip(kept, converged) if not ok]
+            conv["limited_by"] = f"ensemble member N_imp = {bad[0]}"
+    info = {
+        "mode": mode,
+        "tau": tau,
+        "e0": float(min(realised)),
+        "error_bar": plan.error_bar,
+        "refused_reason": plan.refused_reason,
+        "members": [
+            {
+                "total": member.total,
+                "weight": float(w),
+                "e0": float(e0),
+                "walk_energy": member.walk_energy,
+                "residual_pt2": member.residual,
+                "error_bar": member.error_bar,
+                "n_states": len(m.es),
+                "converged": ok,
+                "truncation": trunc,
+            }
+            for (member, m, trunc, _), w, e0, ok in zip(kept, c, realised, converged)
+        ],
+        "state_sector": [m.total for m in measurements for _ in range(len(m.es))],
+    }
+    psis, es, basis, thermal_rho, gs_info = finalize_ground_state(
+        Hop,
+        measurements,
+        tau,
+        block_structure,
+        rot_to_spherical,
+        verbose,
+        stats_path,
+        kept[0][2],
+        conv,
+        spin_layout=layout,
+        shell_ls=shell_ls,
+        ensemble=info,
+    )
+    gs_info["ensemble"] = info
+    n_dominant = len(measurements[0].es)
+    return psis[:n_dominant], es[:n_dominant], basis, thermal_rho, gs_info
 
 
 def calc_gs(
@@ -1836,6 +1923,13 @@ def calc_gs(
         if clash:
             raise ValueError(f"calc_gs: {clash} given both in basis_setup and in the GroundStateSpec")
         basis_setup.update(merged)
+    # The charge-sector switch is not a solve_ground_state keyword (J4): it picks the driver's path here.
+    mv_given = basis_setup.pop("mixed_valence", None)
+    if mv_given is None and spec is not None:
+        mv_given = spec.mixed_valence
+    mode, mv_note = resolve_mixed_valence(mv_given, driver_default="off")
+    if mv_note is not None and (basis_setup.get("comm") is None or basis_setup["comm"].rank == 0):
+        print(mv_note, flush=True)
     tau = basis_setup["tau"]
     layout = basis_setup.get("spin_layout")
     if layout is None:
@@ -1863,6 +1957,19 @@ def calc_gs(
     # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
     # rather than re-listing its keys.
+    if mode != "off":
+        return _calc_gs_ensemble(
+            Hop,
+            basis_setup,
+            mode,
+            block_structure,
+            rot_to_spherical,
+            verbose,
+            slaterWeightMin,
+            stats_path,
+            layout,
+            shell_ls,
+        )
     ground_state = solve_ground_state(Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, **basis_setup)
     ground_state_basis, solver, es, psis = ground_state[:4]
     # Record whether the truncation_threshold bound the ground-state determination (and how

@@ -178,6 +178,7 @@ def report_ground_state(
     gs_convergence_report,
     spin_layout=None,
     shell_ls=None,
+    ensemble=None,
 ):
     """Observables of the thermal ground manifold ``(es, psis)``, and the report that prints them.
 
@@ -189,6 +190,8 @@ def report_ground_state(
     (``calc_gs`` passes the one it solved with); ``None`` resolves it here from ``Hop``.
     ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) makes every shell-aware
     observable and the per-shell Casimirs treat a multi-shell impurity shell by shell; ``None`` is one shell.
+    ``ensemble`` (the charge-sector ensemble record of ``calc_gs``) is stored in the statistics as
+    ``charge_sector_ensemble`` and tags each state of ``(es, psis)`` with the sector it came from.
     """
     # Redistribute onto the basis as it stands; do not first collapse it onto the support of
     # `psis`. The basis is also the seed space for the excited/Green's-function expansion
@@ -244,6 +247,8 @@ def report_ground_state(
         # so it lands in the saved statistics JSON alongside the occupation weights.
         gs_stats["truncation"] = gs_truncation_report
         gs_stats["convergence"] = gs_convergence_report
+        if ensemble is not None:
+            gs_stats["charge_sector_ensemble"] = ensemble
 
     # Many-body impurity-bath entanglement from the impurity RDM (collective call; its
     # memory guard may skip it, deterministically on every rank). Degrades to None.
@@ -599,6 +604,12 @@ def report_ground_state(
         print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
         print(f"{len(ground_state_basis):,} Slater determinants{occ_str}")
         print(convergence_summary(gs_convergence_report))
+        if ensemble is not None:
+            print(
+                "charge-sector ensemble: "
+                + ", ".join(f"N_imp = {m['total']} (weight {m['weight']:.4f})" for m in ensemble["members"])
+                + f"; error bar on <N_imp> {ensemble['error_bar']:.3g} e"
+            )
         for reason in degraded_warnings(gs_convergence_report):
             print(f"WARNING: {reason}", file=sys.stderr, flush=True)
         if not report.enabled(V_SUMMARY):
