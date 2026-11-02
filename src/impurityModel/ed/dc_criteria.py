@@ -1,7 +1,7 @@
 r"""The ED-based double-counting criteria: pin a peak, pin the gap centre, or pin the occupation.
 
 All three are special cases of :func:`dc_search._solve_dc_shift` over the uniform shift
-``dc(mu) = dc_guess + mu * identity``. :func:`fixed_peak_dc` pins a chosen spectral peak --
+``dc(mu) = dc_guess + mu * P`` (``P`` = the identity on one shell). :func:`fixed_peak_dc` pins a chosen spectral peak --
 the sector-energy difference ``E[N+1] - E[N]`` (or ``E[N] - E[N-1]`` for a removal peak);
 :func:`fixed_gap_dc` pins the *midpoint* of the two, ``(E[N+1] - E[N-1])/2``, which is Karolak
 et al.'s prescription for a charge-transfer insulator (arXiv:1004.4569 -- see its docstring for
@@ -77,6 +77,7 @@ will use it.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
@@ -104,6 +105,7 @@ from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
+from impurityModel.ed.observables import shell_index_of_orbitals
 from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
@@ -120,6 +122,34 @@ def _require_single_shell(model):
             f"the double-counting search does not support a multi-shell impurity yet (shell_ls={shells}); "
             "it needs the active-shell projector (MS T4.7)."
         )
+
+
+def _active_shift(model, sb, n_imp):
+    """The matrices the DC shift ``mu`` multiplies, and the orbitals whose occupation it moves.
+
+    Returns ``(shift_input, shift_solver, active_indices)``.
+
+    Single shell (``sb.active_impurity_indices is None``, i.e. no declared ``shell_ls``): exactly
+    ``np.identity(n_imp)`` twice and ``None``, the objects every search used before multi-shell, never
+    a product ``u^dagger I u`` (which differs from the identity at rounding level).
+
+    Multi-shell: the projector onto the *active* shells, those that hybridise (``sb.shell_has_bath``,
+    the rule the fitter and the interface use). A deep bath-less shell has an occupation its energy
+    pins, so a shift on it moves nothing the criterion measures. ``shift_input`` is diagonal in the
+    caller's input basis (the DC matrix lives there), ``shift_solver`` in the solver basis (``sb.h`` lives
+    there); ``prepare_solver_basis`` keeps a rotation only if it maps every orbital into one shell, so both
+    are diagonal and select the same shells.
+    """
+    if sb.active_impurity_indices is None:
+        identity = np.identity(n_imp)
+        return identity, identity, None
+    shell_of_input = shell_index_of_orbitals(model.rot_to_spherical, model.shell_ls)
+    shift_input = np.diag([1.0 if sb.shell_has_bath[int(a)] else 0.0 for a in shell_of_input])
+    position = {orb: k for k, orb in enumerate(sorted(model.impurity_indices))}
+    shift_solver = np.zeros((n_imp, n_imp))
+    for orb in sb.active_impurity_indices:
+        shift_solver[position[orb], position[orb]] = 1.0
+    return shift_input, shift_solver, list(sb.active_impurity_indices)
 
 
 def _ctx_spec(ctx):
@@ -442,7 +472,10 @@ class _SectorContext:
 
     h_op_i: object
     dc_guess: np.ndarray
-    identity: np.ndarray
+    shift_input: np.ndarray
+    shift_solver: np.ndarray
+    #: Orbitals whose occupation ``mu`` moves (the active shells); ``None`` = every impurity orbital.
+    active_indices: Optional[list]
     impurity_orbitals: dict
     bath_states: dict
     N0: dict
@@ -519,11 +552,11 @@ class _SectorContext:
         (``H = h0 - DC + U`` with ``DC = model.dc = dc_guess``); only the incremental ``mu`` shift
         is subtracted here, or ``dc_guess`` would be double-counted.
         """
-        return self.h_op_i - tensors_to_operator(np.asarray(mu * self.identity, dtype=complex))
+        return self.h_op_i - tensors_to_operator(np.asarray(mu * self.shift_solver, dtype=complex))
 
     def dc(self, mu):
-        """The double-counting matrix at ``mu``: ``dc_guess + mu * identity``."""
-        return self.dc_guess + mu * self.identity
+        """The double-counting matrix at ``mu``: ``dc_guess + mu * shift_input``."""
+        return self.dc_guess + mu * self.shift_input
 
     def centre_sector(self, h_op, mu):
         """The centre charge state at ``mu``, from the same walk ``calc_selfenergy`` will run.
@@ -651,7 +684,9 @@ class _SectorContext:
         if not usable:
             self.sector_at[(mu, n_trial)] = None
             return None
-        impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
+        impurity_indices = self.active_indices
+        if impurity_indices is None:
+            impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
         # Only the diagonal of the impurity density matrix is read (its trace, thermally averaged),
         # and <n_i> needs no operator applications and no redistribution of c_i|psi>.
         # <n_i> needs no operator application: bit counts over the one state's support. `.width` is
@@ -809,9 +844,11 @@ def _prepare_sector_context(
         verbosity=verbosity,
         rank=rank,
         comm=comm if comm is not None else MPI.COMM_WORLD,
+        shell_ls=model.shell_ls,
     )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
+    shift_input, shift_solver, active_indices = _active_shift(model, sb, dc_guess.shape[0])
 
     max_occ_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
     # One-body matrix in the *solver* basis (h0_solve, i.e. after any symmetry rotation), so the
@@ -856,7 +893,9 @@ def _prepare_sector_context(
     return _SectorContext(
         h_op_i=sb.h,
         dc_guess=dc_guess,
-        identity=np.identity(dc_guess.shape[0]),
+        shift_input=shift_input,
+        shift_solver=shift_solver,
+        active_indices=active_indices,
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=sb.nominal_occ,
@@ -920,7 +959,7 @@ def fixed_peak_dc(
     electron-removal peak.
 
     The double counting is parametrized as a uniform shift of the guess,
-    ``dc(mu) = dc_guess + mu * identity``. The shift couples to the impurity
+    ``dc(mu) = dc_guess + mu * P`` (``P`` = the identity on one shell). The shift couples to the impurity
     occupation as :math:`-\mu \hat N_{imp}`, so the peak position responds
     monotonically, :math:`d(E_{upper} - E_{lower})/d\mu = -(\langle N
     \rangle_{upper} - \langle N \rangle_{lower}) \approx -1`, and ``mu`` is
@@ -996,7 +1035,7 @@ def fixed_peak_dc(
     Returns
     -------
     dc : ndarray
-        The double counting matrix, ``dc_guess + mu * identity``.
+        The double counting matrix, ``dc_guess + mu * P``.
 
     Raises
     ------
@@ -1584,7 +1623,7 @@ def fixed_gap_dc(
     Returns
     -------
     dc : ndarray
-        The double counting matrix, ``dc_guess + mu * identity``.
+        The double counting matrix, ``dc_guess + mu * P``.
 
     Raises
     ------
@@ -1910,8 +1949,10 @@ class _OccupationContext:
     memory_cap: object
     cap_from_memory: bool
     weighted_restrictions: object
+    #: Orbitals whose occupation is measured and shifted (the active shells; every impurity orbital on one shell).
     impurity_indices: list
-    identity: np.ndarray
+    shift_input: np.ndarray
+    shift_solver: np.ndarray
     total_impurity_orbitals: int
     n0: float
     #: Residual PT2 energy the ground-state determinations converge to: the solver's own
@@ -1988,14 +2029,19 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         verbosity=verbosity,
         rank=comm.rank if comm is not None else 0,
         comm=comm if comm is not None else MPI.COMM_WORLD,
+        shell_ls=model.shell_ls,
     )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
+    shift_input, shift_solver, active_indices = _active_shift(model, sb, n_imp)
     N0 = sb.nominal_occ
     h_op_i = sb.h
 
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
+    if active_indices is not None:
+        impurity_indices = list(active_indices)
+        total_impurity_orbitals = len(impurity_indices)
 
     # Nothing is frozen: calc_selfenergy freezes nothing, and the dc must be measured on the state it
     # solves (review J1; see the module warning).
@@ -2052,7 +2098,8 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
             slater_weight_min=slaterWeightMin,
         ),
         impurity_indices=impurity_indices,
-        identity=np.identity(n_imp),
+        shift_input=shift_input,
+        shift_solver=shift_solver,
         total_impurity_orbitals=total_impurity_orbitals,
         n0=n0,
         e_pt2_tol=_resolve_dc_e_pt2_tol(None, basis.e_pt2_tol, honour_dc_knob=False),
@@ -2076,7 +2123,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     """
     from impurityModel.ed.groundstate import solve_ground_state
 
-    h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.identity, dtype=complex))
+    h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.shift_solver, dtype=complex))
 
     # Determine the ground state the SAME way calc_selfenergy will -- literally the same
     # function, `groundstate.solve_ground_state`, which owns the walk/refine/thermal sequence and
@@ -2255,7 +2302,7 @@ def fixed_occupation_dc(
     Returns
     -------
     dc : ndarray
-        The double counting matrix, ``dc_guess + mu * identity``.
+        The double counting matrix, ``dc_guess + mu * P``.
 
     Raises
     ------
@@ -2408,7 +2455,7 @@ def fixed_occupation_dc(
         # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.
         n = occupation_at[mu]
         sector = sector_at[mu]
-        dc = dc_guess + mu * ctx.identity
+        dc = dc_guess + mu * ctx.shift_input
 
         # M1: the sector at the RETURNED mu is the number this whole branch exists to establish -- DC
         # <-> GS parity is a statement about which charge state calc_selfenergy will find at this same
