@@ -393,8 +393,11 @@ def test_unconverged_hf_seed_is_rejected(monkeypatch, capsys):
 
 
 @pytest.mark.xfail(
-    reason="review step 4 open item: with >= 2 groups and non-convex E(N) (attractive U) the +-1 descent stops in a "
-    "local minimum the scan's diagonal move escapes (2 eV high). Owned by review step 9 (MV 3's N+-2 extension).",
+    reason="attractive U makes E(N) zigzag (even N favoured): the +-1 descent ends at an even sector whose odd neighbours "
+    "are both higher, so the second difference there is POSITIVE (measured on 14 models, e_imp/u scan, 2026-11-02) and "
+    "no ±1 energy can tell it from a true minimum. A N+-2 probe triggered by convexity is vacuous at a descent end; "
+    "one triggered by margin < 1 does not fire here (exact solves). Only an unconditional N+-2 probe (two extra "
+    "solves per walk, the cost the walk dropped on purpose) or a physics signal (attractive U) would catch it.",
     strict=True,
 )
 def test_pm1_descent_finds_the_scan_minimum_on_a_non_convex_two_group_model():
