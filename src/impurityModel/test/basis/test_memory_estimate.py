@@ -260,10 +260,12 @@ def test_resolve_gs_block_width_uses_the_configured_cap_when_set(monkeypatch):
     assert me.resolve_gs_block_width(default=7) == 12
 
 
-def test_log_memory_budget_warns_when_gs_max_block_width_is_unset(capsys, monkeypatch):
+def test_log_memory_budget_does_not_nag_when_gs_max_block_width_is_unset(capsys, monkeypatch):
+    """J8: the unset default is the normal case; advertising an internal knob on every run was noise."""
     monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
     me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
-    assert "GS_MAX_BLOCK_WIDTH is unset" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "GS_MAX_BLOCK_WIDTH" not in out and "ground-state cap 100,000" in out
 
 
 def test_log_memory_budget_warns_when_gs_num_wanted_not_supplied(capsys, monkeypatch):
