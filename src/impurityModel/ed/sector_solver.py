@@ -1184,6 +1184,20 @@ def _record_union_cut(solver, union_cut, cap, retained):
     conv["limited_by"] = conv.get("limited_by") or "cap"
 
 
+def _raise_cap_advice(verdicts, *, widen):
+    """What to do about a window the cap or the memory guard cut short.
+
+    A class stopped by the measured-memory guard (``memory_bound``) was held below its cap by the RAM the rank
+    actually had, so raising ``truncation_threshold`` cannot help: the advice then names the guard.
+    """
+    if any(v.memory_bound for v in verdicts):
+        return (
+            "The measured-memory guard held a class below its determinant cap, so raising truncation_threshold "
+            f"will not help: give each rank more memory (fewer ranks per node, or more nodes), or {widen}."
+        )
+    return f"Raise the determinant cap (truncation_threshold), or {widen}."
+
+
 def window_deficit(verdicts, es, within, lowest_expected):
     """``(found, expected)`` for the whole thermal window, not only its lowest level (review C7).
 
@@ -1409,14 +1423,14 @@ def solve_certified(
         print(
             f"WARNING: the thermal manifold holds {found} states of its lowest level, but certification "
             f"found that level in rows that make at least {expected}: thermal averages over it are "
-            "misweighted. Raise the determinant cap, or widen the thermal window.",
+            f"misweighted. {_raise_cap_advice(verdicts, widen='widen the thermal window')}",
             flush=True,
         )
     if in_window < in_window_expected and (basis.comm is None or basis.comm.rank == 0):
         print(
             f"WARNING: the thermal window holds {in_window} states, but certification found classes in it that "
-            f"make at least {in_window_expected}: states of the higher levels are missing. Raise the determinant "
-            "cap (truncation_threshold), or narrow the thermal window.",
+            f"make at least {in_window_expected}: states of the higher levels are missing. "
+            f"{_raise_cap_advice(verdicts, widen='narrow the thermal window')}",
             flush=True,
         )
     return es, psis, merged, solver, verdicts

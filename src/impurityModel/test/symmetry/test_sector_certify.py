@@ -1066,3 +1066,16 @@ def test_a_class_is_in_the_window_by_its_own_error_bar_not_the_largest_residual_
     assert inside == [0, 3, 2]
     assert 1e-3 + 1e-9 + EXPANSION_ENERGY_FLOOR < 0.2
     assert _classes_in_window(verdict_of, {0: keys[0], 1: keys[1]}, 0.0, 1e-3) == [0]
+
+
+def test_the_window_warning_names_the_memory_guard_when_it_held_a_class():
+    """A class held by the measured-memory guard cannot be helped by a larger cap: the advice must not say so
+    (CrI3 -n 4 printed "raise the cap" while the guard, not the cap, had stopped it)."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed.sector_solver import _raise_cap_advice
+
+    held = _raise_cap_advice([SimpleNamespace(memory_bound=False), SimpleNamespace(memory_bound=True)], widen="x")
+    free = _raise_cap_advice([SimpleNamespace(memory_bound=False)], widen="x")
+    assert "memory guard" in held and "will not help" in held
+    assert "Raise the determinant cap" in free and "memory guard" not in free

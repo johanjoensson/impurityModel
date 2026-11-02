@@ -539,6 +539,14 @@ the last two fixes. impmod_interface (not pushed, by instruction): `ffddb20` wri
   every caller); no `schema_version`/`required_features` bump or archive reader for the recorded cap.
 - `make check`: ruff reports 22 errors under `src` and more in untracked dirs, not re-triaged; files touched here pass ruff.
 
+**Step 10b (2026-11-02), started: finding + one fix.** The auto cap already prices the window solve (`estimate_gs_peak_bytes`
+takes `window_states`/`gs_num_wanted` from the measured connectivity), so O3-2's "sized for one state" is only partly true today.
+CrI3 -n 4 (`prof_cri3_n4_step7p.log`) is memory-bound, not cap-bound: the measured-memory guard tightened the auto cap
+663,716 -> 661,666 at 1.6 GiB/rank, so a larger cap cannot add the missing states; the window warning now says so
+(`_raise_cap_advice`, `sector_solver.py`). `window_expected` is 3, not 4, by design: it is a lower bound that does not read a
+class's multiplicity above its lowest level (`window_deficit` docstring). **Open:** whether the `Within` cap should be raised
+for the SMO regime (auto cap below the memory limit) needs the SMO 3-bath profile (~40 min), not run; B3 not started.
+
 
 **Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
 -n 2 3975/17/7 (1211 s), -n 3 3983/9/7 (2230 s), every rank file green. The step-5 `test_orbits` -n 1 quartet-control
