@@ -184,3 +184,34 @@ def test_convergence_summary_names_residual_limit_and_margin():
     assert "N_imp=8 (undecided)" in line
     ok = convergence_summary({"converged": True, "residual_pt2": 0.0, "e_pt2_tol": 1e-8})
     assert ok.startswith("convergence: converged;") and "limited" not in ok
+
+
+def test_heartbeat_is_rate_limited_and_goes_to_stderr(capsys):
+    from impurityModel.ed.utils import Heartbeat
+
+    t = [0.0]
+    hb = Heartbeat(interval=300.0, clock=lambda: t[0])
+    assert not hb.beat("early")
+    t[0] = 299.0
+    assert not hb.beat("still early")
+    t[0] = 301.0
+    assert hb.beat("late")
+    assert not hb.beat("just beat")
+    out = capsys.readouterr()
+    assert out.out == "" and "[still running] late" in out.err and "early" not in out.err
+
+
+def test_degraded_warnings_only_name_unconverged_or_undecided():
+    from impurityModel.ed.gs_report import degraded_warnings
+
+    assert degraded_warnings(None) == []
+    assert degraded_warnings({"converged": True, "sector_diagnostics": {"undecided": False}}) == []
+    got = degraded_warnings(
+        {
+            "converged": False,
+            "limited_by": "cap",
+            "residual_pt2": 1e-5,
+            "sector_diagnostics": {"undecided": True, "winner_total": 8},
+        }
+    )
+    assert len(got) == 2 and "limited by cap" in got[0] and "N_imp=8" in got[1]

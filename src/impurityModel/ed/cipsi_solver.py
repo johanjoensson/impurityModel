@@ -38,6 +38,7 @@ from impurityModel.ed.memory_estimate import (
     rss_breakdown,
 )
 from impurityModel.ed.solver_trace import note as _trace_note
+from impurityModel.ed.utils import Heartbeat
 from impurityModel.ed.solver_trace import timed as _trace_timed
 
 #: Headroom, in states, on the number of eigenstates one CIPSI cycle asks the eigensolver to retain
@@ -1045,6 +1046,7 @@ class CIPSISolver:
         # candidates, then `truncate` drops determinants, so its residual belongs to a basis that is gone).
         residual_current = False
         cycle = 0
+        _heartbeat = Heartbeat()
         # The kept manifold one cycle back, for the request's growth margin; `None` (no history) is not 0.
         self._prev_kept = None
         lowest = isinstance(manifold, Lowest)
@@ -1128,6 +1130,11 @@ class CIPSISolver:
                     residual_pt2=float(sel.get("residual_pt2", 0.0)),
                 )
             peak_rss, anon_rss, shmem_rss, local_min, local_max = self._cycle_memory(eigensolve_peak, cycle)
+            if self.basis.comm is None or self.basis.comm.rank == 0:
+                _heartbeat.beat(
+                    f"GS expansion cycle {cycle}: {old_size:,} -> {old_size + n_new:,} determinants, "
+                    f"residual_pt2={sel.get('residual_pt2', 0.0):.2e}"
+                )
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                 print(
                     f"  cycle {cycle}: basis={old_size:,} p={_psi_ref_width(psi_refs):,} "

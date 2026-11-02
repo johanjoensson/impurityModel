@@ -360,3 +360,30 @@ def partition(l: Iterable[Any], predicate: Callable[[Any], bool] = bool) -> Tupl
         else:
             failed.append(item)
     return passed, failed
+
+
+class Heartbeat:
+    """Rate-limited "still running" notice on stderr, for solves too long to look alive.
+
+    Purely rank-local: ``beat`` reads a clock and prints, it never communicates, so a caller may
+    invoke it on the master rank only without gating any collective. ``interval`` seconds (default
+    five minutes) must pass between two emissions; the first call only starts the clock.
+    """
+
+    def __init__(self, interval=300.0, clock=None):
+        import time
+
+        self.interval = float(interval)
+        self._clock = clock or time.monotonic
+        self._last = self._clock()
+
+    def beat(self, message):
+        """Emit ``message`` to stderr if ``interval`` has elapsed since the last emission; return whether it did."""
+        import sys
+
+        now = self._clock()
+        if now - self._last < self.interval:
+            return False
+        self._last = now
+        print(f"[still running] {message}", file=sys.stderr, flush=True)
+        return True

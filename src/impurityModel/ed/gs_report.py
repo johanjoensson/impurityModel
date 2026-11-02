@@ -8,6 +8,7 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 
 from dataclasses import asdict
 
+import sys
 import numpy as np
 
 from impurityModel.ed.average import thermal_average_scale_indep
@@ -83,6 +84,26 @@ def convergence_summary(convergence):
         tail = "undecided" if diag.get("undecided") else ("margin n/a" if margin is None else f"margin {margin:.2g}")
         parts.append(f"sector N_imp={diag['winner_total']} ({tail})")
     return "convergence: " + "; ".join(parts)
+
+
+def degraded_warnings(convergence):
+    """The reasons a ground state deserves a stderr line, from a ``convergence_report`` (``None``: none).
+
+    Only the events a user must not miss: an unconverged expansion (a determinant cap or the memory guard
+    withholding PT2 mass) and an undecided sector choice (margin < 1). Pure and replicated-data only.
+    """
+    if not convergence:
+        return []
+    out = []
+    if not convergence.get("converged", True):
+        res = convergence.get("residual_pt2")
+        why = convergence.get("limited_by") or "unknown"
+        extra = f" (residual PT2 {res:.2e})" if res is not None else ""
+        out.append(f"ground-state expansion is NOT converged, limited by {why}{extra}")
+    diag = convergence.get("sector_diagnostics") or {}
+    if diag.get("undecided"):
+        out.append(f"the N_imp={diag.get('winner_total')} sector choice is undecided (margin < 1)")
+    return out
 
 
 def report_ground_state(
@@ -295,9 +316,7 @@ def report_ground_state(
     if multi_shell and rank == 0:
         for a, l_a in enumerate(shell_ls):
             if a not in (per_shell_ops or {}):
-                print(
-                    f"Shell {a} (l={l_a}): S^2/L^2/J^2 skipped (partial shell: some orbitals are not in the model)"
-                )
+                print(f"Shell {a} (l={l_a}): S^2/L^2/J^2 skipped (partial shell: some orbitals are not in the model)")
     # Kondo impurity-bath spin correlation <S_imp . S_bath>. The (dn, up) pairing is the run's
     # spin layout (spin_pairs.spin_layout): impurity pairs from the rotated S_+ or the index
     # convention, bath pairs from the index convention, equal-energy matching or chain position,
@@ -522,6 +541,8 @@ def report_ground_state(
         print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
         print(f"{len(ground_state_basis):,} Slater determinants{occ_str}")
         print(convergence_summary(gs_convergence_report))
+        for reason in degraded_warnings(gs_convergence_report):
+            print(f"WARNING: {reason}", file=sys.stderr, flush=True)
         if not report.enabled(V_SUMMARY):
             note = f"; statistics saved to {stats_path}" if (gs_stats is not None and stats_path is not None) else ""
             print(f"(full report: -v{note})")
