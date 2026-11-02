@@ -933,7 +933,8 @@ def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls,
     complete shells' operators (keyed by shell index; a partial shell is absent) are returned, with
     ``per_shell=True``; otherwise ``ValueError``.
     """
-    orbs = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
+    # Rows of the rotation follow the sorted impurity indices (as rho_imp does), not the group-dict order.
+    orbs = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
     rot = np.asarray(rot_to_spherical, dtype=complex)
     if rot.shape[0] != len(orbs):
         raise ValueError(f"rotation has {rot.shape[0]} rows for {len(orbs)} impurity orbitals")
