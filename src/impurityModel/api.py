@@ -28,7 +28,7 @@ still be described by one file instead of a shell's worth of exported variables.
 from impurityModel.ed.dc_record import dc_levels, dc_spread
 from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.greens_function import save_Greens_function
-from impurityModel.ed.memory_estimate import parse_truncation_threshold
+from impurityModel.ed.memory_estimate import CapLedger, parse_truncation_threshold
 from impurityModel.ed.model import (
     BasisOptions,
     ImpurityModel,
@@ -71,6 +71,7 @@ except ImportError:  # pragma: no cover
 
 __all__ = [
     "BasisOptions",
+    "CapLedger",
     "DoubleCountingUnreachable",
     "ImpurityModel",
     "Meshes",
