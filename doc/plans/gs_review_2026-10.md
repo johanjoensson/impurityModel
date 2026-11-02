@@ -476,6 +476,23 @@ step touching a collective runs `-n 1/2/3`.
 | 7 | **MS T4.1–T4.5** (impurityModel side; impmod_interface G2 and rspt2spectra G3 in their repos); `dc_criteria` raises on multishell until T4.7; MS 2p@−60 Ry fixture measurements (J1); Tr ρ_p = 6 test and T5.1 | no | single-shell archives bit-identical |
 | 8 | **A1** series (a) plumbing, (b) P3 χ, P2 spectra+RIXS, P5, P6 one per commit, (c) **P10** caller-resolved cap (impmod_interface + archive attribute) | (c) yes | (a) bit-identical; (b) each with its A/B threshold written down first |
 | 9 | **B1** (trajectory bound, beyond `cut + margin`); **MV 3** warning + **J8** summary and stderr tiers | yes | winners unchanged on all six profiled workloads; WARNING lines on SMO 4-bath ≤ the stated budget, each event once per channel |
+
+**Step 7′ (2026-11-02), DONE with open items.** Commits `4d5dbae1` (B2 per-verdict margin), `28aa0889` (C7 counting:
+`ClassVerdict.levels`, `window_deficit` expects the per-class sum), `b456415e` (GF-side SYM measurement). Gate: -n 1
+3871 passed, -n 2 3979, -n 3 3987, 9 xfailed, every rank file green (`debug/gs_review_2026-10/step7p/`).
+- **Not met:** oracle seed-1 m8 is *not* exact. The 4th window state (0.2958) has no overlap with the class basis, so CIPSI
+  cannot reach it; a `Within` class expansion passed at -n 1/2 and failed at -n 3 (layout-dependent), so it was dropped.
+  Kept as a non-strict xfail (`UNREACHABLE_WINDOW_STATE`). User decision: defer (options left: a widening round per
+  in-window class, or a deflated restart from the class seed).
+- **Not met:** CrI3 reports `window_expected 3, found 2`, not 4 (`prof_cri3_n4_step7p.log`, unchanged from step 4.5; limited by
+  the cap, a 10b target).
+- Profiles: SMO 4-bath quartet exact (4/4). NiO 10-bath -n 1 identical; -n 4 basis 136,765 -> 136,097 dets but `converged`
+  flipped True -> False (`limited_by: cap`), winner and window unchanged: investigate in 10b.
+- GF-side SYM: **holds.** G_up = G_down to ~1e-15 with all four units cut to 3,000 of 3,920 dets, at -n 1/2/3
+  (`test_gf_spin_symmetry_under_caps.py`; injecting a unit-dependent cut fails it). Suggests 10c may be unnecessary; the
+  fixture is a unique singlet with no exact boundary ties, so this is not proof for degenerate manifolds.
+- `make check`: 62 ruff errors repo-wide, pre-existing; none new in the files this step touched except one fixed.
+
 | 10b | **`Within` cap (O3-2)** (multiplicity × walk per-state basis, memory-bounded, resolved with P10); **B3** (reuse the walk's window-class keys: priced first; the plan-store key includes `truncation_threshold` and the store holds replicated scalars only) with J5's χ-sized `jobs_at` margin. *(C7 fix and B2 moved to step 7′.)* | yes, -n 3 | CrI3 -n 4 keeps 4 window states (or the memory guard is named); SMO 3-bath per-member accuracy ≥ the walk's; quartet exact |
 | 10c | **GF-side SYM fix**, only if the 7′ measurement fails: spin-image GF units placed in one MPI colour, support cut decided on pairs, tie-break in `collective_first_keys` respects spin flip; `assert_uniform` on GF consumers outside an entry | yes, -n 3, `skipif(size == 1)` | the 7′ xfail flips to pass; an injected unpaired unit fails |
 | 11 | **MS T4.7** (active projector, J5 store) | yes | single-shell DC numerics bit-identical (projector = I) |

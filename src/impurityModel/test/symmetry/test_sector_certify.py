@@ -1064,5 +1064,5 @@ def test_a_class_is_in_the_window_by_its_own_error_bar_not_the_largest_residual_
     # 0: the winner. 3: 5e-4 <= 1e-3. 2: 0.3 <= within + its own 0.4. 1: 0.2 > 1e-3 + 1e-9 + floor, although the
     # largest residual (0.4) in the sector would have admitted it.
     assert inside == [0, 3, 2]
-    assert 0.2 > 1e-3 + 1e-9 + EXPANSION_ENERGY_FLOOR
+    assert 1e-3 + 1e-9 + EXPANSION_ENERGY_FLOOR < 0.2
     assert _classes_in_window(verdict_of, {0: keys[0], 1: keys[1]}, 0.0, 1e-3) == [0]
