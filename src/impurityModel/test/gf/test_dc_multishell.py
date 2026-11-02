@@ -81,3 +81,37 @@ def test_a_single_shell_model_keeps_the_exact_identity_and_the_full_index_list()
     assert ctx.active_indices is None
     np.testing.assert_array_equal(ctx.shift_input, np.identity(ctx.shift_input.shape[0]))
     assert ctx.shift_solver is ctx.shift_input  # the one object, as before: never rebuilt as u^dagger I u
+
+
+def test_the_plan_store_measures_the_class_occupation_over_the_active_shell(guard_lifted):
+    model, basis, solver = _p_plus_d()
+    sector = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    occupation = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
+    assert sector.plan_store.active_orbitals == tuple(D_ORBS)
+    assert occupation.plan_store.active_orbitals == tuple(D_ORBS)
+
+
+def test_a_single_shell_plan_store_keeps_the_whole_impurity(guard_lifted):
+    h = np.zeros((12, 12), dtype=complex)
+    for o in range(10):
+        h[o, o] = 1.0
+    h[10, 10], h[11, 11] = -2.0, 2.0
+    h[0, 10] = h[10, 0] = h[5, 11] = h[11, 5] = 0.3
+    model = ImpurityModel.from_solver_matrix(
+        h,
+        10,
+        dc=np.zeros((10, 10), dtype=complex),
+        u4=np.zeros((10,) * 4, dtype=complex),
+        rot_to_spherical=np.eye(10, dtype=complex),
+        bath_valence_conduction=([10], [11]),
+    )
+    _m, basis, solver = _p_plus_d()
+    basis = BasisOptions(
+        nominal_occ=2,
+        mixed_valence=None,
+        tau=1e-2,
+        slater_weight_min=basis.slater_weight_min,
+        truncation_threshold=int(1e8),
+    )
+    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    assert ctx.plan_store.active_orbitals is None

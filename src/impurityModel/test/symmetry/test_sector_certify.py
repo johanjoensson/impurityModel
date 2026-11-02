@@ -878,7 +878,7 @@ def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energ
     plan = CertificationPlan(jobs, {}, [], False, {})
     calls = []
 
-    def fake_expand_job(h_op, basis, plan, job, finished, *args, rank=False, keys=None, window=None):
+    def fake_expand_job(h_op, basis, plan, job, finished, *args, rank=False, keys=None, window=None, **_):
         k = jobs.index(job)
         calls.append((k, rank))
         if k == 0 or not rank:

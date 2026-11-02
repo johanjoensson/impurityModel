@@ -430,6 +430,7 @@ def solve_sector(
                         slater_weight_min=slaterWeightMin,
                         verbose=verbose,
                         only=only,
+                        occupation_orbitals=None if store is None else store.active_orbitals,
                     )
                     if only is not None and store.violated(store_key, shift, verdicts):
                         # Some class came out above its certified tangent: the classes this shift
@@ -446,6 +447,7 @@ def solve_sector(
                             dense_cutoff=dense_cutoff,
                             slater_weight_min=slaterWeightMin,
                             verbose=verbose,
+                            occupation_orbitals=store.active_orbitals,
                         )
                         # The fresh certification replaces the stale record and is a full one.
                         only = None

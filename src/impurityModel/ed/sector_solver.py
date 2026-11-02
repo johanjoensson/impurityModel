@@ -426,6 +426,7 @@ def _expand_job(
     rank=False,
     keys=None,
     window=None,
+    occupation_orbitals=None,
 ):
     """One class expansion: ``(verdict, es, psis, class_basis, solver)`` (collective).
 
@@ -434,6 +435,9 @@ def _expand_job(
 
     ``window`` (a thermal window width) makes a finished class report the energies of its basis within it of
     its lowest state (:func:`_class_window_levels`, review C7), which the verdict counts.
+
+    ``occupation_orbitals`` are the orbitals whose occupation is the verdict's ``n_imp`` (the slope of the energy
+    in the shift): the shift's own, the active shells'. ``None`` is the whole impurity.
     """
     class_basis = basis.clone(
         initial_basis=_job_keys(plan, job, basis) if keys is None else list(keys.keys()),
@@ -491,7 +495,10 @@ def _expand_job(
     energy = float(np.min(es)) if len(es) else np.inf
     report = solver.truncation_report or {}
     residual = float((solver.convergence_report or {}).get("residual_pt2") or 0.0)
-    impurity = [orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]
+    if occupation_orbitals is None:
+        impurity = [orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]
+    else:
+        impurity = list(occupation_orbitals)
     # Collective (one Allreduce), entered on every rank: `psis.width` is replicated.
     n_imp = float(state_occupations(class_basis, psis, impurity).sum(axis=1)[0]) if psis.width else float("nan")
     # The hook's last verdict decided why the expansion stopped (rank 0's, broadcast by `expand`).
@@ -535,7 +542,17 @@ def _class_window_levels(solver, h_op, within, dense_cutoff, slater_weight_min):
 
 
 def certify_sector(
-    h_op, basis, plan, *, expand_kwargs, dense_cutoff, slater_weight_min, verbose=False, within=None, only=None
+    h_op,
+    basis,
+    plan,
+    *,
+    expand_kwargs,
+    dense_cutoff,
+    slater_weight_min,
+    verbose=False,
+    within=None,
+    only=None,
+    occupation_orbitals=None,
 ):
     """Expand every job of ``plan`` from ``basis`` (the seed) and return the lowest.
 
@@ -572,7 +589,7 @@ def certify_sector(
         t_class = time.perf_counter()
         verdict, es, psis, class_basis, solver = _expand_job(
             h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm,
-            rank=ranking, keys=start, window=within,
+            rank=ranking, keys=start, window=within, occupation_orbitals=occupation_orbitals,
         )  # fmt: skip
         verdict_of[k] = verdict
         timings.setdefault(k, []).append(time.perf_counter() - t_class)
@@ -1250,6 +1267,7 @@ def solve_certified(
     verbose=False,
     only=None,
     orbits=None,
+    occupation_orbitals=None,
 ):
     """A certified sector solve for ``manifold``: ``(es, psis, basis, solver, verdicts)``.
 
@@ -1276,6 +1294,7 @@ def solve_certified(
                 slater_weight_min=slater_weight_min,
                 verbose=verbose,
                 only=only,
+                occupation_orbitals=occupation_orbitals,
             )
             phase.dets = result[2].size
         return result
@@ -1290,6 +1309,7 @@ def solve_certified(
             verbose=verbose,
             within=float(manifold.max_energy),
             only=only,
+            occupation_orbitals=occupation_orbitals,
         )
         phase.dets = winner_basis.size
     del es, _solver, winner_basis
@@ -1471,8 +1491,11 @@ class SectorPlanStore:
     solve does not depend on which shifts came before. Records hold replicated scalars only.
     """
 
-    def __init__(self):
+    def __init__(self, active_orbitals=None):
         self.records = {}
+        #: The orbitals the shift acts on, whose occupation is the energy's slope in it (``None``: the whole
+        #: impurity). Fixed at construction: it belongs to the shift operator, so one store never mixes two.
+        self.active_orbitals = None if active_orbitals is None else tuple(int(o) for o in active_orbitals)
         #: Sectors solved by a single expansion because their seed was too large to certify.
         self.uncertified = set()
         #: Sectors certified again because a solve contradicted the record (:meth:`violated`).

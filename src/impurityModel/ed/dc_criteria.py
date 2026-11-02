@@ -917,6 +917,7 @@ def _prepare_sector_context(
         cap_from_memory=cap_from_memory,
         cap_ledger=cap_ledger,
         spin_layout=sb.spin_layout,
+        plan_store=SectorPlanStore(active_orbitals=sb.active_impurity_indices),
         tau=basis.tau,
         slater_weight_min=basis.slater_weight_min,
         chain_restrict=basis.chain_restrict,
@@ -2089,6 +2090,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         cap_from_memory=cap_from_memory,
         cap_ledger=cap_ledger,
         spin_layout=sb.spin_layout,
+        plan_store=SectorPlanStore(active_orbitals=sb.active_impurity_indices),
         weighted_restrictions=build_weighted_restrictions(
             bath_states,
             excitation_budget,
