@@ -433,3 +433,36 @@ def test_the_workflow_solves_saves_and_keeps_su2(tmp_path):
         np.testing.assert_allclose(h5f["w"][()], w)
         np.testing.assert_allclose(h5f["chi/spin_z/realaxis"][()], zz["realaxis"])
         assert h5f.attrs["tau"] == pytest.approx(basis.tau)
+
+
+def test_chi_solves_the_ground_state_under_the_basis_options_like_sigma(monkeypatch):
+    """P3 A/B: chi's ground state is decided by the same ``BasisOptions`` values as the self-energy's (it hard-coded
+    chain_restrict=False and ignored the budgets and tolerances). The recorded baseline is the pre-unification Curie
+    coefficient of this fixture, where no truncation binds, so the two must agree to 1e-8; and the spec the driver
+    hands ``calc_gs`` carries the options."""
+    import dataclasses
+
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.model import Meshes
+
+    from .test_selfenergy_end_to_end import _basis_and_solver, _siam_model
+
+    basis, solver = _basis_and_solver()
+    basis = dataclasses.replace(basis, chain_restrict=True, e_pt2_tol=1e-7, de2_min=1e-10)
+    seen = {}
+    real_calc_gs = groundstate.calc_gs
+
+    def spy(*args, **kwargs):
+        seen["spec"] = kwargs["spec"]
+        return real_calc_gs(*args, **kwargs)
+
+    monkeypatch.setattr(groundstate, "calc_gs", spy)
+    meshes = Meshes(iw=None, w=np.linspace(-3.0, 3.0, 13), delta=0.1)
+    result = susceptibility.calc_susceptibility_workflow(
+        _siam_model(), meshes, basis, solver, comm=MPI.COMM_WORLD, n_matsubara=0
+    )
+    spec = seen["spec"]
+    assert spec.chain_restrict is True and spec.e_pt2_tol == 1e-7 and spec.de2_min == 1e-10
+    assert spec.excitation_budget == basis.excitation_budget and spec.cost_budget == basis.cost_budget
+    if MPI.COMM_WORLD.rank == 0:
+        assert result["operators"]["spin_z"]["curie_coefficient"] == pytest.approx(0.2412685545777933, abs=1e-8)

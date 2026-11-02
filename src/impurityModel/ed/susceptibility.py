@@ -459,7 +459,7 @@ def calc_susceptibility_workflow(
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
-    from impurityModel.ed.groundstate import GroundStateSpec, calc_gs
+    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
     from impurityModel.ed.gs_connectivity import solver_basis_connectivity
     from impurityModel.ed.memory_estimate import resolve_cap_policy
     from impurityModel.ed.solver_basis import prepare_solver_basis
@@ -503,9 +503,20 @@ def calc_susceptibility_workflow(
         log="derived",
         connectivity=solver_basis_connectivity(sb, comm),
     )
-    # What decides which state is found, explicit (A1). chi never chain-restricts and builds no weighted
-    # restrictions (P3 unifies this with the self-energy's, with its own baseline).
-    gs_spec = GroundStateSpec(tau=tau, chain_restrict=False, dense_cutoff=dense_cutoff, truncation_threshold=cap_policy)
+    # What decides which state is found, explicit (A1): the self-energy's values (P3). chi used to hard-code
+    # chain_restrict=False and take no weighted restrictions or tolerances, so it solved a different variational
+    # space from the sigma it is compared with.
+    gs_spec = GroundStateSpec(
+        tau=tau,
+        chain_restrict=basis.chain_restrict,
+        dense_cutoff=dense_cutoff,
+        truncation_threshold=cap_policy,
+        excitation_budget=basis.excitation_budget,
+        cost_budget=basis.cost_budget,
+        restriction_slater_weight_min=slaterWeightMin,
+        e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
+        de2_min=GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
+    )
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,
