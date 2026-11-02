@@ -31,6 +31,11 @@ from typing import Any, Callable
 DEFAULT_DENSE_CUTOFF = 500
 GS_DENSE_CUTOFF = 1000
 
+#: Largest tolerated error bar, in electrons, on the ensemble-averaged impurity occupation that the solved sectors'
+#: residual PT2 energies leave (sum over members of p_s |N_s - <N>| err_s / tau). Above it the charge-sector
+#: ensemble is refused (``mixed_valence``: auto -> winner only plus a warning, on -> raises).
+ENSEMBLE_WEIGHT_ERROR_MAX = 0.05
+
 __all__ = ["KNOBS", "Knob", "NonUniformKnobError", "assert_uniform", "dump"]
 
 
