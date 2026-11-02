@@ -554,6 +554,17 @@ window-class keys holds distributed key arrays across the DC walk, raising peak 
 and needs a new store design (the store holds replicated scalars only; its key includes the cap).
 
 
+**Step 9 (2026-11-02), started: MV 3 field landed, B1 deferred with a measurement.** `solve_ground_state` now puts the walk's
+`SectorDiagnostics` into `convergence_report["sector_diagnostics"]` (`3c726664`; `-n 1/2/3`, bug-injected). **B1 (O6 gate):**
+the step-7′ logs carry no per-class lines (`certify` is 2107 s of the 2149 s SMO 4-bath wall), so the B1 margin cannot be set from
+them; the walk's per-sector times are enough to bound the upside instead. SMO 4-bath: the HF-seed sector (363 s) is certified
+first, so B1 has no E_best to cut against there; the sector at +0.008 Ry (667 s) is inside any margin that is safe; only the
++0.59 Ry sector (38 s) is skippable. Pass 1 (`class_expand`, 1254 s of 71 expansions) is where the time goes, and B1 does not
+touch it. **B1 is not built**: at most tens of seconds of 2149 s, against a new `e_cut` channel through a collective, bounded
+sector energies leaking into `neighbour_totals`/`margin`, and the store/DC guard. Revisit if a workload whose first sector is
+far above the winner shows pass 2 dominating.
+
+
 **Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
 -n 2 3975/17/7 (1211 s), -n 3 3983/9/7 (2230 s), every rank file green. The step-5 `test_orbits` -n 1 quartet-control
 flake did not reproduce: 40 isolated -n 1 runs, 10 runs of `test/symmetry/` at -n 1, 10 at -n 3, plus the gate (0 failures).
