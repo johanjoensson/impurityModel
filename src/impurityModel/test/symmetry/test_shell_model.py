@@ -302,3 +302,31 @@ def test_calc_gs_reports_a_two_shell_impurity_shell_by_shell(tmp_path, capsys):
     assert "not reported" not in out and "skipped" not in out
     rows = out.split("Per-shell impurity observables")[1].splitlines()
     assert [r.split()[0] for r in rows[2:4]] == ["l=1", "l=2"]  # one row per shell, p then d
+
+
+def test_multishell_casimir_ops_follow_the_sorted_orbital_rows_not_the_group_dict_order():
+    """The groups ``prepare_solver_basis`` derives list orbitals out of index order; the rotation rows do not."""
+    from impurityModel.ed.observables import make_impurity_casimir_operators
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    h0, rot = _p_plus_d_model()
+    sb = prepare_solver_basis(
+        h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+    )
+    flat = [o for blocks in sb.impurity_orbitals.values() for block in blocks for o in block]
+    assert flat != sorted(flat)  # the premise: the dict order is not the row order
+    got = make_impurity_casimir_operators(sb.impurity_orbitals, sb.rot_to_spherical, shell_ls=sb.shell_ls)
+    want = make_impurity_casimir_operators({0: [sorted(flat)]}, sb.rot_to_spherical, shell_ls=sb.shell_ls)
+    for k in range(3):
+        for g, w in zip(got[k], want[k]):
+            assert g.approx_equal(w, 1e-12)
+
+
+def test_a_shell_keyed_nominal_occupation_is_not_read_as_group_keyed_when_the_keys_coincide():
+    """Two shells of one group each: group keys == shell keys == {0, 1}, but group 0 is the *d* shell (shell 1)."""
+    from impurityModel.ed.solver_basis import _per_group_occupation
+
+    impurity_orbitals = {0: [list(range(10))], 1: [list(range(10, 16))]}  # group 0: d, group 1: p
+    shell_index = {**dict.fromkeys(range(10), 1), **dict.fromkeys(range(10, 16), 0)}  # p is shell 0, d is shell 1
+    got = _per_group_occupation({0: 2, 1: 8}, impurity_orbitals, impurity_shell_index=shell_index)
+    assert got == {0: 8, 1: 2}
