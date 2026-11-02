@@ -6,9 +6,9 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 :mod:`impurityModel.ed.groundstate`, which only decides *which* state is the ground state.
 """
 
+import sys
 from dataclasses import asdict, dataclass
 
-import sys
 import numpy as np
 
 from impurityModel.ed.average import thermal_average_scale_indep
