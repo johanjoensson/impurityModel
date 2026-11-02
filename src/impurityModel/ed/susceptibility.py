@@ -487,6 +487,7 @@ def calc_susceptibility_workflow(
         verbosity=verbosity,
         rank=rank,
         comm=comm,
+        shell_ls=model.shell_ls,
     )
     # Sized on the ground-state path alone, like every driver (see selfenergy.py).
     cap_policy, _ = resolve_cap_policy(

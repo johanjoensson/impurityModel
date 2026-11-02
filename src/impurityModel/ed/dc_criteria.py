@@ -109,6 +109,20 @@ from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_
 from impurityModel.ed.utils import matrix_print
 
 
+
+def _require_single_shell(model):
+    """The double-counting search measures one correlated shell: refuse a multi-shell model on every rank.
+
+    Raised before any collective. Multi-shell DC (the active-shell projector) is MS T4.7.
+    """
+    shells = model.resolved_shell_ls
+    if shells is not None and len(shells) > 1:
+        raise NotImplementedError(
+            f"the double-counting search does not support a multi-shell impurity yet (shell_ls={shells}); "
+            "it needs the active-shell projector (MS T4.7)."
+        )
+
+
 def _ctx_cap_policy(ctx):
     """The :class:`CapPolicy` a DC context's sector solves run under.
 
@@ -760,6 +774,7 @@ def _prepare_sector_context(
     # Derive the same solver-basis layout calc_selfenergy uses (root cause 3 of the original
     # DC<->GS mismatch: the fit valence/conduction split model.bath_states carries is not
     # necessarily the split calc_selfenergy re-derives from the sign of the bath on-site energy).
+    _require_single_shell(model)
     sb = prepare_solver_basis(
         model.h0,
         model.dc,
@@ -1930,6 +1945,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     # does not mean what it says). The mu shift is a uniform impurity shift (-mu * identity),
     # which commutes with the impurity block and hence with any rotation prepare_solver_basis
     # applies, so the layout derived once here at the guess dc is valid for every trial mu.
+    _require_single_shell(model)
     sb = prepare_solver_basis(
         h0_op,
         model.dc,

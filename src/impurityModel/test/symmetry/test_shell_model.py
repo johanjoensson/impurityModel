@@ -252,3 +252,14 @@ def test_a_bath_component_hopping_to_two_shells_is_refused():
         prepare_solver_basis(
             h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
         )
+
+
+def test_the_dc_search_refuses_a_multishell_model_before_any_collective():
+    from impurityModel.ed.dc_criteria import _require_single_shell
+    from impurityModel.ed.model import ImpurityModel
+
+    h = np.zeros((20, 20))
+    _require_single_shell(ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical=np.eye(10)))
+    _require_single_shell(ImpurityModel.from_solver_matrix(h, 10, rot_to_spherical={2: np.eye(10)}))
+    with pytest.raises(NotImplementedError, match="multi-shell"):
+        _require_single_shell(ImpurityModel.from_solver_matrix(h, 16, rot_to_spherical=np.eye(16), shell_ls=(1, 2)))
