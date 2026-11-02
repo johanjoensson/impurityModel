@@ -544,8 +544,14 @@ takes `window_states`/`gs_num_wanted` from the measured connectivity), so O3-2's
 CrI3 -n 4 (`prof_cri3_n4_step7p.log`) is memory-bound, not cap-bound: the measured-memory guard tightened the auto cap
 663,716 -> 661,666 at 1.6 GiB/rank, so a larger cap cannot add the missing states; the window warning now says so
 (`_raise_cap_advice`, `sector_solver.py`). `window_expected` is 3, not 4, by design: it is a lower bound that does not read a
-class's multiplicity above its lowest level (`window_deficit` docstring). **Open:** whether the `Within` cap should be raised
-for the SMO regime (auto cap below the memory limit) needs the SMO 3-bath profile (~40 min), not run; B3 not started.
+class's multiplicity above its lowest level (`window_deficit` docstring). **SMO 3-bath -n 4 run (`prof_smo3_n4_step10b.log`, 965 s):**
+quartet 4/4, `multiplet_split: None`, `limited_by: memory`; the measured-memory guard tightened the auto cap (292,684 -> 290,600 at
+RSS 1.2 GiB vs a 915 MiB budget), as it did in the old log (486,788 -> 452,240; this run had less free RAM, so the caps differ and the
+bases are not comparable). **Verdict: the `Within` cap is not raised.** On both memory-bound workloads (CrI3, SMO 3-bath) the guard,
+not the auto cap, ends the expansion, so a larger resolved cap has nowhere to go; O3-2 is closed as "memory-limited, no change"
+unless a machine with more RAM per rank shows the auto cap binding first. **B3 deferred** (not built): reusing the walk's
+window-class keys holds distributed key arrays across the DC walk, raising peak memory exactly where memory is the binding resource,
+and needs a new store design (the store holds replicated scalars only; its key includes the cap).
 
 
 **Step 0 (2026-11-01).** Full gate on the tree at `84d9d9ad`+xfail: -n 1 3867 passed / 125 skipped / 6 xfailed (695 s),
