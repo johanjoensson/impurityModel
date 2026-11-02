@@ -1,6 +1,6 @@
 # Mixed valence in impurityModel: what works, what is missing, and how to add it (rev. 2)
 
-**Status (2026-10-30):** planned, not started. **Rev. 2 repurposes the existing `mixed_valence` flag as the ensemble switch, `"auto"|true|false`, and removes its seed-widening behaviour. See "Repurpose `mixed_valence`" below, which supersedes every mention of a new `sector_ensemble` flag.** To be merged with the ground-state determination plans before implementation (see §J "Joint decisions"). Rev. 2 folds in five adversarial reviews (code/MPI, architecture, numerics/memory, physics, UX). Stored copy: `doc/plans/mixed_valence_sector_ensemble.md` (rev. 1). Overwrite it with this file once plan mode is exited.
+**Status (2026-10-30):** planned, not started. **Rev. 2 repurposes the existing `mixed_valence` flag as the ensemble switch, `"auto"|true|false`, and removes its seed-widening behaviour. See "Repurpose `mixed_valence`" below, which supersedes every mention of a new `sector_ensemble` flag.** To be merged with the ground-state determination plans before implementation (see §J "Joint decisions"). Rev. 2 folds in five adversarial reviews (code/MPI, architecture, numerics/memory, physics, UX). This file is rev. 2 (the stored rev. 1 copy was overwritten). Doc consistency pass 2026-11-02 (J9 of `gs_review_2026-10.md`).
 
 ## Context
 
@@ -47,7 +47,7 @@ The physics reviewer confirmed this is purely the two-level Boltzmann population
 - Admission rule: `E_s − residual_s − E_min < cut`.
 - Refusal: if any member or near-member has `residual > c·τ` (c≈0.1), or is cap-bound or uncertified, refuse with an actionable error, or allow it under an explicit override. Record a per-member error bar p(1−p)ΔN·residual/τ.
 - Always make sure the winner's ±1 neighbours are solved. The legacy dN branch (`groundstate.py:868-898`) can miss one. Extend to N±2 only while the edge member is inside the window. Expose the walk's `get_energy` for this; it is a closure today.
-- Never form an ensemble across different frozen (core) occupations: `sector_key` carries the frozen part.
+- Moot (review J1): nothing is frozen on the Σ/DC path, so no ensemble ever crosses frozen occupations. A bath-less deep shell is a seed window (`basis_generation.SeedWindow`, step 11.0b); it is held out of the walk, so every member carries the same deep-shell count and `sector_key` pins it identically.
 - **After the loop**, compare each realised e0_s and the absolute window `e0 + cut` against the walk's values. Filter returned states in absolute terms on rank 0 and broadcast. If the realised minimum moved by more than the tolerance, re-solve the affected members or raise. "Dominant member" means the lowest realised energy, and the weights are reported separately.
 - Walk energies are broadcast and therefore exactly replicated; realised `es` are replicated only to roundoff. Every decision taken from `es`/Z_s is made on rank 0 and broadcast.
 - Refuse `sector_ensemble` when `energy_reference` is not `fermi`. Legacy h0 loads as `"unknown"` (`h0_format.py:595`); the existing refusal covers only the c2i path.
@@ -74,13 +74,14 @@ The physics reviewer confirmed this is purely the two-level Boltzmann population
 - It prints once per `calc_selfenergy` and for the *accepted* DC mu only. Per-trial findings are aggregated into the DC record.
 - ΔE is shown in the run's units. It carries a "lower bound (degeneracy g ignored)" label, or uses the lowest-manifold g if that is cheap. It adds a cap caveat when the walk or truncation report is bound.
 - The advice depends on the driver: Σ/DC say "set sector_ensemble"; spectroscopy says "competing charge state near-degenerate; check nominal/Δ, or set the flag for a reservoir bath".
-- Rename `mixed_valence` → `seed_valence_width`. Add a small `RENAMED_KEYS` alias map in the reader that warns on the old name; the existing RETIRED/REMOVED maps don't fit. Keep the `mv` archive attribute and solver token readable forever. Relabel the RSPt header. Fix the schema description and kind (an electron count, `schema.py:1020`).
+- No rename: `mixed_valence` is repurposed (see "Repurpose `mixed_valence`"), so there is no `RENAMED_KEYS` alias. Keep the `mv` archive attribute and solver token readable forever. Relabel the RSPt header. Fix the schema description and kind (today an electron count, `schema.py:1020`; becomes the tri-state).
 - Labels: ensemble rows read "charge sector (seed N_imp=…, N_total=…)". Docs keep P(N_imp), meaning (A), distinct from the sector weights, meaning (B).
 
 ### D7. Wiring (from commit 1 of the flag, not deferred)
 - Schema `Key` (`inputformat/schema.py`), `inputformat/build.py:706`, the three CLIs that build `BasisOptions` (`scripts/selfenergy.py:453`, `scripts/spectra.py:274`, `scripts/susceptibility.py:145`), and archive read/write (`model.py:1225-1260`, `test/support/real_workload.py`).
 - An impmod_interface solver-line token, archive attribute and header label (`lib.py:358,514,561`). This is a Python-side change in the sibling repo, not RSPt.
 - `required_features` entry so old readers refuse the key instead of running canonical.
+- **Owed to the `schema_version` bump and `required_features` before step 12 starts (J8):** the MV fields (tri-state `mv`, `charge_sector_ensemble`), the MS archive datasets (`Spherical shell l`, per-shell N0), the reinterpreted `mv` token, and the P10 recorded cap. RSPt's `mixed_valence={0: mv}` (`lib.py:439`) is keyed on shell 0 and breaks under MS unless the scalar tri-state lands first.
 - Until a driver is migrated, it **raises** on `sector_ensemble=True`.
 - `gs_statistics` JSON: add `schema_version` and a `charge_sector_ensemble` list. Don't reuse `sector_weights` (`gs_statistics.py:715`, impurity-N blocks). `per_state` gets a `sector` tag and a global `energy_rel`.
 
@@ -136,7 +137,7 @@ Each commit runs the targeted tests. **`-n 1/2/3` runs on every commit that touc
 10. Spectra consumer. This needs `simulate_spectra` refactored to return arrays instead of writing HDF5 mid-run (`spectra.py:319-534`), and XAS components expanded per member before merging.
 11. RIXS consumer.
 12. The KMS pole check, if decision K keeps it.
-13. The `seed_valence_width` rename and alias, the user-guide section, an `examples/` input, and regenerating `input_format.md` and `examples/ground_state_statistics.json`.
+13. The user-guide section (no rename: the key is repurposed), an `examples/` input, and regenerating `input_format.md` and `examples/ground_state_statistics.json`.
 
 ## Verification (sharpened by the numerics review)
 1. **Exact oracle, extended:** a fixture with 2 impurity orbitals and 2–3 bath levels (Fock ≤1024) at τ=2e-3. Pick mu so that one member has an excited state at 0.3–0.9 of its reduced window. Compare ⟨N⟩ **and the per-sector Z_s/Z** against the exact values, truncated at the same cut.
@@ -153,7 +154,7 @@ Each commit runs the targeted tests. **`-n 1/2/3` runs on every commit that touc
 11. **Memory:** log the expand budget and GF budget at each member's entry (two members, NiO-scale) to confirm peak memory is one member.
 
 ## J. Joint decisions with the GS-determination plans
-1. One GS spec built from `BasisOptions`, with the flag in `solve_ground_state`'s signature. This fixes the existing parameter drift: spectra drops `slaterWeightMin`/`chain_restrict`, and susceptibility hard-codes `chain_restrict=False`.
+1. One GS spec built from `BasisOptions`; the flag lives at the ensemble seam (D1), not in `solve_ground_state`'s signature. This fixes the existing parameter drift: spectra drops `slaterWeightMin`/`chain_restrict`, and susceptibility hard-codes `chain_restrict=False`.
 2. Walk semantics: the N±2 extension and the solved set as a first-class output, decided together with the greedy local-minimum issue (`gs_redesign.md` P7) and its oracle.
 3. Which energies decide membership, and at what accuracy (the DC walk can run at a different `DC_E_PT2_TOL`, P5).
 4. Cost: decide membership from Lowest energies alone; solve the thermal ensemble only at the accepted mu; reuse the DC's final ensemble in `calc_selfenergy` (R1/R6). K× applies to both DC trials and the GF stage, which is hours on SMO.

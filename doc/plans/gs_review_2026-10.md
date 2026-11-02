@@ -438,7 +438,7 @@ The stderr tiers are in §4.
   reinterpreted `mv` token and the P10 recorded cap all need a `schema_version` bump and `required_features`
   entries. RSPt's `mixed_valence={0: mv}` (`lib.py:439`) is keyed on shell 0 and breaks under MS unless MV's scalar
   tri-state lands first.
-- **MV's own inconsistencies to fix in that doc:**
+- **MV's own inconsistencies to fix in that doc (done 2026-11-02, step 11.6):**
   - the header still says rev. 1;
   - D6, Verification and commit 13 still describe the `seed_valence_width` rename that the repurpose section dropped;
   - §J1 puts the flag in `solve_ground_state`'s signature;
