@@ -33,10 +33,12 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import (
     log_peak_vs_predicted,
     resolve_cap_policy,
 )
+from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.sigma import (  # noqa: F401
     UnphysicalGreensFunctionError,
     _format_causality_report,
@@ -461,7 +463,14 @@ def _report_phase_time(report, phase, t_start):
     report(f"Wall time: {phase} {time.perf_counter() - t_start:.1f} s", level=V_SUMMARY, flush=True)
 
 
-def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=None):
+def _state_list(psis):
+    """The thermal states as a list of single-column states (a solve returns them as one block)."""
+    return psis.to_states() if isinstance(psis, ManyBodyState) else list(psis)
+
+
+def _drop_low_weight_manifolds(
+    psis, es, tau, min_weight, slaterWeightMin, comm=None, *, e_ref=None, z_before=0.0, exempt_ground=True
+):
     """Drop whole degenerate manifolds whose Boltzmann weight per state is below ``min_weight``.
 
     The eigensolver keeps every state inside the energy window ``-tau*ln(1e-4)``
@@ -475,6 +484,13 @@ def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=
     The decision is taken on the root rank and broadcast, so every rank keeps the same states
     (``comm`` collective; ``None`` for a serial call).
 
+    For a charge-sector ensemble the weights are normalised across the members solved so far: ``e_ref`` is the
+    first member's realised ground energy and ``z_before`` the sum of ``exp(-(E - e_ref)/tau)`` over the earlier
+    members' states, so a manifold's weight is ``exp(-(E - e_ref)/tau) / (z_before + this member's sum)``.  Later
+    members only lower it, so the rule stays conservative.  Only the global ground manifold is exempt
+    (``exempt_ground=False`` for every later member, whose states may all be dropped).  With the defaults the
+    rule is the single-member one, unchanged.
+
     Returns
     -------
     (psis, es, dropped)
@@ -483,15 +499,15 @@ def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=
     """
     e = np.real(np.asarray(es, dtype=complex))
     order = np.argsort(e, kind="stable")
-    e0 = e[order[0]]
+    e0 = e[order[0]] if e_ref is None else e_ref
     weights = np.exp(-(e - e0) / tau)
-    weights /= weights.sum()
+    weights /= z_before + weights.sum()
     e_sorted = e[order]
     groups = degenerate_groups(e_sorted, tol=_degeneracy_tol(e_sorted, slaterWeightMin))
     keep = sorted(
         int(order[j])
         for g_i, group in enumerate(groups)
-        if g_i == 0 or max(weights[order[j]] for j in group) >= min_weight
+        if (g_i == 0 and exempt_ground) or max(weights[order[j]] for j in group) >= min_weight
         for j in group
     )
     if comm is not None:
@@ -550,7 +566,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     w = meshes.w
     delta = meshes.delta
     nominal_occ = basis.nominal_occ
-    mixed_valence = basis.mixed_valence
+    mixed_valence, mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="auto")
     tau = basis.tau
     chain_restrict = basis.chain_restrict
     occ_cutoff = basis.occ_cutoff
@@ -586,6 +602,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # MPI variables
     rank = comm.rank if comm is not None else 0
     report = Reporter(verbosity, rank)
+    if mv_note is not None:
+        report(mv_note, level=V_RESULT)
 
     sb = prepare_solver_basis(
         h0,
@@ -593,7 +611,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         u4,
         impurity_orbitals,
         nominal_occ,
-        mixed_valence=mixed_valence,
         rot_to_spherical=rot_to_spherical,
         verbosity=verbosity,
         rank=rank,
@@ -643,6 +660,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # per-determinant floor.
         e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
         de2_min=GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
+        mixed_valence=mixed_valence,
     )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
@@ -654,43 +672,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     if sb.seed_window is not None:
         # A bath-less shell beside a correlated one: its seed is a window, not the whole shell (review J1).
         basis_information["frozen_occupations"] = sb.seed_window
-    # The thermal ground state and the interacting Green's function. The ground-state solve returns
-    # every eigenstate inside the thermal window, certified complete (or says it could not), so the
-    # ensemble is never re-requested with a larger count.
-    t_phase = time.perf_counter()
-    psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
-        h,
-        basis_information,
-        block_structure,
-        rot_to_spherical,
-        verbosity,
-        slaterWeightMin=slaterWeightMin,
-        shell_ls=sb.shell_ls,
-        spec=gs_spec,
-    )
-    _report_phase_time(report, "ground state", t_phase)
-    restrictions = ground_state_basis.restrictions
-
-    if restrictions is not None:
-        report("Restrictions on ground-state occupation:", level=V_DETAIL)
-        for indices, limits in restrictions.items():
-            report(f"  {sorted(indices)} : {limits}", level=V_DETAIL)
-
-    ensemble_es = es
-    if gf_min_weight is not None:
-        psis, es, dropped = _drop_low_weight_manifolds(psis, es, tau, gf_min_weight, slaterWeightMin, comm)
-        if dropped:
-            report(
-                f"gf_min_weight {gf_min_weight:g}: dropped {len(dropped)} of {len(ensemble_es)} thermal state(s) "
-                f"(E-E0 = {', '.join(f'{de:.4g}' for de, _w in dropped)}; total Boltzmann weight "
-                f"{sum(w for _de, w in dropped):.3e}) from the Green's function and self-energy.",
-                level=V_RESULT,  # it changes the result, so it is never hidden
-            )
-
-    report.banner("Interacting Green's function")
-    report(f"Considering {len(es)} eigenstate(s) for the spectra.")
-    report("Calculating interacting Green's function ...", flush=True)
-
     if gf_refine is not None:
         tables, check_tables = _refine_tables(
             sb,
@@ -701,92 +682,232 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             comm,
         )
         gf_refine = replace(gf_refine, tables=tables, check_tables=check_tables)
-    t_phase = time.perf_counter()
+    inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
     # The retry is off unless asked for: it can cost as much as an unsettled Green's function.
     settle_retry = gf_settle_retry is True and gf_settle is not False
-    gf_run = {}
-    gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
-        matsubara_mesh=iw,
-        omega_mesh=w,
-        psis=psis,
-        es=es,
-        tau=tau,
-        basis=ground_state_basis,
-        hOp=h,
-        delta=delta,
-        blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
-        verbose=verbosity >= 1,
-        verbose_extra=verbosity >= 2,
-        reort=None,  # the Green's-function recurrence never reorthogonalizes
-        dN=dN,
-        occ_cutoff=occ_cutoff,
-        slaterWeightMin=slaterWeightMin,
-        sparse=sparse_green,
-        gf_method=gf_method,
-        gf_admission=gf_admission,
-        gf_admit_tol=gf_admit_tol,
-        gf_settle=gf_settle,
-        gf_settle_ratio=gf_settle_ratio,
-        gf_prune_tol=gf_prune_tol,
-        gf_first_shell_tol=gf_first_shell_tol,
-        gf_refine=gf_refine,
-        gf_tol=gf_tol,
-        gf_real_tol=gf_real_tol,
-        ensemble_es=ensemble_es,
-        operator_families=lambda block: estimator.operator_families(block, sb),
-        run_out=gf_run if settle_retry else None,
-    )
-
-    gf_seconds = time.perf_counter() - t_phase
-    _report_phase_time(report, "Green's function", t_phase)
-    if rank == 0 and gf_report is not None:
-        gf_report.add(
-            "ground state", check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))
-        )
-        # Always shown (this is the diagnostics report itself, not detail): only
-        # problem rows at the terse default, the full table from -v.
-        report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
-    # get_Greens_function resolved the estimator's operator families; the impurity Green's
-    # function is the leading block of each (the whole of it for the Dyson estimator).
-    inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
-    family_matsubara, family_realaxis = gs_matsubara, gs_realaxis
+    # Sort the flattened indices: the groups enumerate the impurity orbitals in
+    # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but h/thermal_rho below
+    # are in the input-basis orbital order. get_greens_function_moments indexes h
+    # with this list, so an unsorted list would permute the extracted moments against it.
+    impurity_indices = sorted(orb for blocks_ in sb.impurity_orbitals.values() for block in blocks_ for orb in block)
+    running = {"e_ref": None, "z": 0.0}  # the drop rule's normalisation across the charge-sector members so far
 
     def _impurity_gf(families):
         if families is None:
             return None
         return [estimator.impurity_gf(g, block) for g, block in zip(families, inequivalent_blocks)]
 
+    def member_moments(psis, es, ground_state_basis):
+        """The spectral moments M1..M3 of one set of thermal states (collective; replicated result).
+
+        Built from the exact interacting Green's-function spectral moments -- collective (applies h + Allreduce),
+        so run unconditionally on every rank. Only the inequivalent blocks' moments are consumed (the entries
+        between blocks vanish by symmetry), so only those blocks' seeds are applied.
+        """
+        report("Calculating self-energy moments ...")
+        t_phase = time.perf_counter()
+        M = get_greens_function_moments(
+            psis, es, tau, ground_state_basis, h, impurity_indices, blocks=inequivalent_blocks
+        )
+        _report_phase_time(report, "self-energy moments", t_phase)
+        return M
+
+    def member_gf(psis, es, ground_state_basis, truncation, convergence, label="", with_moments=True):
+        """The interacting Green's function and moments of one set of thermal states (a charge-sector member).
+
+        Collective. Returns ``None`` when the drop rule removes every state of the member (a minority member
+        whose whole manifold is below ``gf_min_weight``), else a dict of the member's own thermally averaged
+        families, spectral moments ``M`` and the settle-retry note. The averages are normalised over the member's
+        kept states, exactly as for a single sector; the caller weights the members.
+        """
+        if running["e_ref"] is None:
+            running["e_ref"] = float(np.min(np.real(np.asarray(es))))
+        first = running["z"] == 0.0
+        restrictions = ground_state_basis.restrictions
+        if restrictions is not None:
+            report("Restrictions on ground-state occupation:", level=V_DETAIL)
+            for indices, limits in restrictions.items():
+                report(f"  {sorted(indices)} : {limits}", level=V_DETAIL)
+
+        ensemble_es = es
+        if gf_min_weight is not None:
+            psis, es, dropped = _drop_low_weight_manifolds(
+                psis,
+                es,
+                tau,
+                gf_min_weight,
+                slaterWeightMin,
+                comm,
+                e_ref=running["e_ref"],
+                z_before=running["z"],
+                exempt_ground=first,
+            )
+            if dropped:
+                report(
+                    f"gf_min_weight {gf_min_weight:g}: dropped {len(dropped)} of {len(ensemble_es)} thermal "
+                    f"state(s) (E-E0 = {', '.join(f'{de:.4g}' for de, _w in dropped)}; total Boltzmann weight "
+                    f"{sum(w for _de, w in dropped):.3e}) from the Green's function and self-energy.",
+                    level=V_RESULT,  # it changes the result, so it is never hidden
+                )
+        running["z"] += float(np.exp(-(np.real(np.asarray(ensemble_es)) - running["e_ref"]) / tau).sum())
+        if len(es) == 0:
+            report(
+                f"{label}every thermal state of this member is below gf_min_weight; the member is skipped.",
+                level=V_RESULT,  # it changes the result, so it is never hidden
+            )
+            return None
+
+        report.banner("Interacting Green's function")
+        report(f"{label}Considering {len(es)} eigenstate(s) for the spectra.")
+        report("Calculating interacting Green's function ...", flush=True)
+        t_phase = time.perf_counter()
+        gf_run = {}
+        gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
+            matsubara_mesh=iw,
+            omega_mesh=w,
+            psis=psis,
+            es=es,
+            tau=tau,
+            basis=ground_state_basis,
+            hOp=h,
+            delta=delta,
+            blocks=inequivalent_blocks,
+            verbose=verbosity >= 1,
+            verbose_extra=verbosity >= 2,
+            reort=None,  # the Green's-function recurrence never reorthogonalizes
+            dN=dN,
+            occ_cutoff=occ_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            sparse=sparse_green,
+            gf_method=gf_method,
+            gf_admission=gf_admission,
+            gf_admit_tol=gf_admit_tol,
+            gf_settle=gf_settle,
+            gf_settle_ratio=gf_settle_ratio,
+            gf_prune_tol=gf_prune_tol,
+            gf_first_shell_tol=gf_first_shell_tol,
+            gf_refine=gf_refine,
+            gf_tol=gf_tol,
+            gf_real_tol=gf_real_tol,
+            ensemble_es=ensemble_es,
+            operator_families=lambda block: estimator.operator_families(block, sb),
+            run_out=gf_run if settle_retry else None,
+        )
+
+        gf_seconds = time.perf_counter() - t_phase
+        _report_phase_time(report, "Green's function", t_phase)
+        if rank == 0 and gf_report is not None:
+            gf_report.add("ground state", check_ground_state_truncation(truncation, convergence))
+            # Always shown (this is the diagnostics report itself, not detail): only
+            # problem rows at the terse default, the full table from -v.
+            report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
+        # get_Greens_function resolved the estimator's operator families; the impurity Green's
+        # function is the leading block of each (the whole of it for the Dyson estimator).
+        family_matsubara, family_realaxis = gs_matsubara, gs_realaxis
+
+        # Physicality checks run on rank 0 (where the gathered results live); _check_gf_physical
+        # broadcasts each verdict so every rank raises (or continues) as one.
+        _check_gf_physical(comm, _impurity_gf(family_matsubara), "Matsubara")
+        _check_gf_physical(comm, _impurity_gf(family_realaxis), "Real frequency")
+
+        # A self-energy that fails the causality check is attributed, and when the support settle can plausibly be
+        # blamed its units are solved again once, closure-only; the checks below then judge the (possibly new) G.
+        family_matsubara, family_realaxis, retry_note, retried = _settle_retry(
+            run=gf_run.get("run"),
+            gf_report=gf_report,
+            family_matsubara=family_matsubara,
+            family_realaxis=family_realaxis,
+            iw=iw,
+            w=w,
+            delta=delta,
+            estimator=estimator,
+            sb=sb,
+            blocks=inequivalent_blocks,
+            comm=comm,
+            report=report,
+            cluster_label=cluster_label,
+            retry=settle_retry,
+            gf_seconds=gf_seconds,
+        )
+        gf_run.clear()  # the run held every unit's seeds and results; nothing needs them past this point
+        if retried:
+            _check_gf_physical(comm, _impurity_gf(family_matsubara), "Matsubara")
+            _check_gf_physical(comm, _impurity_gf(family_realaxis), "Real frequency")
+
+        M = member_moments(psis, es, ground_state_basis) if with_moments else None
+        return {
+            "matsubara": family_matsubara,
+            "realaxis": family_realaxis,
+            "M": M,
+            "note": retry_note,
+            "es": es,
+            "psis": None if with_moments else psis,
+        }
+
+    # The thermal ground state and the interacting Green's function. The ground-state solve returns
+    # every eigenstate inside the thermal window, certified complete (or says it could not), so the
+    # ensemble is never re-requested with a larger count. Under mixed_valence auto/on it returns the
+    # dominant charge sector's states, and ``member_gf`` runs once per member inside it.
+    t_phase = time.perf_counter()
+    psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
+        h,
+        basis_information,
+        block_structure,
+        rot_to_spherical,
+        verbosity,
+        slaterWeightMin=slaterWeightMin,
+        shell_ls=sb.shell_ls,
+        spec=gs_spec,
+        member_hook=lambda member, gs, trunc, conv: member_gf(
+            _state_list(gs.psis), gs.es, gs.basis, trunc, conv, label=f"[N_total = {member.total}] "
+        ),
+    )
+    _report_phase_time(report, "ground state", t_phase)
+    ensemble = gs_info.get("ensemble")
+    if ensemble is None:  # mixed_valence off: one sector, no hook call
+        # One sector: its moments come after the self-energy, as they always did (no basis is released meanwhile).
+        member_results = [
+            member_gf(
+                psis,
+                es,
+                ground_state_basis,
+                gs_info.get("truncation"),
+                gs_info.get("convergence"),
+                with_moments=False,
+            )
+        ]
+        weights = [1.0]
+    else:
+        member_results = gs_info["member_results"]
+        weights = [m["weight"] for m in ensemble["members"]]
+    live = [(wt, r) for wt, r in zip(weights, member_results) if r is not None]
+    if len(live) == 1:
+        merged = live[0][1]
+    else:
+        total = sum(wt for wt, _ in live)
+        coeff = [wt / total for wt, _ in live]
+
+        def _combine(key):
+            parts = [r[key] for _, r in live]
+            if parts[0] is None:  # non-root ranks hold None
+                return None
+            return [sum(c * part[i] for c, part in zip(coeff, parts)) for i in range(len(parts[0]))]
+
+        merged = {
+            "matsubara": _combine("matsubara"),
+            "realaxis": _combine("realaxis"),
+            "M": sum(c * r["M"] for c, (_, r) in zip(coeff, live)),
+            "psis": None,
+            "note": "\n".join(r["note"] for _, r in live if r["note"]),
+            "es": live[0][1]["es"],
+        }
+    es = merged["es"]
+    family_matsubara, family_realaxis = merged["matsubara"], merged["realaxis"]
+    retry_note, M = merged["note"], merged["M"]
     gs_matsubara = _impurity_gf(family_matsubara)
     gs_realaxis = _impurity_gf(family_realaxis)
-
-    # Physicality checks run on rank 0 (where the gathered results live); _check_gf_physical
-    # broadcasts each verdict so every rank raises (or continues) as one.
-    _check_gf_physical(comm, gs_matsubara, "Matsubara")
-    _check_gf_physical(comm, gs_realaxis, "Real frequency")
-
-    # A self-energy that fails the causality check is attributed, and when the support settle can plausibly be
-    # blamed its units are solved again once, closure-only; the checks below then judge the (possibly new) G.
-    family_matsubara, family_realaxis, retry_note, retried = _settle_retry(
-        run=gf_run.get("run"),
-        gf_report=gf_report,
-        family_matsubara=family_matsubara,
-        family_realaxis=family_realaxis,
-        iw=iw,
-        w=w,
-        delta=delta,
-        estimator=estimator,
-        sb=sb,
-        blocks=inequivalent_blocks,
-        comm=comm,
-        report=report,
-        cluster_label=cluster_label,
-        retry=settle_retry,
-        gf_seconds=gf_seconds,
-    )
-    gf_run.clear()  # the run held every unit's seeds and results; nothing needs them past this point
-    if retried:
-        gs_matsubara = _impurity_gf(family_matsubara)
-        gs_realaxis = _impurity_gf(family_realaxis)
+    if len(live) > 1:
+        # The merged Green's function is judged as one; a failure is reported, not retried.
         _check_gf_physical(comm, gs_matsubara, "Matsubara")
         _check_gf_physical(comm, gs_realaxis, "Real frequency")
 
@@ -817,17 +938,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         note=retry_note,
     )
 
-    # Sort the flattened indices: the groups enumerate the impurity orbitals in
-    # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but h/thermal_rho below
-    # are in the input-basis orbital order. get_greens_function_moments below indexes h
-    # with this list, so an unsorted list would permute the extracted moments against it.
-    impurity_indices = sorted(
-        orb
-        for impurity_blocks in ground_state_basis.impurity_orbitals.values()
-        for block in impurity_blocks
-        for orb in block
-    )
-
     # Rotate every result from the solver basis S back to the caller's input basis B
     # (O_B = W O_S W^dag; impurity block u_imp). When the adaptive test kept the input basis,
     # W and u_imp are identity and these are no-ops. The density matrix is full-space (rotate
@@ -848,18 +958,10 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     gs_matsubara_full = _to_input_basis(gs_matsubara)
     gs_realaxis_full = _to_input_basis(gs_realaxis)
 
-    # High-frequency self-energy moments Sigma_1, Sigma_2 (coefficients of 1/(iw), 1/(iw)^2).
-    # Built from the exact interacting Green's-function spectral moments M1..M3 -- collective
-    # (applies h + Allreduce), so run unconditionally on every rank. The M tensor is replicated
-    # after the reduction, so the conversion and block-symmetrisation below are identical on all
-    # ranks (pure numpy on replicated data).
-    report("Calculating self-energy moments ...")
-    t_phase = time.perf_counter()
-    # Only the inequivalent blocks' moments are consumed (_moment_to_input_basis below rebuilds the
-    # rest from them), and the entries between blocks vanish by symmetry, so only those blocks' seeds
-    # are applied: on SrMnO3, 2 of 10 orbitals.
-    M = get_greens_function_moments(psis, es, tau, ground_state_basis, h, impurity_indices, blocks=inequivalent_blocks)
-    _report_phase_time(report, "self-energy moments", t_phase)
+    # High-frequency self-energy moments Sigma_1, Sigma_2 from the spectral moments M, replicated after the
+    # reduction (so the conversion and block-symmetrisation below are identical on all ranks: pure numpy).
+    if M is None:
+        M = member_moments(merged["psis"], merged["es"], ground_state_basis)
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
     sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
 
@@ -894,4 +996,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # The ground state's residual PT2 energy against its tolerance (CIPSISolver.expand's
         # `convergence_report`): the error bar on the ground-state energy.
         "gs_convergence": gs_info.get("convergence"),
+        # None unless the charge-sector ensemble was formed: members, weights c_s, global e0 (mixed_valence).
+        "gs_ensemble": ensemble,
     }

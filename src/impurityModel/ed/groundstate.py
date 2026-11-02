@@ -1767,7 +1767,17 @@ class GroundStateSpec:
 
 
 def _calc_gs_ensemble(
-    Hop, basis_setup, mode, block_structure, rot_to_spherical, verbose, slaterWeightMin, stats_path, layout, shell_ls
+    Hop,
+    basis_setup,
+    mode,
+    block_structure,
+    rot_to_spherical,
+    verbose,
+    slaterWeightMin,
+    stats_path,
+    layout,
+    shell_ls,
+    member_hook=None,
 ):
     """``calc_gs`` for a resolved ``mixed_valence`` of ``auto``/``on``: every member's thermal manifold, one report.
 
@@ -1777,17 +1787,24 @@ def _calc_gs_ensemble(
     ``(psis, es, basis)`` -- with the merged ``thermal_rho`` and ``gs_info["ensemble"]``.
     """
     kept = []  # (member, SectorMeasurement-args, truncation report, convergence report)
+    hooked = []  # member_hook's return per member
 
     def consume(member, gs):
         keep_basis = gs.basis if not kept else None  # the dominant member's basis carries the report
+        truncation = refined_truncation_report(gs.solver, gs.walk_report)
+        convergence = getattr(gs.solver, "convergence_report", None)
         kept.append(
             (
                 member,
                 measure_ground_state(keep_basis, np.array(gs.es), gs.psis, total=member.total),
-                refined_truncation_report(gs.solver, gs.walk_report),
-                getattr(gs.solver, "convergence_report", None),
+                truncation,
+                convergence,
             )
         )
+        if member_hook is not None:
+            # Collective, member by member while this member's basis is alive (a consumer such as the
+            # Green's function needs the states and their basis; it keeps only what it must).
+            hooked.append(member_hook(member, gs, truncation, convergence))
 
     kwargs = {k: v for k, v in basis_setup.items() if k not in ("use_hf_seed", "warn_neighbours", "mixed_valence")}
     kwargs["use_hf_seed"] = basis_setup.get("use_hf_seed", True)
@@ -1843,6 +1860,7 @@ def _calc_gs_ensemble(
         ensemble=info,
     )
     gs_info["ensemble"] = info
+    gs_info["member_results"] = hooked
     n_dominant = len(measurements[0].es)
     return psis[:n_dominant], es[:n_dominant], basis, thermal_rho, gs_info
 
@@ -1857,6 +1875,7 @@ def calc_gs(
     stats_path: str = "ground_state_statistics.json",
     shell_ls=None,
     spec: Optional[GroundStateSpec] = None,
+    member_hook=None,
     **kwargs,
 ):
     """
@@ -1893,6 +1912,11 @@ def calc_gs(
         ``basis_setup``; a key set by both raises ``ValueError``.
     slaterWeightMin : float
         Minimum weight threshold for determinants in the basis.
+
+    member_hook : callable, optional
+        Only under ``mixed_valence`` ``auto``/``on`` (ignored when the sector ensemble is not formed): called
+        collectively as ``member_hook(member, ground_state, truncation_report, convergence_report)`` for each
+        member while its basis is alive; the returns are listed in ``gs_info["member_results"]``.
 
     Returns
     -------
@@ -1969,6 +1993,7 @@ def calc_gs(
             stats_path,
             layout,
             shell_ls,
+            member_hook=member_hook,
         )
     ground_state = solve_ground_state(Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, **basis_setup)
     ground_state_basis, solver, es, psis = ground_state[:4]
