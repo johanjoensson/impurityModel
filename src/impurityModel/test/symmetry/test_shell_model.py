@@ -188,3 +188,67 @@ def test_whole_shell_spin_pairs_cover_every_shell_of_a_multishell_rotation():
     assert sorted(candidates[0][0]) == want
     # a partial d shell (two rows dropped) is no clean pairing
     assert _impurity_pairs_whole_shell({0: [list(range(14))]}, rot[:14], shell_ls=(1, 2)) is None
+
+
+def _p_plus_d_model(couple_p=False):
+    """16 impurity spin-orbitals (p: 0-5, d: 6-15, each [dn, up]) and 4 bath orbitals hybridised with the d shell."""
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+
+    n = 20
+    h = np.zeros((n, n), dtype=complex)
+    for o in range(6):
+        h[o, o] = 5.0 + 0.01 * o  # p above d: energetic filling alone would leave it empty
+    for i, o in enumerate(range(6, 16)):
+        h[o, o] = 1.0 + 0.1 * (i % 5)
+    for b in range(4):
+        h[16 + b, 16 + b] = -1.0 if b < 2 else 2.0
+    for o, b in ((6, 16), (11, 17), (7, 18), (12, 19)):
+        h[o, b] = h[b, o] = 0.3
+    if couple_p:
+        h[0, 16] = h[16, 0] = 0.3
+    return tensors_to_operator(h).to_dict(), np.eye(16, dtype=complex)
+
+
+def test_prepare_solver_basis_multishell_records_shells_bath_and_per_shell_occupation():
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    h0, rot = _p_plus_d_model()
+    sb = prepare_solver_basis(
+        h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+    )
+    assert sb.shell_ls == (1, 2)
+    assert {sb.impurity_shell_index[o] for o in range(6)} == {0}
+    assert {sb.impurity_shell_index[o] for o in range(6, 16)} == {1}
+    assert sb.shell_has_bath == {0: False, 1: True}
+    assert sb.active_impurity_indices == list(range(6, 16))
+    per_shell = {a: 0 for a in (0, 1)}
+    for k, n_k in sb.nominal_occ.items():
+        orb = next(o for block in sb.impurity_orbitals[k] for o in block)
+        per_shell[sb.impurity_shell_index[orb]] += n_k
+    assert per_shell == {0: 2, 1: 8}
+
+
+def test_prepare_solver_basis_single_shell_leaves_the_shell_fields_empty():
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    h = np.zeros((12, 12), dtype=complex)
+    for i in range(10):
+        h[i, i] = 1.0 + 0.1 * (i % 5)
+    h[10, 10], h[11, 11] = -1.0, 2.0
+    h[0, 10] = h[10, 0] = h[5, 11] = h[11, 5] = 0.3
+    sb = prepare_solver_basis(
+        tensors_to_operator(h).to_dict(), {}, {}, {0: list(range(10))}, 8, rot_to_spherical=np.eye(10), verbosity=0
+    )
+    assert sb.shell_ls is None and sb.impurity_shell_index is None
+    assert sb.shell_has_bath is None and sb.active_impurity_indices is None
+
+
+def test_a_bath_component_hopping_to_two_shells_is_refused():
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    h0, rot = _p_plus_d_model(couple_p=True)
+    with pytest.raises(ValueError, match="spans shells|straddle"):
+        prepare_solver_basis(
+            h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+        )

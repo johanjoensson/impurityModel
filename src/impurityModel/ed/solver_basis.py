@@ -1,12 +1,13 @@
 import functools
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import Optional, cast
 
 import numpy as np
 
 from impurityModel.ed.basis_generation import check_mixed_valence
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.observables import resolve_shell_ls, shell_index_of_orbitals
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,
@@ -52,6 +53,14 @@ class SolverBasis:
     #: The (dn, up) pairing of the solver-basis impurity and bath, resolved once per run; see
     #: :func:`~impurityModel.ed.spin_pairs.spin_layout`.
     spin_layout: object = None
+    #: Multi-shell models only (``None`` for one shell, where everything below is the trivial single entry):
+    #: the ``l`` of each spherical column block of ``rot_to_spherical``, the shell of every impurity orbital
+    #: (solver-basis index -> shell), whether each shell has bath orbitals, and the impurity orbitals of the
+    #: shells that do (the correlated, active ones).
+    shell_ls: Optional[tuple] = None
+    impurity_shell_index: Optional[dict] = None
+    shell_has_bath: Optional[dict] = None
+    active_impurity_indices: Optional[list] = None
 
     @functools.cached_property
     def h_int(self) -> ManyBodyOperator:
@@ -66,7 +75,7 @@ class SolverBasis:
         return h - self.h0_solve
 
 
-def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):
+def _per_group_occupation(nominal_occ, impurity_orbitals, h=None, impurity_shell_index=None):
     """Map ``nominal_occ`` onto the derived orbital-symmetry groups.
 
     Accepts a dict already keyed by the group indices (used as-is), or any other dict / a
@@ -77,8 +86,21 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):
     is spin-symmetric. Without ``h`` it falls back to a size-proportional split (remainder to
     the largest groups). The prescan refines the per-group split, so this only needs to be a
     sensible starting point.
+
+    With ``impurity_shell_index`` (orbital -> shell, multi-shell models) a dict keyed by the shell indices is
+    a per-shell nominal occupation: each shell's electrons are distributed over that shell's groups alone.
     """
     keys = list(impurity_orbitals)
+    if impurity_shell_index is not None and isinstance(nominal_occ, dict):
+        shell_of_group = {
+            k: impurity_shell_index[next(o for block in impurity_orbitals[k] for o in block)] for k in keys
+        }
+        if set(nominal_occ) == set(shell_of_group.values()) and set(nominal_occ) != set(keys):
+            out = {}
+            for a, n_a in nominal_occ.items():
+                sub = {k: impurity_orbitals[k] for k in keys if shell_of_group[k] == a}
+                out.update(_per_group_occupation(int(n_a), sub, h))
+            return {k: out[k] for k in keys}
     if isinstance(nominal_occ, dict) and set(nominal_occ) == set(keys):
         return {k: int(nominal_occ[k]) for k in keys}
     total = int(sum(nominal_occ.values()) if isinstance(nominal_occ, dict) else nominal_occ)
@@ -106,7 +128,18 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):
 
 
 def prepare_solver_basis(
-    h0, dc, u, impurity_orbitals, nominal_occ, *, mixed_valence=None, rot_to_spherical, verbosity, rank=0, comm=None
+    h0,
+    dc,
+    u,
+    impurity_orbitals,
+    nominal_occ,
+    *,
+    mixed_valence=None,
+    rot_to_spherical,
+    verbosity,
+    rank=0,
+    comm=None,
+    shell_ls=None,
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
@@ -124,6 +157,11 @@ def prepare_solver_basis(
 
     ``mixed_valence`` only has to be off (``None``/``False``/``0``): see
     :func:`~impurityModel.ed.basis_generation.check_mixed_valence`. It is checked first, before any collective.
+
+    ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) marks a multi-shell impurity.
+    The symmetry-adapted rotation is then kept only if it maps every orbital into a single shell (otherwise
+    the input basis is solved in), every orbital group must lie in one shell, and ``nominal_occ`` may be keyed
+    by shell. ``None`` (or one shell) is the single-shell path, unchanged.
     """
     check_mixed_valence(mixed_valence)
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
@@ -162,6 +200,13 @@ def prepare_solver_basis(
     fill_ratio = len(h_rotated) / max(n_terms_input, 1)
 
     rotate = fill_ratio <= _MAX_ROTATION_FILL
+    multishell = shell_ls is not None and len(resolve_shell_ls(rot_to_spherical, shell_ls)) > 1
+    if rotate and multishell:
+        # A rotation that mixes shells would make "the occupation of shell a" meaningless: keep the input basis.
+        try:
+            shell_index_of_orbitals(u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex), shell_ls)
+        except ValueError:
+            rotate = False
     if rotate:
         h = h_rotated
         h0_solve = rotate_hamiltonian(h0_input, rotation_full, tol=_ROTATION_TRIM_TOL)
@@ -218,7 +263,18 @@ def prepare_solver_basis(
                 + " merged: one bath component hops to both, so no window can be set per group.",
                 flush=True,
             )
-    nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix)
+    impurity_shell_index = shell_has_bath = active_impurity_indices = None
+    if multishell:
+        local = shell_index_of_orbitals(rot_to_spherical, shell_ls)
+        impurity_shell_index = {int(o): int(a) for o, a in zip(impurity_indices, local)}
+        for k, blocks in impurity_orbitals.items():
+            shells = {impurity_shell_index[o] for block in blocks for o in block}
+            if len(shells) > 1:
+                raise ValueError(
+                    f"impurity orbital group {k} spans shells {sorted(shells)}: a bath component hops to more than "
+                    "one shell, so no per-shell occupation window can be set."
+                )
+    nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix, impurity_shell_index)
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
@@ -247,7 +303,15 @@ def prepare_solver_basis(
                 f"  {i:>5}  {format_index_ranges(orbs):<20} {len(orbs):>4} {n_val:>4} {n_con:>4}"
                 f" {nominal_occ[i]:>7}"
             )
-    spin_layout = resolve_spin_layout(h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm)
+    if multishell:
+        shell_has_bath = {a: False for a in range(len(shell_ls))}
+        for k in impurity_orbitals:
+            if sum_bath_states.get(k, 0) > 0:
+                shell_has_bath[impurity_shell_index[next(o for block in impurity_orbitals[k] for o in block)]] = True
+        active_impurity_indices = sorted(o for o, a in impurity_shell_index.items() if shell_has_bath[a])
+    spin_layout = resolve_spin_layout(
+        h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm, shell_ls=shell_ls
+    )
     return SolverBasis(
         h=h,
         h0_solve=h0_solve,
@@ -262,6 +326,10 @@ def prepare_solver_basis(
         total_impurity_orbitals=total_impurity_orbitals,
         sum_bath_states=sum_bath_states,
         spin_layout=spin_layout,
+        shell_ls=tuple(resolve_shell_ls(rot_to_spherical, shell_ls)) if multishell else None,
+        impurity_shell_index=impurity_shell_index,
+        shell_has_bath=shell_has_bath,
+        active_impurity_indices=active_impurity_indices,
     )
 
 
