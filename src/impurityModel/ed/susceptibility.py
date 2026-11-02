@@ -459,7 +459,7 @@ def calc_susceptibility_workflow(
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.groundstate import GroundStateSpec, calc_gs
     from impurityModel.ed.gs_connectivity import solver_basis_connectivity
     from impurityModel.ed.memory_estimate import resolve_cap_policy
     from impurityModel.ed.solver_basis import prepare_solver_basis
@@ -503,16 +503,15 @@ def calc_susceptibility_workflow(
         log="derived",
         connectivity=solver_basis_connectivity(sb, comm),
     )
+    # What decides which state is found, explicit (A1). chi never chain-restricts and builds no weighted
+    # restrictions (P3 unifies this with the self-energy's, with its own baseline).
+    gs_spec = GroundStateSpec(tau=tau, chain_restrict=False, dense_cutoff=dense_cutoff, truncation_threshold=cap_policy)
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,
         "N0": sb.nominal_occ,
-        "tau": tau,
-        "chain_restrict": False,
-        "dense_cutoff": dense_cutoff,
         "comm": comm,
         "spin_layout": sb.spin_layout,
-        "truncation_threshold": cap_policy,
     }
     psis, es, ground_state_basis, _thermal_rho, _gs_info = calc_gs(
         sb.h,
@@ -522,6 +521,7 @@ def calc_susceptibility_workflow(
         verbosity,
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
+        spec=gs_spec,
     )
     matsubara_mesh = bosonic_matsubara_mesh(tau, n_matsubara) if n_matsubara > 0 else None
     result = calc_susceptibility(

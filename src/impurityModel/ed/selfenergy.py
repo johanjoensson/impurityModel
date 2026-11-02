@@ -5,7 +5,6 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.cipsi_solver import _degeneracy_tol
 
 # The double-counting criteria live in their own modules; re-export their public entry points so
@@ -32,7 +31,7 @@ from impurityModel.ed.greens_function import (
     get_greens_function_moments,
     save_Greens_function,
 )
-from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, calc_gs
+from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.memory_estimate import (
     log_peak_vs_predicted,
@@ -625,30 +624,28 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         label=cluster_label,
         connectivity=solver_basis_connectivity(sb, comm),
     )
+    # What decides which state is found, explicit (A1): this driver's values.
+    gs_spec = GroundStateSpec(
+        tau=tau,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        truncation_threshold=cap_policy,
+        # Optional excitation-budget weighted restriction on the ground-state basis; the GF
+        # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
+        excitation_budget=excitation_budget,
+        cost_budget=basis.cost_budget,
+        restriction_slater_weight_min=slaterWeightMin,
+        # The residual PT2 energy the ground-state refinement converges to, and its optional
+        # per-determinant floor.
+        e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
+        de2_min=GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
+    )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
         "bath_states": bath_states,
         "N0": nominal_occ,
-        "tau": tau,
-        "chain_restrict": chain_restrict,
-        "dense_cutoff": dense_cutoff,
         "comm": comm,
         "spin_layout": sb.spin_layout,
-        "truncation_threshold": cap_policy,
-        # Optional excitation-budget weighted restriction on the ground-state basis; the GF
-        # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
-        "weighted_restrictions": build_weighted_restrictions(
-            bath_states,
-            excitation_budget,
-            cost_budget=basis.cost_budget,
-            h_op=h,
-            impurity_orbitals=impurity_orbitals,
-            slater_weight_min=slaterWeightMin,
-        ),
-        # The residual PT2 energy the ground-state refinement converges to.
-        "e_pt2_tol": GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
-        # ...and its optional per-determinant floor.
-        "de2_min": GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
     }
     # The thermal ground state and the interacting Green's function. The ground-state solve returns
     # every eigenstate inside the thermal window, certified complete (or says it could not), so the
@@ -662,6 +659,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         verbosity,
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
+        spec=gs_spec,
     )
     _report_phase_time(report, "ground state", t_phase)
     restrictions = ground_state_basis.restrictions

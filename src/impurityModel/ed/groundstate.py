@@ -1,11 +1,12 @@
+from dataclasses import dataclass
 from itertools import product
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import numpy as np
 
 from impurityModel.ed import config, solver_trace
 from impurityModel.ed.basis_generation import check_mixed_valence
-from impurityModel.ed.basis_restrictions import build_excited_restrictions
+from impurityModel.ed.basis_restrictions import build_excited_restrictions, build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
@@ -1394,6 +1395,67 @@ def refined_truncation_report(solver, walk_report):
     return {**walk_report, "memory_bound": False, "walk_memory_bound": bool(walk_report.get("memory_bound", False))}
 
 
+@dataclass(frozen=True)
+class GroundStateSpec:
+    """What decides *which state* ``solve_ground_state`` finds, apart from the model (A1).
+
+    One per driver, built explicitly so the differences between drivers (spectra solves at a Slater
+    weight of 0 and builds its restrictions at another; susceptibility never chain-restricts) are
+    visible values instead of the accident of which keys a call site happened to pass. Deliberately
+    absent: ``comm``, ``verbose``, ``plan_store``, ``shift`` (how, not what), ``shell_ls`` and the
+    per-shell N0 (owned by ``SolverBasis``), and the impurity/bath layout (the model).
+
+    The weighted restrictions are stored as their *inputs* (``excitation_budget``, ``cost_budget``,
+    ``restriction_slater_weight_min``): the built list depends on ``h_op``, which differs between the
+    ``dc_guess`` a DC search builds at and the final ``dc`` a self-energy builds at.
+
+    Attributes
+    ----------
+    tau : float
+        Temperature (thermal window width).
+    chain_restrict, dense_cutoff, use_hf_seed, e_pt2_tol, de2_min :
+        As in :func:`solve_ground_state`.
+    truncation_threshold : int, float, CapPolicy or None
+        The determinant cap, or the caller-resolved policy (P10).
+    excitation_budget, cost_budget, restriction_slater_weight_min :
+        Inputs of :func:`~impurityModel.ed.basis_restrictions.build_weighted_restrictions`.
+    """
+
+    tau: float
+    chain_restrict: bool = False
+    dense_cutoff: int = 1000
+    use_hf_seed: bool = True
+    e_pt2_tol: float = GS_E_PT2_TOL
+    de2_min: float = GS_DE2_MIN
+    truncation_threshold: object = None
+    excitation_budget: Optional[int] = None
+    cost_budget: Optional[float] = None
+    restriction_slater_weight_min: Optional[float] = None
+
+    def solve_kwargs(self):
+        """The ``solve_ground_state`` keywords this spec decides."""
+        return {
+            "tau": self.tau,
+            "chain_restrict": self.chain_restrict,
+            "dense_cutoff": self.dense_cutoff,
+            "use_hf_seed": self.use_hf_seed,
+            "e_pt2_tol": self.e_pt2_tol,
+            "de2_min": self.de2_min,
+            "truncation_threshold": self.truncation_threshold,
+        }
+
+    def weighted_restrictions(self, bath_states, h_op, impurity_orbitals):
+        """The weighted restrictions for ``h_op`` (``None`` when no budget is requested)."""
+        return build_weighted_restrictions(
+            bath_states,
+            self.excitation_budget,
+            cost_budget=self.cost_budget,
+            h_op=h_op,
+            impurity_orbitals=impurity_orbitals,
+            slater_weight_min=self.restriction_slater_weight_min,
+        )
+
+
 def calc_gs(
     Hop: ManyBodyOperator,
     basis_setup: dict,
@@ -1403,6 +1465,7 @@ def calc_gs(
     slaterWeightMin=0,
     stats_path: str = "ground_state_statistics.json",
     shell_ls=None,
+    spec: Optional[GroundStateSpec] = None,
     **kwargs,
 ):
     """
@@ -1434,6 +1497,9 @@ def calc_gs(
     shell_ls : tuple of int, optional
         ``l`` of each column block of an ndarray ``rot_to_spherical`` for a multi-shell impurity (reporting
         only); ``None`` is a single shell.
+    spec : GroundStateSpec, optional
+        What decides which state is found (see :class:`GroundStateSpec`). Its fields are merged into
+        ``basis_setup``; a key set by both raises ``ValueError``.
     slaterWeightMin : float
         Minimum weight threshold for determinants in the basis.
 
@@ -1457,6 +1523,15 @@ def calc_gs(
     if "nominal_impurity_occ" in basis_setup:
         basis_setup["N0"] = basis_setup.pop("nominal_impurity_occ")
 
+    if spec is not None:
+        merged = spec.solve_kwargs()
+        merged["weighted_restrictions"] = spec.weighted_restrictions(
+            basis_setup["bath_states"], Hop, basis_setup["impurity_orbitals"]
+        )
+        clash = sorted(set(merged) & set(basis_setup))
+        if clash:
+            raise ValueError(f"calc_gs: {clash} given both in basis_setup and in the GroundStateSpec")
+        basis_setup.update(merged)
     tau = basis_setup["tau"]
     layout = basis_setup.get("spin_layout")
     if layout is None:

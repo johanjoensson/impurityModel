@@ -407,3 +407,70 @@ def test_calc_gs_options_mpi():
     expected_rho[0, 0] = 1.0
     expected_rho[1, 1] = 1.0
     np.testing.assert_allclose(thermal_rho, expected_rho, atol=1e-10)
+
+
+class _Captured(Exception):
+    pass
+
+
+class _Layout:
+    def provenance_note(self):
+        return None
+
+
+def _capture_solve_kwargs(monkeypatch, **call):
+    from impurityModel.ed import groundstate
+
+    seen = {}
+
+    def fake(h_op, **kwargs):
+        seen.update(kwargs)
+        raise _Captured
+
+    monkeypatch.setattr(groundstate, "solve_ground_state", fake)
+    with pytest.raises(_Captured):
+        groundstate.calc_gs(None, call.pop("basis_setup"), None, None, 0, **call)
+    return seen
+
+
+def test_calc_gs_with_a_spec_hands_solve_ground_state_the_same_keywords_as_the_legacy_dict(monkeypatch):
+    """A1(a): plumbing only -- the spec's values reach ``solve_ground_state`` exactly as the dict keys did."""
+    from impurityModel.ed.groundstate import GroundStateSpec
+
+    common = {"impurity_orbitals": {0: [[0, 1]]}, "bath_states": ({}, {}), "N0": {0: 1}, "spin_layout": _Layout()}
+    legacy = _capture_solve_kwargs(
+        monkeypatch,
+        basis_setup={
+            **common,
+            "tau": 0.01,
+            "chain_restrict": True,
+            "dense_cutoff": 77,
+            "truncation_threshold": 1234,
+            "e_pt2_tol": 1e-7,
+            "de2_min": 1e-9,
+            "use_hf_seed": False,
+            "weighted_restrictions": None,
+        },
+        slaterWeightMin=1e-5,
+    )
+    spec = GroundStateSpec(
+        tau=0.01,
+        chain_restrict=True,
+        dense_cutoff=77,
+        truncation_threshold=1234,
+        e_pt2_tol=1e-7,
+        de2_min=1e-9,
+        use_hf_seed=False,
+    )
+    via_spec = _capture_solve_kwargs(monkeypatch, basis_setup=dict(common), slaterWeightMin=1e-5, spec=spec)
+    assert via_spec == legacy
+
+
+def test_calc_gs_refuses_a_key_set_by_both_the_dict_and_the_spec(monkeypatch):
+    from impurityModel.ed.groundstate import GroundStateSpec
+
+    common = {"impurity_orbitals": {0: [[0, 1]]}, "bath_states": ({}, {}), "N0": {0: 1}, "spin_layout": _Layout()}
+    with pytest.raises(ValueError, match="dense_cutoff"):
+        _capture_solve_kwargs(
+            monkeypatch, basis_setup={**common, "dense_cutoff": 5}, spec=GroundStateSpec(tau=0.01, dense_cutoff=7)
+        )

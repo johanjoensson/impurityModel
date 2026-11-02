@@ -14,9 +14,8 @@ from impurityModel.ed import config, spectra
 
 # Local stuff
 from impurityModel.ed.basis_generation import check_mixed_valence
-from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.groundstate import GroundStateSpec, calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
 from impurityModel.ed.symmetries import (
@@ -384,6 +383,20 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     # Many body basis for the ground state
     report("Creating the many-body basis ...", level=V_RESULT, flush=True)
     tau = basis.tau
+    # What decides which state is found, explicit (A1). Spectra solves at the calc_gs default Slater weight
+    # (0) but builds its restrictions at basis.slater_weight_min, and uses the solver defaults for
+    # chain_restrict/dense_cutoff/e_pt2_tol (P2 unifies this, with a spectrum A/B).
+    gs_spec = GroundStateSpec(
+        tau=tau,
+        # None = "as many determinants as fit in RAM", resolved against the per-rank available memory inside
+        # find_ground_state_sector (see memory_estimate).
+        truncation_threshold=basis.truncation_threshold,
+        # Optional excitation-budget weighted restriction on the ground-state basis; the XAS/PES excited bases
+        # inherit it (widened) via spectra/greens_function; RIXS attaches it explicitly (rixs.py).
+        excitation_budget=basis.excitation_budget,
+        cost_budget=basis.cost_budget,
+        restriction_slater_weight_min=basis.slater_weight_min,
+    )
     basis_setup = {
         "impurity_orbital": impurity_orbitals,
         "bath_states": (valence_baths, conduction_baths),
@@ -394,22 +407,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         # the core one, not on "the shell with no bath": those agreed only while both were the
         # same inference, and a core shell that does carry bath states would be left unpinned.
         "frozen_occupations": set() if l_core is None else {l_core},
-        # None = "as many determinants as fit in RAM", resolved against the per-rank
-        # available memory inside find_ground_state_sector (see memory_estimate).
-        "truncation_threshold": basis.truncation_threshold,
-        "tau": tau,
         "comm": comm,
-        # Optional excitation-budget weighted restriction on the ground-state basis; the XAS/PES
-        # excited bases inherit it (widened) via spectra/greens_function; RIXS attaches it
-        # explicitly (rixs.py).
-        "weighted_restrictions": build_weighted_restrictions(
-            (valence_baths, conduction_baths),
-            basis.excitation_budget,
-            cost_budget=basis.cost_budget,
-            h_op=hOp,
-            impurity_orbitals=impurity_orbitals,
-            slater_weight_min=basis.slater_weight_min,
-        ),
     }
     psis, es, ground_state_basis, _rho, _ = calc_gs(
         hOp,
@@ -417,6 +415,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         block_structure,
         rot_to_spherical,
         verbosity,
+        spec=gs_spec,
     )
 
     # Save some of the arrays. HDF5-format does not directly support dictionaries.
