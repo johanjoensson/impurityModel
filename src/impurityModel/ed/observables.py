@@ -540,6 +540,65 @@ def get_Tz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     return float(np.real(np.trace(rho @ _single_particle_tz_matrix(l))))
 
 
+def resolve_shell_ls(rot_to_spherical, shell_ls=None):
+    """The ``l`` of each consecutive spherical column block of ``rot_to_spherical``, validated.
+
+    ``shell_ls=None`` infers one shell from the column count (``2(2l+1)`` columns), the single-shell
+    behaviour every caller had before shells existed. A given tuple is checked against the column count
+    (``sum(2(2l+1)) == n_cols``); repeated values are legitimate (two sets of one ``l`` are never merged).
+    """
+    n_cols = int(np.asarray(rot_to_spherical).shape[1])
+    if shell_ls is None:
+        l = (n_cols // 2 - 1) // 2
+        if l < 0 or 2 * (2 * l + 1) != n_cols:
+            raise ValueError(
+                f"rot_to_spherical has {n_cols} columns, which is not a spin-doubled l-shell (2*(2l+1)); "
+                "pass shell_ls to describe a multi-shell rotation."
+            )
+        return (l,)
+    shell_ls = tuple(int(l) for l in shell_ls)
+    if any(l < 0 for l in shell_ls) or sum(2 * (2 * l + 1) for l in shell_ls) != n_cols:
+        raise ValueError(
+            f"shell_ls={shell_ls} spans {sum(2 * (2 * l + 1) for l in shell_ls)} columns, but rot_to_spherical "
+            f"has {n_cols}."
+        )
+    return shell_ls
+
+
+def shell_column_slices(shell_ls):
+    """``[slice, ...]``: the column block of each shell, in order (shell ``a`` is ``2(2 l_a + 1)`` wide)."""
+    out, start = [], 0
+    for l in shell_ls:
+        out.append(slice(start, start + 2 * (2 * l + 1)))
+        start += 2 * (2 * l + 1)
+    return out
+
+
+def shell_index_of_orbitals(rot_to_spherical, shell_ls, tol=1e-6):
+    """For every impurity orbital, the shell holding its weight: ``argmax_a sum_{c in cols_a} |R[o, c]|^2``.
+
+    Raises ``ValueError`` if an orbital's largest shell weight is below ``1 - tol`` (it straddles shells).
+    """
+    R = np.asarray(rot_to_spherical)
+    weights = np.stack([np.sum(np.abs(R[:, cols]) ** 2, axis=1) for cols in shell_column_slices(shell_ls)], axis=1)
+    index = np.argmax(weights, axis=1)
+    best = weights[np.arange(len(index)), index]
+    total = np.sum(np.abs(R) ** 2, axis=1)
+    bad = np.flatnonzero(best < total * (1.0 - tol))
+    if bad.size:
+        raise ValueError(
+            f"impurity orbitals {bad.tolist()} straddle shells: their weight on the best shell is below "
+            f"1 - {tol:g} of their norm (shell_ls={tuple(shell_ls)})."
+        )
+    return index
+
+
+def shell_is_complete(R_a, tol=1e-8):
+    """``True`` when the shell block ``R_a`` is square and unitary (a whole spin-doubled shell)."""
+    R_a = np.asarray(R_a)
+    return R_a.shape[0] == R_a.shape[1] and np.allclose(R_a.conj().T @ R_a, np.eye(R_a.shape[1]), atol=tol)
+
+
 def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None):
     r"""Split the impurity density matrix into one spherical-basis block per l-shell.
 

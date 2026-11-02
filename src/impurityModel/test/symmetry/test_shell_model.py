@@ -1,0 +1,58 @@
+"""The shell model of a multi-shell rotation (``observables.resolve_shell_ls`` and friends)."""
+
+import numpy as np
+import pytest
+
+from impurityModel.ed.observables import (
+    resolve_shell_ls,
+    shell_column_slices,
+    shell_index_of_orbitals,
+    shell_is_complete,
+)
+
+
+def test_one_shell_is_inferred_from_the_column_count():
+    assert resolve_shell_ls(np.eye(10)) == (2,)
+    assert resolve_shell_ls(np.eye(6)) == (1,)
+    assert resolve_shell_ls(np.zeros((6, 10))) == (2,)  # t2g rows of a d shell
+
+
+def test_an_unrecognisable_column_count_needs_shell_ls():
+    with pytest.raises(ValueError, match="shell_ls"):
+        resolve_shell_ls(np.eye(16))
+
+
+def test_given_shell_ls_must_span_the_columns_and_may_repeat():
+    assert resolve_shell_ls(np.eye(16), (1, 2)) == (1, 2)
+    assert resolve_shell_ls(np.eye(20), (2, 2)) == (2, 2)  # two d sets are never merged
+    with pytest.raises(ValueError, match="spans"):
+        resolve_shell_ls(np.eye(16), (2, 2))
+
+
+def test_column_blocks_follow_the_shell_order():
+    assert shell_column_slices((1, 2)) == [slice(0, 6), slice(6, 16)]
+
+
+def test_orbitals_belong_to_the_shell_with_their_weight():
+    R = np.eye(16)
+    assert shell_index_of_orbitals(R, (1, 2)).tolist() == [0] * 6 + [1] * 10
+    # t2g d rows plus the full p: 12 orbitals, 16 columns
+    R = np.zeros((12, 16), dtype=complex)
+    R[np.arange(6), np.arange(6)] = 1
+    R[np.arange(6, 12), np.arange(6, 12)] = 1
+    assert shell_index_of_orbitals(R, (1, 2)).tolist() == [0] * 6 + [1] * 6
+
+
+def test_an_orbital_straddling_two_shells_raises():
+    R = np.eye(16, dtype=complex)
+    R[0, 0], R[0, 6] = np.sqrt(0.5), np.sqrt(0.5)
+    with pytest.raises(ValueError, match="straddle"):
+        shell_index_of_orbitals(R, (1, 2))
+    R[0, 0], R[0, 6] = np.sqrt(1 - 1e-8), np.sqrt(1e-8)  # below the tolerance: still shell 0
+    assert shell_index_of_orbitals(R, (1, 2))[0] == 0
+
+
+def test_a_partial_shell_is_not_complete():
+    assert shell_is_complete(np.eye(6))
+    assert not shell_is_complete(np.eye(10)[:, :6].T)  # 6 rows of 10 columns
+    assert not shell_is_complete(np.diag([1.0, 1.0, 0.5]))
