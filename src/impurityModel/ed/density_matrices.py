@@ -130,6 +130,31 @@ def _splitmix(h):
     return h ^ (h >> np.uint64(31))
 
 
+def _group_rows(keys):
+    """Group id (``0..n_groups-1``) of each row of a ``(n, nbytes)`` uint8 key array; equal rows share an id.
+
+    ``np.unique(keys, axis=0)`` sorts the rows as opaque structured records, which measured at 12-18 s
+    of a 24 s ``build_density_matrices`` on the NiO 10-bath ground state.  Padding each row to whole
+    uint64 words and ``lexsort``ing the word columns gives the same partition (ids are in sorted-word
+    order, not byte order; the caller only sums over a group, so the numbering is immaterial).
+    """
+    n, nbytes = keys.shape
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    n_words = -(-nbytes // 8)
+    padded = np.zeros((n, n_words * 8), dtype=np.uint8)
+    padded[:, :nbytes] = keys
+    words = padded.view(np.uint64)
+    order = np.lexsort(words.T[::-1])
+    sorted_words = words[order]
+    new = np.empty(n, dtype=bool)
+    new[0] = True
+    new[1:] = (sorted_words[1:] != sorted_words[:-1]).any(axis=1)
+    group = np.empty(n, dtype=np.int64)
+    group[order] = np.cumsum(new) - 1
+    return group
+
+
 def build_density_matrices(
     basis, psis, orbital_indices_left=None, orbital_indices_right=None, max_bytes=_DEFAULT_MAX_BYTES, rounds=None
 ):
@@ -227,8 +252,7 @@ def build_density_matrices(
         n_ent = len(payload["k"])
         if n_ent == 0:
             continue
-        _, group = np.unique(payload["key"], axis=0, return_inverse=True)
-        group = np.asarray(group).reshape(-1)
+        group = _group_rows(payload["key"])
         n_groups = int(group.max()) + 1
         for n in range(width):
             # COO -> CSR sums duplicate (group, orbital) pairs: split rows of one determinant add.

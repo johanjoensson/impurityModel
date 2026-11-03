@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.density_matrices import build_density_matrices, occupation_moments, occupations
+from impurityModel.ed.density_matrices import _group_rows, build_density_matrices, occupation_moments, occupations
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 from impurityModel.ed.mpi_comm import graph_alltoall_block
 from impurityModel.test.support.reference_density_matrices import reference_density_matrices
@@ -167,3 +167,29 @@ def test_occupation_moments_are_the_first_two_moments_of_the_subset_popcount(mod
     assert (n2 - n1**2 / w.sum(axis=0)).min() > 1e-3  # the fixture really spreads the count
     # the orbital-resolved occupations sum to the same <N>
     np.testing.assert_allclose(occupations(basis, psis, subset).sum(axis=1), n1, atol=1e-12)
+
+
+@pytest.mark.parametrize("nbytes", [1, 5, 8, 9, 14, 17])
+def test_group_rows_is_the_partition_of_equal_rows(nbytes):
+    """Equal rows share an id and different rows never do, for widths on and off a uint64 word boundary.
+
+    Rows differ only in their *last* byte as often as in their first, so a comparison that drops the padded
+    tail word (or the first word) merges distinct keys.
+    """
+    rng = np.random.default_rng(nbytes)
+    base = rng.integers(0, 256, size=(40, nbytes), dtype=np.uint8)
+    base[1::4] = base[0::4]
+    base[1::4, nbytes - 1] ^= 1  # a twin that differs in the last byte only
+    base[2::4] = base[0::4]
+    base[2::4, 0] ^= 1  # ... and one that differs in the first byte only
+    keys = base[rng.integers(0, len(base), 500)]
+    group = _group_rows(keys)
+    _, expected = np.unique(keys, axis=0, return_inverse=True)
+    expected = np.asarray(expected).reshape(-1)
+    assert group.max() + 1 == expected.max() + 1
+    pairs = np.unique(np.stack([group, expected], axis=1), axis=0)
+    assert len(pairs) == group.max() + 1  # a bijection between the two numberings
+
+
+def test_group_rows_of_no_rows_is_empty():
+    assert _group_rows(np.zeros((0, 3), dtype=np.uint8)).shape == (0,)
