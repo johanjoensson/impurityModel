@@ -159,8 +159,7 @@ def test_simulate_spectra(
     mock_getNIXS.return_value = [{((0, "a"),): 1}]
 
     hOp = MagicMock(spec=ManyBodyOperator)
-    h5f = MagicMock()
-    spectra.simulate_spectra(
+    datasets = spectra.simulate_spectra(
         es=[0.0],
         psis=[MagicMock()],
         hOp=hOp,
@@ -180,7 +179,6 @@ def test_simulate_spectra(
         deltaRIXS=0.1,
         epsilonsRIXSin=[],
         epsilonsRIXSout=[],
-        h5f=h5f,
         nBaths=OrderedDict([(2, 10), (1, 6)]),
         XAS_projectors=None,
         RIXS_projectors=None,
@@ -198,10 +196,11 @@ def test_simulate_spectra(
     assert mock_calc_spectra.called
     assert mock_calc_spectra_tensor.called
     if spectra.rank == 0:
-        written = {c.args[0] for c in h5f.create_dataset.call_args_list}
+        written = set(datasets)
         assert {"PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"} <= written
         assert not any(name.endswith("thermal") for name in written)  # no legacy dataset names
-        h5f.close.assert_called_once()
+    else:
+        assert datasets == {}
 
 
 # --- tests for hamiltonian_io.py ---

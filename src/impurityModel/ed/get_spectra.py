@@ -447,7 +447,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     report.banner("Spectra", level=V_RESULT)
     report(f"Considering {len(es)} eigenstate(s) for the spectra.", level=V_RESULT)
     report("Calculating spectra ...", level=V_RESULT, flush=True)
-    spectra.simulate_spectra(
+    datasets = spectra.simulate_spectra(
         es,
         psis,
         hOp,
@@ -467,7 +467,6 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         deltaRIXS,
         epsilonsRIXSin,
         epsilonsRIXSout,
-        h5f,
         nBaths,
         XAS_projectors,
         RIXS_projectors,
@@ -483,6 +482,8 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     )
 
     if h5f is not None:
+        for name, data in datasets.items():
+            h5f.create_dataset(name, data=data)
         h5f.close()
     if comm is not None:
         comm.Barrier()

@@ -142,7 +142,6 @@ def simulate_spectra(
     deltaRIXS,
     epsilonsRIXSin,
     epsilonsRIXSout,
-    h5f,
     nBaths,
     XAS_projectors,
     RIXS_projectors,
@@ -217,13 +216,6 @@ def simulate_spectra(
         contraction is a post-processing step (see ``impurityModel.ed.polarization``).
     epsilonsRIXSout : list
         Polarization vectors of out-going photon. Same caveat as ``epsilonsRIXSin``.
-    h5f : h5py file-handle
-        Will be used to write data to disk. This is the single output of a spectra run --
-        each spectrum/tensor is written under its own group (``PS/spectra``, ``XPS/spectra``,
-        ``NIXS/spectra``, ``XAS/tensor`` or ``XAS/projected``, ``RIXS/tensor`` or
-        ``RIXS/projected``) as complex arrays; no separate quick-look ``.dat``/``.bin`` files
-        are written. See ``impurityModel.ed.polarization`` for turning a tensor into an
-        intensity for one or more polarizations.
     nBaths : OrderedDict
         Angular momentum : number of bath states.
     RIXS_projectors : dict
@@ -243,7 +235,19 @@ def simulate_spectra(
         Impurity block structure of the correlated shell in the symmetry-adapted basis. When given
         (with ``rotation``), degenerate PES/IPS operators of that shell are deduplicated (B2a).
 
+    Returns
+    -------
+    dict
+        The single output of a spectra run, on rank 0 (empty on the other ranks): dataset name -> array,
+        namely ``PS/spectra``, ``XPS/spectra``, ``NIXS/spectra``, ``XAS/tensor`` or ``XAS/projected``,
+        ``RIXS/tensor`` or ``RIXS/projected`` (and ``RIXSprojectors/<key>`` strings) as complex arrays. Nothing is
+        written to disk here -- the caller owns the file (``get_spectra.run_spectra``) -- so a driver can merge
+        several runs (one per ground-state member) before writing. See ``impurityModel.ed.polarization`` for
+        turning a tensor into an intensity.
+
     """
+
+    datasets = {}
 
     # One-body transition operators must be rotated into the same basis as hOp/psis; PES/IPS are
     # bare ladder operators whose integer indices already refer to the rotated orbitals, so they
@@ -315,8 +319,8 @@ def simulate_spectra(
         if rank == 0:
             print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
             print("#mesh points = {:d}".format(np.shape(gs)[0]))
-        if rank == 0 and h5f:
-            h5f.create_dataset("PS/spectra", data=gs)
+        if rank == 0:
+            datasets["PS/spectra"] = gs
         if rank == 0:
             print("time(PS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
@@ -346,8 +350,8 @@ def simulate_spectra(
         if rank == 0:
             print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
             print("#mesh points = {:d}".format(np.shape(gs)[0]))
-        if rank == 0 and h5f:
-            h5f.create_dataset("XPS/spectra", data=gs)
+        if rank == 0:
+            datasets["XPS/spectra"] = gs
         if rank == 0:
             print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
@@ -380,8 +384,8 @@ def simulate_spectra(
         if rank == 0:
             print("#q-points = {:d}".format(np.shape(gs)[1]))
             print("#mesh points = {:d}".format(np.shape(gs)[0]))
-        if rank == 0 and h5f:
-            h5f.create_dataset("NIXS/spectra", data=gs)
+        if rank == 0:
+            datasets["NIXS/spectra"] = gs
 
         if rank == 0:
             print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
@@ -418,8 +422,8 @@ def simulate_spectra(
             if rank == 0:
                 print("#projected operators = {:d}".format(np.shape(gs)[1]))
                 print("#mesh points = {:d}".format(np.shape(gs)[0]))
-            if rank == 0 and h5f:
-                h5f.create_dataset("XAS/projected", data=gs)
+            if rank == 0:
+                datasets["XAS/projected"] = gs
         else:
             # Dipole is linear in the polarization: compute and store the spectral tensor over the
             # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
@@ -448,8 +452,8 @@ def simulate_spectra(
             if rank == 0:
                 print("#Cartesian components = {:d}".format(chi.shape[1]))
                 print("#mesh points = {:d}".format(chi.shape[0]))
-            if rank == 0 and h5f:
-                h5f.create_dataset("XAS/tensor", data=chi)
+            if rank == 0:
+                datasets["XAS/tensor"] = chi
         if rank == 0:
             print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
@@ -492,11 +496,10 @@ def simulate_spectra(
             if rank == 0:
                 print("RIXS projectors = {}".format(RIXS_projectors.keys()))
                 print(f"shape(gs) = {np.shape(gs)}")
-            if rank == 0 and h5f:
-                h5f.create_dataset("RIXS/projected", data=gs)
-                g = h5f.create_group("RIXSprojectors")
+            if rank == 0:
+                datasets["RIXS/projected"] = gs
                 for key, proj in RIXS_projectors.items():
-                    g.create_dataset(key, data=str(proj))
+                    datasets[f"RIXSprojectors/{key}"] = str(proj)
         else:
             # Dipole is linear in the polarization: compute and store the full rank-4
             # Kramers-Heisenberg tensor over the 3 Cartesian in/out components once (R4 -- the
@@ -528,17 +531,16 @@ def simulate_spectra(
                 print("#out-components = {:d}".format(C.shape[1]))
                 print("#mesh points of input energy = {:d}".format(C.shape[4]))
                 print("#mesh points of energy loss = {:d}".format(C.shape[5]))
-            if rank == 0 and h5f:
+            if rank == 0:
                 # complex64: ~1e-7 relative precision, below the R1 solve tolerance (1e-6);
                 # halves the storage of the default-mesh tensor (~260 -> ~130 MB).
-                h5f.create_dataset("RIXS/tensor", data=C.astype(np.complex64))
+                datasets["RIXS/tensor"] = C.astype(np.complex64)
 
         if rank == 0:
             print("time(RIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
 
-    if rank == 0 and h5f:
-        h5f.close()
+    return datasets
 
 
 def _sector_restrictions_per_top(hOp, tOps, psis, basis):
