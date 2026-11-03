@@ -17,7 +17,7 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
 
 # Local stuff
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
+from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.symmetries import (
     extract_tensors,
     impurity_block_structure,
@@ -266,9 +266,8 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         ``None`` -> ``V_RESULT`` (0), the terse default.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
-    reject_unmigrated_ensemble(
-        basis.mixed_valence, driver="get_spectra"
-    )  # never forwarded on this path: say so rather than ignore it
+    # Replicated input: a malformed value raises on every rank before any collective.  Spectra default to 'off'.
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="off")
     rank = comm.rank if comm is not None else 0
     if verbosity is None:
         verbosity = V_RESULT
@@ -408,6 +407,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         excitation_budget=basis.excitation_budget,
         cost_budget=basis.cost_budget,
         restriction_slater_weight_min=basis.slater_weight_min,
+        mixed_valence=mixed_valence,
     )
     basis_setup = {
         "impurity_orbital": impurity_orbitals,
@@ -421,14 +421,59 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         "frozen_occupations": set() if l_core is None else {l_core},
         "comm": comm,
     }
-    psis, es, ground_state_basis, _rho, _ = calc_gs(
+
+    # Everything simulate_spectra needs besides the ground state; one member's run and the one-sector run share it.
+    def spectra_of(member_es, member_psis, member_basis):
+        return spectra.simulate_spectra(
+            member_es,
+            member_psis,
+            hOp,
+            tau,
+            w,
+            delta,
+            epsilons,
+            wLoss,
+            deltaNIXS,
+            qsNIXS,
+            liNIXS,
+            ljNIXS,
+            RiNIXS,
+            RjNIXS,
+            radialMesh,
+            wIn,
+            deltaRIXS,
+            epsilonsRIXSin,
+            epsilonsRIXSout,
+            nBaths,
+            XAS_projectors,
+            RIXS_projectors,
+            member_basis,
+            basis.occ_cutoff,
+            basis.slater_weight_min,
+            verbosity >= 1,
+            rotation=rotation,
+            correlated_block_structure=correlated_block_structure,
+            l_valence=l_valence,
+            l_core=l_core,
+            **switches,
+        )
+
+    def member_spectra(_member, member_basis, member_es, member_psis, _truncation, _convergence):
+        # Collective, run while the member's basis is alive and after its solver is released.
+        from impurityModel.ed.selfenergy import _redistributed_states
+
+        return spectra_of(member_es, _redistributed_states(member_basis, member_psis), member_basis)
+
+    psis, es, ground_state_basis, _rho, gs_info = calc_gs(
         hOp,
         basis_setup,
         block_structure,
         rot_to_spherical,
         verbosity,
         spec=gs_spec,
+        member_hook=member_spectra,
     )
+    ensemble = gs_info.get("ensemble")
 
     # Save some of the arrays. HDF5-format does not directly support dictionaries.
     h5f = None
@@ -447,39 +492,14 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     report.banner("Spectra", level=V_RESULT)
     report(f"Considering {len(es)} eigenstate(s) for the spectra.", level=V_RESULT)
     report("Calculating spectra ...", level=V_RESULT, flush=True)
-    datasets = spectra.simulate_spectra(
-        es,
-        psis,
-        hOp,
-        tau,
-        w,
-        delta,
-        epsilons,
-        wLoss,
-        deltaNIXS,
-        qsNIXS,
-        liNIXS,
-        ljNIXS,
-        RiNIXS,
-        RjNIXS,
-        radialMesh,
-        wIn,
-        deltaRIXS,
-        epsilonsRIXSin,
-        epsilonsRIXSout,
-        nBaths,
-        XAS_projectors,
-        RIXS_projectors,
-        ground_state_basis,
-        basis.occ_cutoff,
-        basis.slater_weight_min,
-        verbosity >= 1,
-        rotation=rotation,
-        correlated_block_structure=correlated_block_structure,
-        l_valence=l_valence,
-        l_core=l_core,
-        **switches,
-    )
+    if ensemble is None:  # one sector: no hook call
+        datasets = spectra_of(es, psis, ground_state_basis)
+    else:
+        weights = [m["weight"] for m in ensemble["members"]]
+        datasets = spectra.merge_spectra_datasets(gs_info["member_results"], weights) if rank == 0 else {}
+        if rank == 0 and len(weights) > 1:  # one member: the file is the one-sector file, bit for bit
+            datasets["ensemble/weights"] = np.asarray(weights)
+            datasets["ensemble/e0"] = np.asarray([m["e0"] for m in ensemble["members"]])
 
     if h5f is not None:
         for name, data in datasets.items():

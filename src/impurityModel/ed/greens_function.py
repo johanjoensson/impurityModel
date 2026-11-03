@@ -13,7 +13,7 @@ from impurityModel.ed.basis_restrictions import (
     build_excited_restrictions,
     floor_weighted_restrictions,
     format_chain_zones,
-    intersect_windows,
+    intersect_sector_window,
 )
 from impurityModel.ed.basis_transcription import support_filter
 from impurityModel.ed.block_structure import BlockStructure
@@ -1501,7 +1501,7 @@ def calc_Greens_function_with_offdiag(
     # sector-violating determinants the window alone would admit. Intersected key-by-key so it
     # can only tighten the excited basis, never loosen it.
     if extra_restrictions:
-        excited_restrictions = intersect_windows(excited_restrictions, extra_restrictions)
+        excited_restrictions = intersect_sector_window(excited_restrictions, extra_restrictions)
     if verbose and excited_restrictions is not None and (block_basis.comm is None or block_basis.comm.rank == 0):
         print("Excited state restrictions:")
         for indices, occupations in excited_restrictions.items():

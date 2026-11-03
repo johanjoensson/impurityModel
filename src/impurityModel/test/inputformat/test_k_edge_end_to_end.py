@@ -280,3 +280,66 @@ def test_a_k_edge_actually_solves_and_produces_weight(small_p_shell_h0, write, t
             values = np.asarray(f[name])
             assert np.all(np.isfinite(values)), f"{name} is not finite"
             assert np.max(np.abs(values)) > 0, f"{name} has no weight at the K edge"
+
+
+def _k_edge_spectra(small_p_shell_h0, write, tmp_path, name, **basis_changes):
+    import dataclasses
+
+    import h5py
+    from mpi4py import MPI
+
+    from impurityModel.ed.get_spectra import run_spectra
+
+    built = build(load_input(write(K_EDGE_RUN.format(h0=small_p_shell_h0.name), f"{name}.toml")))
+    output = tmp_path / f"{name}.h5"
+    basis = dataclasses.replace(built.basis, **basis_changes)
+    run_spectra(built.model, built.spectra, basis, MPI.COMM_WORLD, verbosity=0, output_filename=str(output))
+    if MPI.COMM_WORLD.rank != 0:
+        return None
+    with h5py.File(output, "r") as f:
+        return {k: np.asarray(f[k]) for k in ("PS/spectra", "XPS/spectra", "XAS/tensor", "RIXS/tensor", "E")} | {
+            k: np.asarray(f[k]) for k in ("ensemble/weights",) if k in f
+        }
+
+
+def test_one_member_auto_spectra_are_the_off_spectra(small_p_shell_h0, write, tmp_path):
+    """A cold ensemble is one sector: auto takes the single-sector path and writes the same file."""
+    from mpi4py import MPI
+
+    off = _k_edge_spectra(small_p_shell_h0, write, tmp_path, "off", mixed_valence="off", tau=0.01)
+    auto = _k_edge_spectra(small_p_shell_h0, write, tmp_path, "auto", mixed_valence="auto", tau=0.01)
+    if off is None:
+        return
+    assert "ensemble/weights" not in auto
+    for key, value in off.items():
+        # Bit-identical on one rank; across ranks two runs of the iterative resolvent solves agree to the solver
+        # tolerance only (the same holds for two 'off' runs), so the identity is checked there to 1e-4.
+        if MPI.COMM_WORLD.size == 1:
+            np.testing.assert_array_equal(auto[key], value, err_msg=key)
+        else:
+            np.testing.assert_allclose(auto[key], value, atol=1e-4, rtol=1e-4, err_msg=key)
+
+
+def test_the_spectra_ensemble_is_the_weighted_sum_of_the_members(small_p_shell_h0, write, tmp_path, monkeypatch):
+    """Hot enough for several charge sectors: every written spectrum is sum_s c_s S_s of the members' own runs."""
+    from impurityModel.ed import spectra
+
+    seen = {}
+    real = spectra.merge_spectra_datasets
+
+    def spy(parts, weights):
+        seen["parts"], seen["weights"] = parts, list(weights)
+        return real(parts, weights)
+
+    monkeypatch.setattr(spectra, "merge_spectra_datasets", spy)
+    got = _k_edge_spectra(small_p_shell_h0, write, tmp_path, "hot", mixed_valence="on", tau=3.0)
+    if got is None:
+        return
+    parts, c = seen["parts"], np.asarray(seen["weights"])
+    assert len(parts) >= 2
+    np.testing.assert_allclose(got["ensemble/weights"], c)
+    assert c.sum() == pytest.approx(1.0)
+    for key in ("PS/spectra", "XPS/spectra", "XAS/tensor", "RIXS/tensor"):
+        expected = sum(ci * p[key].astype(complex) for ci, p in zip(c, parts))
+        np.testing.assert_allclose(got[key], expected, atol=1e-5 if key.startswith("RIXS") else 1e-12, err_msg=key)
+        assert not np.allclose(parts[0][key], parts[1][key]), f"{key}: the members must differ for this to bite"

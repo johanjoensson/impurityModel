@@ -11,7 +11,7 @@ from mpi4py import MPI
 # Local imports
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed.average import ThermalEnsemble
-from impurityModel.ed.basis_restrictions import intersect_windows
+from impurityModel.ed.basis_restrictions import intersect_sector_window
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
@@ -543,6 +543,40 @@ def simulate_spectra(
     return datasets
 
 
+def merge_spectra_datasets(parts, weights):
+    r"""Merge per-member :func:`simulate_spectra` outputs into the charge-sector ensemble's spectra.
+
+    Every spectrum (PS, XPS, NIXS, XAS and RIXS, projected or tensor) is a thermal average
+    :math:`\sum_i p_i \langle \psi_i | \dots | \psi_i \rangle` that :func:`simulate_spectra` normalises
+    within the member it is given, so it is linear in the members and the ensemble's spectrum is
+    :math:`\sum_s c_s S_s`. Excitations never connect two members (the transition operators act on a
+    determinant of one member and the resolvent stays inside the excited sector), so there are no cross terms.
+    Non-numeric entries (the RIXS projector descriptions) are taken from the first member.
+
+    Parameters
+    ----------
+    parts : list of dict
+        One :func:`simulate_spectra` return per member (empty dicts on non-root ranks).
+    weights : sequence of float
+        The members' ensemble weights ``c_s`` (renormalised here).
+
+    Returns
+    -------
+    dict
+        Dataset name -> merged array, with the dtype of the first member's array (RIXS tensors stay complex64).
+    """
+    c = np.asarray(weights, dtype=float)
+    c = c / c.sum()
+    merged = {}
+    for name, first in parts[0].items():
+        if isinstance(first, str):
+            merged[name] = first
+            continue
+        total = sum(ci * np.asarray(part[name], dtype=complex) for ci, part in zip(c, parts))
+        merged[name] = total.astype(first.dtype, copy=False) if np.iscomplexobj(first) else total.real
+    return merged
+
+
 def _sector_restrictions_per_top(hOp, tOps, psis, basis):
     r"""Conserved-charge sector restrictions for each transition operator (or ``None``).
 
@@ -738,7 +772,7 @@ def calc_spectra(
         group_restrictions = [base_restrictions] * len(tOps)
     else:
         group_restrictions = [
-            base_restrictions if sec is None else intersect_windows(base_restrictions, sec)
+            base_restrictions if sec is None else intersect_sector_window(base_restrictions, sec)
             for sec in sector_restrictions
         ]
 

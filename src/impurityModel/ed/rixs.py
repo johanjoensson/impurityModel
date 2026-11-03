@@ -25,7 +25,7 @@ from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import (
     build_excited_restrictions,
     floor_weighted_restrictions,
-    intersect_windows,
+    intersect_sector_window,
 )
 from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -625,7 +625,7 @@ def _rixs_map_flat(
                 sectors = [transition_sector_restrictions(charges, gs_occ, tin) for tin in in_ops]
             sector_in = sectors[0] if all(sec == sectors[0] for sec in sectors) else None
             if sector_in:
-                tmp = intersect_windows(excited_restrictions, sector_in)
+                tmp = intersect_sector_window(excited_restrictions, sector_in)  # a blocked transition: zero seeds
         tmp_restrictions_per_e.append(tmp)
 
     # Flat work units. Unit seeds are the eigenstate's in-component excitations (duplicated

@@ -356,3 +356,23 @@ def test_calc_spectra_extra_meshes_match_direct_calls():
     direct_iw = spectra.calc_spectra(hOp, tOps, w=w_matsubara, basis=fresh_basis(), **{**common, "delta": 0.0})
     np.testing.assert_allclose(combined[0], direct_w, atol=1e-12)
     np.testing.assert_allclose(combined[1], direct_iw, atol=1e-12)
+
+
+def test_merge_spectra_datasets_is_the_weighted_sum_and_keeps_dtypes():
+    a = {"PS/spectra": np.array([[1.0 + 1j]]), "RIXS/tensor": np.array([2.0 + 0j], dtype=np.complex64), "P/x": "proj"}
+    b = {"PS/spectra": np.array([[3.0 - 1j]]), "RIXS/tensor": np.array([4.0 + 0j], dtype=np.complex64), "P/x": "other"}
+    m = spectra.merge_spectra_datasets([a, b], [1.0, 3.0])  # weights are renormalised
+    np.testing.assert_allclose(m["PS/spectra"], [[0.25 * (1 + 1j) + 0.75 * (3 - 1j)]])
+    assert m["RIXS/tensor"].dtype == np.complex64
+    np.testing.assert_allclose(m["RIXS/tensor"], [3.5])
+    assert m["P/x"] == "proj"
+    assert spectra.merge_spectra_datasets([a], [0.3])["PS/spectra"][0, 0] == a["PS/spectra"][0, 0]
+
+
+def test_a_blocked_transition_window_falls_back_to_the_shared_window():
+    from impurityModel.ed.basis_restrictions import intersect_sector_window
+
+    shared = {frozenset({0, 1}): (0, 2)}
+    assert intersect_sector_window(shared, {frozenset({0, 1}): (1, 2)}) == {frozenset({0, 1}): (1, 2)}
+    assert intersect_sector_window(shared, {frozenset({0, 1}): (3, 3)}) == shared  # infeasible: zero seeds anyway
+    assert intersect_sector_window(shared, {frozenset({0, 1}): (3, 3)}) is not shared
