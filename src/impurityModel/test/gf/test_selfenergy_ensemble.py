@@ -165,3 +165,20 @@ def test_a_partly_dropped_member_ensemble_stays_close_to_the_exact_one_without_t
         assert "dropped 2 of 4" in res["stdout"] and "dropped 5 of 6" in res["stdout"]
         exact = _exact_gc_green(tau, _meshes().iw, dropped=(2.2804, 2.2804, 1.5402, 1.5402, 1.5402, 2.5026, 3.8234))
         assert np.abs(_g00(res) - exact).max() < 5e-4
+
+
+def test_a_later_member_inherits_the_pinned_gf_caps_except_those_below_its_own_support():
+    """One cap per calculation, but never a cap below a member's ground-state basis (units would freeze at seeds)."""
+    import types
+
+    from impurityModel.ed.selfenergy import _inherit_gf_caps
+
+    shared = {"small": (100, 1), "large": (10_000, 2)}
+    member = types.SimpleNamespace(size=500)
+    _inherit_gf_caps(member, shared)
+    assert member._auto_gf_caps == {"large": (10_000, 2)}
+    _inherit_gf_caps(member, {"other": (1, 1)})  # already pinned: left alone
+    assert member._auto_gf_caps == {"large": (10_000, 2)}
+    first = types.SimpleNamespace(size=500)
+    _inherit_gf_caps(first, None)  # the dominant member sizes its own
+    assert not hasattr(first, "_auto_gf_caps")

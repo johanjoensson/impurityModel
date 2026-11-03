@@ -545,6 +545,18 @@ def _drop_low_weight_manifolds(
     return [psis[i] for i in keep], kept_es, dropped
 
 
+def _inherit_gf_caps(basis, shared):
+    """Give ``basis`` the auto GF caps the dominant member pinned, except those below its own support.
+
+    A calculation has one cap, so a later member normally runs at the pinned number. A pinned cap smaller than the
+    member's own ground-state basis would freeze its units at their seeds (the floor in
+    ``gf_units._colors_affording``), so such a pin is left out and that kernel is sized afresh for the member.
+    """
+    if shared is None or getattr(basis, "_auto_gf_caps", None) is not None:
+        return
+    basis._auto_gf_caps = {key: pin for key, pin in shared.items() if pin[0] >= int(basis.size)}
+
+
 def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster", cap_ledger=None):
     """Calculate the self energy of the impurity.
 
@@ -756,8 +768,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         first = running["z"] == 0.0
         # The auto GF cap is sized once, by the dominant member's first stage, and every later member runs at the
         # same cap: a calculation has one cap, not one per member (the pins live on the basis object).
-        if running["gf_caps"] is not None and getattr(ground_state_basis, "_auto_gf_caps", None) is None:
-            ground_state_basis._auto_gf_caps = running["gf_caps"]
+        _inherit_gf_caps(ground_state_basis, running["gf_caps"])
         restrictions = ground_state_basis.restrictions
         if restrictions is not None:
             report("Restrictions on ground-state occupation:", level=V_DETAIL)
