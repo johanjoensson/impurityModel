@@ -2918,3 +2918,21 @@ def test_peak_and_gap_dc_warn_when_a_neighbour_sector_is_thermal_and_stay_silent
     fixed_peak_dc(peak_position=1.2, **kwargs)
     out = capsys.readouterr().out
     assert (not rank0) or ("fixed-peak double counting measures one charge sector" in out), out
+
+
+def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
+    """A refused trial keeps one member with a neighbour inside the window: the note belongs to Sigma, not each trial."""
+    from impurityModel.ed import dc_criteria, groundstate
+
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
+    real = groundstate.plan_ensemble
+    monkeypatch.setattr(
+        groundstate,
+        "plan_ensemble",
+        lambda solved, tau, mode, **kw: real(solved, tau, mode, **{**kw, "max_error": -1.0}),
+    )
+    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
+    capsys.readouterr()
+    dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
+    assert "a neighbouring sector lies within the thermal window" not in capsys.readouterr().out

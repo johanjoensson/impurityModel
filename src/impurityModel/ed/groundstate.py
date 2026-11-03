@@ -1556,6 +1556,7 @@ def solve_ground_state_ensemble(
     shift=0.0,
     spin_layout=None,
     announce_refusal=True,
+    warn_neighbours=True,
 ):
     """The grand-canonical thermal ground state: every charge sector inside the thermal window, one at a time.
 
@@ -1570,6 +1571,7 @@ def solve_ground_state_ensemble(
     ``ENSEMBLE_WEIGHT_ERROR_MAX``) the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on
     every rank.  ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
     itself, such as the double-counting search, reports it once per search rather than per trial).
+    ``warn_neighbours=False`` likewise silences the single-member neighbour-gap note.
 
     Returns
     -------
@@ -1670,7 +1672,9 @@ def solve_ground_state_ensemble(
                 truncation_report=records[member.total].truncation_report,
                 diagnostics=None,
             )
-        ground_state = _thermal_state(member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single, **kw)
+        ground_state = _thermal_state(
+            member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single and warn_neighbours, **kw
+        )
         realised.append(float(np.min(ground_state.es)))
         consumed = consume(member, ground_state)
         del ground_state  # the solver and its Krylov store go before the consumer's own workspace is built
