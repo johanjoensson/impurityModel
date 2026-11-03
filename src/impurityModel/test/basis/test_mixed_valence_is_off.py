@@ -83,9 +83,16 @@ def test_the_low_level_entries_no_longer_take_the_switch():
 @pytest.mark.parametrize("comm", COMMS)
 def test_every_rank_raises_at_the_susceptibility_entry_under_on(comm):
     """The chi driver cannot form the ensemble yet: an explicit 'on' raises on every rank before a collective."""
+    import types
+
+    from impurityModel.ed.susceptibility import calc_susceptibility_workflow
+
     raised = False
     try:
-        reject_unmigrated_ensemble({0: 1}, driver="calc_susceptibility_workflow")
+        # the real entry: the rejection runs before it reads the model, the meshes or the solver
+        calc_susceptibility_workflow(
+            None, None, types.SimpleNamespace(mixed_valence="on"), None, comm=comm or MPI.COMM_SELF
+        )
     except ValueError as err:
         raised = "charge-sector ensemble" in str(err)
     assert all((comm or MPI.COMM_SELF).allgather(raised))
