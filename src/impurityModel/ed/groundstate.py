@@ -228,7 +228,7 @@ def _orbits_for(h_op, basis, manifold, spin_layout):
 
 
 def widen_by_single_excitations(basis, *, max_seed):
-    """``(wide basis or None, too_big)``: ``basis`` widened by every single excitation ``c_i^+ c_j |seed>`` (collective).
+    """``(wide basis or None, too_big)``: ``basis`` widened by every single excitation (collective).
 
     The seed of a closed shell (d0, d10, one determinant) spans one symmetry class of ``H``, and the
     ground state can sit in another one. ``H|seed>`` cannot help: ``H`` conserves what defines the class,
@@ -1626,9 +1626,10 @@ def solve_ground_state_ensemble(
     ground state is dropped before the next member is built, so the peak is one member plus whatever ``consume``
     keeps.  ``after_release(member, consumed)``, when given, runs after the ground state (and so its solver and
     Krylov store) has been dropped, on ``consume``'s return value; its return value replaces that entry of
-    ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is refused (a member is cap-bound, uncertified, or the weights are not fixed to
-    ``ENSEMBLE_WEIGHT_ERROR_MAX``) the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on
-    every rank.  ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
+    ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is
+    refused (a member is cap-bound, uncertified, or the weights are not fixed to ``ENSEMBLE_WEIGHT_ERROR_MAX``)
+    the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on every rank.
+    ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
     itself, such as the double-counting search, reports it once per search rather than per trial).
     ``warn_neighbours=False`` likewise silences the single-member neighbour-gap note.
 

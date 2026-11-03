@@ -639,7 +639,7 @@ def test_the_ensemble_occupation_is_monotone_in_mu_across_the_sector_crossing_on
         kwargs["model"], dataclasses.replace(kwargs["basis"], mixed_valence="on"), kwargs["solver"]
     )
     tau = kwargs["basis"].tau
-    mus = [1.3 + k * tau / 5 for k in range(int(round(0.5 / (tau / 5))) + 1)]
+    mus = [1.3 + k * tau / 5 for k in range(round(0.5 / (tau / 5)) + 1)]
     n = np.array([dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, float(mu), False, 0)[0] for mu in mus])
     assert np.all(np.diff(n) >= -1e-9), np.round(n, 4)
     assert n[0] < 1.1 and n[-1] > 1.9, np.round(n, 4)  # the grid spans the whole crossing
@@ -2921,7 +2921,7 @@ def test_peak_and_gap_dc_warn_when_a_neighbour_sector_is_thermal_and_stay_silent
 
 
 def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
-    """A refused trial keeps one member with a neighbour inside the window: the note belongs to Sigma, not each trial."""
+    """A refused trial keeps one member with a neighbour in the window: the note belongs to Sigma, not each trial."""
     from impurityModel.ed import dc_criteria, groundstate
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
@@ -3017,7 +3017,7 @@ def _handoff_run(refuse=None, occupation=1.0):
     from impurityModel.ed.model import Meshes
     from impurityModel.ed.selfenergy import calc_selfenergy
 
-    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    kwargs, _dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="off")
     kwargs["basis"] = basis
     handoff = GroundStateHandoff()
@@ -3060,7 +3060,7 @@ def test_a_handoff_for_another_dc_or_spec_is_refused_and_the_self_energy_is_solv
 
 
 def test_a_reused_ground_state_means_the_self_energy_runs_no_ground_state_solve(monkeypatch):
-    import impurityModel.ed.groundstate as groundstate
+    from impurityModel.ed import groundstate
 
     calls = []
     real = groundstate.solve_ground_state

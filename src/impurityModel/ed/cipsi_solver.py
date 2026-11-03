@@ -38,8 +38,8 @@ from impurityModel.ed.memory_estimate import (
     rss_breakdown,
 )
 from impurityModel.ed.solver_trace import note as _trace_note
-from impurityModel.ed.utils import Heartbeat
 from impurityModel.ed.solver_trace import timed as _trace_timed
+from impurityModel.ed.utils import Heartbeat
 
 #: Headroom, in states, on the number of eigenstates one CIPSI cycle asks the eigensolver to retain
 #: initially (:func:`_manifold_request`). The window solve grows its retention past it on demand.

@@ -33,6 +33,7 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
+from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import (
     log_peak_vs_predicted,
@@ -57,7 +58,6 @@ from impurityModel.ed.solver_basis import (  # noqa: F401
     _per_group_occupation,
     prepare_solver_basis,
 )
-from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.utils import V_DETAIL, V_RESULT, V_SUMMARY, Reporter
 
 

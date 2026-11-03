@@ -46,8 +46,8 @@ def _run(index, comm, mixed_valence, tmp_path):
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
 def test_a_single_member_ensemble_is_bit_identical_to_off(comm, tmp_path):
-    (psis0, es0, _, rho0, info0), _, _ = _run(20, comm, "off", tmp_path)
-    (psis1, es1, _, rho1, info1), _, _ = _run(20, comm, "auto", tmp_path)
+    (_psis0, es0, _, rho0, _info0), _, _ = _run(20, comm, "off", tmp_path)
+    (_psis1, es1, _, rho1, info1), _, _ = _run(20, comm, "auto", tmp_path)
     assert np.array_equal(es0, es1) and np.array_equal(rho0, rho1)
     assert len(info1["ensemble"]["members"]) == 1 and info1["ensemble"]["members"][0]["weight"] == 1.0
 
@@ -56,7 +56,7 @@ def test_a_single_member_ensemble_is_bit_identical_to_off(comm, tmp_path):
 @pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize("index, members", [(3, [1, 2]), (33, [0, 1])])
 def test_the_merged_density_matrix_carries_the_grand_canonical_electron_count(comm, index, members, tmp_path):
-    (psis, es, basis, rho, info), n_orb, n_val = _run(index, comm, "on", tmp_path)
+    (psis, es, _basis, rho, info), n_orb, n_val = _run(index, comm, "on", tmp_path)
     ens = info["ensemble"]
     assert sorted(m["total"] for m in ens["members"]) == members
     h_op, *_ = _setup(index, comm, "on")

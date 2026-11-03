@@ -34,7 +34,6 @@ from .apply_reference import (
     assert_matches,
     block_from_orbital_sets,
     block_to_orbital_sets,
-    orbitals_from_chunks,
     reference_apply,
     state_to_orbital_sets,
 )
@@ -436,18 +435,18 @@ def test_block_apply_restriction_deltas_match_the_per_state_check(seed):
     op.set_weighted_restrictions(
         [
             ({o: (1 if o % 2 else -1) for o in range(0, 80)}, (-3, 3)),
-            ({o: 2 for o in range(10, 30)} | {o: -1 for o in range(25, 60)}, (-12, 14)),
+            (dict.fromkeys(range(10, 30), 2) | dict.fromkeys(range(25, 60), -1), (-12, 14)),
         ]
     )
     restr = {frozenset(range(0, 40)): (18, 22), frozenset(range(30, 90)): (28, 33)}
     weighted = [
         ({o: (1 if o % 2 else -1) for o in range(0, 80)}, (-3, 3)),
-        ({o: 2 for o in range(10, 30)} | {o: -1 for o in range(25, 60)}, (-12, 14)),
+        (dict.fromkeys(range(10, 30), 2) | dict.fromkeys(range(25, 60), -1), (-12, 14)),
     ]
     states = state_to_orbital_sets(psi)
     got = block_to_orbital_sets(op.apply_block(block_from_orbital_sets(states, N_CHUNKS), 0.0))
     ref = reference_apply(op.to_dict(), states, N_CHUNKS, restr, weighted)
-    assert 0 < len(ref)
+    assert len(ref) > 0
     unrestricted = reference_apply(op.to_dict(), states, N_CHUNKS)
     assert len(ref) < len(unrestricted), "the restrictions cut nothing, so the test discriminates nothing"
     assert_matches(got, ref)

@@ -50,8 +50,8 @@ import numpy as np
 from impurityModel.ed import config, spectra
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
-from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
+from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.utils import report_banner
 

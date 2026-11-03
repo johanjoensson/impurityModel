@@ -258,8 +258,7 @@ def test_partial_trlm_array_bench(nio_workload):
     locals_n = [local_n] if comm is None else comm.gather(local_n, root=0)
     _report(
         comm,
-        f"TRLM/array (NiO {NBATHS} bath, basis {n_global}, "
-        f"{'serial' if comm is None else f'{comm.size} ranks'})",
+        f"TRLM/array (NiO {NBATHS} bath, basis {n_global}, " f"{'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("E0", f"{np.min(e_ref):.6f}"),
             ("median wall time", f"{np.median(times):.3f} s over {REPS} reps"),

@@ -1487,7 +1487,10 @@ def describe_gs_cap(policy, held_by_ceiling=None):
     held = (
         ""
         if held_by_ceiling is None
-        else f"; held to {held_by_ceiling[1]:,} by an earlier solve's ceiling (memory alone allowed {held_by_ceiling[0]:,})"
+        else (
+            f"; held to {held_by_ceiling[1]:,} by an earlier solve's ceiling "
+            f"(memory alone allowed {held_by_ceiling[0]:,})"
+        )
     )
     return (
         f"GS {int(policy.gs):,} (auto, sized from available memory for the ground state alone{held}; "

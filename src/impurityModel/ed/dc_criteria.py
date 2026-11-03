@@ -2077,7 +2077,8 @@ class _OccupationContext:
     #: the next solve starts, so at most one ground state is ever held: keeping every trial point would be K of them.
     retain: bool = False
     last_solution: object = None
-    #: ``(excitation_budget, cost_budget)``: the other inputs of the handoff key (:func:`groundstate.ground_state_handoff_key`).
+    #: ``(excitation_budget, cost_budget)``: the other inputs of the handoff key
+    #: (:func:`groundstate.ground_state_handoff_key`).
     budgets: tuple = (None, None)
 
     def __post_init__(self):

@@ -393,7 +393,8 @@ def test_unconverged_hf_seed_is_rejected(monkeypatch, capsys):
 
 
 @pytest.mark.xfail(
-    reason="attractive U makes E(N) zigzag (even N favoured): the +-1 descent ends at an even sector whose odd neighbours "
+    reason="attractive U makes E(N) zigzag (even N favoured): the +-1 descent ends at an even sector whose odd "
+    "neighbours "
     "are both higher, so the second difference there is POSITIVE (measured on 14 models, e_imp/u scan, 2026-11-02) and "
     "no ±1 energy can tell it from a true minimum. A N+-2 probe triggered by convexity is vacuous at a descent end; "
     "one triggered by margin < 1 does not fire here (exact solves). Only an unconditional N+-2 probe (two extra "

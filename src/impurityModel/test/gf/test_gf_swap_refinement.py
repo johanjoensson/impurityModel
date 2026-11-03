@@ -445,6 +445,6 @@ def test_a_round_that_raises_the_estimated_sigma_error_is_undone_and_ends_the_re
 @pytest.mark.parametrize("comm", COMMS)
 def test_without_the_acceptance_test_the_same_bad_swap_is_kept(monkeypatch, comm):
     _worst_swaps(monkeypatch, from_call=1)
-    g_breadth, _ = _run(10, comm=comm)
+    _g_breadth, _ = _run(10, comm=comm)
     _g, info = _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4, verify=False), comm=comm)
     assert "rejected" not in info["refine"] and sum(info["refine"]["swapped"]) >= 1

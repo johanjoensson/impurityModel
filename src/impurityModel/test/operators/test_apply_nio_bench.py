@@ -157,7 +157,7 @@ def test_nio_cost_form_per_row_cost(nio, capsys):
         slater_weight_min=1e-10,
     )
     assert len(both) == 2
-    cost_weights, cost_bounds = both[1]
+    cost_weights, _cost_bounds = both[1]
     # the bound is irrelevant to the timing; widen it so the form never rejects and the output work is equal
     cost_form = (cost_weights, (-(10**6), 10**6))
     groups = len({w for w in cost_weights.values() if w})

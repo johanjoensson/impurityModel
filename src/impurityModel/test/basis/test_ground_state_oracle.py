@@ -76,7 +76,7 @@ def test_the_scan_walk_reaches_the_exact_sector(seed, index, complex_h):
 def test_the_scan_walk_reaches_the_exact_sector_with_two_groups_and_a_split_that_may_go_negative(
     seed, index, complex_h
 ):
-    h_op, imp, bath, N0, n_orb, n_val, _ = gs_oracle.pinned_model(seed, index, complex_h)
+    h_op, _imp, bath, N0, n_orb, n_val, _ = gs_oracle.pinned_model(seed, index, complex_h)
     imp2 = {0: [[0, 2]], 1: [[1, 3]]}
     bath2 = ({0: bath[0][0], 1: [[]]}, {0: bath[1][0], 1: [[]]})
     n = N0[0]

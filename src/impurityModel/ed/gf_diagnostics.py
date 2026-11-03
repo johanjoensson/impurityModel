@@ -847,7 +847,8 @@ def kms_pole_check(
     Returns
     -------
     Diagnostic
-        ``OK`` or ``WARN``; ``value`` is the worst deviation of ``log(A_rem/A_add) + omega/tau`` over the bins (threshold: ``log(1 + rtol)``).
+        ``OK`` or ``WARN``; ``value`` is the worst deviation of ``log(A_rem/A_add) + omega/tau`` over the bins
+        (threshold: ``log(1 + rtol)``).
     """
     if n_members < 2 or not tau > 0:
         return Diagnostic(

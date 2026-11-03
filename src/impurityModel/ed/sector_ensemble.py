@@ -63,9 +63,9 @@ def resolve_mixed_valence(value: Any, *, driver_default: MixedValence) -> tuple[
     if isinstance(value, bool):
         return ("on" if value else "off"), None
     if isinstance(value, Integral):
-        if value < 0:
+        if int(value) < 0:
             raise ValueError(f"mixed_valence={value!r}: must not be negative")
-        return ("on", LEGACY_NOTE) if value > 0 else ("off", None)
+        return ("on", LEGACY_NOTE) if int(value) > 0 else ("off", None)
     if isinstance(value, str):
         key = value.strip().lower()
         key = {"true": "on", "false": "off", "0": "off"}.get(key, key)

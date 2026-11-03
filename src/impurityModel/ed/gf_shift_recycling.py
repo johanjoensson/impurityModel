@@ -452,7 +452,7 @@ class ShiftedGalerkin:
             self._x = self._x_buf
         capacity = self._x_buf.shape[0]
         if beta_prev is None or self._p is None or self._p.shape[2] != w:
-            self._p_buf, p_buf = np.zeros((capacity, self.n_z, w), dtype=complex), self._p_buf
+            self._p_buf, _old_p_buf = np.zeros((capacity, self.n_z, w), dtype=complex), self._p_buf
             p = self._p_buf[: self.n_rows]
             p_prev = p if beta_prev is None else self._p  # a width change: the old p is read, a new one written
         else:

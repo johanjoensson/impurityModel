@@ -195,7 +195,7 @@ def intersect_windows(base, extra):
 
 
 def intersect_sector_window(base, sector):
-    """:func:`intersect_windows` of the shared excited window with a charge-sector window, tolerant of a *blocked* transition.
+    """:func:`intersect_windows` of the shared excited window with a charge-sector window, tolerant of a blocked one.
 
     A transition is blocked when the sector window asks for more electrons than an orbital subset can hold (or fewer
     than zero): a member of a charge-sector ensemble whose valence shell is full cannot take a core electron, an empty

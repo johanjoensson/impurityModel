@@ -855,11 +855,11 @@ def test_a_cap_ledger_ceiling_lowers_an_auto_cap_and_records_what_was_resolved(f
 
 def test_the_determinant_cap_line_names_the_ledger_ceiling_that_held_the_cap_down(fixed_auto_cap, capsys):
     me.resolve_cap_policy(None, 58, comm=None, log="always", ledger=me.CapLedger(ceiling=10_000))
-    line = [ln for ln in capsys.readouterr().out.splitlines() if "determinant cap:" in ln][0]
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "determinant cap:" in ln)
     assert "GS 10,000" in line and "held to 10,000" in line and "memory alone allowed 40,000" in line
     # a ceiling that did not bind says nothing about itself
     me.resolve_cap_policy(None, 58, comm=None, log="always", ledger=me.CapLedger(ceiling=90_000))
-    line = [ln for ln in capsys.readouterr().out.splitlines() if "determinant cap:" in ln][0]
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "determinant cap:" in ln)
     assert "GS 40,000" in line and "held to" not in line
 
 

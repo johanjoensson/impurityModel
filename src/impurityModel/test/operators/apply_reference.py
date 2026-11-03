@@ -69,8 +69,8 @@ def reference_apply(terms, states, n_chunks, restrictions=None, weighted=None):
     Exactly-zero rows are dropped, as ``apply(..., cutoff=0)`` does.
     """
     out = {}
-    for occ, amp in states.items():
-        amp = np.asarray(amp, dtype=complex)
+    for occ, raw_amp in states.items():
+        amp = np.asarray(raw_amp, dtype=complex)
         for string, coeff in terms.items():
             sign, new = _apply_string(string, occ, n_chunks)
             if sign == 0 or not _within(new, restrictions, weighted):

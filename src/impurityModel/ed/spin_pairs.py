@@ -381,9 +381,7 @@ def _bath_pairs_positional(h, imp_pairs, impurity, n_orb, cut):
     return sorted(up_of.items()), None
 
 
-def spin_layout(
-    h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None, shell_ls=None
-):
+def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None, shell_ls=None):
     r"""Resolve the ``(dn, up)`` pairing of impurity and bath and grade how much of it ``H`` verifies.
 
     Total: always returns a :class:`SpinLayout`. With a ``comm`` the layout is resolved on rank 0

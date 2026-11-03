@@ -26,7 +26,7 @@ def test_the_policy_forwards_its_state_both_ways():
 def test_the_boundary_ranking_fills_exactly_the_free_slots():
     d = SupportDecisions(None, cap=10, global_count=7)
     norms2 = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
-    above, boundary, n_fill = d.rank_boundary(norms2)
+    above, _boundary, n_fill = d.rank_boundary(norms2)
     admitted = int((norms2 > above).sum()) + n_fill
     assert admitted == 3
     d.freeze_at_cap(3)

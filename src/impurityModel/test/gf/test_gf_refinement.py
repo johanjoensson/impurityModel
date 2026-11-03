@@ -249,7 +249,7 @@ def test_the_retire_ranking_resolves_scores_many_decades_below_the_largest():
     from impurityModel.ed.gf_refinement import ImportanceScores, _select_swap
 
     comm = MPI.COMM_WORLD
-    _dets, _op, _basis_, matrix, _h, _index, _in_p = _setup(comm)
+    _dets, _op, _basis, matrix, _h, _index, _in_p = _setup(comm)
     n_p = matrix.n_p_local
     # distinct scores over 40 decades, spread over the ranks in an order unrelated to the keys
     ranks_n = np.array(comm.allgather(n_p))
@@ -261,7 +261,7 @@ def test_the_retire_ranking_resolves_scores_many_decades_below_the_largest():
     s_cand[matrix.p_to_k_slot()] = -np.inf  # every candidate beats every retained row
     scores = ImportanceScores(s_ret, s_cand)
     k = 7
-    retire, admit, _gain = _select_swap(matrix, scores, np.zeros(n_p, dtype=bool), k)
+    retire, _admit, _gain = _select_swap(matrix, scores, np.zeros(n_p, dtype=bool), k)
     got = np.sort(np.concatenate(comm.allgather(s_ret[retire])))
     want = np.sort(np.concatenate(comm.allgather(s_ret)))[:k]
     np.testing.assert_array_equal(got, want)

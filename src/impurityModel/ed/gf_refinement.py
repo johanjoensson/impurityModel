@@ -561,8 +561,9 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     ``first`` is round 0's ``(alphas, betas, widths, status, q_last)`` and ``first_acc`` the
     :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin` that run stepped (a recurrence on the final P,
     ``plan.accumulator_shifts``); ``rerun(q0, shifted, shifted_rtol)`` is the frozen recurrence from a seed block on
-    the matrix's current P slots, stepping the accumulator it is given; ``g_cf(result, zs, framed=True)`` the continued-fraction
-    ``G`` of a result on the shifts ``zs``; ``seed_block(matrix, seed_keys, q0)`` the seed block on the current P slots.
+    the matrix's current P slots, stepping the accumulator it is given; ``g_cf(result, zs, framed=True)`` the
+    continued-fraction ``G`` of a result on the shifts ``zs``; ``seed_block(matrix, seed_keys, q0)`` the seed block on
+    the current P slots.
 
     Round ``n`` scores the retained and discovered determinants from the accumulator's solutions
     (:func:`importance_scores`), then swaps the least important retained against the most important discovered ones
@@ -574,8 +575,8 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     unless the last permitted round's run already did both.
     A round after which the largest estimated self-energy error (:func:`sigma_error` on ``plan.checks``) has grown on
     the real or the Matsubara axis (:func:`_round_worse`) is undone and ends the refinement (``record["rejected"]``;
-    ``record["sigma_error"]`` holds each pass's per-axis maxima). A refinement whose final estimated gain is larger than round 0's
-    falls back to round 0's P and result. The
+    ``record["sigma_error"]`` holds each pass's per-axis maxima). A refinement whose final estimated gain is larger
+    than round 0's falls back to round 0's P and result. The
     record's ``dG_*`` are ``max|G_final - G_0| / max|G_0|`` of the continued fractions on the scoring shifts and on
     held-out ones."""
     from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
@@ -664,7 +665,8 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
         record["fell_back"] = True
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
-    acc = xs = ys = scores = seeds = None  # the views keep the whole accumulator alive through the final run
+    # Drop the views: they keep the whole accumulator alive through the final run.
+    acc = xs = ys = scores = seeds = None  # noqa: F841
     if result[3] == "scored" or rejected:
         # The last run stopped on the scoring residual (or ran on a support that was rejected): G needs its own
         # recurrence on the final P.

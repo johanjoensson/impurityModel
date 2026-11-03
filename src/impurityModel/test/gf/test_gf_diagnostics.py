@@ -197,7 +197,6 @@ def test_empty_report_renders_pass():
 def _grand_canonical_poles(tau, sector_scale=None, n_modes=3, seed=3):
     """Dense Fock-space ED over every charge sector: the (pole, add residue, rem residue) triples of c_0^dagger."""
     rng = np.random.default_rng(seed)
-    dim = 2**n_modes
     z = np.diag([1.0, -1.0])
     lower = np.array([[0.0, 1.0], [0.0, 0.0]])  # annihilates the occupied state |1> = (0, 1)
 
