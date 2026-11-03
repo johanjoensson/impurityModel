@@ -39,11 +39,16 @@ def _dense_siam(eps_d=-0.7, eps_b=1.5, v=0.3, U=3.0):
     return h, cd
 
 
-def _exact_gc_green(tau, z, orbital=0):
-    """Exact grand-canonical impurity Green's function G_oo(z) over every electron count."""
+def _exact_gc_green(tau, z, orbital=0, dropped=()):
+    """Exact grand-canonical impurity Green's function G_oo(z) over every electron count.
+
+    ``dropped`` are excitation energies (E - E0) of initial states left out of the ensemble, as ``gf_min_weight`` does.
+    """
     h, cd = _dense_siam()
     e, v = np.linalg.eigh(h)
     p = np.exp(-(e - e.min()) / tau)
+    for de in dropped:
+        p[np.abs(e - e.min() - de) < 1e-3] = 0.0
     p /= p.sum()
     a = v.T @ cd[orbital] @ v  # <m|c^dag|n>
     g = np.zeros(len(z), complex)
@@ -122,3 +127,41 @@ def test_gf_min_weight_drops_a_whole_minority_member_but_never_the_global_ground
         assert "member is skipped" not in mild["stdout"]
         np.testing.assert_allclose(_g00(mild), _g00(full), atol=1e-12)
         np.testing.assert_allclose(_g00(cut), _g00(off), atol=1e-6)  # only the winner's states remain
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("mode", ["auto", "on"])
+@pytest.mark.parametrize("gf_min_weight", [None, 1e-12])
+def test_one_member_ensemble_reproduces_every_array_of_the_single_sector_run(mode, gf_min_weight):
+    """Not only Sigma: every array the run returns (G, moments, rho, energies ...) is bit-identical to ``off``."""
+    comm = MPI.COMM_WORLD
+    tau = 0.01
+    ens = _run(comm, mode, tau, gf_min_weight=gf_min_weight)
+    off = _run(comm, False, tau, gf_min_weight=gf_min_weight)
+    assert len(ens["gs_ensemble"]["members"]) == 1
+    if comm.rank == 0:
+        arrays = [k for k, v in off.items() if isinstance(v, np.ndarray)]
+        assert len(arrays) >= 8, arrays
+        for key in arrays:
+            np.testing.assert_array_equal(ens[key], off[key], err_msg=key)
+
+
+def test_member_coefficients_weigh_each_member_by_the_share_its_kept_states_carry():
+    from impurityModel.ed.selfenergy import _member_coefficients
+
+    # a member that kept half its weight counts for half; one that kept nothing for nothing; the rest renormalise
+    assert _member_coefficients([0.6, 0.3, 0.1], [1.0, 0.5, 0.0]) == pytest.approx([0.6 / 0.75, 0.15 / 0.75, 0.0])
+    assert _member_coefficients([0.7, 0.3], [1.0, 1.0]) == pytest.approx([0.7, 0.3])  # nothing dropped: unchanged
+
+
+@pytest.mark.mpi
+def test_a_partly_dropped_member_ensemble_stays_close_to_the_exact_one_without_those_states():
+    """tau = 0.5, gf_min_weight 0.02: seven initial states dropped across two members; G stays within the thermal
+    window's own truncation (2.8e-4, as the undropped ensemble) of the exact G without them."""
+    comm = MPI.COMM_WORLD
+    tau = 0.5
+    res = _run(comm, "on", tau, gf_min_weight=0.02)
+    if comm.rank == 0:
+        assert "dropped 2 of 4" in res["stdout"] and "dropped 5 of 6" in res["stdout"]
+        exact = _exact_gc_green(tau, _meshes().iw, dropped=(2.2804, 2.2804, 1.5402, 1.5402, 1.5402, 2.5026, 3.8234))
+        assert np.abs(_g00(res) - exact).max() < 5e-4
