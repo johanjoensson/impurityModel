@@ -34,3 +34,29 @@ def test_members_concatenate_with_absolute_energies_dominant_first():
 def test_empty_raises():
     with pytest.raises(ValueError):
         merge_measurements([])
+
+
+class _Basis:
+    def __init__(self, comm):
+        self.comm = comm
+
+
+@pytest.mark.mpi
+def test_width_zero_block_on_a_rank_still_yields_len_es_states():
+    """A rank whose redistributed block has width 0 (``to_states() == []``) must not return a short list:
+    the merged list has len(es) entries on every rank, so the collectives after it stay in step."""
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    basis = _Basis(comm)
+    # rank 0 holds the data; every other rank holds the width-0 polymorphic zero
+    if comm.rank == 0:
+        psis_a = ManyBodyState.from_states([ManyBodyState({_det(1): 1.0}), ManyBodyState({_det(2): 1.0})])
+    else:
+        psis_a = ManyBodyState.from_states([])
+    a = measure_ground_state(basis, np.array([-2.0, -1.9]), psis_a, total=1)
+    b = measure_ground_state(
+        basis, np.array([-1.95]), ManyBodyState.from_states([ManyBodyState({_det(4): 1.0})]), total=2
+    )
+    _, es, psis = merge_measurements([a, b])
+    assert len(psis) == len(es) == 3

@@ -10,6 +10,7 @@ import sys
 from dataclasses import asdict, dataclass
 
 import numpy as np
+from mpi4py import MPI
 
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
@@ -132,6 +133,20 @@ def measure_ground_state(ground_state_basis, es, psis, *, total=None):
     return SectorMeasurement(ground_state_basis, es, psis, total)
 
 
+def _member_states(m):
+    """The member's thermal states as a list of exactly ``len(m.es)`` width-1 states on every rank.
+
+    ``to_states`` of a width-0 block (a rank that holds no rows of the redistributed block) returns ``[]``;
+    padding with empty states keeps the merged list the same length on every rank, which the collectives
+    that follow rely on.
+    """
+    n = len(m.es)
+    states = m.psis.to_states() if isinstance(m.psis, ManyBodyState) else list(m.psis)
+    if len(states) < n and not states:
+        states = [ManyBodyState() for _ in range(n)]
+    return states
+
+
 def merge_measurements(measurements):
     """``(basis, es, psis)`` of the union of the members' thermal manifolds, dominant member first.
 
@@ -149,8 +164,15 @@ def merge_measurements(measurements):
     es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
     states = []
     for m in measurements:
-        states.extend(m.psis.to_states() if isinstance(m.psis, ManyBodyState) else list(m.psis))
-    # No rank-local length check here: a rank holding a width-0 block would raise alone ahead of the collectives.
+        states.extend(_member_states(m))
+    # Every rank now holds exactly len(es) states (a width-0 block is padded with empty width-1 states), so
+    # this check is rank-invariant; the allreduce makes the raise collective in case that invariant breaks.
+    comm = getattr(first.basis, "comm", None)
+    bad = int(len(states) != len(es))
+    if comm is not None:
+        bad = comm.allreduce(bad, op=MPI.MAX)
+    if bad:
+        raise RuntimeError(f"merge_measurements: {len(states)} states for {len(es)} energies on at least one rank")
     return first.basis, es, states
 
 
