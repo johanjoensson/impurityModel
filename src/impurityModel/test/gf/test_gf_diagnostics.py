@@ -241,6 +241,28 @@ def test_the_kms_check_fires_when_a_sector_weight_is_perturbed():
     assert d.severity == gd.Severity.WARN and d.value > 0.5, d
 
 
+@pytest.mark.parametrize(
+    "damage", ["removal_zero_above_tau", "removal_halved_above_zero", "addition_zero_below_minus_tau"]
+)
+def test_the_kms_check_fires_on_subtle_damage(damage):
+    tau = 0.5
+    omega, add, rem = _grand_canonical_poles(tau)
+    add, rem = np.array(add, float), np.array(rem, float)
+    if damage == "removal_zero_above_tau":
+        rem[omega > tau] = 0.0
+    elif damage == "removal_halved_above_zero":
+        rem[omega > 0] *= 0.5
+    else:
+        add[omega < -tau] = 0.0
+    d = gd.kms_pole_check(omega, add, omega, rem, tau, n_members=4)
+    assert d.severity == gd.Severity.WARN, d
+
+
+def test_the_kms_check_does_not_raise_at_zero_tau():
+    omega, add, rem = _grand_canonical_poles(0.5)
+    assert gd.kms_pole_check(omega, add, omega, rem, 0.0, n_members=4).severity == gd.Severity.OK
+
+
 def test_the_kms_check_is_not_applicable_to_one_member_and_never_raises():
     tau = 0.5
     omega, add, rem = _grand_canonical_poles(tau, sector_scale=3.0)

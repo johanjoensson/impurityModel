@@ -847,15 +847,15 @@ def kms_pole_check(
     Returns
     -------
     Diagnostic
-        ``OK`` or ``WARN``; ``value`` is the worst relative deviation of the bin ratio.
+        ``OK`` or ``WARN``; ``value`` is the worst deviation of ``log(A_rem/A_add) + omega/tau`` over the bins (threshold: ``log(1 + rtol)``).
     """
-    if n_members < 2:
+    if n_members < 2 or not tau > 0:
         return Diagnostic(
             name="kms",
             severity=Severity.OK,
             value=0.0,
             threshold=rtol,
-            message="KMS check not applicable (single-sector ensemble)",
+            message="KMS check not applicable (single-sector ensemble or tau <= 0)",
             suggestion="",
         )
     add_poles, add_residues = np.asarray(add_poles, float), np.asarray(add_residues, float)
@@ -866,13 +866,16 @@ def kms_pole_check(
     a_w, _ = np.histogram(add_poles, edges, weights=add_residues)
     r_w, _ = np.histogram(rem_poles, edges, weights=rem_residues)
     a_x, _ = np.histogram(add_poles, edges, weights=add_residues * add_poles)
+    r_x, _ = np.histogram(rem_poles, edges, weights=rem_residues * rem_poles)
     worst, where = 0.0, None
-    for k in np.flatnonzero(a_w > residue_floor):
-        omega = a_x[k] / a_w[k]
-        expected = np.exp(-omega / tau)
-        dev = abs(r_w[k] / a_w[k] - expected) / max(expected, 1.0)
+    # Compare log-ratios over every bin carrying weight on EITHER side: a one-sided bin (a dropped sector, a
+    # zeroed removal weight) is a violation, and the log keeps the test sensitive for omega > 0 as well.
+    for k in np.flatnonzero((a_w > residue_floor) | (r_w > residue_floor)):
+        omega = (a_x[k] + r_x[k]) / (a_w[k] + r_w[k])
+        dev = abs(np.log(max(r_w[k], residue_floor) / max(a_w[k], residue_floor)) + omega / tau)
         if dev > worst:
             worst, where = dev, omega
+    rtol = float(np.log1p(rtol))
     ok = worst <= rtol
     return Diagnostic(
         name="kms",
