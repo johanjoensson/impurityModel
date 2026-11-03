@@ -2906,3 +2906,15 @@ def test_the_ledger_records_the_cap_the_ladder_settled_on(monkeypatch):
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
     fixed_occupation_dc(occupation=1.0, cap_ledger=ledger, **kwargs)
     assert ledger.resolved == 7
+
+
+def test_peak_and_gap_dc_warn_when_a_neighbour_sector_is_thermal_and_stay_silent_otherwise(capsys):
+    """Fire: the N+1 sector sits inside the thermal window. No fire: it sits many tau above."""
+    rank0 = MPI.COMM_WORLD.rank == 0
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    fixed_peak_dc(peak_position=1.2, **kwargs)
+    assert "ill-posed here" not in capsys.readouterr().out
+    kwargs, _ = common_kwargs(v=0.01, tau=0.5)
+    fixed_peak_dc(peak_position=1.2, **kwargs)
+    out = capsys.readouterr().out
+    assert (not rank0) or ("fixed-peak double counting measures one charge sector" in out), out

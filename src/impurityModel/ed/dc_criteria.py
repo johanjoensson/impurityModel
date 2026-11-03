@@ -83,7 +83,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config, dc_record, solver_trace
-from impurityModel.ed.average import thermal_average_scale_indep
+from impurityModel.ed.average import energy_cut, thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
@@ -1248,6 +1248,9 @@ def fixed_peak_dc(
                 "anyway, or adjust dc_guess/peak_position to land nearer the nominal sector."
             )
 
+        _warn_if_a_neighbour_sector_is_thermal(
+            None if dc_rec.get("peak") is None else abs(dc_rec["peak"]), tau, rank, "fixed-peak"
+        )
         _reject_if_memory_bound(ctx, dc_rec, rank=rank)
         return (dc, n_center) if return_sector else dc
 
@@ -1301,6 +1304,23 @@ GAP_ENERGY_TOLERANCE_MAX_FRACTION = 0.1
 #: is *pure ligand*, is above the floor. ``0.3`` on the minimum is what the three measured models
 #: actually separate at: ``0.032`` and ``0.075`` fire, ``0.56``, ``0.95`` and ``1.00`` do not.
 GAP_EDGE_IMPURITY_FLOOR = 0.3
+
+
+def _warn_if_a_neighbour_sector_is_thermal(excess, tau, rank, criterion):
+    """Warn when the nearest N+-1 sector lies inside the thermal window of the sector the criterion measures.
+
+    Peak/gap measure the winning sector alone, under every ``mixed_valence`` mode. When a neighbour sits within
+    ``energy_cut(tau)`` of it, ``calc_gs`` under ``auto`` forms an ensemble and the Sigma step then sees a different
+    state than the one this criterion placed on the Fermi level. ``excess`` is that neighbour's energy above the
+    measured sector (``None`` when it is unreachable: nothing to warn about).
+    """
+    if excess is not None and excess < float(energy_cut(tau)) and rank == 0:
+        print(
+            f"WARNING: {criterion} double counting measures one charge sector, but the nearest N+-1 sector lies "
+            f"{excess:.4g} above it, inside the thermal window ({float(energy_cut(tau)):.4g}); the criterion is "
+            "ill-posed here and the self-energy ensemble will differ from the state it measured.",
+            flush=True,
+        )
 
 
 def _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank):
@@ -1932,6 +1952,10 @@ def fixed_gap_dc(
             chi=chi,
             chi_span=chi_span,
         )
+        if gap_width is not None:
+            _warn_if_a_neighbour_sector_is_thermal(
+                min(centre_at[mu] + 0.5 * gap_width, 0.5 * gap_width - centre_at[mu]), ctx.tau, rank, "fixed-gap"
+            )
         # `delta_plus` / `delta_minus` were measured and recorded inside the search block above,
         # from the eigenvectors of the solves the search had already paid for. All that is left
         # here is the sum, which needs `chi` for its fallback and so cannot be done up there.
