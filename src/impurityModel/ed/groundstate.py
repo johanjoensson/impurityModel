@@ -1278,6 +1278,65 @@ class GroundState(NamedTuple):
     walk_report: dict | None
 
 
+def ground_state_handoff_key(
+    *,
+    tau,
+    chain_restrict,
+    dense_cutoff,
+    cap,
+    slater_weight_min,
+    excitation_budget,
+    cost_budget,
+    e_pt2_tol,
+    de2_min,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    comm_size,
+):
+    """Everything that decides which single-sector ground state a solve finds, as a comparable tuple.
+
+    The double-counting search and the self-energy build this from their own values; a
+    :class:`GroundStateHandoff` is reused only when the two tuples are equal (``==`` on plain data, never on a live
+    memory probe: ``cap`` is the resolved ``CapPolicy.gs`` number).
+    """
+    return (
+        float(tau),
+        bool(chain_restrict),
+        dense_cutoff,
+        cap,
+        float(slater_weight_min),
+        excitation_budget,
+        cost_budget,
+        float(e_pt2_tol),
+        float(de2_min),
+        repr(impurity_orbitals),
+        repr(bath_states),
+        repr(sorted(N0.items())),
+        int(comm_size),
+    )
+
+
+@dataclass
+class GroundStateHandoff:
+    """The ground state a double-counting search ended on, offered to the self-energy that follows (C1).
+
+    Filled by :func:`dc_criteria.fixed_occupation_dc` (pass an empty one as ``handoff=``); consumed by
+    :func:`selfenergy.calc_selfenergy`, which reuses ``ground_state`` only if ``dc`` and ``key`` match what it would
+    solve itself and otherwise says so and solves fresh. ``mu`` is the shift the states were solved at -- always the
+    returned one. ``mixed_valence`` off only: an ensemble is not handed over yet.
+    """
+
+    dc: Optional[np.ndarray] = None
+    mu: Optional[float] = None
+    key: Optional[tuple] = None
+    ground_state: Optional["GroundState"] = None
+
+    @property
+    def filled(self):
+        return self.ground_state is not None
+
+
 def frozen_shell_leak(h_op, impurity_orbitals, frozen_occupations):
     """``(largest, total)`` ``|coefficient|`` of the terms of ``h_op`` that change a frozen shell's electron count.
 

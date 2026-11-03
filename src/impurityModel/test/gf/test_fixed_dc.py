@@ -2973,3 +2973,39 @@ def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_
             **{**kwargs, "basis": dataclasses.replace(kwargs["basis"], mixed_valence="auto")},
         )
     assert record.get("ensemble_refused_points", 0) >= 1, record
+
+
+def test_the_dc_handoff_holds_the_ground_state_at_the_returned_shift():
+    from impurityModel.ed.groundstate import GroundStateHandoff
+
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    kwargs["basis"] = dataclasses.replace(kwargs["basis"], mixed_valence="off")
+    handoff = GroundStateHandoff()
+    dc = fixed_occupation_dc(occupation=2.0, handoff=handoff, **kwargs)
+    assert handoff.filled and handoff.key is not None
+    assert np.array_equal(handoff.dc, dc)
+    mu = handoff.mu
+    np.testing.assert_allclose(dc[0, 0].real - dc_guess[0, 0].real, mu, atol=1e-12)
+    # The states are the ones a fresh solve at the returned shift finds.
+    _n, e0, _sector = occupation_and_energy_at_mu(kwargs["model"], kwargs["basis"], kwargs["solver"], mu)
+    assert handoff.ground_state.es[0] == pytest.approx(e0, abs=1e-8)
+    # Asking for a handoff does not move the answer.
+    assert np.array_equal(fixed_occupation_dc(occupation=2.0, **kwargs), dc)
+
+
+def test_the_handoff_is_the_solve_at_the_returned_shift_even_when_the_search_ended_elsewhere():
+    from impurityModel.ed.groundstate import GroundStateHandoff
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    kwargs["basis"] = dataclasses.replace(kwargs["basis"], mixed_valence="off")
+    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
+    ctx.retain = True
+    dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 0.0, False, 0)
+    assert ctx.last_solution[0] == 0.0
+    dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 0.5, False, 0)
+    assert ctx.last_solution[0] == 0.5  # one slot: the earlier point has been dropped
+    handoff = GroundStateHandoff()
+    dc_criteria._fill_handoff(ctx, handoff, 0.0, np.zeros((1, 1)), False, 0)  # the search returned an earlier point
+    assert handoff.mu == 0.0 and ctx.last_solution is None
+    _n, e0, _s = dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 0.0, False, 0)
+    assert handoff.ground_state.es[0] == pytest.approx(e0, abs=1e-8)

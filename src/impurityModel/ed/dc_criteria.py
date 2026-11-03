@@ -2073,6 +2073,12 @@ class _OccupationContext:
     seed_window: object = None
     #: As :class:`_SectorContext`: where the cap ladder records the cap it settled on (P10).
     cap_ledger: object = None
+    #: Opt-in retention of the latest single-sector solve, ``(mu, GroundState)`` (C1). One slot, dropped before
+    #: the next solve starts, so at most one ground state is ever held: keeping every trial point would be K of them.
+    retain: bool = False
+    last_solution: object = None
+    #: ``(excitation_budget, cost_budget)``: the other inputs of the handoff key (:func:`groundstate.ground_state_handoff_key`).
+    budgets: tuple = (None, None)
 
     def __post_init__(self):
         if self.cap_bound_at is None:
@@ -2207,7 +2213,52 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         e_pt2_tol=_resolve_dc_e_pt2_tol(None, basis.e_pt2_tol, honour_dc_knob=False),
         de2_min=_resolve_dc_de2_min(None, basis.de2_min, honour_dc_knob=False),
         mixed_valence=mixed_valence,
+        budgets=(excitation_budget, basis.cost_budget),
     )
+
+
+def _handoff_key(ctx):
+    from impurityModel.ed.groundstate import ground_state_handoff_key
+
+    return ground_state_handoff_key(
+        tau=ctx.tau,
+        chain_restrict=ctx.chain_restrict,
+        dense_cutoff=ctx.dense_cutoff,
+        cap=_ctx_cap_policy(ctx).gs,
+        slater_weight_min=ctx.slaterWeightMin,
+        excitation_budget=ctx.budgets[0],
+        cost_budget=ctx.budgets[1],
+        e_pt2_tol=ctx.e_pt2_tol,
+        de2_min=ctx.de2_min,
+        impurity_orbitals=ctx.impurity_orbitals,
+        bath_states=ctx.bath_states,
+        N0=ctx.N0,
+        comm_size=MPI.COMM_WORLD.size,
+    )
+
+
+def _fill_handoff(ctx, handoff, mu, dc, verbose, rank):
+    """Put the solve at the returned ``mu`` into ``handoff``.
+
+    The bracket search may return a point that was not its last evaluation, so the one retained slot is used only
+    when it is the returned ``mu``; otherwise that one point is solved again (no dearer than the fresh ground state
+    the self-energy would solve). ``mu`` is replicated, so every rank takes the same branch.
+    """
+    if ctx.mixed_valence != "off":
+        if rank == 0:
+            print(
+                "NOTE: handoff= is only filled for mixed_valence = 'off'; the self-energy will solve its own "
+                "ground state ensemble.",
+                flush=True,
+            )
+        return
+    if ctx.last_solution is None or ctx.last_solution[0] != mu:
+        _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
+    handoff.dc = np.array(dc, copy=True)
+    handoff.mu = float(mu)
+    handoff.key = _handoff_key(ctx)
+    handoff.ground_state = ctx.last_solution[1]
+    ctx.last_solution = None
 
 
 def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
@@ -2239,6 +2290,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     # N0 stays the *original* nominal occupation on every call (never a carried-forward sector
     # from the previous mu): feeding the walk its own last answer would make the result
     # path-dependent on the bracket's evaluation order, which breaks parity by another route.
+    ctx.last_solution = None  # free the previous trial's states before this solve builds its own
     with solver_trace.timed("expand", stage="dc_refine"):
         ground_state = solve_ground_state(
             h_op,
@@ -2284,6 +2336,8 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     )
     e0 = float(es[0])
     sector = sum(mb_basis.ground_state_occupation.values())
+    if ctx.retain:
+        ctx.last_solution = (mu, ground_state)
     return n_out, e0, sector
 
 
@@ -2394,6 +2448,7 @@ def fixed_occupation_dc(
     return_sector=False,
     report=None,
     cap_ledger=None,
+    handoff=None,
 ):
     r"""
     Calculate the double counting correction using a fixed (or self-consistent) impurity
@@ -2470,6 +2525,10 @@ def fixed_occupation_dc(
     max_shift : float
         Bracketing gives up if ``|mu|`` exceeds this, in the energy units of
         the Hamiltonian (the requested occupation is then unreachable).
+    handoff : impurityModel.ed.groundstate.GroundStateHandoff, optional
+        An empty handoff to fill with the ground state at the returned shift, for
+        :func:`~impurityModel.ed.selfenergy.calc_selfenergy` to reuse (``mixed_valence`` off only). Holds one
+        ground state alive until it is consumed or dropped.
 
     Returns
     -------
@@ -2493,6 +2552,7 @@ def fixed_occupation_dc(
         verbose = verbosity > 0
 
         ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity, cap_ledger=cap_ledger)
+        ctx.retain = handoff is not None and ctx.mixed_valence == "off"
 
         self_consistent = occupation is None
         if self_consistent:
@@ -2737,4 +2797,6 @@ def fixed_occupation_dc(
         # instead, so the record's n_gs never has a genuine miss hidden in it.
         _dump_dc_matrices(dc_guess, dc, rank)
         _reject_if_memory_bound(ctx, dc_rec, rank=rank)
+        if handoff is not None:
+            _fill_handoff(ctx, handoff, mu, dc, verbose, rank)
         return (dc, sector) if return_sector else dc
