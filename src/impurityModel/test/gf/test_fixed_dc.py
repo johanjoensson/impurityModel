@@ -597,16 +597,18 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
     assert ctx.refused_at == {} and not any(ctx.cap_bound_at.values())
     refuse["on"] = True
     ctx.cap_bound_at.clear()
+    capsys.readouterr()
     got = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
     assert sorted(ctx.refused_at) == [1.5, 1.75], ctx.refused_at
     assert [mu for mu, flag in sorted(ctx.cap_bound_at.items()) if flag] == [1.5, 1.75]
     assert dc_criteria._any_cap_bound(ctx) is True
     assert got[0] == free[0]  # the unrefused point is untouched
     assert got[1] != free[1]  # a refused point carries the winning sector alone
-    ctx.refused_at.clear()  # a re-measure of an unrefused point forgets an old refusal
-    refuse["on"] = False
+    # the per-trial warning is silenced: the search reports the refusal once, in the DC record
+    assert "keeps the single N_imp" not in capsys.readouterr().out
+    refuse["on"] = False  # a re-measure of an unrefused point forgets its old refusal (the pop in the evaluator)
     dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
-    assert ctx.refused_at == {}
+    assert sorted(ctx.refused_at) == [1.75], ctx.refused_at
 
 
 def test_the_between_sector_variance_warning_fires_only_when_the_occupation_is_set_by_the_sector_gap(capsys):

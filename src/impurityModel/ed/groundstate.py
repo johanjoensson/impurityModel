@@ -1555,6 +1555,7 @@ def solve_ground_state_ensemble(
     plan_store=None,
     shift=0.0,
     spin_layout=None,
+    announce_refusal=True,
 ):
     """The grand-canonical thermal ground state: every charge sector inside the thermal window, one at a time.
 
@@ -1567,7 +1568,8 @@ def solve_ground_state_ensemble(
     Krylov store) has been dropped, on ``consume``'s return value; its return value replaces that entry of
     ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is refused (a member is cap-bound, uncertified, or the weights are not fixed to
     ``ENSEMBLE_WEIGHT_ERROR_MAX``) the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on
-    every rank.
+    every rank.  ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
+    itself, such as the double-counting search, reports it once per search rather than per trial).
 
     Returns
     -------
@@ -1634,7 +1636,7 @@ def solve_ground_state_ensemble(
             raise ValueError(
                 f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {plan.refused_reason}"
             )
-        if comm is None or comm.rank == 0:
+        if announce_refusal and (comm is None or comm.rank == 0):
             print(
                 f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {plan.members[0].total} "
                 f"sector: {plan.refused_reason}.",

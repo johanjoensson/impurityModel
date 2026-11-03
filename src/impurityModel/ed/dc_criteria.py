@@ -2308,6 +2308,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             shift=mu,
             spin_layout=ctx.spin_layout,
             frozen_occupations=ctx.seed_window,
+            announce_refusal=False,
         )
     n_s, e0_s, z_s, n2_s, bound, memory = (np.array(col) for col in zip(*results))
     c = sector_weights(e0_s, z_s, ctx.tau)
