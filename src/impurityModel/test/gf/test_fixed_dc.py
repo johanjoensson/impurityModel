@@ -575,6 +575,17 @@ def test_the_ensemble_observable_attains_a_target_the_single_sector_one_steps_ov
     dc = fixed_occupation_dc(occupation=0.4, report=record, **{**kwargs, "basis": on})
     assert np.all(np.isfinite(dc))
     assert abs(record["n_gs"] - 0.4) < 2e-2, record
+    # the occupation is mixed over sectors here, and the record says how much of its variance is between them
+    assert record["var_n_inter_sector"] > 0 and record["var_n_intra_sector"] >= 0, record
+
+
+def test_a_one_member_ensemble_measures_exactly_what_the_single_sector_observable_does():
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
+    got = {}
+    for mode in ("off", "auto", "on"):
+        basis = dataclasses.replace(kwargs["basis"], mixed_valence=mode)
+        got[mode] = occupation_and_energy_at_mu(kwargs["model"], basis, kwargs["solver"], 0.0)
+    assert got["auto"] == got["off"] and got["on"] == got["off"], got
 
 
 def test_fixed_occupation_dc_increases_occupation():

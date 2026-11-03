@@ -28,8 +28,8 @@ def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None, *, 
     ----------
     lv : int
         Angular momentum of the valence shell.
-    n_val_i : int
-        Nominal (integer) valence occupation.
+    n_val_i : float
+        Valence occupation: an integer nominal one, or a grand-canonical average (mixed_valence = on).
     c : float
         Many-body correction to the charge transfer energy.
     Fvv : sequence of float
@@ -61,8 +61,6 @@ def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None, *, 
     .. math:: \Delta_{CT} = (e_d-e_b) + c.
 
     """
-    if int(n_val_i) != n_val_i:
-        raise ValueError(f"valence (l={lv}) occupation should be an integer, got {n_val_i}")
     if n_core_i is not None and int(n_core_i) != n_core_i:
         raise ValueError(f"core (l={lc}) occupation should be an integer, got {n_core_i}")
     if (Fvv is None) == (Uvv is None):

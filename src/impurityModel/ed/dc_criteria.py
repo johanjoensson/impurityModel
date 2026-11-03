@@ -2029,6 +2029,8 @@ class _OccupationContext:
     #: The resolved ``mixed_valence`` (``auto``/``on``/``off``): off measures the winning charge sector alone,
     #: auto/on the grand-canonical ensemble of the sectors inside the thermal window.
     mixed_valence: str = "off"
+    #: ``mu -> (intra, inter)``: the variance of the impurity occupation inside the members and between them.
+    ensemble_variance_at: dict | None = None
     cap_bound_at: dict | None = None
     memory_bound_at: dict | None = None
     #: Each sector's certification, shared by every ground state this search solves
@@ -2272,6 +2274,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             float(thermal_average_scale_indep(es, occ, ctx.tau)),
             float(es.min()),
             float(np.exp(-(es - es.min()) / ctx.tau).sum()),
+            float(thermal_average_scale_indep(es, occ**2, ctx.tau)),
             bound,
             bool((report or {}).get("memory_bound", False)),
         )
@@ -2294,11 +2297,15 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             spin_layout=ctx.spin_layout,
             frozen_occupations=ctx.seed_window,
         )
-    n_s, e0_s, z_s, bound, memory = (np.array(col) for col in zip(*results))
+    n_s, e0_s, z_s, n2_s, bound, memory = (np.array(col) for col in zip(*results))
     c = sector_weights(e0_s, z_s, ctx.tau)
+    n_avg = float(c @ n_s)
+    if ctx.ensemble_variance_at is None:
+        ctx.ensemble_variance_at = {}
+    ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()), root=0)
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
-    return float(c @ n_s), float(e0_s.min()), plan.members[0].total
+    return n_avg, float(e0_s.min()), plan.members[0].total
 
 
 def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):
@@ -2506,6 +2513,13 @@ def fixed_occupation_dc(
                 f"|mu| <= {max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
                 "The target may be unreachable with the available bath states."
             )
+        unreachable += (
+            " The occupation is still stepping with mixed_valence = 'on': the bath lacks states near E_F to mix "
+            "charge sectors, so no shift attains the target."
+            if ctx.mixed_valence == "on"
+            else " mixed_valence = 'on' measures the thermal ensemble over charge sectors, where the occupation "
+            "can vary continuously with the shift."
+        )
         # Held by the record so the emit in its `finally` can read the search's own verdict even on
         # the path where the raise skips past every line that would have projected it.
         search_report = dc_rec.search = {}
@@ -2620,6 +2634,17 @@ def fixed_occupation_dc(
             chi=occ_chi,
             chi_span=occ_chi_span,
         )
+        variance = (ctx.ensemble_variance_at or {}).get(mu)
+        if variance is not None:
+            dc_rec.update(var_n_intra_sector=variance[0], var_n_inter_sector=variance[1])
+            if variance[1] > variance[0] and rank == 0:
+                print(
+                    f"WARNING: at the double-counting shift the fluctuation of the impurity occupation is mostly "
+                    f"between charge sectors (Var N = {variance[1]:.3g} between, {variance[0]:.3g} within): the bath "
+                    "lacks states near E_F to screen a charge change, so the occupation is set by the sector "
+                    "energies' alignment and this dc is only as good as that gap.",
+                    flush=True,
+                )
         # The same error bar the gap criterion reports (see its own comment on this field), so a
         # caller reading the record programmatically gets one for both. This criterion has no
         # `delta_sum` -- it is a sector-energy quantity, and this one is not -- so it comes from

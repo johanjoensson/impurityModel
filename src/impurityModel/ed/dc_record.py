@@ -73,6 +73,8 @@ _FIELDS = (
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
     ("chi_span", "{:.4g}"),
+    ("var_n_intra_sector", "{:.4g}"),
+    ("var_n_inter_sector", "{:.4g}"),
     ("tol", "{:.2e}"),
     ("tol_basis", "{}"),
     ("dc_cap", "{}"),
