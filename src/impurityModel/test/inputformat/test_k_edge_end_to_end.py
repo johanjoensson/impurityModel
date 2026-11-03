@@ -332,7 +332,7 @@ def test_the_spectra_ensemble_is_the_weighted_sum_of_the_members(small_p_shell_h
         return real(parts, weights)
 
     monkeypatch.setattr(spectra, "merge_spectra_datasets", spy)
-    got = _k_edge_spectra(small_p_shell_h0, write, tmp_path, "hot", mixed_valence="on", tau=3.0)
+    got = _k_edge_spectra(small_p_shell_h0, write, tmp_path, "hot", mixed_valence="on", tau=0.5)
     if got is None:
         return
     parts, c = seen["parts"], np.asarray(seen["weights"])
