@@ -570,6 +570,18 @@ GF_SECTOR_CACHE_DIR = Knob(
     once per material instead of once per run.""",
 )
 
+IMPMOD_MATVEC_PROF = Knob(
+    name="IMPMOD_MATVEC_PROF",
+    kind="bool",
+    default=False,
+    group="rixs-solvers",
+    uniform=False,
+    doc="""Opt-in stage timer of the Green's-function recurrence (seconds, calls and the resident-set
+    high-water per stage, printed to stderr every 30 s). A measurement aid: it has no collective inside
+    and nothing reads its result back, so ranks may legitimately differ. The Cython kernel and
+    DistributedSparseMatrix read the raw environment variable (any non-empty value switches it on).""",
+)
+
 GF_KRYLOV_RECYCLE_MAX_BYTES = Knob(
     name="GF_KRYLOV_RECYCLE_MAX_BYTES",
     kind="int",
@@ -1055,6 +1067,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_REAL_TOL,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
+    IMPMOD_MATVEC_PROF,
     GF_KRYLOV_RECYCLE_MAX_BYTES,
     GF_RIXS_WIN_CHUNK,
     GF_RIXS_ADAPTIVE_TOL,
