@@ -1443,11 +1443,14 @@ def resolve_cap_policy(
         connectivity = connectivity()
     elif callable(connectivity):
         connectivity = None
+    held_by_ceiling = None
     if unresolved:
         gs = suggest_gs_truncation_threshold(n_spin_orbitals, comm=comm, safety=safety, connectivity=connectivity)
         if ledger is not None:
             ceiling = ledger.ceiling if comm is None else comm.bcast(ledger.ceiling, root=0)
             if ceiling is not None:
+                if int(ceiling) < gs:
+                    held_by_ceiling = (int(gs), int(ceiling))
                 gs = min(gs, int(ceiling))
             ledger.resolved = gs
     budget = None
@@ -1467,18 +1470,27 @@ def resolve_cap_policy(
     if log != "never" and (comm is None or comm.rank == 0):
         # Whatever the verbosity: the one line that says which cap governs and who set it.
         prefix = f"{label}: " if label else ""
-        print(f"{prefix}determinant cap: {describe_gs_cap(resolved)}", flush=True)
+        print(f"{prefix}determinant cap: {describe_gs_cap(resolved, held_by_ceiling)}", flush=True)
     return resolved, budget
 
 
-def describe_gs_cap(policy):
-    """The ground-state half of a :class:`CapPolicy`, in words, for the ``determinant cap:`` line."""
+def describe_gs_cap(policy, held_by_ceiling=None):
+    """The ground-state half of a :class:`CapPolicy`, in words, for the ``determinant cap:`` line.
+
+    ``held_by_ceiling`` is ``(sized, ceiling)`` when an earlier call's :class:`CapLedger` ceiling lowered this
+    auto cap below what the memory probe alone would have allowed; the line then says so.
+    """
     if policy.source == "user":
         return f"GS {int(policy.gs):,} (set by you; final -- memory checks warn, never lower it)"
     if policy.source == "unlimited":
         return "GS unlimited (the measured-memory guard may still hold a basis lower)"
+    held = (
+        ""
+        if held_by_ceiling is None
+        else f"; held to {held_by_ceiling[1]:,} by an earlier solve's ceiling (memory alone allowed {held_by_ceiling[0]:,})"
+    )
     return (
-        f"GS {int(policy.gs):,} (auto, sized from available memory for the ground state alone; "
+        f"GS {int(policy.gs):,} (auto, sized from available memory for the ground state alone{held}; "
         "the measured-memory guard may hold it lower)"
     )
 

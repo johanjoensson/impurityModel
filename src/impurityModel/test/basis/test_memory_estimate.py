@@ -828,10 +828,19 @@ def test_the_window_phase_reproduces_the_measured_nio_cost_per_determinant(monke
     assert 0.7 * 9.4 <= predicted <= 2.0 * 9.4, predicted
 
 
-def test_a_cap_ledger_ceiling_lowers_an_auto_cap_and_records_what_was_resolved():
+@pytest.fixture
+def fixed_auto_cap(monkeypatch):
+    """The memory probe pinned to a constant: the auto cap is otherwise re-derived from live ``MemAvailable``,
+    so two calls in one test can differ by whatever else the machine did in between."""
+    monkeypatch.setattr(me, "suggest_gs_truncation_threshold", lambda *a, **k: 40_000)
+    return 40_000
+
+
+def test_a_cap_ledger_ceiling_lowers_an_auto_cap_and_records_what_was_resolved(fixed_auto_cap):
     """P10: the auto cap is re-derived from live free memory on every call, so the DC search and the
     self-energy it feeds ran at different caps. A ledger carries the first call's cap to the later ones."""
     auto, _ = me.resolve_cap_policy(None, 58, comm=None, log="never")
+    assert auto.gs == fixed_auto_cap
     first = me.CapLedger()
     me.resolve_cap_policy(None, 58, comm=None, log="never", ledger=first)
     assert first.resolved == auto.gs
@@ -842,6 +851,16 @@ def test_a_cap_ledger_ceiling_lowers_an_auto_cap_and_records_what_was_resolved()
     roomy = me.CapLedger(ceiling=auto.gs * 10)
     policy, _ = me.resolve_cap_policy(None, 58, comm=None, log="never", ledger=roomy)
     assert policy.gs == auto.gs
+
+
+def test_the_determinant_cap_line_names_the_ledger_ceiling_that_held_the_cap_down(fixed_auto_cap, capsys):
+    me.resolve_cap_policy(None, 58, comm=None, log="always", ledger=me.CapLedger(ceiling=10_000))
+    line = [ln for ln in capsys.readouterr().out.splitlines() if "determinant cap:" in ln][0]
+    assert "GS 10,000" in line and "held to 10,000" in line and "memory alone allowed 40,000" in line
+    # a ceiling that did not bind says nothing about itself
+    me.resolve_cap_policy(None, 58, comm=None, log="always", ledger=me.CapLedger(ceiling=90_000))
+    line = [ln for ln in capsys.readouterr().out.splitlines() if "determinant cap:" in ln][0]
+    assert "GS 40,000" in line and "held to" not in line
 
 
 def test_a_cap_ledger_leaves_a_user_cap_alone():
