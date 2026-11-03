@@ -50,6 +50,7 @@ import numpy as np
 from impurityModel.ed import config, spectra
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
+from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.utils import report_banner
@@ -457,6 +458,9 @@ def calc_susceptibility_workflow(
         HDF5 output path; ``None`` skips saving.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
+    # Replicated input: every rank raises together, before any collective.  Dropped when the susceptibility forms
+    # the ensemble (MV 9); until then an explicit 'on' would silently be answered with the winning sector alone.
+    reject_unmigrated_ensemble(basis.mixed_valence, driver="calc_susceptibility_workflow")
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
@@ -471,7 +475,6 @@ def calc_susceptibility_workflow(
     impurity_orbitals = model.impurity_orbitals
     rot_to_spherical = model.rot_to_spherical
     nominal_occ = basis.nominal_occ
-    mixed_valence = basis.mixed_valence
     tau = basis.tau
     occ_cutoff = basis.occ_cutoff
     slaterWeightMin = basis.slater_weight_min
@@ -487,7 +490,6 @@ def calc_susceptibility_workflow(
         u4,
         impurity_orbitals,
         nominal_occ,
-        mixed_valence=mixed_valence,
         rot_to_spherical=rot_to_spherical,
         verbosity=verbosity,
         rank=rank,

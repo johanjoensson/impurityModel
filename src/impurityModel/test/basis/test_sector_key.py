@@ -158,7 +158,6 @@ def _walk(nominal, frozen=None, use_hf_seed=False):
             impurity_orbitals,
             bath_states,
             nominal,
-            mixed_valence=dict.fromkeys(nominal, 0),
             chain_restrict=False,
             dense_cutoff=1000,
             comm=None,

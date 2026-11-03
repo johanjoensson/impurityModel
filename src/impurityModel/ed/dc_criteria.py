@@ -881,6 +881,10 @@ def _prepare_sector_context(
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
 
+    # Peak/gap measure the winning sector alone under every mode (auto, on and off): the switch is resolved here,
+    # so a malformed value raises on every rank before any collective, but it no longer reaches the basis layer.
+    resolve_mixed_valence(basis.mixed_valence, driver_default="auto")
+
     # Derive the same solver-basis layout calc_selfenergy uses (root cause 3 of the original
     # DC<->GS mismatch: the fit valence/conduction split model.bath_states carries is not
     # necessarily the split calc_selfenergy re-derives from the sign of the bath on-site energy).
@@ -890,7 +894,6 @@ def _prepare_sector_context(
         model.u4,
         model.impurity_orbitals,
         basis.nominal_occ,
-        mixed_valence=basis.mixed_valence,
         rot_to_spherical=model.rot_to_spherical,
         verbosity=verbosity,
         rank=rank,

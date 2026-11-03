@@ -69,36 +69,26 @@ def test_the_resolver_refuses_nonsense(bad):
         resolve_mixed_valence(bad, driver_default="off")
 
 
+def test_the_low_level_entries_no_longer_take_the_switch():
+    """The switch is resolved by the drivers; the basis layer never sees it (a stale caller fails loudly)."""
+    import inspect
+
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    for fn in (groundstate.find_ground_state_sector, groundstate.solve_ground_state, prepare_solver_basis):
+        assert "mixed_valence" not in inspect.signature(fn).parameters, fn.__name__
+
+
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
-@pytest.mark.parametrize("entry", ["find_ground_state_sector", "solve_ground_state"])
-def test_every_rank_raises_at_the_public_entries(comm, entry):
-    """No rank gets past the check, so none is left in a collective waiting for the others."""
-    common = dict(slaterWeightMin=1e-12, comm=comm, truncation_threshold=np.inf, verbose=False)
-    args = (_model(), IMPURITY, BATHS, {0: 1})
+def test_every_rank_raises_at_the_susceptibility_entry_under_on(comm):
+    """The chi driver cannot form the ensemble yet: an explicit 'on' raises on every rank before a collective."""
     raised = False
     try:
-        if entry == "find_ground_state_sector":
-            groundstate.find_ground_state_sector(*args, mixed_valence={0: 1}, **common)
-        else:
-            groundstate.solve_ground_state(*args, tau=0.1, mixed_valence={0: 1}, **common)
+        reject_unmigrated_ensemble({0: 1}, driver="calc_susceptibility_workflow")
     except ValueError as err:
         raised = "charge-sector ensemble" in str(err)
     assert all((comm or MPI.COMM_SELF).allgather(raised))
-
-
-@pytest.mark.mpi
-def test_prepare_solver_basis_raises_before_its_collective():
-    from impurityModel.ed.solver_basis import prepare_solver_basis
-
-    raised = False
-    try:
-        prepare_solver_basis(
-            {}, {}, {}, IMPURITY, {0: 1}, mixed_valence=1, rot_to_spherical=None, verbosity=0, comm=MPI.COMM_WORLD
-        )
-    except ValueError as err:
-        raised = "charge-sector ensemble" in str(err)
-    assert all(MPI.COMM_WORLD.allgather(raised))
 
 
 @pytest.mark.mpi

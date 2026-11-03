@@ -29,7 +29,6 @@ from impurityModel.ed.memory_estimate import (
 from impurityModel.ed.orbits import build_orbits
 from impurityModel.ed.sector_ensemble import (
     plan_ensemble,
-    reject_unmigrated_ensemble,
     resolve_mixed_valence,
     sector_weights,
 )
@@ -832,7 +831,6 @@ def find_ground_state_sector(
     N0,
     frozen_occupations=None,
     *,
-    mixed_valence=False,
     chain_restrict=False,
     dense_cutoff=config.GS_DENSE_CUTOFF,
     comm=None,
@@ -890,12 +888,7 @@ def find_ground_state_sector(
     determinants are kept. ``None`` derives the cap from the available per-rank memory
     (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
-
-    mixed_valence : None, bool, int, str or dict
-        Must not resolve to ``"on"`` (see
-        :func:`~impurityModel.ed.sector_ensemble.reject_unmigrated_ensemble`). Checked before any collective.
     """
-    reject_unmigrated_ensemble(mixed_valence, driver="solve_ground_state")
     # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
     # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
     # re-resolving it would reprint the cap line and restart the warning counts on every trial of
@@ -1437,7 +1430,6 @@ def solve_ground_state(
     tau,
     slaterWeightMin,
     frozen_occupations=None,
-    mixed_valence=None,
     chain_restrict=False,
     dense_cutoff=config.GS_DENSE_CUTOFF,
     comm=None,
@@ -1486,9 +1478,6 @@ def solve_ground_state(
         ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
-    reject_unmigrated_ensemble(
-        mixed_valence, driver="find_ground_state_sector"
-    )  # replicated input: every rank raises together, before a collective
     _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
     if plan_store is None:
         plan_store = SectorPlanStore()
@@ -1498,7 +1487,6 @@ def solve_ground_state(
         bath_states,
         N0,
         frozen_occupations=frozen_occupations,
-        mixed_valence=mixed_valence,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
         comm=comm,

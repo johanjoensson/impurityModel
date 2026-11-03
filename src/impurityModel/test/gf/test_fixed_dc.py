@@ -513,7 +513,6 @@ def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
         model.u4,
         model.impurity_orbitals,
         basis_opts.nominal_occ,
-        mixed_valence=basis_opts.mixed_valence,
         rot_to_spherical=model.rot_to_spherical,
         verbosity=0,
     )
@@ -1305,7 +1304,6 @@ def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
         kwargs["model"].u4,
         kwargs["model"].impurity_orbitals,
         kwargs["basis"].nominal_occ,
-        mixed_valence=kwargs["basis"].mixed_valence,
         rot_to_spherical=kwargs["model"].rot_to_spherical,
         verbosity=0,
     )
@@ -1740,7 +1738,6 @@ def test_dc_search_applies_weighted_restrictions(monkeypatch):
         model.u4,
         model.impurity_orbitals,
         basis.nominal_occ,
-        mixed_valence=basis.mixed_valence,
         rot_to_spherical=model.rot_to_spherical,
         verbosity=0,
     )
@@ -1825,7 +1822,6 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
         model.u4,
         model.impurity_orbitals,
         basis_opts.nominal_occ,
-        mixed_valence=basis_opts.mixed_valence,
         rot_to_spherical=model.rot_to_spherical,
         verbosity=0,
     )
