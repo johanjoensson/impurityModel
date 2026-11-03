@@ -220,7 +220,7 @@ accepts `--from-archive`.
 
 By default a calculation uses the ground state of one charge sector (N particles in the
 impurity-plus-bath system). `[many_body_basis] mixed_valence` (`"off"`, `"auto"`, `"on"`; the
-CLI/archive token is `mv`) lets the solver instead form a thermal ensemble over neighbouring
+archive token is `mv`) lets the solver instead form a thermal ensemble over neighbouring
 sectors, weighted by `exp(-(E_s - E_0)/tau)` with `tau` from `[temperature]`.
 
 Two different physical situations are easy to confuse:
@@ -236,18 +236,20 @@ Defaults per driver: self-energy and double counting use `auto` (form the ensemb
 more than one sector is thermally relevant); susceptibilities, spectra and RIXS use `off`.
 `auto` with one relevant sector is bit-identical to `off`.
 
-Guard: if the bath has no states near the Fermi level, the neighbouring sectors are far above
-the ground state and an `on` ensemble is refused (a warning names the member that is kept).
-Under a double-counting search an ensemble refused at a trial mu is a flagged point, never
-silently replaced by the single-sector value.
+Admission and refusal: sectors whose weight is below the energy cut derived from `tau` are simply not
+admitted, so at low `tau` even `on` gives a one-member ensemble (no warning). A plan that is cap-bound,
+uncertified or limited by its error bars is *refused*: under `auto` a warning names the sector that is
+kept and the run continues with it; under `on` the run raises on every rank. Under a double-counting
+search an ensemble refused at a trial mu is a flagged point in the record.
 
 How each driver merges the members: linear quantities (G, chi(w), spectra, RIXS maps) are
 computed per member, normalised, and summed with the sector weights on rank 0; nonlinear ones
 (Curie = `<M^2> - |<M>|^2`) are formed after the sum. Blocked transitions (a member whose
 valence shell is full or empty) contribute zero spectral weight, not an error. With more than
 one member `spectra.h5` also carries `ensemble/weights` and `ensemble/e0`. The weights depend
-on the absolute energy zero of the h0 file only through differences, so they are insensitive to
-it; the spectra are not shifted per member.
+on the energy zero of the h0 file: shifting every one-body energy by D moves a sector's energy by
+N_s*D, so the zero acts as a chemical potential. For spectra inputs that are not Fermi-referenced
+the weights are therefore arbitrary; use `on` only with a Fermi-referenced h0.
 
 A diagnostic, `gf_diagnostics.kms_pole_check`, compares addition and removal pole residues with
 the grand-canonical relation `A_rem(w) = exp(-w/tau) A_add(w)`; it warns and never raises.

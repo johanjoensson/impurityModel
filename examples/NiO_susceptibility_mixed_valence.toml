@@ -41,7 +41,7 @@ F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
 [temperature]
 # A thermal ensemble needs a temperature high enough to populate the neighbouring charge
 # sectors at all: with tau = 0.002 eV (~23 K) the N+-1 members carry weight ~exp(-gap/tau) and
-# are refused as negligible. 0.1 eV (~1160 K) is a deliberately hot, illustrative value.
+# are not admitted. 0.1 eV (~1160 K) is a deliberately hot, illustrative value.
 tau = 0.1
 
 [many_body_basis]
