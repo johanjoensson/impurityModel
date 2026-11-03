@@ -97,6 +97,33 @@ def occupations(basis, psis, orbitals=None):
     return occ
 
 
+def occupation_moments(basis, psis, orbitals):
+    r"""``<psi_n|N|psi_n>`` and ``<psi_n|N^2|psi_n>`` for ``N = sum_{i in orbitals} n_i`` (collective).
+
+    ``N`` is diagonal in the determinant basis, so ``<N^2>`` is the amplitude-weighted sum of the squared
+    popcount over ``orbitals`` (not ``<N>**2``, and not the sum of the squared orbital occupations).
+    Returns two arrays of shape ``(width,)``; one ``Allreduce`` is communicated.
+    """
+    n_orb = basis.num_spin_orbitals
+    orbitals = _check_orbitals(orbitals, n_orb)
+    block = _as_block(psis)
+    comm = basis.comm if basis.is_distributed else None
+    width = _global_width(block, comm)
+    if comm is not None:
+        block = basis.redistribute_block(block)
+    _, bits = _bit_matrix(block, n_orb)
+    amps = _amplitudes(block, bits.shape[0], width)
+    weights = amps.real**2 + amps.imag**2
+    out = np.zeros((2, width))
+    if bits.shape[0]:
+        count = bits[:, orbitals].astype(float).sum(axis=1)
+        out[0] = weights.T @ count
+        out[1] = weights.T @ count**2
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, out, op=MPI.SUM)
+    return out[0], out[1]
+
+
 def _splitmix(h):
     h = (h ^ (h >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
     h = (h ^ (h >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)

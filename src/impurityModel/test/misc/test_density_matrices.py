@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.density_matrices import build_density_matrices, occupations
+from impurityModel.ed.density_matrices import build_density_matrices, occupation_moments, occupations
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 from impurityModel.ed.mpi_comm import graph_alltoall_block
 from impurityModel.test.support.reference_density_matrices import reference_density_matrices
@@ -148,3 +148,22 @@ def test_counting_orbitals_above_gives_the_same_rho():
             for j, aj in g.items():
                 rho[i, j] += ai * np.conj(aj)
     np.testing.assert_allclose(rho, ref[0], atol=1e-12)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("mode", ["owned", "split"])
+def test_occupation_moments_are_the_first_two_moments_of_the_subset_popcount(mode):
+    """<N^2> is not <N>^2: determinants with different counts in the subset make the variance non-zero."""
+    comm = MPI.COMM_WORLD
+    basis = _FakeBasis(comm)
+    subset = [0, 2, 3, 9]
+    psis = _local_states(comm, 3, mode)
+    dets, amps = _global_states(3)
+    count = np.array([sum(o in subset for o in d) for d in dets], dtype=float)
+    w = abs(amps) ** 2
+    n1, n2 = occupation_moments(basis, psis, subset)
+    np.testing.assert_allclose(n1, count @ w, atol=1e-12)
+    np.testing.assert_allclose(n2, count**2 @ w, atol=1e-12)
+    assert (n2 - n1**2 / w.sum(axis=0)).min() > 1e-3  # the fixture really spreads the count
+    # the orbital-resolved occupations sum to the same <N>
+    np.testing.assert_allclose(occupations(basis, psis, subset).sum(axis=1), n1, atol=1e-12)

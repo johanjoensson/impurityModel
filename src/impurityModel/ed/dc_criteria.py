@@ -100,6 +100,7 @@ from impurityModel.ed.dc_search import (
     bracket_width_tol,
     resolve_cap_at_max,
 )
+from impurityModel.ed.density_matrices import occupation_moments
 from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
@@ -2266,7 +2267,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
     from impurityModel.ed.sector_ensemble import sector_weights
 
     def consume(member, gs):
-        occ = state_occupations(gs.basis, gs.psis, ctx.impurity_indices).sum(axis=1)
+        occ, occ2 = occupation_moments(gs.basis, gs.psis, ctx.impurity_indices)
         es = np.asarray(gs.es)
         bound = bool(getattr(gs.solver, "truncation_report", None) is not None or gs.walk_report is not None)
         report = refined_truncation_report(gs.solver, gs.walk_report)
@@ -2274,7 +2275,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             float(thermal_average_scale_indep(es, occ, ctx.tau)),
             float(es.min()),
             float(np.exp(-(es - es.min()) / ctx.tau).sum()),
-            float(thermal_average_scale_indep(es, occ**2, ctx.tau)),
+            float(thermal_average_scale_indep(es, occ2, ctx.tau)),
             bound,
             bool((report or {}).get("memory_bound", False)),
         )
@@ -2285,7 +2286,10 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             ctx.impurity_orbitals,
             ctx.bath_states,
             ctx.N0,
-            mode=ctx.mixed_valence,
+            # A trial point whose ensemble is refused (or whose sectors re-rank) is a flagged point, not a
+            # failed search: 'on' would raise inside one bracket step and abort the whole DC. The refusal
+            # reason is replicated, so every rank flags the point alike.
+            mode="auto",
             consume=consume,
             slaterWeightMin=ctx.slaterWeightMin,
             comm=MPI.COMM_WORLD,
@@ -2303,7 +2307,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
     if ctx.ensemble_variance_at is None:
         ctx.ensemble_variance_at = {}
     ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
-    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()), root=0)
+    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or plan.refused_reason is not None, root=0)
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
     return n_avg, float(e0_s.min()), plan.members[0].total
 
