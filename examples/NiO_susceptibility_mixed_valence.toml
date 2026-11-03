@@ -1,0 +1,63 @@
+# Ni in NiO -- chi(w) as a thermal ensemble over charge sectors (mixed_valence = "on").
+# Compare with NiO_susceptibility.toml: the only changes are the two tables below.
+#
+# Run with:   mpirun -n <ranks> impurityModel run examples/NiO_susceptibility_mixed_valence.toml
+
+[format]
+version = [1, 0]
+
+[units]
+energy = "eV"
+
+[hamiltonian.file]
+path = "../h0/h0_NiO_10bath.pickle"
+
+[[shell]]
+l = 2
+role = "valence"
+n_bath = 10
+n_valence_bath = 10
+nominal_occupation = 8
+
+[interaction.slater]
+F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
+
+[double_counting.nominal]
+# NOT optional in practice. Without a double counting the bare 3d level sits far above the
+# bath and the impurity empties: this model relaxes to a mean occupation of 0.57 electrons
+# instead of 8, and every downstream number is then meaningless. The `nominal` scheme is FLL
+# evaluated at the nominal integer occupation -- closed form, no ground-state solve, and it
+# needs no reference filling so it cannot saturate on a coarse bath fit. It gives dc = 52.125
+# eV here (U = 7.5, J = 1.179, N = 8) and a d8 ground state with ~10% d9 admixture.
+#
+# For a production NiO calculation prefer [double_counting.fixed_gap], which centres the
+# double counting in the charge gap -- Karolak's prescription for a charge-transfer
+# insulator, where the fixed-occupation condition breaks down because the occupation is flat
+# in mu inside the gap. It runs a search: expect 1-15 full ground-state solves.
+#   [double_counting.fixed_gap]
+#   offset = 0.0
+#   on_unreachable = "abort"
+
+[temperature]
+# A thermal ensemble needs a temperature high enough to populate the neighbouring charge
+# sectors at all: with tau = 0.002 eV (~23 K) the N+-1 members carry weight ~exp(-gap/tau) and
+# are refused as negligible. 0.1 eV (~1160 K) is a deliberately hot, illustrative value.
+tau = 0.1
+
+[many_body_basis]
+# "on": always form the charge-sector ensemble. "auto" forms it only when more than one sector
+# is thermally relevant; "off" (the default for chi) keeps the single ground-state sector.
+mixed_valence = "on"
+
+[susceptibility]
+cluster = "NiO"
+
+[susceptibility.real_axis]
+enabled = true
+mesh = { min = -5.0, max = 5.0, n = 501 }
+broadening = 0.01
+
+[susceptibility.matsubara]
+# Bosonic, and it includes nu = 0 -- the Van Vleck term.
+enabled = true
+n_points = 64

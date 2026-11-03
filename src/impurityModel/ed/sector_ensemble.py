@@ -74,32 +74,6 @@ def resolve_mixed_valence(value: Any, *, driver_default: MixedValence) -> tuple[
     raise ValueError(f"mixed_valence={value!r}: expected 'auto', true/'on', false/'off' (or None)")
 
 
-def reject_unmigrated_ensemble(value: Any, *, driver: str, driver_default: MixedValence = "off") -> MixedValence:
-    """Resolve ``mixed_valence`` for a driver that cannot form the ensemble (yet).
-
-    ``"off"`` and ``"auto"`` both run the winning sector alone (``auto`` never raises: it resolves to off);
-    an explicit ``"on"`` raises, because ignoring it would hand a single-sector answer to a caller who asked
-    for the ensemble. Replicated input: every rank raises together, so call it before any collective.
-
-    Returns
-    -------
-    {"auto", "off"}
-        The resolved mode (``"on"`` never returns).
-
-    Raises
-    ------
-    ValueError
-        If the value resolves to ``"on"``.
-    """
-    mode, _note = resolve_mixed_valence(value, driver_default=driver_default)
-    if mode == "on":
-        raise ValueError(
-            f"mixed_valence={value!r}: the charge-sector ensemble is not implemented for {driver} yet; "
-            "use 'auto', false or leave it unset."
-        )
-    return mode
-
-
 # ---------------------------------------------------------------------------------------------------------------
 # Membership: which charge sectors enter the ensemble, and how well the walk's energies fix their weights.
 # Pure functions of the walk's replicated ``solved`` records: no MPI, so every rank computes the same plan.

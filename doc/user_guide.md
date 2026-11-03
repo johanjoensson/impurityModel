@@ -216,6 +216,43 @@ occupation (`dc_criteria.py`; the closed-form FLL/AMF/Σ(∞) schemes are in `dc
 `chi.h5` and a Curie/Van-Vleck/screening-scale summary (the Hund's-metal diagnostic). It also
 accepts `--from-archive`.
 
+## Mixed valence: the charge-sector ensemble
+
+By default a calculation uses the ground state of one charge sector (N particles in the
+impurity-plus-bath system). `[many_body_basis] mixed_valence` (`"off"`, `"auto"`, `"on"`; the
+CLI/archive token is `mv`) lets the solver instead form a thermal ensemble over neighbouring
+sectors, weighted by `exp(-(E_s - E_0)/tau)` with `tau` from `[temperature]`.
+
+Two different physical situations are easy to confuse:
+
+- **(A) Valence fluctuation at fixed N.** The impurity charge fluctuates, but the total particle
+  number of the cluster is fixed. This is already handled by the ordinary ground state; it needs
+  no ensemble.
+- **(B) Thermal sector mixing.** Several total-N sectors lie within a few `tau` of the lowest.
+  Only here is the ensemble physical. `on` is meaningful when `tau` is comparable to the sector
+  gap; at low `tau` the extra sectors have weight ~`exp(-gap/tau)` and are dropped.
+
+Defaults per driver: self-energy and double counting use `auto` (form the ensemble only when
+more than one sector is thermally relevant); susceptibilities, spectra and RIXS use `off`.
+`auto` with one relevant sector is bit-identical to `off`.
+
+Guard: if the bath has no states near the Fermi level, the neighbouring sectors are far above
+the ground state and an `on` ensemble is refused (a warning names the member that is kept).
+Under a double-counting search an ensemble refused at a trial mu is a flagged point, never
+silently replaced by the single-sector value.
+
+How each driver merges the members: linear quantities (G, chi(w), spectra, RIXS maps) are
+computed per member, normalised, and summed with the sector weights on rank 0; nonlinear ones
+(Curie = `<M^2> - |<M>|^2`) are formed after the sum. Blocked transitions (a member whose
+valence shell is full or empty) contribute zero spectral weight, not an error. With more than
+one member `spectra.h5` also carries `ensemble/weights` and `ensemble/e0`. The weights depend
+on the absolute energy zero of the h0 file only through differences, so they are insensitive to
+it; the spectra are not shifted per member.
+
+A diagnostic, `gf_diagnostics.kms_pole_check`, compares addition and removal pole residues with
+the grand-canonical relation `A_rem(w) = exp(-w/tau) A_add(w)`; it warns and never raises.
+Example input: `examples/NiO_susceptibility_mixed_valence.toml`.
+
 ## Model Hamiltonians
 
 Besides atomic shells with Slater-Condon integrals, an input file can describe a *model*: a

@@ -1,9 +1,8 @@
-"""``mixed_valence`` no longer widens the seed; an explicit ``on`` raises where no driver forms the ensemble yet.
+"""``mixed_valence`` no longer widens the seed; it is the charge-sector ensemble switch.
 
-The option is the charge-sector ensemble switch (``doc/plans/mixed_valence_sector_ensemble.md``). Until a driver is
-migrated, honouring ``on`` is impossible and ignoring it would hand a single-sector answer to a caller who asked
-for a mixed-valence one, so it raises -- from replicated input, before any collective, so every rank raises together
-instead of one rank leaving the others in a collective. ``auto`` and ``off`` run the winning sector.
+The option is the charge-sector ensemble switch (``doc/plans/mixed_valence_sector_ensemble.md``). Every driver
+(self-energy, double counting, susceptibility, spectra, RIXS) resolves it itself from replicated input, before any
+collective, so a malformed value raises on every rank together instead of leaving the others in a collective.
 """
 
 import numpy as np
@@ -12,7 +11,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import groundstate
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble, resolve_mixed_valence
+from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.test.support.comms import COMMS
 
 IMPURITY = {0: [[0, 1]]}
@@ -25,22 +24,6 @@ def _model():
         for orbital, energy in ((s, 0.9), (2 + s, -1.2), (4 + s, 1.0)):
             terms[((orbital, "c"), (orbital, "a"))] = energy
     return ManyBodyOperator(terms)
-
-
-@pytest.mark.parametrize("off", [None, False, 0, "off", "OFF", "false", {0: 0}, {0: False}, {0: None}, np.int64(0)])
-def test_the_off_spellings_pass(off):
-    assert reject_unmigrated_ensemble(off, driver="x") == "off"
-
-
-def test_auto_runs_the_winning_sector_and_never_raises():
-    assert reject_unmigrated_ensemble("auto", driver="x") == "auto"
-    assert reject_unmigrated_ensemble(None, driver="x", driver_default="auto") == "auto"
-
-
-@pytest.mark.parametrize("on", [1, True, 2, "on", "True", b"on", {0: 1}, {0: 0, 1: 2}, np.int64(3)])
-def test_an_explicit_on_raises(on):
-    with pytest.raises(ValueError, match="charge-sector ensemble"):
-        reject_unmigrated_ensemble(on, driver="x")
 
 
 @pytest.mark.parametrize(
