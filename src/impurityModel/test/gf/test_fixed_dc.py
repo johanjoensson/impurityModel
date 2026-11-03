@@ -37,7 +37,6 @@ analytic formula there.
 """
 
 import dataclasses
-
 from dataclasses import replace
 from pathlib import Path
 

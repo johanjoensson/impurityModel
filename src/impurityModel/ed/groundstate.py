@@ -1666,7 +1666,7 @@ def solve_ground_state_ensemble(
     results, realised = [], []
     single = len(plan.members) == 1
     winner_total = sum(search.occupation.values())
-    for i, member in enumerate(plan.members):
+    for member in plan.members:
         if member.total == winner_total:
             member_search = search
         else:

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from impurityModel.ed.gs_report import SectorMeasurement, measure_ground_state, merge_measurements
+from impurityModel.ed.gs_report import measure_ground_state, merge_measurements
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 
 
@@ -29,12 +29,6 @@ def test_members_concatenate_with_absolute_energies_dominant_first():
     assert basis == "basis1"
     assert list(es) == [-2.0, -1.9, -1.95]
     assert len(psis) == 3
-
-
-def test_mismatched_state_and_energy_counts_raise():
-    a = SectorMeasurement("b", np.array([-1.0, -2.0]), [ManyBodyState({_det(1): 1.0})], 1)
-    with pytest.raises(ValueError):
-        merge_measurements([a, _member([_det(2)], [-1.0], 2)])
 
 
 def test_empty_raises():

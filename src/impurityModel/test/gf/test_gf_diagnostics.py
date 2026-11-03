@@ -260,7 +260,7 @@ def test_the_self_energy_report_carries_the_ground_state_row():
     from impurityModel.ed import selfenergy
 
     src = Path(selfenergy.__file__).read_text()
-    assert 'check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))' in src
+    assert 'check_ground_state_truncation(truncation, convergence)' in src
 
 
 def test_bicgstab_convergence_check():
