@@ -93,19 +93,20 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
         return real(solver, walk_report)
 
     monkeypatch.setattr(groundstate, "refined_truncation_report", spy)
-    alive_at_hook, calls = [], []
+    alive_at_hook, calls, widths = [], [], []
 
     def hook(member, basis, es, psis, truncation, convergence):
         gc.collect()
         alive_at_hook.append(solvers[len(calls)]() is not None)
         calls.append(member.total)
+        widths.append(len(es))
         return len(es)
 
     h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
     out = calc_gs(
         h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
     )
-    assert len(calls) == n_members and out[4]["member_results"] == [n for n in out[4]["member_results"]]
+    assert len(calls) == n_members and out[4]["member_results"] == widths
     assert not any(alive_at_hook)
 
 
