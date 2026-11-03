@@ -482,9 +482,12 @@ def _redistributed_states(basis, psis):
     that starts from these is the one the ``mixed_valence = off`` path starts from (one member: bit-identical).
     Collective on ``basis.comm``.
     """
+    n = len(psis) if not isinstance(psis, ManyBodyState) else int(psis.width)
     block = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
     block.prune_rows(0.0)
-    return block.to_states()
+    states = block.to_states()
+    # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
+    return states if states else [ManyBodyState(width=1) for _ in range(n)]
 
 
 def _state_list(psis):

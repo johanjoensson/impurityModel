@@ -143,7 +143,7 @@ def _member_states(m):
     n = len(m.es)
     states = m.psis.to_states() if isinstance(m.psis, ManyBodyState) else list(m.psis)
     if len(states) < n and not states:
-        states = [ManyBodyState() for _ in range(n)]
+        states = [ManyBodyState(width=1) for _ in range(n)]  # width 1: from_states rejects the width-0 zero
     return states
 
 

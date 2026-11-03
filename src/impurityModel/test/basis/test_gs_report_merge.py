@@ -60,3 +60,6 @@ def test_width_zero_block_on_a_rank_still_yields_len_es_states():
     )
     _, es, psis = merge_measurements([a, b])
     assert len(psis) == len(es) == 3
+    # what report_ground_state does next, on every rank: the padded entries must be width-1 states
+    block = ManyBodyState.from_states(list(psis))
+    assert int(block.width) == len(es)
