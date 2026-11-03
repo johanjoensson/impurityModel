@@ -107,3 +107,26 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
     )
     assert len(calls) == n_members and out[4]["member_results"] == [n for n in out[4]["member_results"]]
     assert not any(alive_at_hook)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tmp_path, monkeypatch, capsys):
+    from impurityModel.ed import groundstate
+
+    real = groundstate.plan_ensemble
+    plans = []
+
+    def refusing(solved, tau, mode, **kw):
+        plan = real(solved, tau, mode, **{**kw, "max_error": -1.0})
+        plans.append(plan)
+        return plan
+
+    monkeypatch.setattr(groundstate, "plan_ensemble", refusing)
+    (_, _, _, _, info), _, _ = _run(3, comm, "auto", tmp_path)
+    final = plans[-1]
+    assert final.refused_reason is not None and len(final.members) == 1
+    assert len(info["ensemble"]["members"]) == 1
+    out = capsys.readouterr().out
+    if comm is None or comm.rank == 0:
+        assert f"keeps the single N_imp = {final.members[0].total} sector" in out, out

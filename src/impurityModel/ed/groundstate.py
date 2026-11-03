@@ -1621,9 +1621,11 @@ def solve_ground_state_ensemble(
         # An edge that could not be solved leaves the plan provisional, and a provisional plan has skipped the
         # cap / certification / error-bar checks: refuse rather than merge unchecked.
         winner_total = sum(search.occupation.values())
+        # (the winner is the lowest sector, so it is always admitted; should it ever not be, keep the dominant
+        # member rather than an empty plan -- an empty member list would crash every rank in the loop below)
         plan = dataclasses.replace(
             plan,
-            members=tuple(m for m in plan.members if m.total == winner_total),
+            members=tuple(m for m in plan.members if m.total == winner_total) or plan.members[:1],
             refused_reason=f"the edge sector(s) {list(plan.needs)} could not be solved",
             needs=(),
         )
@@ -1634,7 +1636,7 @@ def solve_ground_state_ensemble(
             )
         if comm is None or comm.rank == 0:
             print(
-                f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {sum(search.occupation.values())} "
+                f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {plan.members[0].total} "
                 f"sector: {plan.refused_reason}.",
                 flush=True,
             )
