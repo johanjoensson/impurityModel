@@ -2533,8 +2533,14 @@ def fixed_occupation_dc(
             " The occupation is still stepping with mixed_valence = 'on': the bath lacks states near E_F to mix "
             "charge sectors, so no shift attains the target."
             if ctx.mixed_valence == "on"
-            else " mixed_valence = 'on' measures the thermal ensemble over charge sectors, where the occupation "
-            "can vary continuously with the shift."
+            else (
+                # auto already forms the ensemble where the sectors are thermally mixed: "use on" would be no advice
+                " mixed_valence = 'auto' already averages over the charge sectors it could weight; where it refused "
+                "the ensemble (see the refusal note) the occupation steps with the winning sector."
+                if ctx.mixed_valence == "auto"
+                else " mixed_valence = 'on' measures the thermal ensemble over charge sectors, where the occupation "
+                "can vary continuously with the shift."
+            )
         )
         # Held by the record so the emit in its `finally` can read the search's own verdict even on
         # the path where the raise skips past every line that would have projected it.
@@ -2624,7 +2630,7 @@ def fixed_occupation_dc(
         # winning sector total near a crossing -- that disagreement is itself worth surfacing, not an
         # error. Unconditional on rank 0, matching the other reference-quality warnings in this module.
         nominal_total = sum(ctx.N0.values())
-        if rank == 0 and sector != nominal_total:
+        if rank == 0 and sector != nominal_total and ctx.mixed_valence != "on":
             print(
                 f"WARNING: fixed_occupation_dc found mu = {mu:.6f} (dc = dc_guess + mu), but the "
                 f"walk's winning sector there totals {sector}, not the nominal occupation "
