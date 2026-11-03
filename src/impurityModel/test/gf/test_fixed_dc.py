@@ -629,6 +629,21 @@ def test_the_between_sector_variance_warning_fires_only_when_the_occupation_is_s
     assert "mostly between charge sectors" not in out, out
 
 
+@pytest.mark.mpi
+def test_the_ensemble_occupation_is_monotone_in_mu_across_the_sector_crossing_on_a_tau_over_5_grid():
+    """n(mu) = sum_s c_s n_s must rise smoothly through the crossing -- at every rank count (an empty rank included)."""
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    ctx = dc_criteria._prepare_occupation_context(
+        kwargs["model"], dataclasses.replace(kwargs["basis"], mixed_valence="on"), kwargs["solver"]
+    )
+    tau = kwargs["basis"].tau
+    mus = [1.3 + k * tau / 5 for k in range(int(round(0.5 / (tau / 5))) + 1)]
+    n = np.array([dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, float(mu), False, 0)[0] for mu in mus])
+    assert np.all(np.diff(n) >= -1e-9), np.round(n, 4)
+    assert n[0] < 1.1 and n[-1] > 1.9, np.round(n, 4)  # the grid spans the whole crossing
+    assert np.max(np.diff(n)) < 0.5, "a smooth ensemble average has no sector-sized jump"
+
+
 def test_a_one_member_ensemble_measures_exactly_what_the_single_sector_observable_does():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
     got = {}
