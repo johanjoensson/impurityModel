@@ -1551,6 +1551,7 @@ def solve_ground_state_ensemble(
     *,
     mode,
     consume,
+    after_release=None,
     tau,
     slaterWeightMin,
     frozen_occupations=None,
@@ -1574,7 +1575,9 @@ def solve_ground_state_ensemble(
     (solving an admitted edge member's outer neighbour first, collectively, until the edge is not admitted).
     Each member is solved for ``Within.thermal(tau)`` in turn and handed to ``consume(member, ground_state)``; the
     ground state is dropped before the next member is built, so the peak is one member plus whatever ``consume``
-    keeps.  When the plan is refused (a member is cap-bound, uncertified, or the weights are not fixed to
+    keeps.  ``after_release(member, consumed)``, when given, runs after the ground state (and so its solver and
+    Krylov store) has been dropped, on ``consume``'s return value; its return value replaces that entry of
+    ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is refused (a member is cap-bound, uncertified, or the weights are not fixed to
     ``ENSEMBLE_WEIGHT_ERROR_MAX``) the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on
     every rank.
 
@@ -1677,8 +1680,10 @@ def solve_ground_state_ensemble(
             )
         ground_state = _thermal_state(member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single, **kw)
         realised.append(float(np.min(ground_state.es)))
-        results.append(consume(member, ground_state))
-        del ground_state
+        consumed = consume(member, ground_state)
+        del ground_state  # the solver and its Krylov store go before the consumer's own workspace is built
+        results.append(consumed if after_release is None else after_release(member, consumed))
+        del consumed
     # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. If the thermal
     # solves find another member lowest, the dominant member -- and so the sector the caller's basis, psis and
     # report are keyed to -- was mis-ranked. Decided on rank 0 and broadcast.
@@ -1822,15 +1827,28 @@ def _calc_gs_ensemble(
                 convergence,
             )
         )
-        if member_hook is not None:
-            # Collective, member by member while this member's basis is alive (a consumer such as the
-            # Green's function needs the states and their basis; it keeps only what it must).
-            hooked.append(member_hook(member, gs, truncation, convergence))
+        # Only what the consumer needs, never the solver (reports above were taken from it first).
+        return gs.basis, gs.es, gs.psis, truncation, convergence
+
+    def release(member, consumed):
+        if member_hook is None:
+            return None
+        basis, es, psis, truncation, convergence = consumed
+        # Collective, member by member while this member's basis is alive (a consumer such as the Green's
+        # function needs the states and their basis; it keeps only what it must).
+        hooked.append(member_hook(member, basis, es, psis, truncation, convergence))
+        return None
 
     kwargs = {k: v for k, v in basis_setup.items() if k not in ("use_hf_seed", "warn_neighbours", "mixed_valence")}
     kwargs["use_hf_seed"] = basis_setup.get("use_hf_seed", True)
     plan, _, realised = solve_ground_state_ensemble(
-        Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, mode=mode, consume=consume, **kwargs
+        Hop,
+        verbose=verbose,
+        slaterWeightMin=slaterWeightMin,
+        mode=mode,
+        consume=consume,
+        after_release=release,
+        **kwargs,
     )
     tau = basis_setup["tau"]
     measurements = [k[1] for k in kept]
@@ -1936,7 +1954,7 @@ def calc_gs(
 
     member_hook : callable, optional
         Only under ``mixed_valence`` ``auto``/``on`` (ignored when the sector ensemble is not formed): called
-        collectively as ``member_hook(member, ground_state, truncation_report, convergence_report)`` for each
+        collectively as ``member_hook(member, basis, es, psis, truncation_report, convergence_report)`` for each
         member while its basis is alive; the returns are listed in ``gs_info["member_results"]``.
 
     Returns

@@ -690,7 +690,11 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # are in the input-basis orbital order. get_greens_function_moments indexes h
     # with this list, so an unsorted list would permute the extracted moments against it.
     impurity_indices = sorted(orb for blocks_ in sb.impurity_orbitals.values() for block in blocks_ for orb in block)
-    running = {"e_ref": None, "z": 0.0}  # the drop rule's normalisation across the charge-sector members so far
+    running = {
+        "e_ref": None,
+        "z": 0.0,
+        "gf_caps": None,
+    }  # the drop rule's normalisation across the charge-sector members so far
 
     def _impurity_gf(families):
         if families is None:
@@ -723,6 +727,10 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         if running["e_ref"] is None:
             running["e_ref"] = float(np.min(np.real(np.asarray(es))))
         first = running["z"] == 0.0
+        # The auto GF cap is sized once, by the dominant member's first stage, and every later member runs at the
+        # same cap: a calculation has one cap, not one per member (the pins live on the basis object).
+        if running["gf_caps"] is not None and getattr(ground_state_basis, "_auto_gf_caps", None) is None:
+            ground_state_basis._auto_gf_caps = running["gf_caps"]
         restrictions = ground_state_basis.restrictions
         if restrictions is not None:
             report("Restrictions on ground-state occupation:", level=V_DETAIL)
@@ -795,6 +803,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         )
 
         gf_seconds = time.perf_counter() - t_phase
+        if running["gf_caps"] is None:
+            running["gf_caps"] = getattr(ground_state_basis, "_auto_gf_caps", None)
         _report_phase_time(report, "Green's function", t_phase)
         if rank == 0 and gf_report is not None:
             gf_report.add("ground state", check_ground_state_truncation(truncation, convergence))
@@ -858,8 +868,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
         spec=gs_spec,
-        member_hook=lambda member, gs, trunc, conv: member_gf(
-            _state_list(gs.psis), gs.es, gs.basis, trunc, conv, label=f"[N_total = {member.total}] "
+        member_hook=lambda member, basis, es, psis, trunc, conv: member_gf(
+            _state_list(psis), es, basis, trunc, conv, label=f"[N_total = {member.total}] "
         ),
     )
     _report_phase_time(report, "ground state", t_phase)

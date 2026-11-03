@@ -73,3 +73,37 @@ def test_the_merged_density_matrix_carries_the_grand_canonical_electron_count(co
     assert (comm or MPI.COMM_SELF).allgather(float(np.trace(rho).real)) == [float(np.trace(rho).real)] * (
         comm.size if comm else 1
     )
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("index, n_members", [(20, 1), (3, 2)])
+def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_path, monkeypatch):
+    """A member's solver (and its Krylov store) must be gone before the hook builds its own workspace."""
+    import gc
+    import weakref
+
+    from impurityModel.ed import groundstate
+
+    solvers = []
+    real = groundstate.refined_truncation_report
+
+    def spy(solver, walk_report):
+        solvers.append(weakref.ref(solver))
+        return real(solver, walk_report)
+
+    monkeypatch.setattr(groundstate, "refined_truncation_report", spy)
+    alive_at_hook, calls = [], []
+
+    def hook(member, basis, es, psis, truncation, convergence):
+        gc.collect()
+        alive_at_hook.append(solvers[len(calls)]() is not None)
+        calls.append(member.total)
+        return len(es)
+
+    h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
+    out = calc_gs(
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
+    )
+    assert len(calls) == n_members and out[4]["member_results"] == [n for n in out[4]["member_results"]]
+    assert not any(alive_at_hook)
