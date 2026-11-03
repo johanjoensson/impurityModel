@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from itertools import product
 from typing import NamedTuple, Optional
@@ -1245,7 +1246,10 @@ def find_ground_state_sector(
         # `get_energy` solves stay matched. A total already tried (or unattainable: `get_energy` stores nothing
         # for it) is never asked for twice, so the loop ends.
         tried = {r.total for r in solved}
-        movable = [i for i in keys if i not in _hard_frozen(frozen_occupations)]
+        # The same move set as the +-1 walk: a SeedWindow group is held out of it too, and a total is spread
+        # over the unfrozen groups with their capacities (a bare `+= dN` could leave a group negative).
+        movable = [i for i in keys if i not in (frozen_occupations or ())]
+        sizes = {i: sum(len(block) for block in impurity_orbitals[i]) for i in keys}
         while movable:
             wanted = [t for t in extend_sectors(solved) if t not in tried]
             if not wanted:
@@ -1254,7 +1258,7 @@ def find_ground_state_sector(
                 tried.add(t)
                 trial = dict(winning_impurity_occ)
                 trial[movable[0]] += t - sum(trial.values())
-                get_energy(trial)
+                get_energy(canonical_split(trial, sizes, frozen_occupations))
             solved = tuple(energy_cache.values())
     # Decided on rank 0 and broadcast: every input is replicated, but the verdict steers a print, and two ranks
     # disagreeing on it would be a bug that only shows as a missing line.
@@ -1591,8 +1595,14 @@ def solve_ground_state_ensemble(
         plan_store = SectorPlanStore()
     max_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
 
+    # Frozen groups are pinned at their nominal filling; the rest range over their capacity.
+    pinned = sum(N0[i] for i in N0 if i in (frozen_occupations or ()))
+    free_capacity = sum(
+        len(block) for i, blocks in impurity_orbitals.items() if i not in (frozen_occupations or ()) for block in blocks
+    )
+
     def attainable(total):
-        return 0 <= total <= max_total
+        return 0 <= total <= max_total and pinned <= total <= pinned + free_capacity
 
     search = find_ground_state_sector(
         h_op,
@@ -1616,6 +1626,16 @@ def solve_ground_state_ensemble(
         extend_sectors=lambda solved: plan_ensemble(solved, tau, mode, attainable=attainable).needs,
     )
     plan = plan_ensemble(search.solved, tau, mode, attainable=attainable)
+    if plan.needs and plan.refused_reason is None:
+        # An edge that could not be solved leaves the plan provisional, and a provisional plan has skipped the
+        # cap / certification / error-bar checks: refuse rather than merge unchecked.
+        winner_total = sum(search.occupation.values())
+        plan = dataclasses.replace(
+            plan,
+            members=tuple(m for m in plan.members if m.total == winner_total),
+            refused_reason=f"the edge sector(s) {list(plan.needs)} could not be solved",
+            needs=(),
+        )
     if plan.refused_reason is not None:
         if mode == "on":
             raise ValueError(
@@ -1645,8 +1665,9 @@ def solve_ground_state_ensemble(
     )
     results, realised = [], []
     single = len(plan.members) == 1
+    winner_total = sum(search.occupation.values())
     for i, member in enumerate(plan.members):
-        if i == 0:
+        if member.total == winner_total:
             member_search = search
         else:
             member_search = search._replace(
@@ -1815,9 +1836,9 @@ def _calc_gs_ensemble(
     measurements = [k[1] for k in kept]
     z = np.array([np.exp(-(m.es - m.es.min()) / tau).sum() for m in measurements])
     c = sector_weights(np.array(realised), z, tau)
-    converged = [bool((k[3] or {}).get("converged", True)) for k in kept]
+    converged = [(k[3] or {}).get("converged") is not False for k in kept]
     conv = dict(kept[0][3]) if kept[0][3] is not None else None
-    if conv is not None and not all(converged):
+    if conv is not None and len(kept) > 1 and not all(converged):
         conv["converged"] = False
         conv.setdefault("limited_by", None)
         if conv["limited_by"] is None:

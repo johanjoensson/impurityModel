@@ -196,7 +196,9 @@ def plan_ensemble(
     members = _members(admitted, tau)
     error = sum(m.error_bar for m in members)
     reason = None
-    for r in admitted:
+    # A lone winner is a one-member ensemble however it was solved: cap / certification matter only when they
+    # would corrupt a merge.
+    for r in admitted if len(admitted) > 1 else ():
         if r.cap_bound:
             reason = f"the N_imp = {r.total} sector is bound by the determinant cap"
             break

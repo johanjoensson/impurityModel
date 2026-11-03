@@ -150,8 +150,7 @@ def merge_measurements(measurements):
     states = []
     for m in measurements:
         states.extend(m.psis.to_states() if isinstance(m.psis, ManyBodyState) else list(m.psis))
-    if len(states) != len(es):
-        raise ValueError(f"{len(states)} states for {len(es)} energies across the ensemble members")
+    # No rank-local length check here: a rank holding a width-0 block would raise alone ahead of the collectives.
     return first.basis, es, states
 
 

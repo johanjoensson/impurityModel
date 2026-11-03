@@ -99,6 +99,12 @@ def test_the_weights_reproduce_the_grand_canonical_average_on_an_exact_spectrum(
     assert abs(sector_weights(np.zeros(2), z, TAU) @ np.array([8.0, 9.0]) - exact) > 1e-3
 
 
+def test_a_capped_winner_alone_is_a_one_member_ensemble_not_a_refusal():
+    cut = energy_cut(TAU)
+    plan = plan_ensemble([_rec(8, 0.0, cap_bound=True, certified=False), _rec(7, 6 * cut), _rec(9, 6 * cut)], TAU, "on")
+    assert plan.refused_reason is None and [m.total for m in plan.members] == [8]
+
+
 # --- the walk's extension hook, on the toy model of test_mixed_valence_is_off (collective) ---------------------
 from mpi4py import MPI  # noqa: E402
 
