@@ -13,6 +13,7 @@ These tests use a cheap analytic observable rather than an ED solve: the propert
 """
 
 import numpy as np
+import pytest
 
 from impurityModel.ed.dc_search import _solve_dc_shift
 
@@ -354,3 +355,21 @@ def test_a_known_slope_seeds_the_first_step():
     assert np.isclose(mu, 2.0, atol=1e-8)
     # Without the seed this needs ~9 doublings of a 0.01 step to cross mu = 2 at all.
     assert len(visited) <= 4, f"slope-seeded search took {len(visited)} evaluations: {visited}"
+
+
+def test_the_unreachable_error_names_the_shift_range_that_was_searched():
+    from impurityModel.ed.dc_search import DoubleCountingUnreachable
+
+    observable, _ = _counting(lambda mu: 1.0)  # never moves: cannot bracket
+    with pytest.raises(DoubleCountingUnreachable, match=r"max_shift"):
+        _solve_dc_shift(
+            observable,
+            2.0,
+            tol=1e-6,
+            width_tol=1e-9,
+            initial_step=0.5,
+            max_shift=3.0,
+            plateau_ok=False,
+            unreachable_message=UNREACHABLE,
+            slope_sign=1,
+        )

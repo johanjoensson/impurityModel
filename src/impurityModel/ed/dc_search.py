@@ -677,6 +677,7 @@ def _solve_dc_shift(
             value=(g + target) if g is not None and math.isfinite(g) else float("nan"),
             target=target,
         )
+        + f" The search covered |mu| <= {max_shift:.4g} (max_shift); a target beyond that range needs a larger one."
     )
 
 
