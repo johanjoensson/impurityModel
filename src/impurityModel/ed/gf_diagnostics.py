@@ -22,12 +22,10 @@ Severity policy: checks are advisory (``WARN``) by default; ``FAIL`` is reserved
 that are outright unphysical (a violated exact sum rule, a non-causal Green's function).
 
 .. note::
-    A frequency-domain addition/removal consistency check (peaks in
-    :math:`G^{\mathrm{add}} - w\,G^{\mathrm{rem}}` flagging truncated eigenstates) was
-    designed but **deferred**: the underlying KMS detailed-balance relation
+    The KMS detailed-balance relation
     :math:`A^{\mathrm{rem}}(\omega) = e^{-\omega/\tau} A^{\mathrm{add}}(\omega)` holds for a
-    grand-canonical (mixed particle number) ensemble, whereas this code uses a fixed
-    total-N ensemble.  See :func:`addition_removal_peak_check` for the placeholder.
+    grand-canonical (mixed particle number) ensemble, not for a fixed total-N one, so
+    :func:`kms_pole_check` applies to merged charge-sector ensembles only and is advisory.
 """
 
 from __future__ import annotations
@@ -809,17 +807,91 @@ def check_causality(G, label: str = "G") -> Diagnostic:
     )
 
 
-def addition_removal_peak_check(*args, **kwargs):
-    r"""Deferred: KMS addition/removal peak diagnostic (see module note).
+def kms_pole_check(
+    add_poles,
+    add_residues,
+    rem_poles,
+    rem_residues,
+    tau,
+    *,
+    n_members,
+    omega_cut=None,
+    bin_width=None,
+    rtol=0.5,
+    residue_floor=1e-6,
+):
+    r"""Pole-residue KMS (detailed-balance) diagnostic for a charge-sector ensemble.  Warns, never raises.
 
-    Would flag truncated eigenstates as sharp peaks in
-    :math:`G^{\mathrm{add}}(\omega) - w\,G^{\mathrm{rem}}(\omega)`.  Deferred because the
-    detailed-balance relation it relies on holds for a grand-canonical ensemble, whereas
-    this code uses a fixed total-N ensemble; the correct fixed-N reweighting must be pinned
-    down before implementing it.  Truncation is meanwhile covered by
-    :func:`check_thermal_weight_cutoff` and :func:`check_spectral_sum_rule`.
+    For a grand-canonical ensemble the transitions :math:`m \to n` of a creation operator obey
+    :math:`A^{\mathrm{rem}}(\omega) = e^{-\omega/\tau} A^{\mathrm{add}}(\omega)` pole by pole, where the
+    addition residues carry the initial-state weight :math:`p_m` and the removal residues the final-state weight
+    :math:`p_n` of the *same* transition.  A fixed-N ensemble has no such relation (hence the old deferral); the
+    merged sector ensemble does, up to the members that were dropped or truncated, so a violation points at a
+    wrong ``c_s`` or a missing member.
+
+    The poles are binned (``bin_width``; default :math:`\tau/4`) and, for every bin with :math:`|\omega| <`
+    ``omega_cut`` (default :math:`4\tau`) whose addition weight exceeds ``residue_floor``, the removal/addition
+    weight ratio is compared with :math:`e^{-\omega_{\mathrm{bin}}/\tau}` at the weighted mean pole position.
+    The check only means something when several members contribute, so with ``n_members < 2`` it returns ``OK``
+    with a "not applicable" message (a refused ``auto`` ensemble is the one-member case).
+
+    Parameters
+    ----------
+    add_poles, add_residues, rem_poles, rem_residues : array_like
+        Pole positions (relative to the common energy zero) and non-negative residues of one operator.
+    tau : float
+        :math:`k_B T`.
+    n_members : int
+        Number of charge sectors in the merged ensemble.
+
+    Returns
+    -------
+    Diagnostic
+        ``OK`` or ``WARN``; ``value`` is the worst relative deviation of the bin ratio.
     """
-    raise NotImplementedError(
-        "addition/removal KMS peak check is deferred pending the fixed-N reweighting formula; "
-        "use check_thermal_weight_cutoff for truncation detection."
+    if n_members < 2:
+        return Diagnostic(
+            name="kms",
+            severity=Severity.OK,
+            value=0.0,
+            threshold=rtol,
+            message="KMS check not applicable (single-sector ensemble)",
+            suggestion="",
+        )
+    add_poles, add_residues = np.asarray(add_poles, float), np.asarray(add_residues, float)
+    rem_poles, rem_residues = np.asarray(rem_poles, float), np.asarray(rem_residues, float)
+    omega_cut = 4.0 * tau if omega_cut is None else omega_cut
+    bin_width = tau / 4.0 if bin_width is None else bin_width
+    edges = np.arange(-omega_cut, omega_cut + bin_width, bin_width)
+    a_w, _ = np.histogram(add_poles, edges, weights=add_residues)
+    r_w, _ = np.histogram(rem_poles, edges, weights=rem_residues)
+    a_x, _ = np.histogram(add_poles, edges, weights=add_residues * add_poles)
+    worst, where = 0.0, None
+    for k in np.flatnonzero(a_w > residue_floor):
+        omega = a_x[k] / a_w[k]
+        expected = np.exp(-omega / tau)
+        dev = abs(r_w[k] / a_w[k] - expected) / max(expected, 1.0)
+        if dev > worst:
+            worst, where = dev, omega
+    ok = worst <= rtol
+    return Diagnostic(
+        name="kms",
+        severity=Severity.OK if ok else Severity.WARN,
+        value=float(worst),
+        threshold=rtol,
+        message=(
+            "addition/removal weights obey detailed balance"
+            if ok
+            else f"addition/removal weights violate detailed balance (worst near omega = {where:.4g})"
+        ),
+        suggestion=(
+            ""
+            if ok
+            else "a sector's ensemble weight c_s is off or a thermally relevant sector was dropped; check the members"
+        ),
     )
+
+
+def addition_removal_peak_check(*args, **kwargs):
+    r"""Superseded by :func:`kms_pole_check` (kept so the old name fails with a pointer)."""
+    raise NotImplementedError("use gf_diagnostics.kms_pole_check (pole-residue form, sector ensembles only)")

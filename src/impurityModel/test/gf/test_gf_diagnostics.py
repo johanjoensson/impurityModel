@@ -194,8 +194,59 @@ def test_empty_report_renders_pass():
 # --------------------------------------------------------------------------- #
 
 
-def test_addition_removal_peak_check_is_deferred():
-    with pytest.raises(NotImplementedError):
+def _grand_canonical_poles(tau, sector_scale=None, n_modes=3, seed=3):
+    """Dense Fock-space ED over every charge sector: the (pole, add residue, rem residue) triples of c_0^dagger."""
+    rng = np.random.default_rng(seed)
+    dim = 2**n_modes
+    z = np.diag([1.0, -1.0])
+    lower = np.array([[0.0, 1.0], [0.0, 0.0]])  # annihilates the occupied state |1> = (0, 1)
+
+    def kron_all(mats):
+        out = np.array([[1.0]])
+        for m in mats:
+            out = np.kron(out, m)
+        return out
+
+    c = [kron_all([z] * k + [lower] + [np.eye(2)] * (n_modes - k - 1)) for k in range(n_modes)]
+    t = rng.normal(size=(n_modes, n_modes))
+    t = 0.5 * (t + t.T)
+    h = sum(t[i, j] * c[i].T @ c[j] for i in range(n_modes) for j in range(n_modes))
+    h = h + 1.5 * c[0].T @ c[0] @ c[1].T @ c[1]
+    number = sum(ci.T @ ci for ci in c)
+    energies, vectors = np.linalg.eigh(h)
+    n_of = np.einsum("in,ij,jn->n", vectors, number, vectors)
+    weight = np.exp(-(energies - energies[0]) / tau)
+    if sector_scale is not None:
+        weight = weight * np.where(np.isclose(n_of, 2.0), sector_scale, 1.0)
+    weight = weight / weight.sum()
+    m_el = vectors.T @ c[0].T @ vectors  # <n|c^dagger|m> = m_el[n, m]
+    omega = energies[:, None] - energies[None, :]
+    sq = m_el**2
+    return omega.ravel(), (weight[None, :] * sq).ravel(), (weight[:, None] * sq).ravel()
+
+
+def test_the_kms_check_passes_on_an_exact_grand_canonical_ensemble():
+    tau = 0.5
+    omega, add, rem = _grand_canonical_poles(tau)
+    d = gd.kms_pole_check(omega, add, omega, rem, tau, n_members=4)
+    assert (
+        d.severity == gd.Severity.OK and d.value < 1e-2
+    ), d  # binning only; the mean-pole ratio is exact per bin to O(bin_width)
+
+
+def test_the_kms_check_fires_when_a_sector_weight_is_perturbed():
+    tau = 0.5
+    omega, add, rem = _grand_canonical_poles(tau, sector_scale=3.0)
+    d = gd.kms_pole_check(omega, add, omega, rem, tau, n_members=4)
+    assert d.severity == gd.Severity.WARN and d.value > 0.5, d
+
+
+def test_the_kms_check_is_not_applicable_to_one_member_and_never_raises():
+    tau = 0.5
+    omega, add, rem = _grand_canonical_poles(tau, sector_scale=3.0)
+    d = gd.kms_pole_check(omega, add, omega, rem, tau, n_members=1)
+    assert d.severity == gd.Severity.OK and "not applicable" in d.message
+    with pytest.raises(NotImplementedError, match="kms_pole_check"):
         gd.addition_removal_peak_check()
 
 
@@ -260,7 +311,7 @@ def test_the_self_energy_report_carries_the_ground_state_row():
     from impurityModel.ed import selfenergy
 
     src = Path(selfenergy.__file__).read_text()
-    assert 'check_ground_state_truncation(truncation, convergence)' in src
+    assert "check_ground_state_truncation(truncation, convergence)" in src
 
 
 def test_bicgstab_convergence_check():
