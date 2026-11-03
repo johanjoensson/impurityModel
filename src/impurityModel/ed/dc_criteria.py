@@ -2613,35 +2613,45 @@ def fixed_occupation_dc(
                 # share, not a decision local to this loop.
                 _clear_occupation_caches()
 
-            mu = _solve_dc_shift(
-                occupation_observable,
-                target,
-                tol=occ_tol,
-                width_tol=occ_width_tol,
-                initial_step=max(10 * ctx.tau, initial_step),
-                max_shift=max_shift,
-                plateau_ok=True,
-                unreachable_message=unreachable,
-                rank=rank,
-                # Sector-first, and the nominal occupation is what "prefer the user's nominal" means:
-                # the criterion is solved inside the mu-interval where the walk lands on that charge
-                # state, so a root at another sector cannot win by sitting nearer mu = 0.
-                # Continuous mode (mixed_valence = on): n(mu) is the grand-canonical average, smooth across a
-                # sector change, so there is no sector boundary to solve inside -- a plain bracketed root.
-                sector_of=None if ctx.mixed_valence == "on" else sector_at.get,
-                nominal_sector=None if ctx.mixed_valence == "on" else sum(ctx.N0.values()),
-                # dn/dmu >= 0: a positive mu lowers the impurity level and raises its occupation.
-                # No analytic magnitude here -- chi is precisely what the plateau/gap question is
-                # about, and assuming a value for it is how a search talks itself past a flat region.
-                # Direction only; the walk finds the scale.
-                slope_sign=1,
-                report=search_report,
-                verbose=verbose,
-                # The observable's own collectives run on COMM_WORLD (the basis builds below
-                # hardcode it), not on the caller's `comm`, so the residual must be broadcast
-                # there too or the branch decisions can diverge between ranks.
-                comm=MPI.COMM_WORLD,
-            )
+            try:
+                mu = _solve_dc_shift(
+                    occupation_observable,
+                    target,
+                    tol=occ_tol,
+                    width_tol=occ_width_tol,
+                    initial_step=max(10 * ctx.tau, initial_step),
+                    max_shift=max_shift,
+                    plateau_ok=True,
+                    unreachable_message=unreachable,
+                    rank=rank,
+                    # Sector-first, and the nominal occupation is what "prefer the user's nominal" means:
+                    # the criterion is solved inside the mu-interval where the walk lands on that charge
+                    # state, so a root at another sector cannot win by sitting nearer mu = 0.
+                    # Continuous mode (mixed_valence = on): n(mu) is the grand-canonical average, smooth across a
+                    # sector change, so there is no sector boundary to solve inside -- a plain bracketed root.
+                    sector_of=None if ctx.mixed_valence == "on" else sector_at.get,
+                    nominal_sector=None if ctx.mixed_valence == "on" else sum(ctx.N0.values()),
+                    # dn/dmu >= 0: a positive mu lowers the impurity level and raises its occupation.
+                    # No analytic magnitude here -- chi is precisely what the plateau/gap question is
+                    # about, and assuming a value for it is how a search talks itself past a flat region.
+                    # Direction only; the walk finds the scale.
+                    slope_sign=1,
+                    report=search_report,
+                    verbose=verbose,
+                    # The observable's own collectives run on COMM_WORLD (the basis builds below
+                    # hardcode it), not on the caller's `comm`, so the residual must be broadcast
+                    # there too or the branch decisions can diverge between ranks.
+                    comm=MPI.COMM_WORLD,
+                )
+            except DoubleCountingUnreachable:
+                # An unreachable target is the likeliest outcome of a refused ensemble (n(mu) then steps with the
+                # winning sector): the record must still say how many trial points were flagged.
+                if ctx.refused_at:
+                    dc_rec.update(
+                        ensemble_refused_points=len(ctx.refused_at),
+                        ensemble_refusal_reasons=sorted(set(ctx.refused_at.values())),
+                    )
+                raise
 
         # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
         # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.

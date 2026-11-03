@@ -2936,3 +2936,40 @@ def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
     capsys.readouterr()
     dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
     assert "a neighbouring sector lies within the thermal window" not in capsys.readouterr().out
+
+
+def test_fixed_occupation_dc_under_auto_is_the_off_result_when_one_sector_is_populated():
+    """One-member identity end to end: far from the crossing and cold, auto forms no ensemble and changes nothing."""
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
+    got, rec = {}, {"off": {}, "auto": {}}
+    for mode in ("off", "auto"):
+        got[mode] = fixed_occupation_dc(
+            occupation=1.0,
+            report=rec[mode],
+            **{**kwargs, "basis": dataclasses.replace(kwargs["basis"], mixed_valence=mode)},
+        )
+    assert np.array_equal(got["off"], got["auto"])
+    assert rec["off"]["n_gs"] == rec["auto"]["n_gs"]
+
+
+def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_it(monkeypatch):
+    """A refusal at a trial shift is a flagged point: the search finishes and the record says how many."""
+    from impurityModel.ed import groundstate
+
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    real = groundstate.plan_ensemble
+    monkeypatch.setattr(
+        groundstate,
+        "plan_ensemble",
+        lambda solved, tau, mode, **kw: real(solved, tau, mode, **{**kw, "max_error": -1.0}),
+    )
+    record = {}
+    # the occupation steps with the winning sector where the ensemble is refused, so 1.6 is unreachable -- but
+    # through the search's own error, not an ensemble failure, and the record carries the flagged points
+    with pytest.raises(DoubleCountingUnreachable, match="refused the ensemble"):
+        fixed_occupation_dc(
+            occupation=1.6,
+            report=record,
+            **{**kwargs, "basis": dataclasses.replace(kwargs["basis"], mixed_valence="auto")},
+        )
+    assert record.get("ensemble_refused_points", 0) >= 1, record
