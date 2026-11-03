@@ -2035,6 +2035,9 @@ class _OccupationContext:
     mixed_valence: str = "off"
     #: ``mu -> (intra, inter)``: the variance of the impurity occupation inside the members and between them.
     ensemble_variance_at: dict | None = None
+    #: ``mu -> reason``: trial points whose ensemble was refused (replicated). Such a point carries the winning
+    #: sector alone and is flagged through ``cap_bound_at``; it is reported once per search, not per trial.
+    refused_at: dict | None = None
     cap_bound_at: dict | None = None
     memory_bound_at: dict | None = None
     #: Each sector's certification, shared by every ground state this search solves
@@ -2050,6 +2053,8 @@ class _OccupationContext:
     def __post_init__(self):
         if self.cap_bound_at is None:
             self.cap_bound_at = {}
+        if self.refused_at is None:
+            self.refused_at = {}
         if self.memory_bound_at is None:
             self.memory_bound_at = {}
         if self.plan_store is None:
@@ -2311,6 +2316,10 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
         ctx.ensemble_variance_at = {}
     ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or plan.refused_reason is not None, root=0)
+    if plan.refused_reason is not None:
+        ctx.refused_at[mu] = plan.refused_reason
+    else:
+        ctx.refused_at.pop(mu, None)
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
     return n_avg, float(e0_s.min()), plan.members[0].total
 
@@ -2548,6 +2557,9 @@ def fixed_occupation_dc(
                     occupation_at.clear()
                     sector_at.clear()
                     ctx.plan_store.clear()
+                    ctx.refused_at.clear()
+                    if ctx.ensemble_variance_at is not None:
+                        ctx.ensemble_variance_at.clear()
 
                 _calibrate_cap(
                     ctx,
@@ -2641,6 +2653,19 @@ def fixed_occupation_dc(
             chi=occ_chi,
             chi_span=occ_chi_span,
         )
+        if ctx.refused_at:
+            # One note per search (the reasons are replicated, so every rank agrees): at these trial shifts the
+            # sector energies did not fix the occupation weights well enough, so the point carries the winning
+            # sector alone and the result is flagged cap-bound.
+            reasons = sorted(set(ctx.refused_at.values()))
+            dc_rec.update(ensemble_refused_points=len(ctx.refused_at), ensemble_refusal_reasons=reasons)
+            if rank == 0:
+                print(
+                    f"WARNING: fixed_occupation_dc: the charge-sector ensemble was refused at {len(ctx.refused_at)} of "
+                    f"{len(occupation_at)} trial shifts ({'; '.join(reasons)}). Those points use the winning sector "
+                    "alone, so n(mu) is not the grand-canonical average there and the result is flagged.",
+                    flush=True,
+                )
         variance = (ctx.ensemble_variance_at or {}).get(mu)
         if variance is not None:
             dc_rec.update(var_n_intra_sector=variance[0], var_n_inter_sector=variance[1])

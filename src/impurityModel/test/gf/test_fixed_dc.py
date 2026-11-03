@@ -577,6 +577,38 @@ def test_the_ensemble_observable_attains_a_target_the_single_sector_one_steps_ov
     assert record["var_n_inter_sector"] > 0 and record["var_n_intra_sector"] >= 0, record
 
 
+def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monkeypatch, capsys):
+    """Review #3: under auto a refusal flags the point (cap-bound verdict, one aggregated note); it never raises."""
+    from impurityModel.ed import dc_criteria, groundstate
+
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
+    real = groundstate.plan_ensemble
+    refuse = {"on": False}
+
+    def planned(solved, tau, mode, **kw):
+        # a negative limit refuses every plan that still has more than one member
+        return real(solved, tau, mode, **({**kw, "max_error": -1.0} if refuse["on"] else kw))
+
+    monkeypatch.setattr(groundstate, "plan_ensemble", planned)
+    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
+    mus = [0.0, 1.5, 1.75]  # 1.5 and 1.75 sit on the crossing (n = 1.25 -> 1.98): two members
+    free = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
+    assert ctx.refused_at == {} and not any(ctx.cap_bound_at.values())
+    refuse["on"] = True
+    ctx.cap_bound_at.clear()
+    got = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
+    assert sorted(ctx.refused_at) == [1.5, 1.75], ctx.refused_at
+    assert [mu for mu, flag in sorted(ctx.cap_bound_at.items()) if flag] == [1.5, 1.75]
+    assert dc_criteria._any_cap_bound(ctx) is True
+    assert got[0] == free[0]  # the unrefused point is untouched
+    assert got[1] != free[1]  # a refused point carries the winning sector alone
+    ctx.refused_at.clear()  # a re-measure of an unrefused point forgets an old refusal
+    refuse["on"] = False
+    dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
+    assert ctx.refused_at == {}
+
+
 def test_a_one_member_ensemble_measures_exactly_what_the_single_sector_observable_does():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
     got = {}
