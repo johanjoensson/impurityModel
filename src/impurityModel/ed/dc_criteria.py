@@ -107,6 +107,7 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
 from impurityModel.ed.observables import shell_index_of_orbitals
 from impurityModel.ed.sector_solver import SectorPlanStore
+from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
@@ -2025,6 +2026,9 @@ class _OccupationContext:
     #: Recorded on the context rather than returned, because the public
     #: :func:`occupation_and_energy_at_mu` has a documented ``(n, E0, sector)`` return and this is
     #: not part of the answer -- it qualifies it.
+    #: The resolved ``mixed_valence`` (``auto``/``on``/``off``): off measures the winning charge sector alone,
+    #: auto/on the grand-canonical ensemble of the sectors inside the thermal window.
+    mixed_valence: str = "off"
     cap_bound_at: dict | None = None
     memory_bound_at: dict | None = None
     #: Each sector's certification, shared by every ground state this search solves
@@ -2059,7 +2063,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     u = model.u4
     n_imp = len(model.impurity_indices)
     N0 = basis.nominal_occ
-    mixed_valence = basis.mixed_valence
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="auto")
     tau = basis.tau
     excitation_budget = basis.excitation_budget
     chain_restrict = basis.chain_restrict
@@ -2079,7 +2083,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         u,
         model.impurity_orbitals,
         N0,
-        mixed_valence=mixed_valence,
         rot_to_spherical=model.rot_to_spherical,
         verbosity=verbosity,
         rank=comm.rank if comm is not None else 0,
@@ -2168,6 +2171,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         n0=n0,
         e_pt2_tol=_resolve_dc_e_pt2_tol(None, basis.e_pt2_tol, honour_dc_knob=False),
         de2_min=_resolve_dc_de2_min(None, basis.de2_min, honour_dc_knob=False),
+        mixed_valence=mixed_valence,
     )
 
 
@@ -2188,6 +2192,8 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     from impurityModel.ed.groundstate import solve_ground_state
 
     h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.shift_solver, dtype=complex))
+    if ctx.mixed_valence != "off":
+        return _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose)
 
     # Determine the ground state the SAME way calc_selfenergy will -- literally the same
     # function, `groundstate.solve_ground_state`, which owns the walk/refine/thermal sequence and
@@ -2244,6 +2250,55 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     e0 = float(es[0])
     sector = sum(mb_basis.ground_state_occupation.values())
     return n_out, e0, sector
+
+
+def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
+    """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` auto/on.
+
+    Every charge sector inside the thermal window is a member; ``n`` is the grand-canonical average
+    ``sum_s c_s n_s`` with ``c_s`` from :func:`~impurityModel.ed.sector_ensemble.sector_weights`, ``E0`` the lowest
+    member's, and ``sector`` the dominant member's total. When the ensemble is refused (``auto``) or has one member
+    this is the single-sector answer. The cap and memory verdicts are those of any member.
+    """
+    from impurityModel.ed.groundstate import refined_truncation_report, solve_ground_state_ensemble
+    from impurityModel.ed.sector_ensemble import sector_weights
+
+    def consume(member, gs):
+        occ = state_occupations(gs.basis, gs.psis, ctx.impurity_indices).sum(axis=1)
+        es = np.asarray(gs.es)
+        bound = bool(getattr(gs.solver, "truncation_report", None) is not None or gs.walk_report is not None)
+        report = refined_truncation_report(gs.solver, gs.walk_report)
+        return (
+            float(thermal_average_scale_indep(es, occ, ctx.tau)),
+            float(es.min()),
+            float(np.exp(-(es - es.min()) / ctx.tau).sum()),
+            bound,
+            bool((report or {}).get("memory_bound", False)),
+        )
+
+    with solver_trace.timed("expand", stage="dc_refine"):
+        plan, results, _ = solve_ground_state_ensemble(
+            h_op,
+            ctx.impurity_orbitals,
+            ctx.bath_states,
+            ctx.N0,
+            mode=ctx.mixed_valence,
+            consume=consume,
+            slaterWeightMin=ctx.slaterWeightMin,
+            comm=MPI.COMM_WORLD,
+            verbose=verbose,
+            weighted_restrictions=ctx.weighted_restrictions,
+            **_ctx_spec(ctx).solve_kwargs(),
+            plan_store=ctx.plan_store,
+            shift=mu,
+            spin_layout=ctx.spin_layout,
+            frozen_occupations=ctx.seed_window,
+        )
+    n_s, e0_s, z_s, bound, memory = (np.array(col) for col in zip(*results))
+    c = sector_weights(e0_s, z_s, ctx.tau)
+    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()), root=0)
+    ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
+    return float(c @ n_s), float(e0_s.min()), plan.members[0].total
 
 
 def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):
@@ -2433,6 +2488,10 @@ def fixed_occupation_dc(
         # The same bracket-collapse resolution _solve_dc_shift uses below (width_tol); computed once
         # so the trace's chi report filters against the identical value, not a second copy of it.
         occ_width_tol = bracket_width_tol(ctx.tau)
+        if ctx.mixed_valence == "on":
+            # Continuous mode: n(mu) is smooth over ~tau, so a bracket as wide as tau would read a steep but
+            # continuous step as a discontinuity. Resolve mu to the accuracy that pins n to occ_tol.
+            occ_width_tol = max(occ_width_tol * occ_tol, 1e-6)
 
         target = occupation
         if self_consistent:
@@ -2502,8 +2561,10 @@ def fixed_occupation_dc(
                 # Sector-first, and the nominal occupation is what "prefer the user's nominal" means:
                 # the criterion is solved inside the mu-interval where the walk lands on that charge
                 # state, so a root at another sector cannot win by sitting nearer mu = 0.
-                sector_of=sector_at.get,
-                nominal_sector=sum(ctx.N0.values()),
+                # Continuous mode (mixed_valence = on): n(mu) is the grand-canonical average, smooth across a
+                # sector change, so there is no sector boundary to solve inside -- a plain bracketed root.
+                sector_of=None if ctx.mixed_valence == "on" else sector_at.get,
+                nominal_sector=None if ctx.mixed_valence == "on" else sum(ctx.N0.values()),
                 # dn/dmu >= 0: a positive mu lowers the impurity level and raises its occupation.
                 # No analytic magnitude here -- chi is precisely what the plateau/gap question is
                 # about, and assuming a value for it is how a search talks itself past a flat region.
@@ -2550,7 +2611,9 @@ def fixed_occupation_dc(
             occupation_at,
             mu,
             width_tol=occ_width_tol,
-            in_sector=lambda trial: sector_at.get(trial) == sector_at.get(mu),
+            in_sector=(
+                None if ctx.mixed_valence == "on" else (lambda trial: sector_at.get(trial) == sector_at.get(mu))
+            ),
         )
         dc_rec.update(
             n_gs=n,

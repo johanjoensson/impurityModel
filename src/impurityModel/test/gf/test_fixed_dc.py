@@ -36,6 +36,8 @@ since the sector search never leaves N_imp = 1 for them -- keep using the
 analytic formula there.
 """
 
+import dataclasses
+
 from dataclasses import replace
 from pathlib import Path
 
@@ -561,6 +563,20 @@ def test_fixed_occupation_dc_already_converged():
     np.testing.assert_allclose(dc, dc_guess, atol=1e-8)
 
 
+def test_the_ensemble_observable_attains_a_target_the_single_sector_one_steps_over():
+    """mixed_valence = on: n(mu) is the grand-canonical average, so a target inside the single-sector step is hit."""
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    off = dataclasses.replace(kwargs["basis"], mixed_valence="off")
+    # the single-sector observable steps 0.011 -> 1.002 across the sector boundary: 0.4 is in the gap
+    with pytest.raises(DoubleCountingUnreachable):
+        fixed_occupation_dc(occupation=0.4, **{**kwargs, "basis": off})
+    on = dataclasses.replace(kwargs["basis"], mixed_valence="on")
+    record = {}
+    dc = fixed_occupation_dc(occupation=0.4, report=record, **{**kwargs, "basis": on})
+    assert np.all(np.isfinite(dc))
+    assert abs(record["n_gs"] - 0.4) < 2e-2, record
+
+
 def test_fixed_occupation_dc_increases_occupation():
     # Requesting two electrons on the impurity: find_ground_state_sector's sector search hits the
     # "free bath electron" alternate sector (module docstring) well before the analytic
@@ -593,6 +609,8 @@ def test_fixed_occupation_dc_low_target_lands_on_plateau(capsys):
     # B3: this is "no solution here", not a tolerable miss, so it raises DoubleCountingUnreachable
     # (the diagnostic still prints on rank 0 before the raise; only the old silent-return is gone).
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    # The single-sector observable: the ensemble (mixed_valence auto/on) smooths this step, see below.
+    kwargs["basis"] = dataclasses.replace(kwargs["basis"], mixed_valence="off")
     # The exception's own message is unreachable_message (the generic "could not bracket" text);
     # the richer "no double-counting shift attains" narration is printed separately by
     # _report_unattainable_target on rank 0, checked below via capsys.
