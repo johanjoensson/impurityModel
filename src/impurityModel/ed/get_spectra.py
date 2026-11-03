@@ -492,19 +492,28 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     report.banner("Spectra", level=V_RESULT)
     report(f"Considering {len(es)} eigenstate(s) for the spectra.", level=V_RESULT)
     report("Calculating spectra ...", level=V_RESULT, flush=True)
+    failure = None  # a rank-0 verdict: raising on rank 0 alone would leave the others in the Barrier below
     if ensemble is None:  # one sector: no hook call
         datasets = spectra_of(es, psis, ground_state_basis)
     else:
-        weights = [m["weight"] for m in ensemble["members"]]
-        datasets = spectra.merge_spectra_datasets(gs_info["member_results"], weights) if rank == 0 else {}
-        if rank == 0 and len(weights) > 1:  # one member: the file is the one-sector file, bit for bit
-            datasets["ensemble/weights"] = np.asarray(weights)
-            datasets["ensemble/e0"] = np.asarray([m["e0"] for m in ensemble["members"]])
+        datasets = {}
+        if rank == 0:
+            try:
+                weights = [m["weight"] for m in ensemble["members"]]
+                datasets = spectra.merge_spectra_datasets(gs_info["member_results"], weights)
+                if len(weights) > 1:  # one member: the file is the one-sector file, bit for bit
+                    datasets["ensemble/weights"] = np.asarray(weights)
+                    datasets["ensemble/e0"] = np.asarray([m["e0"] for m in ensemble["members"]])
+            except Exception as exc:  # noqa: BLE001 -- re-raised on every rank below
+                failure = f"merging the sector-ensemble spectra failed: {exc!r}"
 
     if h5f is not None:
         for name, data in datasets.items():
             h5f.create_dataset(name, data=data)
         h5f.close()
+    from impurityModel.ed.selfenergy import _raise_together
+
+    _raise_together(comm, failure)
     if comm is not None:
         comm.Barrier()
     report("\nDone.", level=V_RESULT)
