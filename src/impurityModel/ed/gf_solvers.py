@@ -120,6 +120,12 @@ def block_Green(
             basis, hOp, basis.redistribute_psis(*psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
         )
 
+        if alphas.shape[1:] != alphas_prev.shape[1:]:
+            # The expanded basis changed the block width (a rank-deficient seed block gained a direction, e.g. a
+            # core-hole seed block of which only some components are non-zero in the first basis): the two
+            # recurrences are not comparable, so this pass has not converged yet.
+            done = False
+            continue
         n_test = min(alphas.shape[0], alphas_prev.shape[0])
         # relatively large changes in alpha and/or betas means we have not converged
         if np.any(np.abs(alphas[:n_test] - alphas_prev[:n_test]) > 1e-12) or np.any(
