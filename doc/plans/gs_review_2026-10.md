@@ -637,7 +637,7 @@ measured in the 7′ profiles, fixed in 10b if they bind. HF off-by->1 misses, D
 ±1-descent local minimum (add `_two_group_siam(u=-4)` to the oracle as xfail in step 0), oracle seed 1 m0, the step-5
 deferrals (one-sided E_N(μ) check, `get_energy` for N±2): step 9. `_resolve_shell_roles` core inference: step 7.
 `IMPMOD_MATVEC_PROF` registration: step 14. B8 and the `_nio_workload`/`BLBENCH_MV`/`BICG_MV` re-baseline: start of
-step 12 status (2026-11-03): MV 4-8 plus the Phase A review fixes are committed; full gate -n1/2/3 green (4026/4134/4142 passed). MV 9-13 open. step 13. J9 (MV-doc fixes, `schema_version`/`required_features`): a doc commit before step 12. O6 oracle CI budget:
+step 12 status (2026-11-03): MV 4-8 plus the Phase A review fixes are committed; full gate -n1/2/3 green (4026/4134/4142 passed). MV 9-13 (χ, spectra, RIXS, KMS pole-residue diagnostic, docs) committed 2026-11-03; Phase B gate -n1/2/3 green (4021/4129/4137 passed) plus Opus-review fixes (blocked-only window fallback, KMS log-ratio, docs, rank-0 merge failure raised together). Open: KMS not wired into Σ/χ reports, weight-discriminating GC oracles for χ/spectra, streamed merge. step 13. J9 (MV-doc fixes, `schema_version`/`required_features`): a doc commit before step 12. O6 oracle CI budget:
 step 0.
 
 Steps 1–4 are independent of both plans and can ship first. The first point where the plans touch the same code is
