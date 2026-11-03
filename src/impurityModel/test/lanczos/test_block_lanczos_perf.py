@@ -71,7 +71,6 @@ NBATHS = int(os.environ.get("BLBENCH_NBATHS", "10"))
 TRUNC = int(os.environ.get("BLBENCH_TRUNC", "30000"))
 MAXITER = int(os.environ.get("BLBENCH_MAXITER", "40"))
 BLOCK = int(os.environ.get("BLBENCH_BLOCK", "2"))
-TRLM_REORT = os.environ.get("BLBENCH_REORT", "FULL").upper() != "NONE"
 REPS = int(os.environ.get("BLBENCH_REPS", "3"))
 # Force the restarted-Lanczos path in the CIPSI expansion regardless of basis size
 # (production hits it once the basis outgrows dense_cutoff; the bench always should).
@@ -247,7 +246,6 @@ def test_partial_trlm_array_bench(nio_workload):
             max_restarts=100,
             verbose=False,
             slaterWeightMin=SLATER_WEIGHT_MIN,
-            reort=TRLM_REORT,
         )
         times.append(time.perf_counter() - t0)
     sampler.stop()
@@ -260,7 +258,7 @@ def test_partial_trlm_array_bench(nio_workload):
     locals_n = [local_n] if comm is None else comm.gather(local_n, root=0)
     _report(
         comm,
-        f"TRLM/array {TRLM_REORT.name} (NiO {NBATHS} bath, basis {n_global}, "
+        f"TRLM/array (NiO {NBATHS} bath, basis {n_global}, "
         f"{'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("E0", f"{np.min(e_ref):.6f}"),

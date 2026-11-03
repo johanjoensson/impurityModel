@@ -198,7 +198,7 @@ def gf_workload():
         psi_refs=solver.psi_refs,
     )
     e0 = float(np.min(es))
-    psi0 = psis[int(np.argmin(es))]
+    psi0 = psis.to_states()[int(np.argmin(es))]
 
     excited_restrictions, excited_weighted = _build_excited_restrictions(
         basis, h, [psi0], [e0], dN=DN, occ_cutoff=1e-12
