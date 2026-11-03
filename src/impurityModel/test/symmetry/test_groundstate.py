@@ -489,3 +489,35 @@ def test_every_dense_cutoff_default_has_one_owner():
         assert inspect.signature(fn).parameters["dense_cutoff"].default == config.GS_DENSE_CUTOFF
     text = inspect.getsource(__import__("impurityModel.inputformat.schema", fromlist=["x"]))
     assert f'Key("dense_cutoff", Kind.COUNT, {config.DEFAULT_DENSE_CUTOFF},' in text
+
+
+def test_the_spec_keywords_a_dc_call_site_hands_on_are_exactly_the_ones_its_callee_accepts():
+    """Each ``_ctx_spec(...).solve_kwargs(<names>)`` call in ``dc_criteria`` names an explicit subset (the callee
+    has no ``**kwargs``). Dropping a name silently reverts that keyword to the callee's default, so the subset
+    is pinned to what the callee declares among the keywords the spec decides."""
+    import ast
+    import inspect
+
+    from impurityModel.ed import dc_criteria, groundstate
+    from impurityModel.ed.groundstate import GroundStateSpec
+
+    decided = set(GroundStateSpec(tau=0.01).solve_kwargs())
+    tree = ast.parse(inspect.getsource(dc_criteria))
+    seen = {}
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+            continue
+        callee = getattr(groundstate, call.func.id, None)
+        if call.func.id not in ("find_ground_state_sector", "solve_sector") or callee is None:
+            continue
+        for kw in call.keywords:
+            if (
+                kw.arg is None
+                and isinstance(kw.value, ast.Call)
+                and isinstance(kw.value.func, ast.Attribute)
+                and kw.value.func.attr == "solve_kwargs"
+            ):
+                names = {a.value for a in kw.value.args}
+                seen[call.func.id] = seen.get(call.func.id, set()) | {frozenset(names)}
+                assert names == decided & set(inspect.signature(callee).parameters), (call.func.id, sorted(names))
+    assert set(seen) == {"find_ground_state_sector", "solve_sector"}, seen

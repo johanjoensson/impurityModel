@@ -627,7 +627,7 @@ class _SectorContext:
             verbose=self.verbose,
             weighted_restrictions=self.weighted_restrictions,
             **_ctx_spec(self).solve_kwargs(
-                "chain_restrict", "dense_cutoff", "truncation_threshold", "de2_min", "e_pt2_tol"
+                "chain_restrict", "dense_cutoff", "truncation_threshold", "de2_min", "e_pt2_tol", "use_hf_seed"
             ),
             # The walk's trials are this search's own cached sector solves: the N +- 1 solves at this
             # shift are the same solves, at the same accuracy, and are never repeated.
