@@ -50,7 +50,7 @@ import numpy as np
 from impurityModel.ed import config, spectra
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
-from impurityModel.ed.sector_ensemble import reject_unmigrated_ensemble
+from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.utils import report_banner
@@ -332,11 +332,59 @@ def calc_susceptibility(
                 "matsubara": None,
                 "curie_coefficient": float(curie),
                 "expectation": complex(expectation),
+                # The linear partial the sector-ensemble merge needs: Curie = elastic2 - |expectation|^2 is not
+                # linear in the members, so it is formed once after the weighted sum of these two.
+                "elastic2": float(elastic2),
             }
             if matsubara_mesh is not None:
                 entry["matsubara"] = res_plus[1][:, i] + res_minus[1][:, i]
             result["operators"][name] = entry
     return result
+
+
+def merge_susceptibility_results(parts, weights):
+    r"""Merge per-member :func:`calc_susceptibility` results into the charge-sector ensemble's response.
+
+    The susceptibility operators conserve the charge, so there are no cross-sector matrix elements: the
+    thermal response of the ensemble is the weighted sum of the members' responses,
+    :math:`\chi = \sum_s c_s \chi_s`, with each :math:`\chi_s` normalised within its own member.  The Curie
+    coefficient is not linear in the members -- it is :math:`\langle A^2\rangle - |\langle A\rangle|^2` -- so
+    the two linear pieces (``elastic2`` and ``expectation``) are summed with the same weights and the
+    difference is formed once.  Forming it per member and summing would drop the between-sector variance of
+    :math:`\langle A\rangle`, which for the charge operator is the dominant part of the charge fluctuation.
+
+    Parameters
+    ----------
+    parts : list of dict or None
+        One :func:`calc_susceptibility` result per member (``None`` on a rank that is not the root).
+    weights : sequence of float
+        The members' ensemble weights ``c_s`` (renormalised here).
+
+    Returns
+    -------
+    dict or None
+        A result with the structure of :func:`calc_susceptibility`; ``None`` where ``parts`` are ``None``.
+    """
+    if parts[0] is None:
+        return None
+    c = np.asarray(weights, dtype=float)
+    c = c / c.sum()
+    merged = {k: v for k, v in parts[0].items() if k != "operators"}
+    merged["operators"] = {}
+    for name in parts[0]["operators"]:
+        entries = [part["operators"][name] for part in parts]
+        elastic2 = float(sum(ci * e["elastic2"] for ci, e in zip(c, entries)))
+        expectation = complex(sum(ci * e["expectation"] for ci, e in zip(c, entries)))
+        merged["operators"][name] = {
+            "realaxis": sum(ci * e["realaxis"] for ci, e in zip(c, entries)),
+            "matsubara": (
+                None if entries[0]["matsubara"] is None else sum(ci * e["matsubara"] for ci, e in zip(c, entries))
+            ),
+            "curie_coefficient": float(elastic2 - abs(expectation) ** 2),
+            "expectation": expectation,
+            "elastic2": elastic2,
+        }
+    return merged
 
 
 def save_susceptibility(result, filename):
@@ -458,9 +506,8 @@ def calc_susceptibility_workflow(
         HDF5 output path; ``None`` skips saving.
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
-    # Replicated input: every rank raises together, before any collective.  Dropped when the susceptibility forms
-    # the ensemble (MV 9); until then an explicit 'on' would silently be answered with the winning sector alone.
-    reject_unmigrated_ensemble(basis.mixed_valence, driver="calc_susceptibility_workflow")
+    # Resolved before any collective (a malformed value raises on every rank); the default is 'off' here.
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="off")
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
@@ -518,6 +565,7 @@ def calc_susceptibility_workflow(
         restriction_slater_weight_min=slaterWeightMin,
         e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
         de2_min=GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
+        mixed_valence=mixed_valence,
     )
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,
@@ -526,7 +574,33 @@ def calc_susceptibility_workflow(
         "comm": comm,
         "spin_layout": sb.spin_layout,
     }
-    psis, es, ground_state_basis, _thermal_rho, _gs_info = calc_gs(
+    matsubara_mesh = bosonic_matsubara_mesh(tau, n_matsubara) if n_matsubara > 0 else None
+
+    def chi_of(psis, es, ground_state_basis):
+        return calc_susceptibility(
+            sb.h,
+            psis,
+            es,
+            tau,
+            ground_state_basis,
+            w,
+            delta,
+            matsubara_mesh=matsubara_mesh,
+            rot_to_spherical=sb.rot_to_spherical,
+            occ_cutoff=occ_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbosity >= 1,
+            spin_layout=sb.spin_layout,
+            shell_ls=sb.shell_ls,
+        )
+
+    def member_chi(member, member_basis, member_es, member_psis, _truncation, _convergence):
+        # Collective, run while the member's basis is alive and after its solver is released.
+        from impurityModel.ed.selfenergy import _redistributed_states
+
+        return chi_of(_redistributed_states(member_basis, member_psis), member_es, member_basis)
+
+    psis, es, ground_state_basis, _thermal_rho, gs_info = calc_gs(
         sb.h,
         basis_information,
         sb.block_structure,
@@ -535,24 +609,13 @@ def calc_susceptibility_workflow(
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
         spec=gs_spec,
+        member_hook=member_chi,
     )
-    matsubara_mesh = bosonic_matsubara_mesh(tau, n_matsubara) if n_matsubara > 0 else None
-    result = calc_susceptibility(
-        sb.h,
-        psis,
-        es,
-        tau,
-        ground_state_basis,
-        w,
-        delta,
-        matsubara_mesh=matsubara_mesh,
-        rot_to_spherical=sb.rot_to_spherical,
-        occ_cutoff=occ_cutoff,
-        slaterWeightMin=slaterWeightMin,
-        verbose=verbosity >= 1,
-        spin_layout=sb.spin_layout,
-        shell_ls=sb.shell_ls,
-    )
+    ensemble = gs_info.get("ensemble")
+    if ensemble is None:  # one sector: no hook call
+        result = chi_of(psis, es, ground_state_basis)
+    else:
+        result = merge_susceptibility_results(gs_info["member_results"], [m["weight"] for m in ensemble["members"]])
     if rank == 0 and result is not None:
         print_susceptibility_summary(result)
         if output_filename is not None:

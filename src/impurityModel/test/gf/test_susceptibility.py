@@ -466,3 +466,94 @@ def test_chi_solves_the_ground_state_under_the_basis_options_like_sigma(monkeypa
     assert spec.excitation_budget == basis.excitation_budget and spec.cost_budget == basis.cost_budget
     if MPI.COMM_WORLD.rank == 0:
         assert result["operators"]["spin_z"]["curie_coefficient"] == pytest.approx(0.2412685545777933, abs=1e-8)
+
+
+def _fake_result(expectation, elastic2, realaxis):
+    """A calc_susceptibility-shaped result for one member (one operator, no Matsubara)."""
+    return {
+        "w": np.zeros(2),
+        "operators": {
+            "charge": {
+                "realaxis": np.asarray(realaxis, dtype=complex),
+                "matsubara": None,
+                "curie_coefficient": float(elastic2 - abs(expectation) ** 2),
+                "expectation": complex(expectation),
+                "elastic2": float(elastic2),
+            }
+        },
+    }
+
+
+def test_the_sector_merge_forms_the_curie_coefficient_after_the_weighted_sum():
+    """chi = sum_s c_s chi_s is linear, the Curie coefficient <A^2> - |<A>|^2 is not: the between-sector variance of
+    <A> must survive.  Two sectors with a sharp charge (2 and 3, no fluctuation inside either) have Curie 0 each but
+    c(1-c) in the ensemble."""
+    a = _fake_result(2.0, 4.0, [1.0, 2.0])
+    b = _fake_result(3.0, 9.0, [3.0, 6.0])
+    merged = susceptibility.merge_susceptibility_results([a, b], [0.25, 0.75])
+    entry = merged["operators"]["charge"]
+    assert entry["expectation"] == pytest.approx(2.75)
+    assert entry["curie_coefficient"] == pytest.approx(0.25 * 0.75)  # the variance of N over the two sectors
+    np.testing.assert_allclose(entry["realaxis"], [0.25 * 1.0 + 0.75 * 3.0, 0.25 * 2.0 + 0.75 * 6.0])
+    # the weights are renormalised, and a one-member merge is the member itself
+    assert susceptibility.merge_susceptibility_results([a, b], [1.0, 3.0])["operators"]["charge"][
+        "curie_coefficient"
+    ] == pytest.approx(0.25 * 0.75)
+    one = susceptibility.merge_susceptibility_results([a], [0.4])["operators"]["charge"]
+    assert one["curie_coefficient"] == a["operators"]["charge"]["curie_coefficient"]
+    np.testing.assert_array_equal(one["realaxis"], a["operators"]["charge"]["realaxis"])
+    assert susceptibility.merge_susceptibility_results([None, None], [0.5, 0.5]) is None
+
+
+def _workflow(mixed_valence, tau, n_matsubara=2):
+    import dataclasses
+
+    from impurityModel.ed.model import Meshes
+
+    from .test_selfenergy_end_to_end import _basis_and_solver, _siam_model
+
+    basis, solver = _basis_and_solver()
+    basis = dataclasses.replace(basis, tau=tau, mixed_valence=mixed_valence)
+    meshes = Meshes(iw=None, w=np.linspace(-3.0, 3.0, 9), delta=0.1)
+    return susceptibility.calc_susceptibility_workflow(
+        _siam_model(), meshes, basis, solver, comm=MPI.COMM_WORLD, n_matsubara=n_matsubara
+    )
+
+
+def test_one_member_auto_chi_is_the_off_chi():
+    """At low temperature the ensemble has one member and takes the single-sector path: bit-identical."""
+    off, auto = _workflow("off", 0.05), _workflow("auto", 0.05)
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    for name, entry in off["operators"].items():
+        for key in ("realaxis", "matsubara", "curie_coefficient", "expectation"):
+            np.testing.assert_array_equal(auto["operators"][name][key], entry[key])
+
+
+def test_the_chi_ensemble_merges_the_members_with_their_weights(monkeypatch):
+    """Hot enough for several charge sectors: the driver hands the members' own results and the ensemble weights to
+    the merge, and the merged charge response carries the between-sector variance of N."""
+    parts_seen = {}
+    real = susceptibility.merge_susceptibility_results
+
+    def spy(parts, weights):
+        parts_seen["parts"], parts_seen["weights"] = parts, list(weights)
+        return real(parts, weights)
+
+    monkeypatch.setattr(susceptibility, "merge_susceptibility_results", spy)
+    result = _workflow("on", 1.0)
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    parts, c = parts_seen["parts"], np.asarray(parts_seen["weights"])
+    assert len(parts) >= 2 and c.sum() == pytest.approx(1.0, abs=1e-12)
+    for name, entry in result["operators"].items():
+        n_mean = sum(ci * p["operators"][name]["expectation"] for ci, p in zip(c, parts))
+        n2 = sum(ci * p["operators"][name]["elastic2"] for ci, p in zip(c, parts))
+        assert entry["expectation"] == pytest.approx(n_mean)
+        assert entry["curie_coefficient"] == pytest.approx(n2 - abs(n_mean) ** 2)
+        np.testing.assert_allclose(
+            entry["realaxis"], sum(ci * p["operators"][name]["realaxis"] for ci, p in zip(c, parts))
+        )
+    charge = result["operators"]["charge"]
+    within = sum(ci * p["operators"]["charge"]["curie_coefficient"] for ci, p in zip(c, parts))
+    assert charge["curie_coefficient"] > within + 1e-3  # the sectors have different <N>
