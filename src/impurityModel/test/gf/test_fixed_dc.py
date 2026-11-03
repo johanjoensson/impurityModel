@@ -609,6 +609,26 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
     assert ctx.refused_at == {}
 
 
+def test_the_between_sector_variance_warning_fires_only_when_the_occupation_is_set_by_the_sector_gap(capsys):
+    """Fire: a target inside the single-sector step is reached through inter-sector mixing. No fire: one member."""
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    on = dataclasses.replace(kwargs["basis"], mixed_valence="on")
+    record = {}
+    fixed_occupation_dc(occupation=0.4, report=record, **{**kwargs, "basis": on})
+    out = capsys.readouterr().out
+    assert record["var_n_inter_sector"] > record["var_n_intra_sector"], record
+    rank0 = MPI.COMM_WORLD.rank == 0
+    assert (not rank0) or "mostly between charge sectors" in out, out
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
+    on = dataclasses.replace(kwargs["basis"], mixed_valence="on")
+    record = {}
+    fixed_occupation_dc(occupation=1.0, report=record, **{**kwargs, "basis": on})
+    out = capsys.readouterr().out
+    assert record["var_n_inter_sector"] <= record["var_n_intra_sector"], record
+    assert "mostly between charge sectors" not in out, out
+
+
 def test_a_one_member_ensemble_measures_exactly_what_the_single_sector_observable_does():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
     got = {}
