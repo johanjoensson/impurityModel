@@ -195,17 +195,19 @@ def intersect_windows(base, extra):
 
 
 def intersect_sector_window(base, sector):
-    """:func:`intersect_windows` of the shared excited window with a charge-sector window, tolerant of a blocked transition.
+    """:func:`intersect_windows` of the shared excited window with a charge-sector window, tolerant of a *blocked* transition.
 
-    An infeasible intersection means the transition operator cannot act on this ground state at all (a member of a
-    charge-sector ensemble whose valence shell is full cannot take a core electron; an empty one cannot lose one):
-    the seeds are exactly zero and so is the contribution.  The shared window is returned then -- the sector can only
-    tighten it, never loosen it, so nothing is admitted that should not be.  The windows are replicated data, so
-    every rank takes the same branch.
+    A transition is blocked when the sector window asks for more electrons than an orbital subset can hold (or fewer
+    than zero): a member of a charge-sector ensemble whose valence shell is full cannot take a core electron, an empty
+    one cannot lose one.  Its seeds are exactly zero and so is its contribution, so the shared window is returned.
+    Any other infeasible intersection -- a window that is merely too narrow -- is a genuine error and still raises
+    (review ledger C4).  The windows are replicated data, so every rank takes the same branch.
     """
     try:
         return intersect_windows(base, sector)
     except ValueError:
+        if not any(lo > len(key) or hi < 0 for key, (lo, hi) in sector.items()):
+            raise
         return None if not base else dict(base)
 
 

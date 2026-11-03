@@ -376,3 +376,13 @@ def test_a_blocked_transition_window_falls_back_to_the_shared_window():
     assert intersect_sector_window(shared, {frozenset({0, 1}): (1, 2)}) == {frozenset({0, 1}): (1, 2)}
     assert intersect_sector_window(shared, {frozenset({0, 1}): (3, 3)}) == shared  # infeasible: zero seeds anyway
     assert intersect_sector_window(shared, {frozenset({0, 1}): (3, 3)}) is not shared
+
+
+def test_a_window_that_is_merely_too_narrow_still_raises():
+    import pytest
+
+    from impurityModel.ed.basis_restrictions import intersect_sector_window
+
+    shared = {frozenset({0, 1}): (0, 1)}
+    with pytest.raises(ValueError, match="admit no determinant"):
+        intersect_sector_window(shared, {frozenset({0, 1}): (2, 2)})  # fits two orbitals: not blocked, just too narrow
