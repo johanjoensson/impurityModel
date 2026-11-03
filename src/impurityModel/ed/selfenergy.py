@@ -545,6 +545,15 @@ def _drop_low_weight_manifolds(
     return [psis[i] for i in keep], kept_es, dropped
 
 
+def _holds_the_global_ground(first, es, e_ref):
+    """Whether this member's lowest manifold is the global ground manifold, which the drop rule never removes.
+
+    The first member sets ``e_ref``; a later member holds it only when its walk was mis-ranked and it realised a
+    lower energy than ``e_ref``.
+    """
+    return bool(first or float(np.min(np.real(np.asarray(es)))) < e_ref)
+
+
 def _inherit_gf_caps(basis, shared):
     """Give ``basis`` the auto GF caps the dominant member pinned, except those below its own support.
 
@@ -786,7 +795,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
                 comm,
                 e_ref=running["e_ref"],
                 z_before=running["z"],
-                exempt_ground=first,
+                exempt_ground=_holds_the_global_ground(first, es, running["e_ref"]),
             )
             if dropped:
                 report(

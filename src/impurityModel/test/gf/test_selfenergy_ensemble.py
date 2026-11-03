@@ -182,3 +182,11 @@ def test_a_later_member_inherits_the_pinned_gf_caps_except_those_below_its_own_s
     first = types.SimpleNamespace(size=500)
     _inherit_gf_caps(first, None)  # the dominant member sizes its own
     assert not hasattr(first, "_auto_gf_caps")
+
+
+def test_a_later_member_that_realised_the_lowest_energy_keeps_its_ground_manifold():
+    from impurityModel.ed.selfenergy import _holds_the_global_ground
+
+    assert _holds_the_global_ground(True, [0.0, 1.0], 0.0)
+    assert not _holds_the_global_ground(False, [0.5, 1.0], 0.0)  # an ordinary minority member
+    assert _holds_the_global_ground(False, [-0.5, 1.0], 0.0)  # a mis-ranked walk: it is the global minimum
