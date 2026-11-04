@@ -1971,7 +1971,6 @@ def calc_gs(
     shell_ls=None,
     spec: Optional[GroundStateSpec] = None,
     member_hook=None,
-    ground_state: Optional[GroundState] = None,
     **kwargs,
 ):
     """
@@ -2013,11 +2012,6 @@ def calc_gs(
         Only under ``mixed_valence`` ``auto``/``on`` (ignored when the sector ensemble is not formed): called
         collectively as ``member_hook(member, basis, es, psis, truncation_report, convergence_report)`` for each
         member while its basis is alive; the returns are listed in ``gs_info["member_results"]``.
-
-    ground_state : GroundState, optional
-        An already-solved single-sector ground state (a validated :class:`GroundStateHandoff`'s) to report on
-        instead of solving one; ``mixed_valence`` off only. The caller owns the claim that it is the state this
-        call would find.
 
     Returns
     -------
@@ -2083,8 +2077,6 @@ def calc_gs(
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
     # rather than re-listing its keys.
     if mode != "off":
-        if ground_state is not None:
-            raise ValueError("ground_state= is a single-sector state; it cannot be used with mixed_valence auto/on")
         return _calc_gs_ensemble(
             Hop,
             basis_setup,
@@ -2098,8 +2090,7 @@ def calc_gs(
             shell_ls,
             member_hook=member_hook,
         )
-    if ground_state is None:
-        ground_state = solve_ground_state(Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, **basis_setup)
+    ground_state = solve_ground_state(Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, **basis_setup)
     ground_state_basis, solver, es, psis = ground_state[:4]
     # Record whether the truncation_threshold bound the ground-state determination (and how
     # the fixed-budget refinement resolved it), so a capped GS is auditable downstream

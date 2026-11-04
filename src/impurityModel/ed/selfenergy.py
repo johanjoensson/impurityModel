@@ -567,35 +567,7 @@ def _inherit_gf_caps(basis, shared):
     basis._auto_gf_caps = {key: pin for key, pin in shared.items() if pin[0] >= int(basis.size)}
 
 
-def _usable_handoff(handoff, *, key, dc, comm, mixed_valence):
-    """``None`` if ``handoff`` may stand in for this call's ground-state solve, else the reason it may not.
-
-    Every input is replicated, and the verdict is reduced over ``comm`` anyway, so all ranks agree on whether the
-    next (collective) step is a solve or a report.
-    """
-    reason = None
-    if handoff is None or not handoff.filled:
-        reason = "no ground state was handed over"
-    elif mixed_valence != "off":
-        reason = f"mixed_valence is {mixed_valence!r} (only 'off' is handed over)"
-    elif handoff.key != key:
-        reason = "the ground-state inputs (spec, cap, orbitals or nominal occupation) differ from the double counting's"
-    elif handoff.dc.shape != dc.shape or not np.allclose(
-        handoff.dc, dc, rtol=0.0, atol=1e-12 * max(1.0, np.abs(dc).max())
-    ):
-        reason = "the double counting differs from the one the states were solved at"
-    elif comm is not None and MPI.Comm.Compare(comm, MPI.COMM_WORLD) not in (MPI.IDENT, MPI.CONGRUENT):
-        reason = "the communicator differs from the one the states are distributed on"
-    if comm is not None:
-        ok = comm.allreduce(int(reason is None), op=MPI.MIN)
-        if ok == 0 and reason is None:
-            reason = "another rank refused it"
-    return reason
-
-
-def calc_selfenergy(
-    model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster", cap_ledger=None, handoff=None
-):
+def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster", cap_ledger=None):
     """Calculate the self energy of the impurity.
 
     Parameters
@@ -626,10 +598,6 @@ def calc_selfenergy(
     cap_ledger : impurityModel.ed.memory_estimate.CapLedger, optional
         Carries an auto ground-state cap between calls (P10): its ``ceiling`` lowers this call's auto cap and
         ``resolved`` receives the cap used. A cap the user set is never touched.
-    handoff : impurityModel.ed.groundstate.GroundStateHandoff, optional
-        The ground state :func:`~impurityModel.ed.dc_criteria.fixed_occupation_dc` ended on. Used in place of the
-        ground-state solve when it is for this ``dc``, spec, cap and communicator (``mixed_valence`` off); otherwise
-        a note says why and the ground state is solved fresh. Consumed: the handoff is emptied.
 
     Returns
     -------
@@ -943,37 +911,6 @@ def calc_selfenergy(
     # ensemble is never re-requested with a larger count. Under mixed_valence auto/on it returns the
     # dominant charge sector's states, and ``member_gf`` runs once per member inside it.
     t_phase = time.perf_counter()
-    reused = None
-    if handoff is not None:
-        from impurityModel.ed.groundstate import ground_state_handoff_key
-
-        refusal = _usable_handoff(
-            handoff,
-            key=ground_state_handoff_key(
-                tau=tau,
-                chain_restrict=chain_restrict,
-                dense_cutoff=dense_cutoff,
-                cap=cap_policy.gs,
-                slater_weight_min=slaterWeightMin,
-                excitation_budget=excitation_budget,
-                cost_budget=basis.cost_budget,
-                e_pt2_tol=gs_spec.e_pt2_tol,
-                de2_min=gs_spec.de2_min,
-                impurity_orbitals=impurity_orbitals,
-                bath_states=bath_states,
-                N0=nominal_occ,
-                comm_size=comm.size if comm is not None else 1,
-            ),
-            dc=extract_tensors(model.dc or {}, n_orb=len(model.impurity_indices), two_body=False)[0],
-            comm=comm,
-            mixed_valence=mixed_valence,
-        )
-        if refusal is None:
-            reused = handoff.ground_state
-            report("Reusing the double counting's ground state (no fresh ground-state solve).", level=V_RESULT)
-        else:
-            report(f"NOTE: the double counting's ground state is not reused: {refusal}.", level=V_RESULT)
-        handoff.dc = handoff.mu = handoff.key = handoff.ground_state = None  # consumed either way: it holds RAM
     psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
         h,
         basis_information,
@@ -983,7 +920,6 @@ def calc_selfenergy(
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
         spec=gs_spec,
-        ground_state=reused,
         member_hook=lambda member, basis, es, psis, trunc, conv: member_gf(
             _redistributed_states(basis, psis), es, basis, trunc, conv, label=f"[N_total = {member.total}] "
         ),
