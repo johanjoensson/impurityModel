@@ -1438,7 +1438,7 @@ def solve_certified(
     certified = merged.size < dense_cutoff or eig is None or bool(eig.certified)
     split = multiplet_split(plan, verdicts, es, psis, merged, roundoff, certified=certified)
     solver.manifold_check["multiplet_split"] = split
-    solver.manifold_check["certified"] = certified
+    solver.manifold_check["certified"] = bool(certified)
     if split is not None and (basis.comm is None or basis.comm.rank == 0):
         spins = ", ".join(f"S = {ts / 2:g}" for ts in split["two_s"])
         cause = (

@@ -508,3 +508,12 @@ def test_unique_rows_handles_zero_rows():
     uniq, inverse = _unique_rows(np.zeros((0, 3), dtype=np.uint8), np.zeros(0, dtype=np.int64))
     assert uniq.shape == (0, 3)
     assert inverse.shape == (0,)
+
+
+def test_numpy_bools_are_written_as_json_booleans(tmp_path):
+    """A numpy bool in the report (``manifold_check['certified']``) made rank 0's write raise, so rank 0 left the
+    collectives and the other ranks hung (review GS8 regression)."""
+    path = tmp_path / "gs.json"
+    save_gs_statistics({"certified": np.bool_(True), "flags": np.array([True, False])}, str(path))
+    data = json.loads(path.read_text())
+    assert data["certified"] is True and data["flags"] == [True, False]
