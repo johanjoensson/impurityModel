@@ -228,7 +228,8 @@ def _orbits_for(h_op, basis, manifold, spin_layout):
     if isinstance(manifold, Lowest) or not config.GS_ORBIT_CLOSURE.get():
         return None
     orbits = build_orbits(h_op, basis, spin_layout=spin_layout)
-    _report_orbit_notes(orbits, basis)
+    if orbits is not None:
+        _report_orbit_notes(orbits, basis)
     return orbits
 
 

@@ -104,3 +104,13 @@ def test_a_degraded_orbit_closure_is_reported_once(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.count("symmetry orbit closure is degraded") == 1
     assert "left out" in out
+
+
+def test_no_orbits_means_nothing_to_report(monkeypatch):
+    """``build_orbits`` returns ``None`` when there is no symmetry to close over (review GS11 regression)."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.eigensolvers import Within
+
+    monkeypatch.setattr(groundstate, "build_orbits", lambda *a, **k: None)
+    basis = type("B", (), {"is_distributed": False})()
+    assert groundstate._orbits_for(None, basis, Within(1.0), None) is None
