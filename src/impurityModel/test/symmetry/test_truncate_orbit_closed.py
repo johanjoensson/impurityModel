@@ -85,3 +85,22 @@ def test_the_seed_size_truncation_builds_its_orbits_with_the_spin_layout(monkeyp
     except Exception:  # the marker is not a layout: building the orbits may reject it; the call is what is pinned
         pass
     assert seen and seen[0] is marker
+
+
+def test_a_degraded_orbit_closure_is_reported_once(monkeypatch, capsys):
+    """``Orbits.notes`` say the closure is not what the guarantee assumes; they must reach the user (review GS11)."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.eigensolvers import Within
+
+    class _Fake:
+        def __init__(self):
+            self.notes = ["a symmetry does not map spin pairs onto spin pairs: left out"]
+
+    monkeypatch.setattr(groundstate, "build_orbits", lambda *a, **k: _Fake())
+    monkeypatch.setattr(groundstate, "_REPORTED_ORBIT_NOTES", set())
+    basis = type("B", (), {"is_distributed": False})()
+    assert groundstate._orbits_for(None, basis, Within(1.0), None).notes
+    groundstate._orbits_for(None, basis, Within(1.0), None)
+    out = capsys.readouterr().out
+    assert out.count("symmetry orbit closure is degraded") == 1
+    assert "left out" in out

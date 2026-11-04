@@ -226,7 +226,30 @@ def _orbits_for(h_op, basis, manifold, spin_layout):
     """The symmetry orbits a ``Within`` solve selects and truncates by (collective), or ``None``."""
     if isinstance(manifold, Lowest) or not config.GS_ORBIT_CLOSURE.get():
         return None
-    return build_orbits(h_op, basis, spin_layout=spin_layout)
+    orbits = build_orbits(h_op, basis, spin_layout=spin_layout)
+    _report_orbit_notes(orbits, basis)
+    return orbits
+
+
+#: Orbit degradations already reported by this process (one line per distinct note, not one per solve).
+_REPORTED_ORBIT_NOTES = set()
+
+
+def _report_orbit_notes(orbits, basis):
+    """Say, once per process on rank 0, what the orbit closure left out (review GS11).
+
+    ``Orbits.notes`` records that the selection and truncation are *not* closed over some symmetry
+    (unpaired orbitals, a symmetry that does not map spin pairs, a group over ``GROUP_CAP``). The
+    orbit-closed guarantee then no longer holds for the solve, which the user must be able to see.
+    Rank-local print only, no collective.
+    """
+    comm = basis.comm if basis.is_distributed else None
+    if comm is not None and comm.rank != 0:
+        return
+    for note in orbits.notes:
+        if note not in _REPORTED_ORBIT_NOTES:
+            _REPORTED_ORBIT_NOTES.add(note)
+            print(f"  WARNING: symmetry orbit closure is degraded: {note}", flush=True)
 
 
 def widen_by_single_excitations(basis, *, max_seed):
