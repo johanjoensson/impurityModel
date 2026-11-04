@@ -137,7 +137,7 @@ def test_the_walk_solves_the_totals_the_plan_asks_for_and_every_rank_agrees(comm
     def extend(solved):
         return plan_ensemble(solved, tau, attainable=lambda t: 0 <= t <= 2, max_error=1e9).needs
 
-    wide = groundstate.find_ground_state_sector(_toy(), IMPURITY, BATHS, {0: 0}, extend_sectors=extend, **kw)
+    wide = groundstate.find_ground_state_sector(_toy(), IMPURITY, BATHS, {0: 0}, more_totals=extend, **kw)
     assert sorted(r.total for r in wide.solved) == [0, 1, 2]
     plan = plan_ensemble(wide.solved, tau, attainable=lambda t: 0 <= t <= 2, max_error=1e9)
     assert plan.needs == () and [m.total for m in plan.members] == [0, 1, 2]

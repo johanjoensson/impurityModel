@@ -882,7 +882,7 @@ def find_ground_state_sector(
     plan_store=None,
     shift=0.0,
     spin_layout=None,
-    extend_sectors=None,
+    more_totals=None,
 ):
     """
     Find the charge sector with the lowest energy, compare N0 - 1, N0 and N0 + 1: :class:`SectorSearch`.
@@ -968,7 +968,7 @@ def find_ground_state_sector(
 
     # Whole-impurity capacity: the groups redistribute charge freely at fixed total, so this --
     # not any per-group size -- is the bound a trial total has to satisfy to be attainable.
-    max_total_impurity_occupation = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
+    max_total_impurity_occupation, _, _ = sector_bounds(impurity_orbitals, frozen_occupations)
 
     def get_energy(trial_N0):
         """
@@ -1273,8 +1273,8 @@ def find_ground_state_sector(
     winner = energy_cache[winning_key]
     e_gs, report = winner.energy, winner.truncation_report
     solved = tuple(energy_cache.values())
-    if extend_sectors is not None:
-        # Solve further totals the caller (the charge-sector ensemble) asks for. `extend_sectors` must be a pure
+    if more_totals is not None:
+        # Solve further totals the caller (the charge-sector ensemble) asks for. `more_totals` must be a pure
         # function of the replicated `solved`, so every rank asks for the same totals and the collective
         # `get_energy` solves stay matched. A total already tried (or unattainable: `get_energy` stores nothing
         # for it) is never asked for twice, so the loop ends.
@@ -1284,7 +1284,7 @@ def find_ground_state_sector(
         movable = [i for i in keys if i not in (frozen_occupations or ())]
         sizes = {i: sum(len(block) for block in impurity_orbitals[i]) for i in keys}
         while movable:
-            wanted = [t for t in extend_sectors(solved) if t not in tried]
+            wanted = [t for t in more_totals(solved) if t not in tried]
             if not wanted:
                 break
             for t in wanted:
@@ -1604,6 +1604,26 @@ def solve_ground_state(
     )
 
 
+def sector_bounds(impurity_orbitals, frozen_occupations):
+    """The total-N bounds of a model: ``(max_total, free_capacity, pinned_of)``.
+
+    ``max_total`` is the whole-impurity capacity (the groups redistribute charge freely at fixed total, so this,
+    not any per-group size, bounds an attainable total). ``free_capacity`` is the capacity of the groups that are
+    not frozen. ``pinned_of(occupation)`` is the electron count the frozen groups hold in ``occupation``; a total
+    ``t`` is attainable when ``0 <= t <= max_total`` and ``pinned <= t <= pinned + free_capacity``.
+    """
+    frozen = frozen_occupations or ()
+    max_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
+    free_capacity = sum(
+        len(block) for i, blocks in impurity_orbitals.items() if i not in frozen for block in blocks
+    )
+
+    def pinned_of(occupation):
+        return sum(occupation[i] for i in occupation if i in frozen)
+
+    return max_total, free_capacity, pinned_of
+
+
 def _agree_on_switch(mixed_valence, comm):
     """Raise on every rank if the resolved ``mixed_valence`` differs between ranks (env knobs are checked elsewhere)."""
     if comm is not None and comm.size > 1:
@@ -1670,18 +1690,11 @@ def solve_ground_state_ensemble(
     _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
     if plan_store is None:
         plan_store = SectorPlanStore()
-    max_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
-
     # Frozen groups are pinned at the filling the walk settled on (a window group sits at Hartree-Fock's
     # filling, which need not be the nominal one); the rest range over their capacity. Until a sector is solved
     # the nominal filling stands in.
-    def pinned_of(occupation):
-        return sum(occupation[i] for i in occupation if i in (frozen_occupations or ()))
-
+    max_total, free_capacity, pinned_of = sector_bounds(impurity_orbitals, frozen_occupations)
     pinned_box = [pinned_of(N0)]
-    free_capacity = sum(
-        len(block) for i, blocks in impurity_orbitals.items() if i not in (frozen_occupations or ()) for block in blocks
-    )
 
     def attainable(total):
         pinned = pinned_box[0]
@@ -1710,7 +1723,7 @@ def solve_ground_state_ensemble(
         plan_store=plan_store,
         shift=shift,
         spin_layout=spin_layout,
-        extend_sectors=needs_of,
+        more_totals=needs_of,
     )
     pinned_box[0] = pinned_of(search.occupation)
     plan = plan_ensemble(search.solved, tau, attainable=attainable)
