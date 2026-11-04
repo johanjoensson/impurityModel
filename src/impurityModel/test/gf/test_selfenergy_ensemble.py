@@ -269,3 +269,18 @@ def test_the_default_member_weight_cut_is_the_owners():
     from impurityModel.ed import config
 
     assert config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT == 1e-3  # owner decision 2026-11-04 (PERF-MV-a)
+
+
+@pytest.mark.mpi
+def test_the_member_holding_the_global_ground_is_never_cut(monkeypatch):
+    """A cut above every member's weight still leaves the member that holds the global ground state its Green's
+    function: the plan's weight is the walk's, and that member is dominant whatever the walk said."""
+    from impurityModel.ed import config
+
+    comm = MPI.COMM_WORLD
+    monkeypatch.setattr(config, "ENSEMBLE_GF_MIN_MEMBER_WEIGHT", 0.999)
+    cut = _run(comm, "on", 0.2)
+    if comm.rank == 0:
+        assert cut["stdout"].count("no Green's function") == 2
+        assert all("[N_total = 1]" not in line for line in cut["stdout"].splitlines() if "no Green's function" in line)
+        assert np.all(np.isfinite(_g00(cut)))

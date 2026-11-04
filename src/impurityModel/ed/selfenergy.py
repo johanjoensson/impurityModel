@@ -762,7 +762,14 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         """
         if running["e_ref"] is None:
             running["e_ref"] = float(np.min(np.real(np.asarray(es))))
-        if member_weight is not None and member_weight < config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT:
+        negligible = member_weight is not None and member_weight < config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT
+        if negligible:
+            # The plan's weight is the walk's. A member the walk mis-ranked can realise the global ground state
+            # (review H-MV6) and is then dominant, with a realised weight near 1: it is never skipped. The energies
+            # are rank-local and the skip decides a collective, so rank 0's verdict holds.
+            holds = _holds_the_global_ground(running["z"] == 0.0, es, running["e_ref"])
+            negligible = not (comm.bcast(holds, root=0) if comm is not None else holds)
+        if negligible:
             # A negligible member (PERF-MV-a): no Green's function. Its Boltzmann weight still counts towards the
             # running sum the drop rule of later members measures against, as for a member gf_min_weight empties.
             running["z"] += float(np.exp(-(np.real(np.asarray(es)) - running["e_ref"]) / tau).sum())
