@@ -223,3 +223,22 @@ def test_the_settle_retry_runs_once_per_member_on_that_members_own_run(monkeypat
         assert all(r is not None for r in runs)
     else:
         assert all(r is None for r in runs)
+
+
+@pytest.mark.mpi
+def test_a_failing_rank0_merge_is_raised_on_every_rank(monkeypatch):
+    """The member merge runs on rank 0's Green's functions (None elsewhere); a failure there used to leave the other
+    ranks in the next collective forever. It is now raised everywhere."""
+    from impurityModel.ed import selfenergy
+
+    comm = MPI.COMM_WORLD
+
+    def boom(*_args, **_kwargs):
+        if comm.rank == 0:
+            raise ValueError("injected merge failure")
+        return [1.0]
+
+    monkeypatch.setattr(selfenergy, "_member_coefficients", boom)
+    with pytest.raises((ValueError, RuntimeError)):
+        _run(comm, "on", 0.2)
+    assert comm.allreduce(1, op=MPI.SUM) == comm.size  # every rank got here

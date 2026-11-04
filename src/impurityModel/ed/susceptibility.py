@@ -50,6 +50,7 @@ import numpy as np
 from impurityModel.ed import config, spectra
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
+from impurityModel.ed.mpi_root import on_every_rank
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
@@ -613,7 +614,10 @@ def calc_susceptibility_workflow(
     if ensemble is None:  # one sector: no hook call
         result = chi_of(psis, es, ground_state_basis)
     else:
-        result = merge_susceptibility_results(gs_info["member_results"], [m["weight"] for m in ensemble["members"]])
+        result = on_every_rank(
+            comm,
+            lambda: merge_susceptibility_results(gs_info["member_results"], [m["weight"] for m in ensemble["members"]]),
+        )
     if rank == 0 and result is not None:
         print_susceptibility_summary(result)
         if output_filename is not None:

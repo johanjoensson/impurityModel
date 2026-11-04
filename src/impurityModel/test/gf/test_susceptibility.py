@@ -584,3 +584,16 @@ def test_the_chi_ensemble_charge_response_is_the_exact_grand_canonical_one_and_t
     assert got["curie_coefficient"] == pytest.approx(elastic - mean**2, abs=1e-4)
     assert abs(single["expectation"].real - mean) > 5e-3  # mutation: the winner alone is not the ensemble
     assert abs(single["curie_coefficient"] - (elastic - mean**2)) > 5e-3
+
+
+def test_a_failing_rank0_chi_merge_is_raised_on_every_rank(monkeypatch):
+    """A failure of the rank-0 ensemble merge is raised on every rank, not left as a hang in the next collective."""
+
+    def boom(parts, weights):
+        if MPI.COMM_WORLD.rank == 0:
+            raise ValueError("injected merge failure")
+
+    monkeypatch.setattr(susceptibility, "merge_susceptibility_results", boom)
+    with pytest.raises((ValueError, RuntimeError)):
+        _workflow("on", 1.0)
+    assert MPI.COMM_WORLD.allreduce(1, op=MPI.SUM) == MPI.COMM_WORLD.size

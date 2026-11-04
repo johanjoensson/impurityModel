@@ -44,6 +44,7 @@ from impurityModel.ed.memory_estimate import (
     log_peak_vs_predicted,
     resolve_cap_policy,
 )
+from impurityModel.ed.mpi_root import on_every_rank
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.sigma import (  # noqa: F401
     UnphysicalGreensFunctionError,
@@ -939,22 +940,27 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # A member's G is normalised over its kept states; its weight in the merge is the share of the ensemble its
         # kept states carry (c_s x kept share), renormalised over the members that remain -- the same convention
         # for a member that lost some states and one that lost all of them.
-        coeff = _member_coefficients([wt for wt, _ in live], [r["kept_share"] for _, r in live])
+        def _merge():
+            coeff = _member_coefficients([wt for wt, _ in live], [r["kept_share"] for _, r in live])
 
-        def _combine(key):
-            parts = [r[key] for _, r in live]
-            if parts[0] is None:  # non-root ranks hold None
-                return None
-            return [sum(c * part[i] for c, part in zip(coeff, parts)) for i in range(len(parts[0]))]
+            def _combine(key):
+                parts = [r[key] for _, r in live]
+                if parts[0] is None:  # non-root ranks hold None
+                    return None
+                return [sum(c * part[i] for c, part in zip(coeff, parts)) for i in range(len(parts[0]))]
 
-        merged = {
-            "matsubara": _combine("matsubara"),
-            "realaxis": _combine("realaxis"),
-            "M": sum(c * r["M"] for c, (_, r) in zip(coeff, live)),
-            "psis": None,
-            "note": "\n".join(r["note"] for _, r in live if r["note"]),
-            "es": live[0][1]["es"],
-        }
+            merged = {
+                "matsubara": _combine("matsubara"),
+                "realaxis": _combine("realaxis"),
+                "M": sum(c * r["M"] for c, (_, r) in zip(coeff, live)),
+                "psis": None,
+                "note": "\n".join(r["note"] for _, r in live if r["note"]),
+                "es": live[0][1]["es"],
+            }
+            return merged
+
+        # Rank 0 holds the families, the others None: a failure of the merge on one rank is raised on all.
+        merged = on_every_rank(comm, _merge)
     es = merged["es"]
     family_matsubara, family_realaxis = merged["matsubara"], merged["realaxis"]
     retry_note, M = merged["note"], merged["M"]

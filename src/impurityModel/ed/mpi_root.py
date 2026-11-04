@@ -22,3 +22,27 @@ def on_root(comm, compute):
     elif error is not None:
         raise error
     return result
+
+
+def on_every_rank(comm, compute):
+    """``compute()`` on every rank (collective): its result, or the same failure raised on all ranks.
+
+    For a step that runs everywhere but can only fail on some ranks (a merge that works on rank 0's data and
+    on ``None`` elsewhere): each rank's verdict is exchanged before anyone moves on, so a failure on one rank
+    is raised on every rank instead of leaving the others in the next collective.
+    """
+    result = error = None
+    try:
+        result = compute()
+    except Exception as exc:  # re-raised below, on every rank
+        error = exc
+    if comm is not None:
+        verdicts = comm.allgather(None if error is None else f"rank {comm.rank}: {type(error).__name__}: {error}")
+        failure = next((v for v in verdicts if v is not None), None)
+        if failure is not None:
+            if error is not None:
+                raise error
+            raise RuntimeError(failure)
+    elif error is not None:
+        raise error
+    return result
