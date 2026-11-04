@@ -1604,10 +1604,10 @@ def solve_ground_state(
     )
 
 
-def _agree_on_mode(mode, comm):
+def _agree_on_switch(mixed_valence, comm):
     """Raise on every rank if the resolved ``mixed_valence`` differs between ranks (env knobs are checked elsewhere)."""
     if comm is not None and comm.size > 1:
-        modes = comm.allgather(mode)
+        modes = comm.allgather(bool(mixed_valence))
         if len(set(modes)) != 1:
             raise RuntimeError(f"mixed_valence resolved differently on different ranks: {modes}")
 
@@ -1618,7 +1618,6 @@ def solve_ground_state_ensemble(
     bath_states,
     N0,
     *,
-    mode,
     consume,
     after_release=None,
     tau,
@@ -1641,7 +1640,7 @@ def solve_ground_state_ensemble(
 ):
     """The grand-canonical thermal ground state: every charge sector inside the thermal window, one at a time.
 
-    ``mode`` is the resolved ``mixed_valence`` (``"auto"`` or ``"on"``). The sector walk runs as in
+    The sector walk runs as in
     :func:`solve_ground_state`, then :func:`~impurityModel.ed.sector_ensemble.plan_ensemble` decides the members
     (solving an admitted edge member's outer neighbour first, collectively, until the edge is not admitted).
     Each member is solved for ``Within.thermal(tau)`` in turn and handed to ``consume(member, ground_state)``; the
@@ -1650,11 +1649,11 @@ def solve_ground_state_ensemble(
     Krylov store) has been dropped, on ``consume``'s return value; its return value replaces that entry of
     ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is
     refused (a member is cap-bound, uncertified, or the weights are not fixed to ``ENSEMBLE_WEIGHT_ERROR_MAX``)
-    the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on every rank. The same holds
+    the ensemble is the winner alone: a warning is printed and the run goes on. The same holds
     when a member's own thermal solve, checked before ``consume`` sees it, is cap-bound or unconverged, except
     that the ensemble is cut at that member rather than to the winner: the members before it, already consumed,
     are kept. ``plan`` then says so, and ``results`` and ``realised`` hold the kept members.
-    ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
+    ``announce_refusal=False`` silences that warning (a caller that records the refusal
     itself, such as the double-counting search, reports it once per search rather than per trial).
     ``warn_neighbours=False`` likewise silences the single-member neighbour-gap note.
 
@@ -1667,10 +1666,7 @@ def solve_ground_state_ensemble(
     realised : list of float
         The lowest energy each member's thermal solve actually found.
     """
-    if mode not in ("auto", "on"):
-        raise ValueError(f"solve_ground_state_ensemble needs mode 'auto' or 'on', got {mode!r}")
     config.assert_uniform(comm)
-    _agree_on_mode(mode, comm)
     _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
     if plan_store is None:
         plan_store = SectorPlanStore()
@@ -1693,7 +1689,7 @@ def solve_ground_state_ensemble(
 
     def needs_of(solved):
         pinned_box[0] = pinned_of(solved[0].trial_N0) if solved else pinned_box[0]
-        return plan_ensemble(solved, tau, mode, attainable=attainable).needs
+        return plan_ensemble(solved, tau, attainable=attainable).needs
 
     search = find_ground_state_sector(
         h_op,
@@ -1717,7 +1713,7 @@ def solve_ground_state_ensemble(
         extend_sectors=needs_of,
     )
     pinned_box[0] = pinned_of(search.occupation)
-    plan = plan_ensemble(search.solved, tau, mode, attainable=attainable)
+    plan = plan_ensemble(search.solved, tau, attainable=attainable)
     if plan.needs and plan.refused_reason is None:
         # An edge that could not be solved leaves the plan provisional, and a provisional plan has skipped the
         # cap / certification / error-bar checks: refuse rather than merge unchecked.
@@ -1731,13 +1727,9 @@ def solve_ground_state_ensemble(
             needs=(),
         )
     if plan.refused_reason is not None:
-        if mode == "on":
-            raise ValueError(
-                f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {plan.refused_reason}"
-            )
         if announce_refusal and (comm is None or comm.rank == 0):
             print(
-                f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {plan.members[0].total} "
+                f"WARNING: mixed_valence: keeps the single N_imp = {plan.members[0].total} "
                 f"sector: {plan.refused_reason}.",
                 flush=True,
             )
@@ -1780,8 +1772,6 @@ def solve_ground_state_ensemble(
             # thrown away (review 7b, owner decision); this one and those after it go. A failing winner is still a
             # valid one-member ensemble, so it is consumed alone.
             reason, by_cap = bad
-            if mode == "on":
-                raise ValueError(f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {reason}")
             kept_members = plan.members[: max(index, 1)]
             if announce_refusal and (comm is None or comm.rank == 0):
                 held = (
@@ -1789,7 +1779,7 @@ def solve_ground_state_ensemble(
                     if len(kept_members) == 1
                     else f"the N_imp = {[m.total for m in kept_members]} members solved before it"
                 )
-                print(f"WARNING: mixed_valence = 'auto' keeps {held}: {reason}.", flush=True)
+                print(f"WARNING: mixed_valence: keeps {held}: {reason}.", flush=True)
             if warn_neighbours:
                 # The kept members were solved as ensemble members, without the single-sector note (review 7c).
                 _warn_near_neighbours(search, tau, comm, kept_totals=[m.total for m in kept_members])
@@ -1975,7 +1965,6 @@ class GroundStateSpec:
 def _calc_gs_ensemble(
     Hop,
     basis_setup,
-    mode,
     block_structure,
     rot_to_spherical,
     verbose,
@@ -2028,7 +2017,6 @@ def _calc_gs_ensemble(
         Hop,
         verbose=verbose,
         slaterWeightMin=slaterWeightMin,
-        mode=mode,
         consume=consume,
         after_release=release,
         **kwargs,
@@ -2065,7 +2053,7 @@ def _calc_gs_ensemble(
         union = np.arange(len(union_es))  # one member is handed on untouched (merge_measurements), so is its order
     labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
     info = {
-        "mode": mode,
+        "mixed_valence": True,
         "tau": tau,
         "e0": float(min(realised)),
         "error_bar": plan.error_bar,
@@ -2212,7 +2200,8 @@ def calc_gs(
     mv_given = basis_setup.pop("mixed_valence", None)
     if mv_given is None and spec is not None:
         mv_given = spec.mixed_valence
-    mode, mv_note = resolve_mixed_valence(mv_given, driver_default="off")
+    mixed_valence, mv_note = resolve_mixed_valence(mv_given, driver_default="off")
+    _agree_on_switch(mixed_valence, basis_setup.get("comm"))
     if mv_note is not None and (basis_setup.get("comm") is None or basis_setup["comm"].rank == 0):
         print(mv_note, flush=True)
     tau = basis_setup["tau"]
@@ -2242,11 +2231,10 @@ def calc_gs(
     # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
     # rather than re-listing its keys.
-    if mode != "off":
+    if mixed_valence:
         return _calc_gs_ensemble(
             Hop,
             basis_setup,
-            mode,
             block_structure,
             rot_to_spherical,
             verbose,

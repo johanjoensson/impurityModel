@@ -1,79 +1,91 @@
-"""Charge-sector ensemble: the ``mixed_valence`` switch and (later) the member plan.
+"""Charge-sector ensemble: the ``mixed_valence`` switch and the member plan.
 
-``mixed_valence`` is a tri-state grand-canonical multi-sector switch: ``"auto"``, ``"on"`` or ``"off"``.
-This module resolves the user-facing spellings to one of those three strings. The value is replicated
-input, so every rank resolves identically and may do so before any collective.
+``mixed_valence`` is a boolean grand-canonical multi-sector switch: on lets the code pick the total-N sectors inside
+the thermal window (a one-member ensemble is fine), off keeps the winning sector alone. This module resolves the
+user-facing spellings to that bool. The value is replicated input, so every rank resolves identically and may do so
+before any collective.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from numbers import Integral
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 import numpy as np
 
 from impurityModel.ed import config
 from impurityModel.ed.average import energy_cut
 
-MixedValence = Literal["auto", "on", "off"]
-_MODES = ("auto", "on", "off")
+_SPELLINGS = {"auto": True, "on": True, "true": True, "off": False, "false": False, "0": False}
 
 #: One-line note for a legacy positive integer / dict value (the seed-width meaning is gone).
 LEGACY_NOTE = (
     "mixed_valence: an integer used to widen the seed's impurity window; that is gone. A non-zero value now "
-    "means 'auto' (the charge-sector ensemble where it can be formed, else the winning sector with a warning); "
-    "write 'on' to make a refused ensemble an error, or false/'off'."
+    "means on (the charge-sector ensemble where it can be formed, else the winning sector with a warning); "
+    "write false/'off' to keep the winning sector alone."
 )
 
 
-def resolve_mixed_valence(value: Any, *, driver_default: MixedValence) -> tuple[MixedValence, str | None]:
-    """Resolve a user ``mixed_valence`` value to ``"auto"``, ``"on"`` or ``"off"``.
+def resolve_mixed_valence(
+    value: Any, *, driver_default: Any = None, default: bool = True
+) -> tuple[bool, str | None]:
+    """Resolve a user ``mixed_valence`` value to a bool.
 
     Parameters
     ----------
     value : None, bool, int, str or dict
-        ``None`` takes ``driver_default``. ``"auto"``/``"on"``/``"off"`` (case-insensitive), ``True``/``False``
-        and ``0`` are taken as named. A positive int is ``"auto"`` plus a note, not ``"on"``: an old input that
-        asked for a wider seed never asked for a refused ensemble to abort the run (review X7). A legacy
-        ``{group: int|bool}`` dict is ``"off"`` if every entry is falsy, else ``"auto"`` plus a note.
-    driver_default : {"auto", "on", "off"}
-        What ``None`` means for the calling driver (Sigma/DC: ``"auto"``; spectra/RIXS/chi: ``"off"``).
+        ``None`` takes the default. ``"on"``/``"auto"``/``"true"`` (case-insensitive) and ``True`` are on;
+        ``"off"``/``"false"``, ``False`` and ``0`` are off (``"auto"`` stays accepted: archives and the ``mv``
+        token written since 2026-11-03 carry it). A positive int is on plus a note. A legacy
+        ``{group: int|bool}`` dict is off if every entry is falsy, else on plus a note.
+    driver_default : {"auto", "on", "off"} or bool, optional
+        What ``None`` means for the calling driver; takes precedence over ``default`` while a caller still passes
+        one.
+    default : bool
+        What ``None`` means otherwise.
 
     Returns
     -------
-    mode, note : tuple
-        The resolved mode and an optional one-line note for rank 0 to print.
+    on, note : tuple
+        The resolved switch and an optional one-line note for rank 0 to print.
 
     Raises
     ------
     ValueError
         For an unknown string, a negative int, a dict holding anything but int/bool, or an unsupported type.
     """
-    if driver_default not in _MODES:
-        raise ValueError(f"driver_default must be one of {_MODES}, got {driver_default!r}")
+    if driver_default is not None:
+        default = _coerce_default(driver_default)
     if isinstance(value, bytes):
         value = value.decode()
     if isinstance(value, np.generic):  # an HDF5 attribute arrives as a numpy scalar
         value = value.item()
     if value is None:
-        return driver_default, None
+        return bool(default), None
     if isinstance(value, dict):
         if not all(isinstance(v, (Integral, bool)) or v is None for v in value.values()):
             raise ValueError(f"mixed_valence={value!r}: a dict is accepted only with int/bool values (legacy form)")
-        return ("auto", LEGACY_NOTE) if any(bool(v) for v in value.values()) else ("off", None)
+        return (True, LEGACY_NOTE) if any(bool(v) for v in value.values()) else (False, None)
     if isinstance(value, bool):
-        return ("on" if value else "off"), None
+        return value, None
     if isinstance(value, Integral):
         if int(value) < 0:
             raise ValueError(f"mixed_valence={value!r}: must not be negative")
-        return ("auto", LEGACY_NOTE) if int(value) > 0 else ("off", None)
+        return (True, LEGACY_NOTE) if int(value) > 0 else (False, None)
     if isinstance(value, str):
         key = value.strip().lower()
-        key = {"true": "on", "false": "off", "0": "off"}.get(key, key)
-        if key in _MODES:
-            return key, None  # type: ignore[return-value]
-    raise ValueError(f"mixed_valence={value!r}: expected 'auto', true/'on', false/'off' (or None)")
+        if key in _SPELLINGS:
+            return _SPELLINGS[key], None
+    raise ValueError(f"mixed_valence={value!r}: expected true/'on'/'auto', false/'off' (or None)")
+
+
+def _coerce_default(driver_default: Any) -> bool:
+    if isinstance(driver_default, (bool, np.bool_)):
+        return bool(driver_default)
+    if isinstance(driver_default, str) and driver_default in ("auto", "on", "off"):
+        return driver_default != "off"
+    raise ValueError(f"driver_default must be 'auto', 'on', 'off' or a bool, got {driver_default!r}")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -106,7 +118,7 @@ class EnsembleMember:
 class EnsemblePlan:
     """Who is in the ensemble. ``members`` are ordered dominant first (lowest walk energy).
 
-    ``mode`` is the resolved ``mixed_valence`` (``"auto"`` or ``"on"``). ``needs`` lists totals outside the
+    ``needs`` lists totals outside the
     solved range that must be solved before membership is decided (an admitted edge member's outer neighbour);
     while it is non-empty the plan is provisional. ``refused_reason`` is set when the ensemble cannot be formed
     (``members`` is then the winner alone, or, when a member's own thermal solve fails after lower members were
@@ -115,7 +127,6 @@ class EnsemblePlan:
     electrons.
     """
 
-    mode: str
     members: tuple
     e_min: float
     cut: float
@@ -129,7 +140,6 @@ class EnsemblePlan:
 def plan_ensemble(
     solved,
     tau: float,
-    mode: str,
     *,
     attainable: Callable[[int], bool] = lambda total: True,
     max_error: float | None = None,
@@ -150,8 +160,6 @@ def plan_ensemble(
         ``SectorSearch.solved`` (replicated).
     tau : float
         Temperature scale.
-    mode : {"auto", "on"}
-        Only recorded: the caller decides what a refusal means (warn for auto, raise for on).
     attainable : callable
         ``attainable(total)`` is False for a total the model cannot reach (bounds, frozen groups).
     max_error : float, optional
@@ -172,7 +180,7 @@ def plan_ensemble(
             needs.append(edge)
     solved_totals = tuple(sorted(totals))
     if needs:
-        return EnsemblePlan(mode, _members(admitted, tau), e_min, cut, needs=tuple(needs), solved_totals=solved_totals)
+        return EnsemblePlan(_members(admitted, tau), e_min, cut, needs=tuple(needs), solved_totals=solved_totals)
     members = _members(admitted, tau)
     error = sum(m.error_bar for m in members)
     reason = None
@@ -194,7 +202,6 @@ def plan_ensemble(
         )
     if reason is not None:
         return EnsemblePlan(
-            mode,
             members[:1],
             e_min,
             cut,
@@ -203,7 +210,7 @@ def plan_ensemble(
             refused_by_cap=by_cap,
             solved_totals=solved_totals,
         )
-    return EnsemblePlan(mode, members, e_min, cut, error_bar=error, solved_totals=solved_totals)
+    return EnsemblePlan(members, e_min, cut, error_bar=error, solved_totals=solved_totals)
 
 
 def _members(admitted, tau) -> tuple:

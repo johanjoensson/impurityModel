@@ -27,23 +27,24 @@ def _model():
 
 
 @pytest.mark.parametrize(
-    "value, default, mode, noted",
+    "value, default, on, noted",
     [
-        (None, "auto", "auto", False),
-        (None, "off", "off", False),
-        ("auto", "off", "auto", False),
-        (True, "off", "on", False),
-        ("on", "off", "on", False),
-        (False, "auto", "off", False),
-        (0, "auto", "off", False),
-        (2, "off", "auto", True),  # legacy: auto, not on (review X7)
-        ({0: 0}, "auto", "off", False),
-        ({0: 1}, "off", "auto", True),
+        (None, "auto", True, False),
+        (None, "off", False, False),
+        ("auto", "off", True, False),  # archives and the mv token carry 'auto': accepted, means on
+        (True, "off", True, False),
+        ("on", "off", True, False),
+        (False, "auto", False, False),
+        (0, "auto", False, False),
+        (2, "off", True, True),  # legacy: a non-zero integer means on, with a note
+        ({0: 0}, "auto", False, False),
+        ({0: 1}, "off", True, True),
     ],
 )
-def test_the_resolver_mapping_table(value, default, mode, noted):
+def test_the_resolver_mapping_table(value, default, on, noted):
     got, note = resolve_mixed_valence(value, driver_default=default)
-    assert got == mode and (note is not None) == noted
+    assert got is on and (note is not None) == noted
+    assert resolve_mixed_valence(value, default=default != "off")[0] is on
 
 
 @pytest.mark.parametrize("bad", [-1, "maybe", 1.5, {0: "auto"}, [1]])

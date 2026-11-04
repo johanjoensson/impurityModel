@@ -268,4 +268,4 @@ def test_mixed_valence_reads_a_legacy_integer_as_auto(written, expected):
     key = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "mixed_valence")
     got = _coerce("many_body_basis.mixed_valence", key, written, {"energy": "eV"}, ".")
     assert got == expected
-    assert resolve_mixed_valence(got, driver_default="off")[0] == expected
+    assert resolve_mixed_valence(got, driver_default="off")[0] is (expected != "off")

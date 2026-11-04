@@ -2080,9 +2080,9 @@ class _OccupationContext:
     #: Recorded on the context rather than returned, because the public
     #: :func:`occupation_and_energy_at_mu` has a documented ``(n, E0, sector)`` return and this is
     #: not part of the answer -- it qualifies it.
-    #: The resolved ``mixed_valence`` (``auto``/``on``/``off``): off measures the winning charge sector alone,
-    #: auto/on the grand-canonical ensemble of the sectors inside the thermal window.
-    mixed_valence: str = "off"
+    #: The resolved ``mixed_valence``: off measures the winning charge sector alone, on the grand-canonical
+    #: ensemble of the sectors inside the thermal window.
+    mixed_valence: bool = False
     #: ``mu -> (intra, inter)``: the variance of the impurity occupation inside the members and between them.
     ensemble_variance_at: dict | None = None
     #: ``mu -> reason``: trial points whose ensemble was refused (replicated). Such a point carries the winning
@@ -2262,7 +2262,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     from impurityModel.ed.groundstate import solve_ground_state
 
     h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.shift_solver, dtype=complex))
-    if ctx.mixed_valence != "off":
+    if ctx.mixed_valence:
         return _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose)
 
     # Determine the ground state the SAME way calc_selfenergy will -- literally the same
@@ -2323,7 +2323,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
 
 
 def _member_flip_collapse(ctx, bracket):
-    """Whether a collapsed bracket of the ``auto`` occupation search lies between two formed ensembles.
+    """Whether a collapsed bracket of the sector-first occupation search lies between two formed ensembles.
 
     Then the step is a re-ranking of the members, not a charge-sector step: both endpoints carry the
     grand-canonical average over at least two members, so ``n(mu)`` is continuous between them and a
@@ -2331,7 +2331,7 @@ def _member_flip_collapse(ctx, bracket):
     winning sector alone, so its step is a real one, and a retry would only repeat the miss at a finer
     resolution.
     """
-    if ctx.mixed_valence != "auto" or bracket is None or not ctx.members_at:
+    if not ctx.mixed_valence or bracket is None or not ctx.members_at:
         return False
     # The search reports the bracket's raw endpoints; the observable ran at their snapped shifts, the nearest
     # evaluated points.
@@ -2340,7 +2340,7 @@ def _member_flip_collapse(ctx, bracket):
 
 
 def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
-    """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` auto/on.
+    """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` on.
 
     Every charge sector inside the thermal window is a member; ``n`` is the grand-canonical average
     ``sum_s c_s n_s`` with ``c_s`` from :func:`~impurityModel.ed.sector_ensemble.sector_weights`, ``E0`` the lowest
@@ -2371,9 +2371,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             ctx.bath_states,
             ctx.N0,
             # A trial point whose ensemble is refused is a flagged point (a re-ranked one is only printed),
-            # not a failed search: 'on' would raise inside one bracket step and abort the whole DC. The refusal
-            # reason is replicated, so every rank flags the point alike.
-            mode="auto",
+            # not a failed search. The refusal reason is replicated, so every rank flags the point alike.
             consume=consume,
             slaterWeightMin=ctx.slaterWeightMin,
             comm=MPI.COMM_WORLD,
@@ -2590,7 +2588,7 @@ def fixed_occupation_dc(
 
         # The same bracket-collapse resolution _solve_dc_shift uses below (width_tol); computed once
         # so the trace's chi report filters against the identical value, not a second copy of it.
-        continuous = ctx.mixed_valence == "on"
+        continuous = False  # sector-first; the continuous search is the fallback below
         # Continuous mode: n(mu) is smooth over ~tau, so a bracket as wide as tau would read a steep but
         # continuous step as a discontinuity. Resolve mu to the accuracy that pins n to occ_tol.
         continuous_width_tol = max(bracket_width_tol(ctx.tau) * occ_tol, 1e-6)
@@ -2610,17 +2608,12 @@ def fixed_occupation_dc(
                 "The target may be unreachable with the available bath states."
             )
         unreachable += (
-            " The occupation is still stepping with mixed_valence = 'on': the bath lacks states near E_F to mix "
-            "charge sectors, so no shift attains the target."
-            if ctx.mixed_valence == "on"
-            else (
-                # auto already forms the ensemble where the sectors are thermally mixed: "use on" would be no advice
-                " mixed_valence = 'auto' already averages over the charge sectors it could weight; where it refused "
-                "the ensemble (see the refusal note) the occupation steps with the winning sector."
-                if ctx.mixed_valence == "auto"
-                else " mixed_valence = 'on' measures the thermal ensemble over charge sectors, where the occupation "
-                "can vary continuously with the shift."
-            )
+            # on already forms the ensemble where the sectors are thermally mixed: "use on" would be no advice
+            " mixed_valence already averages over the charge sectors it could weight; where it refused "
+            "the ensemble (see the refusal note) the occupation steps with the winning sector."
+            if ctx.mixed_valence
+            else " mixed_valence = true measures the thermal ensemble over charge sectors, where the occupation "
+            "can vary continuously with the shift."
         )
         # Held by the record so the emit in its `finally` can read the search's own verdict even on
         # the path where the raise skips past every line that would have projected it.
@@ -2682,7 +2675,7 @@ def fixed_occupation_dc(
                     # Sector-first, and the nominal occupation is what "prefer the user's nominal" means:
                     # the criterion is solved inside the mu-interval where the walk lands on that charge
                     # state, so a root at another sector cannot win by sitting nearer mu = 0.
-                    # Continuous mode (mixed_valence = on): n(mu) is the grand-canonical average, smooth across a
+                    # Continuous fallback (mixed_valence on): n(mu) is the grand-canonical average, smooth across a
                     # sector change, so there is no sector boundary to solve inside -- a plain bracketed root.
                     sector_of=None if continuous else sector_at.get,
                     nominal_sector=None if continuous else sum(ctx.N0.values()),

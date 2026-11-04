@@ -587,9 +587,9 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
     real = groundstate.plan_ensemble
     refuse = {"on": False}
 
-    def planned(solved, tau, mode, **kw):
+    def planned(solved, tau, **kw):
         # a negative limit refuses every plan that still has more than one member
-        return real(solved, tau, mode, **({**kw, "max_error": -1.0} if refuse["on"] else kw))
+        return real(solved, tau, **({**kw, "max_error": -1.0} if refuse["on"] else kw))
 
     monkeypatch.setattr(groundstate, "plan_ensemble", planned)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
@@ -651,10 +651,10 @@ def test_the_ensemble_occupation_is_monotone_in_mu_across_the_sector_crossing_on
 def test_a_one_member_ensemble_measures_exactly_what_the_single_sector_observable_does():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-3, dc_scale=0.5)
     got = {}
-    for mode in ("off", "auto", "on"):
+    for mode in (False, True):
         basis = dataclasses.replace(kwargs["basis"], mixed_valence=mode)
         got[mode] = occupation_and_energy_at_mu(kwargs["model"], basis, kwargs["solver"], 0.0)
-    assert got["auto"] == got["off"] and got["on"] == got["off"], got
+    assert got[True] == got[False], got
 
 
 def test_fixed_occupation_dc_increases_occupation():
@@ -2940,7 +2940,7 @@ def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
     monkeypatch.setattr(
         groundstate,
         "plan_ensemble",
-        lambda solved, tau, mode, **kw: real(solved, tau, mode, **{**kw, "max_error": -1.0}),
+        lambda solved, tau, **kw: real(solved, tau, **{**kw, "max_error": -1.0}),
     )
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     capsys.readouterr()
@@ -2971,7 +2971,7 @@ def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_
     monkeypatch.setattr(
         groundstate,
         "plan_ensemble",
-        lambda solved, tau, mode, **kw: real(solved, tau, mode, **{**kw, "max_error": -1.0}),
+        lambda solved, tau, **kw: real(solved, tau, **{**kw, "max_error": -1.0}),
     )
     record = {}
     # the occupation steps with the winning sector where the ensemble is refused, so 1.6 is unreachable -- but
@@ -2985,11 +2985,10 @@ def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_
     assert record.get("ensemble_refused_points", 0) >= 1, record
 
 
-@pytest.mark.parametrize("mode", ["off", "auto", "on"])
-def test_the_occupation_search_is_sector_first_except_in_continuous_mode(mode, monkeypatch):
-    """``on`` makes n(mu) a smooth grand-canonical average: the search is a plain bracketed root (no ``sector_of``,
-    no nominal sector) and resolves mu finer than the single-sector bracket. Restoring the sector-first call or the
-    old bracket width under ``on`` fails this; ``off``/``auto`` must keep both."""
+@pytest.mark.parametrize("mixed_valence", [False, True])
+def test_the_occupation_search_is_sector_first_with_the_single_sector_bracket(mixed_valence, monkeypatch):
+    """Both settings start sector-first (``sector_of``, a nominal sector) at the single-sector bracket width; the
+    continuous search is only the fallback after a member-flip collapse (``continuous_fallback``)."""
     seen = {}
     real = dc_criteria._solve_dc_shift
 
@@ -2999,15 +2998,10 @@ def test_the_occupation_search_is_sector_first_except_in_continuous_mode(mode, m
 
     monkeypatch.setattr(dc_criteria, "_solve_dc_shift", spy)
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
-    basis = dataclasses.replace(kwargs["basis"], mixed_valence=mode)
+    basis = dataclasses.replace(kwargs["basis"], mixed_valence=mixed_valence)
     fixed_occupation_dc(occupation=1.0, **{**kwargs, "basis": basis})
-    single = dc_criteria.bracket_width_tol(basis.tau)
-    if mode == "on":
-        assert seen["sector_of"] is None and seen["nominal_sector"] is None
-        assert seen["width_tol"] < single
-    else:
-        assert callable(seen["sector_of"]) and seen["nominal_sector"] is not None
-        assert seen["width_tol"] == single
+    assert callable(seen["sector_of"]) and seen["nominal_sector"] is not None
+    assert seen["width_tol"] == dc_criteria.bracket_width_tol(basis.tau)
 
 
 def test_auto_reaches_a_target_inside_a_member_flip_by_searching_continuously():
@@ -3025,11 +3019,11 @@ def test_auto_reaches_a_target_inside_a_member_flip_by_searching_continuously():
 def test_a_collapse_is_a_member_flip_only_between_two_formed_ensembles():
     from types import SimpleNamespace
 
-    ctx = SimpleNamespace(mixed_valence="auto", members_at={-1.0: 2, -0.9: 2, 0.5: 1}, refused_at={})
+    ctx = SimpleNamespace(mixed_valence=True, members_at={-1.0: 2, -0.9: 2, 0.5: 1}, refused_at={})
     assert dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))
     assert not dc_criteria._member_flip_collapse(ctx, (-0.9, 0.5))  # a one-member endpoint: a real step
     assert not dc_criteria._member_flip_collapse(ctx, None)
     ctx.refused_at = {-0.9: "cap"}
     assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # a refused endpoint carries the winner alone
-    ctx.refused_at, ctx.mixed_valence = {}, "on"
-    assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # 'on' is continuous from the start
+    ctx.refused_at, ctx.mixed_valence = {}, False
+    assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # off never forms an ensemble

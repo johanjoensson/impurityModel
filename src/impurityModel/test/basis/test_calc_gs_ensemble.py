@@ -118,8 +118,8 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
     real = groundstate.plan_ensemble
     plans = []
 
-    def refusing(solved, tau, mode, **kw):
-        plan = real(solved, tau, mode, **{**kw, "max_error": -1.0})
+    def refusing(solved, tau, **kw):
+        plan = real(solved, tau, **{**kw, "max_error": -1.0})
         plans.append(plan)
         return plan
 
@@ -135,10 +135,9 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
-@pytest.mark.parametrize("mode", ["auto", "on"])
-def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, mode, tmp_path, capsys):
+def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path, capsys):
     """H-MV11: at a cap of 10 the walk admits N = 1 and 2 unflagged, but both thermal solves are cap-bound."""
-    h_op, setup, bs, rot, _, _ = _setup(3, comm, mode)
+    h_op, setup, bs, rot, _, _ = _setup(3, comm, True)
     setup["truncation_threshold"] = 10
     hooks = []
 
@@ -148,10 +147,6 @@ def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, mode, tmp
     run = lambda: calc_gs(  # noqa: E731
         h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
     )
-    if mode == "on":
-        with pytest.raises(ValueError, match="thermal solve is bound by the determinant cap"):
-            run()
-        return
     *_, info = run()
     ens = info["ensemble"]
     assert "thermal solve is bound by the determinant cap" in ens["refused_reason"]
@@ -241,8 +236,8 @@ def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(com
 
     real = groundstate.plan_ensemble
 
-    def reversed_plan(solved, tau, mode, **kw):
-        plan = real(solved, tau, mode, **kw)
+    def reversed_plan(solved, tau, **kw):
+        plan = real(solved, tau, **kw)
         return plan if plan.needs else dataclasses.replace(plan, members=plan.members[::-1])
 
     monkeypatch.setattr(groundstate, "plan_ensemble", reversed_plan)

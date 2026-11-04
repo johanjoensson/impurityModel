@@ -17,7 +17,7 @@ def _rec(total, energy, residual=0.0, certified=True, cap_bound=False):
 def test_a_sector_inside_the_window_is_admitted_and_one_outside_is_not():
     cut = energy_cut(TAU)
     solved = [_rec(8, 0.0), _rec(9, 0.5 * cut), _rec(7, 2.0 * cut), _rec(10, 3 * cut), _rec(6, 3 * cut)]
-    plan = plan_ensemble(solved, TAU, "on", max_error=1.0)
+    plan = plan_ensemble(solved, TAU, max_error=1.0)
     assert [m.total for m in plan.members] == [8, 9]
     assert plan.needs == () and plan.refused_reason is None
 
@@ -25,22 +25,22 @@ def test_a_sector_inside_the_window_is_admitted_and_one_outside_is_not():
 def test_the_residual_is_optimistic_for_admission():
     cut = energy_cut(TAU)
     far = _rec(9, 1.5 * cut, residual=1.0 * cut)
-    plan = plan_ensemble([_rec(8, 0.0), far, _rec(7, 5 * cut), _rec(10, 5 * cut)], TAU, "on", max_error=1e9)
+    plan = plan_ensemble([_rec(8, 0.0), far, _rec(7, 5 * cut), _rec(10, 5 * cut)], TAU, max_error=1e9)
     assert [m.total for m in plan.members] == [8, 9]
 
 
 def test_an_admitted_edge_asks_for_its_outer_neighbour_and_respects_attainability():
     cut = energy_cut(TAU)
     solved = [_rec(8, 0.0), _rec(9, 0.5 * cut), _rec(7, 0.6 * cut)]
-    plan = plan_ensemble(solved, TAU, "on")
+    plan = plan_ensemble(solved, TAU)
     assert sorted(plan.needs) == [6, 10]
-    plan = plan_ensemble(solved, TAU, "on", attainable=lambda t: t <= 9)
+    plan = plan_ensemble(solved, TAU, attainable=lambda t: t <= 9)
     assert plan.needs == (6,)
 
 
 def test_the_winner_alone_needs_nothing_when_its_neighbours_are_solved():
     cut = energy_cut(TAU)
-    plan = plan_ensemble([_rec(8, 0.0), _rec(7, 4 * cut), _rec(9, 4 * cut)], TAU, "auto")
+    plan = plan_ensemble([_rec(8, 0.0), _rec(7, 4 * cut), _rec(9, 4 * cut)], TAU)
     assert [m.total for m in plan.members] == [8] and plan.needs == () and plan.refused_reason is None
 
 
@@ -51,7 +51,7 @@ def test_the_winner_alone_needs_nothing_when_its_neighbours_are_solved():
 def test_a_capped_or_uncertified_member_refuses_the_ensemble(bad, word):
     cut = energy_cut(TAU)
     solved = [_rec(8, 0.0), _rec(9, 0.4 * cut, **bad), _rec(7, 6 * cut), _rec(10, 6 * cut)]
-    plan = plan_ensemble(solved, TAU, "auto")
+    plan = plan_ensemble(solved, TAU)
     assert plan.refused_reason and word in plan.refused_reason
     assert [m.total for m in plan.members] == [8]  # the winner alone
     # only a cap-bound member is the cap's doing: the DC cap ladder must not react to an uncertified one (review MV2)
@@ -63,7 +63,7 @@ def test_the_error_bar_refuses_above_the_limit_and_scales_with_the_residual():
 
     def plan(residual):
         solved = [_rec(8, 0.0, residual), _rec(9, 0.0, residual), _rec(7, 6 * cut), _rec(10, 6 * cut)]
-        return plan_ensemble(solved, TAU, "auto")
+        return plan_ensemble(solved, TAU)
 
     small, large = plan(1e-6), plan(1e-3)
     assert small.refused_reason is None and small.error_bar < 0.05
@@ -103,7 +103,7 @@ def test_the_weights_reproduce_the_grand_canonical_average_on_an_exact_spectrum(
 
 def test_a_capped_winner_alone_is_a_one_member_ensemble_not_a_refusal():
     cut = energy_cut(TAU)
-    plan = plan_ensemble([_rec(8, 0.0, cap_bound=True, certified=False), _rec(7, 6 * cut), _rec(9, 6 * cut)], TAU, "on")
+    plan = plan_ensemble([_rec(8, 0.0, cap_bound=True, certified=False), _rec(7, 6 * cut), _rec(9, 6 * cut)], TAU)
     assert plan.refused_reason is None and [m.total for m in plan.members] == [8]
 
 
@@ -135,11 +135,11 @@ def test_the_walk_solves_the_totals_the_plan_asks_for_and_every_rank_agrees(comm
     assert sorted(r.total for r in plain.solved) == [0, 1]  # the plain walk stops at the winner's neighbours
 
     def extend(solved):
-        return plan_ensemble(solved, tau, "on", attainable=lambda t: 0 <= t <= 2, max_error=1e9).needs
+        return plan_ensemble(solved, tau, attainable=lambda t: 0 <= t <= 2, max_error=1e9).needs
 
     wide = groundstate.find_ground_state_sector(_toy(), IMPURITY, BATHS, {0: 0}, extend_sectors=extend, **kw)
     assert sorted(r.total for r in wide.solved) == [0, 1, 2]
-    plan = plan_ensemble(wide.solved, tau, "on", attainable=lambda t: 0 <= t <= 2, max_error=1e9)
+    plan = plan_ensemble(wide.solved, tau, attainable=lambda t: 0 <= t <= 2, max_error=1e9)
     assert plan.needs == () and [m.total for m in plan.members] == [0, 1, 2]
     totals = (comm or MPI.COMM_SELF).allgather([m.total for m in plan.members])
     assert all(t == totals[0] for t in totals)
@@ -174,7 +174,7 @@ def test_the_ensemble_weights_are_the_exact_grand_canonical_sector_weights_and_e
         return member.total
 
     plan, results, realised = groundstate.solve_ground_state_ensemble(
-        h_op, imp, bath, N0, mode="on", consume=consume, **kw
+        h_op, imp, bath, N0, consume=consume, **kw
     )
     assert results == [m.total for m in plan.members] == [m for m, _ in kept]
     assert sorted(results) == expected
@@ -216,14 +216,14 @@ def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one
         lambda *a, **k: SimpleNamespace(occupation=walked, solved=[]),
     )
 
-    def spy(solved, tau, mode, attainable):
+    def spy(solved, tau, attainable):
         seen["top"], seen["bottom"] = attainable(16), attainable(5)
         raise Stop
 
     monkeypatch.setattr(groundstate, "plan_ensemble", spy)
     with pytest.raises(Stop):
         groundstate.solve_ground_state_ensemble(
-            None, imp, ({}, {}), nominal, mode="on", consume=None, tau=0.1, slaterWeightMin=0,
+            None, imp, ({}, {}), nominal, consume=None, tau=0.1, slaterWeightMin=0,
             frozen_occupations=SeedWindow({0}),
         )  # fmt: skip
     assert seen == {"top": False, "bottom": True}
@@ -244,5 +244,5 @@ def test_a_sector_exactly_on_the_energy_cut_is_not_admitted():
     """The window is open at the cut (``E_s - residual - E_min < cut``); the C2 injection ``<`` -> ``<=`` escaped."""
     cut = float(energy_cut(TAU))
     solved = [_rec(8, 0.0), _rec(9, cut), _rec(7, 5 * cut), _rec(10, 5 * cut)]
-    plan = plan_ensemble(solved, TAU, "on", max_error=1e9)
+    plan = plan_ensemble(solved, TAU, max_error=1e9)
     assert [m.total for m in plan.members] == [8]
