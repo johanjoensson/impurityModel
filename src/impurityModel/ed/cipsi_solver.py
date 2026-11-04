@@ -547,11 +547,21 @@ class CIPSISolver:
         else:
             keys, norms2 = blk.row_max_norms2()
         if self.orbits is not None:
-            kept = self.orbits.retain(self.basis, keys, norms2, int(target))
-            keep_mask = np.fromiter((k in kept for k in keys), dtype=bool, count=len(keys))
+            # The orbits are cut over the whole BASIS, not over the block's support: ``build_state`` drops
+            # a row whose every amplitude is <= slaterWeightMin, so a member of a kept orbit can sit in the
+            # basis with no row in ``blk`` -- and retaining only the supported members broke the orbit
+            # (measured: 118 missing members at the default slaterWeightMin on the capped cubic d-shell,
+            # 0 at slaterWeightMin=0). Unsupported members carry importance 0, so they never change which
+            # orbits are ranked in, only that a kept orbit is kept whole.
+            on_block = set(keys)
+            extra = [k for k in self.basis.local_basis if k not in on_block]
+            all_keys = list(keys) + extra
+            importance = np.concatenate([np.asarray(norms2, dtype=float), np.zeros(len(extra))])
+            retained = self.orbits.retain(self.basis, all_keys, importance, int(target))
+            keep_mask = np.fromiter((k in retained for k in keys), dtype=bool, count=len(keys))
         else:
             keep_mask = self._top_k_mask(norms2, keys, int(target))
-        retained = set(itertools.compress(keys, keep_mask))
+            retained = set(itertools.compress(keys, keep_mask))
         kept_weight = self._allreduce_sum(float(norms2[keep_mask].sum()))
         total_weight = self._allreduce_sum(float(norms2.sum()))
         self.last_truncation = {
