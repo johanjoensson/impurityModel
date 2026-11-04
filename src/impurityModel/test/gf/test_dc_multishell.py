@@ -338,3 +338,9 @@ def test_dc_trial_sectors_keep_the_bath_less_window_at_its_nominal_filling(dc_d)
         assert sum(trial.values()) == n
         assert sum(trial[g] for g in window) == nominal, (n, trial)
     assert ctx.trial_occupation(nominal - 1) is None  # below the pinned window: no such sector
+    # Where the walk at mu held the window elsewhere (Hartree-Fock's filling), the trial sectors at mu follow it.
+    ctx.window_filling_at[0.25] = {g: (5 if k == 0 else ctx.N0[g]) for k, g in enumerate(window)}
+    held = sum(ctx.window_filling_at[0.25].values())
+    trial = ctx.trial_occupation(n_tot, 0.25)
+    assert sum(trial[g] for g in window) == held and sum(trial.values()) == n_tot
+    assert sum(ctx.trial_occupation(n_tot, 0.5)[g] for g in window) == nominal  # no walk at 0.5: the nominal

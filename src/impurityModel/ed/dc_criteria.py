@@ -573,8 +573,13 @@ class _SectorContext:
     #: A bath-less shell's seed window (:attr:`solver_basis.SolverBasis.seed_window`), ``None`` on a single shell.
     #: Passed as ``frozen_occupations`` to every solve, so the deep shell is seeded as a window, never spanned.
     seed_window: object = None
+    #: ``mu -> {window group: filling}``: where the walk at ``mu`` holds the window (Hartree-Fock's filling, which
+    #: need not be the nominal one). Read by :meth:`trial_occupation`; replicated, like the walk's trials.
+    window_filling_at: dict | None = None
 
     def __post_init__(self):
+        if self.window_filling_at is None:
+            self.window_filling_at = {}
         if self.de2_min is None:
             self.de2_min = _resolve_dc_de2_min()
         if self.e_pt2_tol is None:
@@ -689,7 +694,7 @@ class _SectorContext:
             return None
         if (mu, n_trial) in self.sector_at:
             return self.sector_at[(mu, n_trial)]
-        occ_trial = self.trial_occupation(n_trial)
+        occ_trial = self.trial_occupation(n_trial, mu)
         if occ_trial is None:
             self.sector_at[(mu, n_trial)] = None
             return None
@@ -762,16 +767,18 @@ class _SectorContext:
         self.sector_at[(mu, n_trial)] = solution
         return solution
 
-    def trial_occupation(self, n_trial):
+    def trial_occupation(self, n_trial, mu=None):
         """The per-group occupation of the walk's sector ``n_trial`` (energetic filling over every impurity
         orbital), or ``None`` if it has none. Nothing is frozen on the DC path (review J1), so the split is a
         basis-generation parameter only: the sector is its total. A bath-less shell beside a correlated one is
         held out of the walk and seeded as a window (:attr:`seed_window`), not frozen.
 
-        The window's groups keep their nominal filling and only the other groups share the rest of ``n_trial``,
-        as on the self-energy path. Filling every orbital energetically put a deep shell's electrons wherever
-        the unshifted levels said: a d-shell double counting of 65 left the p window empty, so the DC solved
-        sectors the self-energy never seeds (review H-MS4). ``None`` when the rest does not fit the other groups.
+        The window's groups keep the filling the walk at ``mu`` holds them at (:attr:`window_filling_at`, the
+        Hartree-Fock seed's; the nominal one before any walk ran at ``mu``), and only the other groups share the
+        rest of ``n_trial``, as on the self-energy path. Filling every orbital energetically put a deep shell's
+        electrons wherever the unshifted levels said: a d-shell double counting of 65 left the p window empty, so
+        the DC solved sectors the self-energy never seeds (review H-MS4). ``None`` when the rest does not fit the
+        other groups.
         """
         n_trial = int(n_trial)
         if not 0 <= n_trial <= sum(len(block) for blocks in self.impurity_orbitals.values() for block in blocks):
@@ -779,7 +786,7 @@ class _SectorContext:
         window = set(self.seed_window or ())
         if not window:
             return _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
-        pinned = {g: int(self.N0[g]) for g in window}
+        pinned = self.window_filling_at.get(mu) or {g: int(self.N0[g]) for g in window}
         free = {g: blocks for g, blocks in self.impurity_orbitals.items() if g not in window}
         rest = n_trial - sum(pinned.values())
         if not 0 <= rest <= sum(len(block) for blocks in free.values() for block in blocks):
@@ -793,6 +800,9 @@ class _SectorContext:
         only the ``cap_bound`` flag), the residual and the verdict are the cached solve's own."""
         from impurityModel.ed.groundstate import SectorEnergy
 
+        if self.seed_window:
+            # The walk holds the window where Hartree-Fock put it (review of H-MS4); the sector is solved there.
+            self.window_filling_at[mu] = {g: int(trial[g]) for g in self.seed_window}
         solution = self.sector_solve(h_op, mu, sum(trial.values()))
         if solution is None:
             return SectorEnergy(np.inf, None)
