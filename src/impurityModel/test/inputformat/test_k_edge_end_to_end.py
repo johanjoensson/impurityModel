@@ -343,3 +343,17 @@ def test_the_spectra_ensemble_is_the_weighted_sum_of_the_members(small_p_shell_h
         expected = sum(ci * p[key].astype(complex) for ci, p in zip(c, parts))
         np.testing.assert_allclose(got[key], expected, atol=1e-5 if key.startswith("RIXS") else 1e-12, err_msg=key)
         assert not np.allclose(parts[0][key], parts[1][key]), f"{key}: the members must differ for this to bite"
+
+
+def test_a_failing_ensemble_merge_raises_on_every_rank_and_writes_no_spectra(
+    small_p_shell_h0, write, tmp_path, monkeypatch
+):
+    """The merge runs on rank 0 only; its failure must reach every rank (not leave them in the closing Barrier)."""
+    from impurityModel.ed import spectra
+
+    def boom(parts, weights):
+        raise RuntimeError("injected merge failure")
+
+    monkeypatch.setattr(spectra, "merge_spectra_datasets", boom)
+    with pytest.raises(Exception, match="injected merge failure"):
+        _k_edge_spectra(small_p_shell_h0, write, tmp_path, "boom", mixed_valence="on", tau=0.5)
