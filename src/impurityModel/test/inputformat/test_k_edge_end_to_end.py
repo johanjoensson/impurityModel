@@ -298,7 +298,7 @@ def _k_edge_spectra(small_p_shell_h0, write, tmp_path, name, **basis_changes):
         return None
     with h5py.File(output, "r") as f:
         return {k: np.asarray(f[k]) for k in ("PS/spectra", "XPS/spectra", "XAS/tensor", "RIXS/tensor", "E")} | {
-            k: np.asarray(f[k]) for k in ("ensemble/weights",) if k in f
+            k: np.asarray(f[k]) for k in ("ensemble/weights", "ensemble/e0", "ensemble/total") if k in f
         }
 
 
@@ -338,6 +338,9 @@ def test_the_spectra_ensemble_is_the_weighted_sum_of_the_members(small_p_shell_h
     parts, c = seen["parts"], np.asarray(seen["weights"])
     assert len(parts) >= 2
     np.testing.assert_allclose(got["ensemble/weights"], c)
+    # each member is labelled by its electron count and carries its energy, so the file says what the weights mean
+    assert got["ensemble/total"].shape == c.shape and len(set(got["ensemble/total"].tolist())) == len(c)
+    assert got["ensemble/e0"].shape == c.shape
     assert c.sum() == pytest.approx(1.0)
     for key in ("PS/spectra", "XPS/spectra", "XAS/tensor", "RIXS/tensor"):
         expected = sum(ci * p[key].astype(complex) for ci, p in zip(c, parts))

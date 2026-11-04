@@ -502,6 +502,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
                 if len(weights) > 1:  # one member: the file is the one-sector file, bit for bit
                     datasets["ensemble/weights"] = np.asarray(weights)
                     datasets["ensemble/e0"] = np.asarray([m["e0"] for m in ensemble["members"]])
+                    datasets["ensemble/total"] = np.asarray([m["total"] for m in ensemble["members"]])
             except Exception as exc:
                 failure = f"merging the sector-ensemble spectra failed: {exc!r}"
 

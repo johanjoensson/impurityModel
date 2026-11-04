@@ -246,7 +246,7 @@ How each driver merges the members: linear quantities (G, chi(w), spectra, RIXS 
 computed per member, normalised, and summed with the sector weights on rank 0; nonlinear ones
 (Curie = `<M^2> - |<M>|^2`) are formed after the sum. Blocked transitions (a member whose
 valence shell is full or empty) contribute zero spectral weight, not an error. With more than
-one member `spectra.h5` also carries `ensemble/weights` and `ensemble/e0`. The weights depend
+one member `spectra.h5` also carries `ensemble/weights`, `ensemble/e0` and `ensemble/total` (the member electron counts). The weights depend
 on the energy zero of the h0 file: shifting every one-body energy by D moves a sector's energy by
 N_s*D, so the zero acts as a chemical potential. For spectra inputs that are not Fermi-referenced
 the weights are therefore arbitrary; use `on` only with a Fermi-referenced h0.
