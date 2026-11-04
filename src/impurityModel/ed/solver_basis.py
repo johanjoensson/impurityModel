@@ -133,6 +133,10 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None, impurity_shell
     return alloc
 
 
+#: Elements at or below this are roundoff, not a coupling worth naming in the shell refusal.
+_ROUNDOFF = 1e-12
+
+
 def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices, h_input_matrix, input_shell_of):
     """Name what couples two shells inside one orbital group: a direct impurity element, a shared bath, or both.
 
@@ -144,17 +148,23 @@ def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices, h_inpu
     h = np.asarray(h_matrix)
     h_in = np.asarray(h_input_matrix)
     imp = sorted(impurity_indices)
+    shells = {shell_of[o] for o in group_orbitals}  # the group's shells; the rotation keeps every orbital in one
     direct = max(
-        ((abs(h_in[a, b]), a, b) for a in imp for b in imp if a < b and input_shell_of[a] != input_shell_of[b]),
+        (
+            (abs(h_in[a, b]), a, b)
+            for a in imp
+            for b in imp
+            if a < b and input_shell_of[a] != input_shell_of[b] and {input_shell_of[a], input_shell_of[b]} <= shells
+        ),
         default=(0.0, None, None),
     )
     shared = []
     for b in sorted(set(range(h.shape[0])) - set(imp)):
-        reached = {shell_of[o]: abs(h[o, b]) for o in group_orbitals if abs(h[o, b]) > 0}
+        reached = {shell_of[o]: abs(h[o, b]) for o in group_orbitals if abs(h[o, b]) > _ROUNDOFF}
         if len(reached) > 1:
             shared.append((min(reached.values()), b))
     parts = []
-    if direct[0] > 0:
+    if direct[0] > _ROUNDOFF:
         a, b = direct[1], direct[2]
         parts.append(
             f"the input-basis impurity element h[{a}, {b}] = {direct[0]:.3g} couples shells {input_shell_of[a]} and "
