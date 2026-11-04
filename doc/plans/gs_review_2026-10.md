@@ -806,3 +806,27 @@ No `off` regression beyond noise. Two new performance items for decision:
 H-MV13 (sorted union `es`) moves to the `gs_energies` contract change (H-MV4/MV6). Each fix has a test that fails on
 the old code (injected). Gate at `bf954cb4`: `-n 1` 4076 passed; `-n 2` 4187 / 4186; `-n 3` 4195 / 4194 / 4194;
 9 xfailed on every rank file; `-n 3` took 47.6 min. Logs: `debug/review_2026-11/series1/logs`.
+
+**Follow-up series 2 (2026-11-04), owner decisions:**
+
+| id | decision | fix |
+|---|---|---|
+| H-MV11 (narrowed) | refuse on a bound basis or a *current* residual above tol; a stale residual or widened manifold warns | `e8027095`; a member held by the measured-memory guard is refused but not as a cap verdict, `841e38ef` |
+| H-MV12 | `auto`: a bracket that collapses on a member flip is searched continuously, not raised | `64cd1a22`; the fallback records its own width, evaluations and failure, `dd3c06f3` |
+| H-MS6 | message only: name the direct input-basis element or the bath that joins the shells | `55746235`, `09086bf0` (group's shells only, roundoff floor) |
+| X7 | a legacy non-zero `mv` means `auto` | `5dcaccd7`; the input-file reader did the same, `cae06086` |
+| H-MV4/MV6/MV13 | the dominant member is the realised lowest; `gs_energies` is the ascending labelled union | `3cd81ba1`; orders are rank 0's (rank-local `es`), `93a6a95c` |
+| PERF-MV-a | members below weight 1e-3 get no Green's function, reported at every verbosity | `3092418e`; the global-ground member is exempt, `5a07ef8a` |
+| H-MS4 | DC trial sectors hold a bath-less window at the walk's filling | `195ebac3`, `be82a810` |
+| B10 | an uncertified ground-state sector is announced once at every verbosity | `374e5d62` |
+| PERF-MV-b | accepted, no change | — |
+| H-MV5 | deferred (modest cost) | — |
+
+An Opus review of the series diff found the follow-up items above (rank-local ordering, the cut's exemption, the reader,
+the fallback record, the memory-guard verdict, the window filling, the operator-copy comments). Still open from that
+review: when a member at index ≥ 2 is refused, a Green's function already computed for an earlier member is wasted (7b); the
+provisional neighbour note (7c) is cosmetic. Docs: user guide ensemble section `e7ac312c`.
+Gate at `09086bf0`: `-n 1` 4110 passed; `-n 2` 4222 / 4221; `-n 3` 4230 / 4229 / 4229; 9 xfailed on every rank file;
+`-n 3` took 46.9 min (the 58 min outlier again did not reproduce). The one failure on every rank file was
+`test_gs_report_merge`, still asserting the pre-H-MV13 union order; fixed in `151b9552` (test only, re-run at -n 1/3).
+Logs: `debug/review_2026-11/series2/logs`.
