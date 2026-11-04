@@ -242,3 +242,27 @@ def test_chi_hands_the_seed_window_of_a_bathless_shell_to_the_ground_state(monke
     with pytest.raises(Stop):
         susceptibility.calc_susceptibility_workflow(model, meshes, basis, solver, comm=MPI.COMM_WORLD)
     assert isinstance(seen["frozen"], SeedWindow)
+
+
+def test_the_cap_probe_seeds_a_bathless_shell_as_the_solve_does(monkeypatch):
+    """The auto cap is priced on a measured seed; it must be the window seed the solve uses, not the whole p+d space
+    (review MS2)."""
+    from impurityModel.ed import gs_connectivity
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    model, basis, _solver = _p_plus_d()
+    sb = prepare_solver_basis(
+        model.h0, model.dc, model.u4, model.impurity_orbitals, basis.nominal_occ,
+        rot_to_spherical=model.rot_to_spherical, verbosity=0, shell_ls=model.shell_ls,
+    )  # fmt: skip
+    assert sb.seed_window is not None
+    seen = []
+    real = gs_connectivity._probe
+
+    def spy(*args, **kwargs):
+        seen.append(args[5] if len(args) > 5 else kwargs.get("frozen_occupations"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gs_connectivity, "_probe", spy)
+    gs_connectivity.solver_basis_connectivity(sb, MPI.COMM_WORLD)()
+    assert MPI.COMM_WORLD.rank != 0 or seen == [sb.seed_window]

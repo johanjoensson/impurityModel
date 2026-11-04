@@ -74,19 +74,24 @@ class GsConnectivity:
         )
 
 
-def measure_gs_connectivity(h_op, impurity_orbitals, bath_states, nominal_occ, comm=None, *, target=PROBE_DETERMINANTS):
+def measure_gs_connectivity(
+    h_op, impurity_orbitals, bath_states, nominal_occ, comm=None, *, target=PROBE_DETERMINANTS, frozen_occupations=None
+):
     """Measure :class:`GsConnectivity` of ``h_op`` on the nominal-occupation sector. Collective on ``comm``.
 
     Rank 0 builds the seed the ground state starts from (``build_basis_and_solver`` at ``nominal_occ``, no
     cap), closes it breadth-first under ``h_op`` to ``target`` determinants (hash-ordered, so the set does
     not depend on dictionary order), and broadcasts the numbers. The seed's sector has a fixed impurity
-    occupation, so its energy order is the same at every chemical-potential shift.
+    occupation, so its energy order is the same at every chemical-potential shift. ``frozen_occupations`` is the
+    solve's own (a ``SeedWindow`` for a bath-less shell): the cap is priced on the seed the solve will use.
     """
-    result = on_root(comm, lambda: _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target))
+    result = on_root(
+        comm, lambda: _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target, frozen_occupations)
+    )
     return comm.bcast(result, root=0) if comm is not None and comm.size > 1 else result
 
 
-def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
+def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target, frozen_occupations=None):
     from impurityModel.ed.eigensolvers import Lowest
     from impurityModel.ed.groundstate import build_probe_seed
 
@@ -101,7 +106,7 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
         truncation_threshold=None,
         comm=None,
         verbose=False,
-        frozen_occupations=None,
+        frozen_occupations=frozen_occupations,
         weighted_restrictions=None,
         slaterWeightMin=0,
         manifold=Lowest(),
@@ -164,4 +169,6 @@ def solver_basis_connectivity(sb, comm=None):
     inputs, so this is the one place the double-counting search, the self-energy and the susceptibility
     take their cap's inputs from.
     """
-    return lambda: measure_gs_connectivity(sb.h, sb.impurity_orbitals, sb.bath_states, sb.nominal_occ, comm)
+    return lambda: measure_gs_connectivity(
+        sb.h, sb.impurity_orbitals, sb.bath_states, sb.nominal_occ, comm, frozen_occupations=sb.seed_window
+    )

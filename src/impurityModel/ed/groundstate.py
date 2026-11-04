@@ -912,7 +912,9 @@ def find_ground_state_sector(
             verbose=verbose,
             label="ground-state basis",
             log="derived",
-            connectivity=lambda: measure_gs_connectivity(h_op, impurity_orbitals, bath_states, N0, comm),
+            connectivity=lambda: measure_gs_connectivity(
+                h_op, impurity_orbitals, bath_states, N0, comm, frozen_occupations=frozen_occupations
+            ),
         )
     (
         _num_val_baths,
