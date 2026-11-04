@@ -148,21 +148,33 @@ def _member_states(m):
     return states
 
 
-def union_order(measurements):
-    """The permutation that sorts the concatenated member energies ascending (stable).
+def union_order(measurements, comm=None):
+    """The permutation that sorts the concatenated member energies ascending (stable), and those energies.
 
     Shared by :func:`merge_measurements` and by any caller that labels the union's states (``state_sector``),
-    so the labels follow the states. The energies are replicated, so the order is the same on every rank.
+    so the labels follow the states. The eigensolver's energies are rank-local, and a degenerate multiplet
+    differs in its last bits between ranks (a ``release`` build gives up bitwise identity across ranks), so
+    a rank-local sort could permute the columns differently on each rank. The energies are therefore taken
+    from rank 0 (one broadcast, unconditional on every rank of ``comm``), and so is the order.
+
+    Returns
+    -------
+    order : ndarray of int
+    es : ndarray of float
+        Rank 0's concatenated energies (unsorted).
     """
     es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
-    return np.argsort(es, kind="stable")
+    if comm is not None:
+        es = comm.bcast(es, root=0)
+    return np.argsort(es, kind="stable"), es
 
 
 def merge_measurements(measurements):
     """``(basis, es, psis)`` of the union of the members' thermal manifolds, ascending in energy.
 
     One member is returned untouched (same objects), which is what makes the single-sector report
-    bit-identical.  With several, ``es`` are concatenated unshifted and sorted (:func:`union_order`), so
+    bit-identical.  With several, ``es`` are concatenated unshifted and sorted in rank 0's order
+    (:func:`union_order`), so
     ``es[0]`` is the global ground state as for one sector (review H-MV13), and ``psis`` become one list of
     states in the same order.  The basis is the first member's that carries one; its only roles downstream
     are the orbital layout, the communicator and the hash routing, all shared by the members.
@@ -186,7 +198,7 @@ def merge_measurements(measurements):
         bad = comm.allreduce(bad, op=MPI.MAX)
     if bad:
         raise RuntimeError(f"merge_measurements: {len(states)} states for {len(es)} energies on at least one rank")
-    order = union_order(measurements)
+    order, _ = union_order(measurements, comm)
     return basis, es[order], [states[k] for k in order]
 
 

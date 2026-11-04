@@ -257,3 +257,20 @@ def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(com
     assert info["member_results"] == [m["total"] for m in ens["members"]]  # the hook results follow the members
     assert hooks == [m["total"] for m in ens["members"]][::-1]  # solved in the reversed plan's order
     assert min(es) == min(ens["es"])
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs a second rank whose energies differ in the last bits")
+def test_the_union_order_is_rank_zeros_whatever_the_local_energies():
+    """Review of H-MV13: the eigensolver's energies are rank-local; a near-degenerate pair sorted locally would
+    permute the columns differently on each rank, and every collective over them would then pair wrong states."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed.gs_report import union_order
+
+    comm = MPI.COMM_WORLD
+    tie = -1.0 + (1e-15 if comm.rank == 1 else 0.0)  # rank 1 sees the pair in the other order
+    measurements = [SimpleNamespace(es=np.array([-1.0, 0.3])), SimpleNamespace(es=np.array([tie, 0.5]))]
+    order, es = union_order(measurements, comm)
+    assert comm.allgather(order.tolist()) == [order.tolist()] * comm.size
+    assert np.array_equal(es, comm.bcast(es, root=0))

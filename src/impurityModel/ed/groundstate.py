@@ -2007,6 +2007,11 @@ def _calc_gs_ensemble(
     # The dominant member is the one whose thermal solve realised the lowest energy, not the walk's lowest
     # (review H-MV6): the members, their hook results and their energies are ordered by realised energy, so
     # members[0] holds the global ground state. Stable, and the energies are replicated: one order everywhere.
+    comm = basis_setup.get("comm")
+    if comm is not None:
+        # The realised energies are rank-local (the eigensolver's); a near tie must not order the members
+        # differently on different ranks (the ordering selects the states every rank hands on).
+        realised = comm.bcast([float(e) for e in realised], root=0)
     order = [int(k) for k in np.argsort(np.asarray(realised), kind="stable")]
     kept = [kept[k] for k in order]
     realised = [realised[k] for k in order]
@@ -2024,8 +2029,9 @@ def _calc_gs_ensemble(
         if conv["limited_by"] is None:
             bad = [k[0].total for k, ok in zip(kept, converged) if not ok]
             conv["limited_by"] = f"ensemble member N_imp = {bad[0]}"
-    union = union_order(measurements)
-    union_es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
+    union, union_es = union_order(measurements, comm)
+    if len(measurements) == 1:
+        union = np.arange(len(union_es))  # one member is handed on untouched (merge_measurements), so is its order
     labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
     info = {
         "mode": mode,
