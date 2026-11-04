@@ -1160,6 +1160,13 @@ def _dc_search_trace(label, comm, rank, width_tol=0.0, report=None):
         try:
             yield trace
         finally:
+            # A caller that reruns the search at another resolution (the auto occupation fallback) records it
+            # in the report as `width_tol`; the chi filter must use the resolution the answer came from.
             _report_dc_trace(
-                trace, label, comm, rank, width_tol=width_tol, at=None if report is None else report.get("mu")
+                trace,
+                label,
+                comm,
+                rank,
+                width_tol=width_tol if report is None else report.get("width_tol", width_tol),
+                at=None if report is None else report.get("mu"),
             )

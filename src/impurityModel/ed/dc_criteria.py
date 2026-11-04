@@ -2717,8 +2717,16 @@ def fixed_occupation_dc(
                             flush=True,
                         )
                     continuous, occ_width_tol = True, continuous_width_tol
-                    mu = search(occ_width_tol, continuous)
+                    # Recorded before the rerun, so a fallback that also fails is visible in the record; the
+                    # first search's collapsed bracket is not this answer's.
                     dc_rec["continuous_fallback"] = True
+                    search_report.pop("collapsed_bracket", None)
+                    search_report["width_tol"] = occ_width_tol
+                    first_evaluations = int(search_report.get("evaluations", 0))
+                    try:
+                        mu = search(occ_width_tol, continuous)
+                    finally:
+                        search_report["evaluations"] = first_evaluations + int(search_report.get("evaluations", 0))
             except DoubleCountingUnreachable:
                 # An unreachable target is the likeliest outcome of a refused ensemble (n(mu) then steps with the
                 # winning sector): the record must still say how many trial points were flagged.
