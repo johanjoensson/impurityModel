@@ -109,7 +109,8 @@ class EnsemblePlan:
     ``mode`` is the resolved ``mixed_valence`` (``"auto"`` or ``"on"``). ``needs`` lists totals outside the
     solved range that must be solved before membership is decided (an admitted edge member's outer neighbour);
     while it is non-empty the plan is provisional. ``refused_reason`` is set when the ensemble cannot be formed
-    (``members`` is then the winner alone); ``refused_by_cap`` says the refusal is a determinant-cap
+    (``members`` is then the winner alone, or, when a member's own thermal solve fails after lower members were
+    consumed, the members before it); ``refused_by_cap`` says the refusal is a determinant-cap
     limit, the one reason a smaller or larger cap bears on; ``error_bar`` is the total error on ``<N_imp>`` in
     electrons.
     """

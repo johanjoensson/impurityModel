@@ -1651,9 +1651,9 @@ def solve_ground_state_ensemble(
     ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is
     refused (a member is cap-bound, uncertified, or the weights are not fixed to ``ENSEMBLE_WEIGHT_ERROR_MAX``)
     the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on every rank. The same holds
-    when a member's own thermal solve, checked before ``consume`` sees it, is cap-bound or unconverged. ``plan``
-    then says so, and ``results`` and ``realised`` are cut to the winner (a member consumed before the refused
-    one is dropped from them).
+    when a member's own thermal solve, checked before ``consume`` sees it, is cap-bound or unconverged, except
+    that the ensemble is cut at that member rather than to the winner: the members before it, already consumed,
+    are kept. ``plan`` then says so, and ``results`` and ``realised`` hold the kept members.
     ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
     itself, such as the double-counting search, reports it once per search rather than per trial).
     ``warn_neighbours=False`` likewise silences the single-member neighbour-gap note.
@@ -1775,12 +1775,14 @@ def solve_ground_state_ensemble(
         bad = None if single else _thermal_member_defect(member, ground_state, comm)
         if bad is not None:
             # The walk certified the plan; the member's own thermal solve did not hold up (review H-MV11). Decided
-            # on rank 0's reports and broadcast, so every rank takes the same branch. A lone winner is still a valid
-            # one-member ensemble, so it is consumed; a later member is not.
+            # on rank 0's reports and broadcast, so every rank takes the same branch. The ensemble is cut at this
+            # member: the members before it (the lower sectors, already consumed) stay, so no consumer's work is
+            # thrown away (review 7b, owner decision); this one and those after it go. A failing winner is still a
+            # valid one-member ensemble, so it is consumed alone.
             reason, by_cap = bad
             if mode == "on":
                 raise ValueError(f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {reason}")
-            kept_members = plan.members[:1]
+            kept_members = plan.members[: max(index, 1)]
             if announce_refusal and (comm is None or comm.rank == 0):
                 held = (
                     f"the single N_imp = {kept_members[0].total} sector"
@@ -2031,7 +2033,7 @@ def _calc_gs_ensemble(
         after_release=release,
         **kwargs,
     )
-    # A member refused after its thermal solve (H-MV11) leaves the winner alone; drop anything consumed after it.
+    # A member refused after its thermal solve (H-MV11) cuts the ensemble there (7b); drop anything consumed after it.
     del kept[len(plan.members) :], hooked[len(plan.members) :]
     # The dominant member is the one whose thermal solve realised the lowest energy, not the walk's lowest
     # (review H-MV6): the members, their hook results and their energies are ordered by realised energy, so

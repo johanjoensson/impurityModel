@@ -292,6 +292,37 @@ def _failing_member(monkeypatch, total):
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
+def test_a_failing_later_member_cuts_the_ensemble_there_keeping_the_members_before_it(
+    comm, tmp_path, monkeypatch, capsys
+):
+    """7b (owner decision): at tau 0.3 model 33 forms N = 0, 1, 2. When N = 2's thermal solve fails, N = 0 and 1 were
+    already handed to the hook; they stay in the ensemble instead of being thrown away for the winner alone."""
+    h_op, setup, bs, rot, _, _ = _setup(33, comm, "auto")
+    setup["tau"] = 0.3
+    _failing_member(monkeypatch, 2)
+    hooks = []
+
+    def hook(member, *_):
+        hooks.append(member.total)
+        return member.total
+
+    *_, info = calc_gs(
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
+    )
+    ens = info["ensemble"]
+    assert "injected" in ens["refused_reason"]
+    assert sorted(m["total"] for m in ens["members"]) == [0, 1]
+    assert hooks == [0, 1] and sorted(info["member_results"]) == [0, 1]
+    assert set(ens["state_sector"]) == {0, 1}
+    assert sum(m["weight"] for m in ens["members"]) == pytest.approx(1.0)
+    if comm is None or comm.rank == 0:
+        out = capsys.readouterr().out
+        assert "keeps the N_imp = [0, 1] members solved before it" in out, out
+        assert "neighbouring sector lies" not in out  # N = 1 is kept; N = 2 is no neighbour of N = 0
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
 def test_an_ensemble_cut_to_its_winner_still_warns_about_a_near_neighbour(comm, tmp_path, monkeypatch, capsys):
     """7c: the winner was solved as an ensemble member (no neighbour note); once the cut leaves it alone, the N = 1
     neighbour at weight ~0.39 is outside the ground state, and the single-sector note says so."""
