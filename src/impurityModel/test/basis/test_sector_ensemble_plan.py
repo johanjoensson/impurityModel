@@ -238,3 +238,11 @@ def test_the_ensemble_truncation_report_is_not_the_dominant_members_when_a_light
     assert worst_truncation([capped]) is capped
     assert worst_truncation([None, capped]) is capped
     assert worst_truncation([capped, memory]) is memory
+
+
+def test_a_sector_exactly_on_the_energy_cut_is_not_admitted():
+    """The window is open at the cut (``E_s - residual - E_min < cut``); the C2 injection ``<`` -> ``<=`` escaped."""
+    cut = float(energy_cut(TAU))
+    solved = [_rec(8, 0.0), _rec(9, cut), _rec(7, 5 * cut), _rec(10, 5 * cut)]
+    plan = plan_ensemble(solved, TAU, "on", max_error=1e9)
+    assert [m.total for m in plan.members] == [8]
