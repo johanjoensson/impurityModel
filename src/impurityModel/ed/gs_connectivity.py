@@ -97,7 +97,9 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target, frozen_occ
 
     start = time.perf_counter()
     # A private copy: the probe runs on rank 0 alone, and restrictions set on the shared operator would
-    # survive on rank 0 only (review H-GS13). ``* 1.0`` copies the terms exactly and none of the restrictions.
+    # survive on rank 0 only (review H-GS13). ``* 1.0`` is an exact copy, restrictions included (the C++
+    # copy constructor carries both masks), so the probe measures under the caller's weighted restrictions as
+    # before; it is only the caller's object that is no longer touched.
     h_op = h_op * 1.0
     basis, _solver = build_probe_seed(
         h_op,

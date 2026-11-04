@@ -86,9 +86,10 @@ cdef class ManyBodyOperator:
 
     Occupation restrictions (:meth:`set_restrictions` /
     :meth:`set_weighted_restrictions`) are a property of the operator *object*, not of
-    the operator algebra: they are NOT propagated through ``+``, ``-``, ``*`` or any
-    other operation, so a result must have its restrictions set explicitly (this is
-    what e.g. ``gf_solvers`` and ``manybody_basis.Basis`` do).
+    the operator algebra. A result of ``+``, ``-`` or ``*`` (scalar or composition) is built
+    in C++ from a copy of the left operand, so it carries *that* operand's restriction masks
+    whatever the right one has. Never rely on that: set a result's restrictions explicitly
+    (this is what e.g. ``gf_solvers`` and ``manybody_basis.Basis`` do).
     """
     # Opt out of numpy's ufunc dispatch. Without this a numpy scalar on the left of a
     # mixed expression (`np.complex128(z) - hOp`, which is what a frequency taken from a
