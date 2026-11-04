@@ -862,8 +862,8 @@ class _NumpyEncoder(json.JSONEncoder):
 
 
 #: Version of the JSON layout. 2: ``schema_version`` itself, and the optional ``charge_sector_ensemble`` block
-#: (members, weights, global e0) with ``sector`` tags on ``per_state`` entries when ``mixed_valence`` formed an
-#: ensemble. A file without the key is version 1.
+#: (members, weights, global e0; the per-state sector is ``info["state_sector"]``) when ``mixed_valence`` formed
+#: an ensemble. A file without the key is version 1.
 GS_STATISTICS_SCHEMA_VERSION = 2
 
 

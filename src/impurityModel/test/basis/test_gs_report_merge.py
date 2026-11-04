@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed.gs_report import measure_ground_state, merge_measurements
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
@@ -42,10 +43,10 @@ class _Basis:
 
 
 @pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs a rank that holds none of the data (width-0 block)")
 def test_width_zero_block_on_a_rank_still_yields_len_es_states():
     """A rank whose redistributed block has width 0 (``to_states() == []``) must not return a short list:
     the merged list has len(es) entries on every rank, so the collectives after it stay in step."""
-    from mpi4py import MPI
 
     comm = MPI.COMM_WORLD
     basis = _Basis(comm)

@@ -212,7 +212,7 @@ def report_ground_state(
     ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) makes every shell-aware
     observable and the per-shell Casimirs treat a multi-shell impurity shell by shell; ``None`` is one shell.
     ``ensemble`` (the charge-sector ensemble record of ``calc_gs``) is stored in the statistics as
-    ``charge_sector_ensemble`` and tags each state of ``(es, psis)`` with the sector it came from.
+    ``charge_sector_ensemble``; its ``state_sector`` gives the sector of each state of ``(es, psis)``.
     """
     # Redistribute onto the basis as it stands; do not first collapse it onto the support of
     # `psis`. The basis is also the seed space for the excited/Green's-function expansion

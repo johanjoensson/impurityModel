@@ -593,7 +593,7 @@ one was added. The deep shell reaches the solves as `SeedWindow` (11.0b), in the
 state. `dc_static` `fll/amf/nominal` refuse a multi-shell model; `sigma_inf_dc` is the scheme. Totals (`nominal_total`,
 `max_occ_total`) stay whole-impurity on purpose: the deep shell is held out of the walk, so every sector carries the same p count.
 Measured: `fixed_occupation_dc` on p(6)+d with U=3, target 1.0, gives dc = 0 on p and 1.5 on d, sector 7; 13 evaluations, one sector
-seed above `GS_CERTIFY_MAX_SEED` (solved uncertified). `-n 1/2/3` green on the new tests; bug injection (P = I) fails four of them.
+seed above `GS_CERTIFY_MAX_SEED` (solved uncertified). `-n 1/2/3` green on the new tests; bug injection (P = I) fails seven of them.
 Single shell: `seed_window` and `active_impurity_indices` are `None`, the projector is the identity object, nothing changed.
 Open: which sector is the uncertified one (not looked at); the interface-side MS T4.7 text (impmod_interface repo, doc only, not
 touched here).
