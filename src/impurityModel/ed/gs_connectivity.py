@@ -96,6 +96,9 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target, frozen_occ
     from impurityModel.ed.groundstate import build_probe_seed
 
     start = time.perf_counter()
+    # A private copy: the probe runs on rank 0 alone, and restrictions set on the shared operator would
+    # survive on rank 0 only (review H-GS13). ``* 1.0`` copies the terms exactly and none of the restrictions.
+    h_op = h_op * 1.0
     basis, _solver = build_probe_seed(
         h_op,
         impurity_orbitals,
@@ -128,7 +131,7 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target, frozen_occ
         raw = np.array([len(h_op.apply_block(ManyBodyState({k: 1.0}), 0.0)) for k in sample], dtype=float)
         block = len(h_op.apply_block(ManyBodyState(dict.fromkeys(dets, 1.0)), 0.0)) / len(dets)
     finally:
-        h_op.set_restrictions(None)  # the solves set their own; the operator is shared
+        h_op.set_restrictions(None)
     return GsConnectivity(
         nnz_per_state=float(raw.mean()),
         selection_fanout=float(block),

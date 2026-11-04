@@ -87,3 +87,28 @@ def test_the_window_width_is_the_lowest_levels_degeneracy_of_the_seed():
     got = _measure(_hamiltonian())
     assert got.window_states >= 1
     assert "states in the lowest level" in got.describe()
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_probe_leaves_the_callers_restrictions_on_the_operator(comm):
+    """H-GS13: the probe ran on rank 0 only and reset the shared operator's restrictions to None there."""
+    from impurityModel.ed.eigensolvers import Lowest
+    from impurityModel.ed.groundstate import build_probe_seed
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
+    h_op = _hamiltonian()
+    basis, _ = build_probe_seed(
+        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 2}, tau=0, chain_restrict=True, truncation_threshold=None,
+        comm=None, verbose=False, frozen_occupations=None, weighted_restrictions=None, slaterWeightMin=0,
+        manifold=Lowest(),
+    )  # fmt: skip
+    seed = ManyBodyState(dict.fromkeys(basis.local_basis, 1.0))
+    impurity = frozenset(o for blocks in IMPURITY_ORBITALS.values() for block in blocks for o in block)
+    h_op.set_restrictions({impurity: (2, 2)})  # the impurity charge is pinned: no hop onto or off it
+    before = sorted(k.get_hash() for k in h_op.apply_block(seed, 0.0).keys())
+    h_op.set_restrictions(None)
+    assert len(h_op.apply_block(seed, 0.0)) > len(before), "the restriction must cut, or the test is vacuous"
+    h_op.set_restrictions({impurity: (2, 2)})
+    _measure(h_op, comm)
+    after = sorted(k.get_hash() for k in h_op.apply_block(seed, 0.0).keys())
+    assert after == before
