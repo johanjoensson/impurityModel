@@ -1773,24 +1773,41 @@ def _thermal_member_defect(member, ground_state, comm):
     """``(reason, by_cap)`` when a member's thermal solve may not enter a merge; ``None`` when it may.
 
     The plan checked the walk's records. The thermal solve builds its own, larger basis, and that basis can be
-    cap-bound or unconverged where the walk's was not (review H-MV11). The verdict is taken from rank 0's reports
-    and broadcast; the broadcast is unconditional on every rank of ``comm``.
+    cap-bound or unconverged where the walk's was not (review H-MV11). Two things refuse the member: a cap- or
+    memory-bound basis, or a residual measured on the final basis and above ``e_pt2_tol``. Two weaker verdicts
+    only warn (owner decision): a residual not re-measured after the last truncation, and a thermal manifold
+    wider than the reference states the residual covers. The verdict is taken from rank 0's reports and
+    broadcast; the broadcast is unconditional on every rank of ``comm``.
     """
     solver = ground_state.solver
     cap_bound = getattr(solver, "truncation_report", None) is not None
     convergence = getattr(solver, "convergence_report", None) or {}
     unconverged = convergence.get("converged") is False
-    verdict = (bool(cap_bound), bool(unconverged), convergence.get("residual_pt2"), convergence.get("limited_by"))
+    verdict = (
+        bool(cap_bound),
+        bool(unconverged),
+        convergence.get("residual_pt2"),
+        convergence.get("limited_by"),
+        bool(convergence.get("residual_is_current", True)),
+    )
     if comm is not None:
         verdict = comm.bcast(verdict, root=0)
-    cap_bound, unconverged, residual, limited_by = verdict
+    cap_bound, unconverged, residual, limited_by, current = verdict
     if cap_bound:
         return f"the N_imp = {member.total} member's thermal solve is bound by the determinant cap", True
-    if unconverged:
-        detail = f"residual PT2 {residual:.2e}" if residual is not None else "no residual"
-        if limited_by:
-            detail += f", limited by {limited_by}"
+    if not unconverged:
+        return None
+    detail = f"residual PT2 {residual:.2e}" if residual is not None else "no residual"
+    if limited_by:
+        detail += f", limited by {limited_by}"
+    if current and limited_by != "manifold_widened":
         return f"the N_imp = {member.total} member's thermal solve is not converged ({detail})", False
+    if comm is None or comm.rank == 0:
+        print(
+            f"WARNING: the N_imp = {member.total} ensemble member's thermal solve is not certified ({detail}); "
+            "it is merged, since the residual is stale or does not cover the whole manifold rather than large.",
+            flush=True,
+        )
     return None
 
 

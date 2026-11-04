@@ -174,3 +174,37 @@ def test_a_failed_statistics_write_on_rank_0_is_raised_on_every_rank(tmp_path, m
     monkeypatch.setattr(gs_report, "save_gs_statistics", failing)
     with pytest.raises((TypeError, RuntimeError)):
         _run(20, MPI.COMM_WORLD, "off", tmp_path)
+
+
+def _fake_member_state(truncation=None, **convergence):
+    from types import SimpleNamespace
+
+    report = {"converged": True, "residual_pt2": 1e-9, "residual_is_current": True, "limited_by": None, **convergence}
+    return SimpleNamespace(solver=SimpleNamespace(truncation_report=truncation, convergence_report=report))
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize(
+    "state, refused, by_cap",
+    [
+        (dict(), False, False),
+        (dict(truncation={"cap": 10}), True, True),
+        (dict(converged=False, residual_pt2=3e-3, limited_by="cap"), True, False),
+        (dict(converged=False, residual_pt2=3e-9, residual_is_current=False), False, False),
+        (dict(converged=False, residual_pt2=1e-9, limited_by="manifold_widened"), False, False),
+    ],
+    ids=["converged", "cap-bound", "current-residual-large", "stale-residual", "manifold-widened"],
+)
+def test_only_a_bound_basis_or_a_current_large_residual_refuses_a_member(comm, state, refused, by_cap, capsys):
+    """H-MV11 as narrowed by the owner: a stale residual or a widened manifold warns, it does not refuse."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed.groundstate import _thermal_member_defect
+
+    got = _thermal_member_defect(SimpleNamespace(total=2), _fake_member_state(**state), comm)
+    assert (got is not None) == refused
+    if refused:
+        assert got[1] == by_cap and "N_imp = 2" in got[0]
+    elif state.get("converged") is False and (comm is None or comm.rank == 0):
+        assert "is not certified" in capsys.readouterr().out
