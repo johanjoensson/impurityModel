@@ -578,7 +578,8 @@ def test_the_ensemble_observable_attains_a_target_the_single_sector_one_steps_ov
 
 
 def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monkeypatch, capsys):
-    """Review #3: under auto a refusal flags the point (cap-bound verdict, one aggregated note); it never raises."""
+    """Review #3: under auto a refusal flags the point (one aggregated note; a cap-bound verdict only if the cap
+    caused it); it never raises."""
     from impurityModel.ed import dc_criteria, groundstate
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
@@ -600,8 +601,9 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
     capsys.readouterr()
     got = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
     assert sorted(ctx.refused_at) == [1.5, 1.75], ctx.refused_at
-    assert [mu for mu, flag in sorted(ctx.cap_bound_at.items()) if flag] == [1.5, 1.75]
-    assert dc_criteria._any_cap_bound(ctx) is True
+    # an error-bar refusal is not the cap's doing: the cap ladder must not be asked to halve it away (review MV2)
+    assert [mu for mu, flag in sorted(ctx.cap_bound_at.items()) if flag] == []
+    assert dc_criteria._any_cap_bound(ctx) is False
     assert got[0] == free[0]  # the unrefused point is untouched
     assert got[1] != free[1]  # a refused point carries the winning sector alone
     # the per-trial warning is silenced: the search reports the refusal once, in the DC record

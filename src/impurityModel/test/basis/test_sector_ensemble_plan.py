@@ -54,6 +54,8 @@ def test_a_capped_or_uncertified_member_refuses_the_ensemble(bad, word):
     plan = plan_ensemble(solved, TAU, "auto")
     assert plan.refused_reason and word in plan.refused_reason
     assert [m.total for m in plan.members] == [8]  # the winner alone
+    # only a cap-bound member is the cap's doing: the DC cap ladder must not react to an uncertified one (review MV2)
+    assert plan.refused_by_cap is (word == "cap")
 
 
 def test_the_error_bar_refuses_above_the_limit_and_scales_with_the_residual():

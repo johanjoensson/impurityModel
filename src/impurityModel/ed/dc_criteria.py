@@ -2346,7 +2346,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
     if ctx.ensemble_variance_at is None:
         ctx.ensemble_variance_at = {}
     ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
-    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or plan.refused_reason is not None, root=0)
+    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or plan.refused_by_cap, root=0)
     if plan.refused_reason is not None:
         ctx.refused_at[mu] = plan.refused_reason
     else:

@@ -107,7 +107,9 @@ class EnsemblePlan:
     ``mode`` is the resolved ``mixed_valence`` (``"auto"`` or ``"on"``). ``needs`` lists totals outside the
     solved range that must be solved before membership is decided (an admitted edge member's outer neighbour);
     while it is non-empty the plan is provisional. ``refused_reason`` is set when the ensemble cannot be formed
-    (``members`` is then the winner alone); ``error_bar`` is the total error on ``<N_imp>`` in electrons.
+    (``members`` is then the winner alone); ``refused_by_cap`` says the refusal is a determinant-cap
+    limit, the one reason a smaller or larger cap bears on; ``error_bar`` is the total error on ``<N_imp>`` in
+    electrons.
     """
 
     mode: str
@@ -117,6 +119,7 @@ class EnsemblePlan:
     error_bar: float = 0.0
     needs: tuple = ()
     refused_reason: str | None = None
+    refused_by_cap: bool = False
     solved_totals: tuple = field(default=())
 
 
@@ -170,11 +173,13 @@ def plan_ensemble(
     members = _members(admitted, tau)
     error = sum(m.error_bar for m in members)
     reason = None
+    by_cap = False
     # A lone winner is a one-member ensemble however it was solved: cap / certification matter only when they
     # would corrupt a merge.
     for r in admitted if len(admitted) > 1 else ():
         if r.cap_bound:
             reason = f"the N_imp = {r.total} sector is bound by the determinant cap"
+            by_cap = True
             break
         if r.certified is False:
             reason = f"the N_imp = {r.total} sector is not certified"
@@ -192,6 +197,7 @@ def plan_ensemble(
             cut,
             error_bar=error,
             refused_reason=reason,
+            refused_by_cap=by_cap,
             solved_totals=solved_totals,
         )
     return EnsemblePlan(mode, members, e_min, cut, error_bar=error, solved_totals=solved_totals)
