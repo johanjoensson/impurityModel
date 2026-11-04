@@ -739,7 +739,8 @@ member's, `rhos` the union), H-MV6 (dominant member by walk energy, not realised
 raise on a cap-bound thermal member; should `auto` keep the winner), H-MS4 (DC sector splits for a SeedWindow
 are not shell-keyed), H-MS6 (tolerance mismatch refusing p–d couplings ≥ 1e-5), H-MS7 (rank-local rotate/refusal
 decision), X7 (legacy `mv N>0` meaning), default-verbosity visibility of an uncertified winner, H-MV5
-(streaming K-member merges), impmod_interface X6/X8 (header "Mixed valence |> None", `_parse_mv("-1")`).
+(streaming K-member merges). impmod_interface X6/X8 (header "Mixed valence |> None", `_parse_mv("-1")`) are
+fixed in impmod_interface `fc456a1`, not open.
 
 **Hang introduced and fixed in this pass.** GS8 (`858adaa5`) stored a numpy bool in `manifold_check`. Rank 0's
 `save_gs_statistics` then raised `TypeError`, while the other ranks went on into the next collective, so the `-n 2` gate
@@ -791,3 +792,17 @@ No `off` regression beyond noise. Two new performance items for decision:
 - The 35→58 min `-n 3` growth did not reproduce (46.5 min in this capped run) and is still unexplained; P3 was not run.
 - impmod_interface (`fc456a1`, local) suite at this HEAD: 231 passed. No archive (409 `mv` attributes) or solver line in
   `impmod_tests` has a negative `mv`, so rejecting `mv -1` (X8) changes no real input.
+
+**Follow-up series 1 (2026-11-04), no-decision fixes:**
+
+| id | defect | fix |
+|---|---|---|
+| H-MS7 | symmetry rotation and rotate decision taken from a rank-local `eigh` | `ab92eaec` broadcast from rank 0 |
+| H-MV11 | a member whose own thermal solve was cap-bound or unconverged was merged; `on` did not raise | `041ced88` checked before `consume`; `on` raises, `auto` keeps the winner (owner decision B3) |
+| H-GS13 | the connectivity probe reset the shared operator's restrictions on rank 0 only | `dc9952f4` probe on a copy |
+| H-GS3 | `solve_sector` / `find_ground_state_sector` lacked `assert_uniform` | `bf954cb4` |
+| H-MV9, H-MS8 | `mixed_valence_tristate` undocumented; discretized `n0` docstring | `c8cebf23` |
+
+H-MV13 (sorted union `es`) moves to the `gs_energies` contract change (H-MV4/MV6). Each fix has a test that fails on
+the old code (injected). Gate at `bf954cb4`: `-n 1` 4076 passed; `-n 2` 4187 / 4186; `-n 3` 4195 / 4194 / 4194;
+9 xfailed on every rank file; `-n 3` took 47.6 min. Logs: `debug/review_2026-11/series1/logs`.
