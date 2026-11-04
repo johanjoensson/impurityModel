@@ -557,3 +557,30 @@ def test_the_chi_ensemble_merges_the_members_with_their_weights(monkeypatch):
     charge = result["operators"]["charge"]
     within = sum(ci * p["operators"]["charge"]["curie_coefficient"] for ci, p in zip(c, parts))
     assert charge["curie_coefficient"] > within + 1e-3  # the sectors have different <N>
+
+
+def test_the_chi_ensemble_charge_response_is_the_exact_grand_canonical_one_and_the_winner_alone_is_not():
+    """Dense ED over every electron count of the minimal SIAM (the model of ``test_selfenergy_ensemble``): at
+    tau = 0.2 the ensemble <N_imp> and the elastic (inside the retained thermal states) part of the charge Curie
+    coefficient are the Boltzmann averages; the winner sector alone gets <N_imp> off by 1e-2 and a Curie coefficient
+    of zero. Weights that were wrong (uniform, or unshifted by the sector energies) land far outside 1e-4."""
+    from .test_selfenergy_ensemble import _dense_siam
+
+    tau = 0.2
+    h, cd = _dense_siam()
+    e, v = np.linalg.eigh(h)
+    nn = v.T @ (cd[0] @ cd[0].T + cd[1] @ cd[1].T) @ v
+    p = np.exp(-(e - e.min()) / tau)
+    p /= p.sum()
+    keep = p > 1e-4  # the thermal states the ensemble retains (the dropped tail carries < 1e-3 of the weight)
+    pk = p * keep / (p * keep).sum()
+    mean = pk @ np.diag(nn)
+    elastic = sum(pk[n] * sum(nn[m, n] ** 2 for m in range(len(e)) if keep[m]) for n in range(len(e)))
+    on, off = _workflow("on", tau), _workflow("off", tau)
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    got, single = on["operators"]["charge"], off["operators"]["charge"]
+    assert got["expectation"].real == pytest.approx(mean, abs=1e-4)
+    assert got["curie_coefficient"] == pytest.approx(elastic - mean**2, abs=1e-4)
+    assert abs(single["expectation"].real - mean) > 5e-3  # mutation: the winner alone is not the ensemble
+    assert abs(single["curie_coefficient"] - (elastic - mean**2)) > 5e-3
