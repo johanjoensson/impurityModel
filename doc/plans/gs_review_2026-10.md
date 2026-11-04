@@ -777,11 +777,17 @@ passed; 9 xfailed on every rank file. `-n 3` took 46.5 min, against 58 before th
 | NiO auto | 4231 s | 188 s | 190 s | K=2: N=8 (0.9999), N=9 (1e-4) | GS ~380 s; ~3850 s are GFs of both members |
 | NiO auto, -n 1 | timeout 5400 s | | | inside the first member's GF | |
 | SMO 4-bath off | 2201 s | 1612 s | 564 s | −11.5651958, quartet 4/4, 489,322 | 7′ 2147 s (+2.5 %), E0 2.5 µRy lower |
-| SMO 4-bath auto | 3562 s | 2012 s | 526 s | K=1 (N=3), 484,890, E0 0.5 µRy above off | walk +25 %: one extra N=1 solve (387 s) |
+| SMO 4-bath auto | 3562 s | 2012 s | 526 s | K=1 (N=3), 484,890, E0 0.5 µRy above off | walk +25 %: one extra N=1 solve (387 s); cap 497,260 vs 506,172, see below |
 | CrI3 off | 2534 s | 1685 s | 825 s | −7.62335438, 2 states, 517,698 | 7′ 2472 s (+2.5 %), identical E |
 
 No `off` regression beyond noise. Two new performance items for decision:
 - **PERF-MV-a.** A member with weight 1e-4 (NiO N=9) gets a full Green's function, the same as the dominant one.
 - **PERF-MV-b.** Under `auto`, a sector admitted provisionally on its optimistic (residual-subtracted) energy makes the plan solve
   its edge neighbour. On SMO that cost 387 s, and the final ensemble was the winner alone. The doc's prediction of K = 2 on
-  SMO 4-bath did not hold (K = 1). P3 (gate duration attribution) was not needed: `-n 3` is back to 46.5 min.
+  SMO 4-bath did not hold (K = 1). SMO auto vs off is not a one-member identity break. The auto cap is sized at start from measured available memory and
+  the deterministic connectivity probe, with no mode input (`resolve_cap_policy`). The two runs read about 2.9 GiB/rank but
+  sized 497,260 against 506,172 dets. Both then tightened at the same 1.7 GiB RSS, and the first sector solved is identical.
+  The 0.5 µRy is that measured-memory noise; it is also why off drifted from 462k to 489k dets between step 7′ and now.
+- The 35→58 min `-n 3` growth did not reproduce (46.5 min in this capped run) and is still unexplained; P3 was not run.
+- impmod_interface (`fc456a1`, local) suite at this HEAD: 231 passed. No archive (409 `mv` attributes) or solver line in
+  `impmod_tests` has a negative `mv`, so rejecting `mv -1` (X8) changes no real input.
