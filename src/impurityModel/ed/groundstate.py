@@ -234,7 +234,7 @@ def _orbits_for(h_op, basis, manifold, spin_layout):
 
 
 #: Orbit degradations already reported by this process (one line per distinct note, not one per solve).
-_REPORTED_ORBIT_NOTES = set()
+_REPORTED_ORBIT_NOTES: set[str] = set()
 
 
 def _report_orbit_notes(orbits, basis):
