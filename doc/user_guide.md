@@ -242,8 +242,9 @@ uncertified or limited by its error bars is *refused*: under `auto` a warning na
 kept and the run continues with it; under `on` the run raises on every rank. Under a double-counting
 search an ensemble refused at a trial mu is a flagged point in the record. Each member's own thermal solve
 is checked again before it is merged: a cap- or memory-bound basis, or a residual measured on the final
-basis above `e_pt2_tol`, refuses the ensemble the same way. A residual that is stale, or that does not cover
-the whole thermal manifold, only warns. A legacy integer `mixed_valence` (`mv N`) means `auto` when non-zero.
+basis above `e_pt2_tol`, refuses the ensemble the same way, except that under `auto` the members solved
+before the failing one are kept (the ensemble is cut at it, not to the winner), and a near neighbour left out
+is named. A residual that is stale, or that does not cover the whole thermal manifold, only warns. A legacy integer `mixed_valence` (`mv N`) means `auto` when non-zero.
 
 Ordering: the dominant member is the one whose thermal solve realised the lowest energy. The merged
 states are sorted by energy, so `es[0]` is the global ground state. The self-energy's `gs_energies` are
