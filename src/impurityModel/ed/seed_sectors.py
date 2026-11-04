@@ -51,6 +51,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
+from impurityModel.ed.mpi_root import on_root
 
 #: Relative size of an off-diagonal element, in the eigenbasis of ``X``, that joins two seed
 #: eigenvectors into one class. Exact symmetry zeros sit at roundoff (~1e-15 relative), genuine
@@ -276,12 +277,12 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
         return None
     seed = gather_seed(basis)
     rank = comm.rank if comm is not None else 0
-    plan = None
     # On every rank, not only on the one that builds the plan: whatever applies ``h_op`` next must
     # see the same operator everywhere.
     h_op.set_restrictions(basis.restrictions)
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
-    if rank == 0:
+
+    def _build_plan():
         a, m, _b, _outside = seed_matrices(h_op, seed)
         classes, ok = _build_classes(a, m)
         evals_a = np.linalg.eigvalsh(a)
@@ -290,7 +291,10 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
         window = _window(classes)
         classes = _select(classes, window, scale, max(float(np.linalg.norm(m, 2)), 1e-300))
         penalty = PENALTY_FACTOR * max(width, window, 1e-6 * scale)
-        plan = SeedClassPlan(seed, classes, window, penalty, ok)
+        return SeedClassPlan(seed, classes, window, penalty, ok)
+
+    # A rank-0 failure is raised on every rank before the broadcast of the plan.
+    plan = on_root(comm, _build_plan)
     if comm is not None:
         plan = comm.bcast(plan, root=0)
     if verbose and rank == 0:

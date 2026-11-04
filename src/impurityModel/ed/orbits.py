@@ -31,6 +31,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config, label_symmetries
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.spin_pairs import _spin_symmetric, bath_spin_pairs, impurity_spin_pairs
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.symmetries import PARITY_TERM_TOL, conserves_sz, weighted_parts
@@ -374,8 +375,8 @@ def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
     ``S^2`` is a symmetry and the restrictions are pair-closed. ``M`` is the largest ``|2 S_z|`` of the seed.
     """
     comm = basis.comm if basis.is_distributed else None
-    head = None
-    if comm is None or comm.rank == 0:
+
+    def _detect():
         n_orb = max(basis.num_spin_orbitals, max((o for term in h_op.keys() for o, _ in term), default=-1) + 1)
         layout = spin_layout or resolve_spin_layout(h_op, basis.impurity_orbitals, basis.bath_states, None, n_orb)
         index_imp = impurity_spin_pairs(basis.impurity_orbitals)
@@ -428,7 +429,10 @@ def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
         if group is None:
             notes.append(f"the symmetry group has more than {GROUP_CAP} elements: not closed over")
             group = np.arange(columns, dtype=np.int64)[None, :]
-        head = (group, pair_array if closed else None, n_orb, notes)
+        return (group, pair_array if closed else None, n_orb, notes)
+
+    # A rank-0 failure is raised on every rank before the broadcast of the result.
+    head = on_root(comm, _detect)
     if comm is not None:
         head = comm.bcast(head, root=0)
     group, pair_array, n_orb, notes = head

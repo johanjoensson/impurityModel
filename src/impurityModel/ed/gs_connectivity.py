@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.mpi_root import on_root
 
 #: Determinants the breadth-first closure grows to. The fan-out of a block *falls* with its size
 #: (SrMnO3: 13.3, 10.7, 8.1 at 5k, 20k, 100k determinants), so a probe smaller than the production basis
@@ -81,9 +82,7 @@ def measure_gs_connectivity(h_op, impurity_orbitals, bath_states, nominal_occ, c
     not depend on dictionary order), and broadcasts the numbers. The seed's sector has a fixed impurity
     occupation, so its energy order is the same at every chemical-potential shift.
     """
-    result = None
-    if comm is None or comm.rank == 0:
-        result = _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target)
+    result = on_root(comm, lambda: _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target))
     return comm.bcast(result, root=0) if comm is not None and comm.size > 1 else result
 
 

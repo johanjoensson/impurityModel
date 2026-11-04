@@ -1,7 +1,6 @@
 """Every cut of a Within expansion leaves a basis made of whole orbits, at the default slaterWeightMin."""
 
 import numpy as np
-import pytest
 
 from impurityModel.ed import cipsi_solver
 from impurityModel.ed.eigensolvers import Within
@@ -38,8 +37,19 @@ def test_truncate_keeps_orbits_whole_when_members_fall_below_the_slater_weight_c
     _h0, H, imp, bath = cubic_d_shell(n_bath_sets=2)
     manifold = Within(0.05)
     basis, solver = build_basis_and_solver(
-        H, imp, bath, {0: 8}, tau=0.0, chain_restrict=False, truncation_threshold=2000, comm=None, verbose=False,
-        frozen_occupations=None, weighted_restrictions=None, slaterWeightMin=SWMIN_DEFAULT, manifold=manifold,
+        H,
+        imp,
+        bath,
+        {0: 8},
+        tau=0.0,
+        chain_restrict=False,
+        truncation_threshold=2000,
+        comm=None,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=SWMIN_DEFAULT,
+        manifold=manifold,
         dense_cutoff=500,
     )
     solver.orbits = _orbits_for(H, basis, manifold, None)

@@ -46,6 +46,7 @@ from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.eigensolvers import Lowest, Within, cold_vector
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.ed.memory_estimate import measured_phase
+from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     casimir_operator,
     casimir_to_quantum_number,
@@ -221,7 +222,6 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
     per-spin grouped impurity.
     """
     comm = basis.comm if basis.is_distributed else None
-    rank = comm.rank if comm is not None else 0
     h_op.set_restrictions(basis.restrictions)
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
     if len(basis) == 0 or len(basis) > max_seed:
@@ -229,8 +229,8 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
         # by a single expansion and reported uncertified (``None``), never refused.
         return None
     seed = seed_sectors.gather_seed(basis)
-    head = None
-    if rank == 0:
+
+    def _plan_head():
         n_orb = max(basis.num_spin_orbitals, max((o for term in h_op.keys() for o, _ in term), default=-1) + 1)
         index_imp = impurity_spin_pairs(basis.impurity_orbitals)
         index_bath = bath_spin_pairs(basis.bath_states)
@@ -273,7 +273,10 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
                 generators = [sp for sp in generators if _respects_sz(sp, sign)]
             if generators:
                 orbit_of = label_symmetries.label_orbits(needed, generators, parities)
-        head = (labels, needed, pairs, su2, orbit_of, layout)
+        return (labels, needed, pairs, su2, orbit_of, layout)
+
+    # A rank-0 failure is raised on every rank before the broadcast of the result.
+    head = on_root(comm, _plan_head)
     if comm is not None:
         head = comm.bcast(head, root=0)
     # Decided on rank 0 and broadcast: which labels are expanded must be identical on every rank.

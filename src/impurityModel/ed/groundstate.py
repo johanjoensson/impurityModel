@@ -26,6 +26,7 @@ from impurityModel.ed.memory_estimate import (
     resident_bytes_per_rank,
     resolve_cap_policy,
 )
+from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.orbits import build_orbits
 from impurityModel.ed.sector_ensemble import (
     plan_ensemble,
@@ -245,8 +246,8 @@ def widen_by_single_excitations(basis, *, max_seed):
     """
     comm = basis.comm if basis.is_distributed else None
     seed = gather_seed(basis)
-    shell = None
-    if comm is None or comm.rank == 0:
+
+    def _excitations():
         n = basis.num_spin_orbitals
         excite = tensors_to_operator(np.ones((n, n)))
         excite.set_restrictions(basis.restrictions)
@@ -257,7 +258,10 @@ def widen_by_single_excitations(basis, *, max_seed):
             found.update(key for key in seed_images(excite, det) if key not in known)
             if len(seed) + len(found) > max_seed:
                 break  # decided on rank 0: the rest of the shell is never built or broadcast
-        shell = False if len(seed) + len(found) > max_seed else sorted(found)
+        return False if len(seed) + len(found) > max_seed else sorted(found)
+
+    # A rank-0 failure is raised on every rank before the broadcast of the result.
+    shell = on_root(comm, _excitations)
     if comm is not None:
         shell = comm.bcast(shell, root=0)
     if shell is False:
