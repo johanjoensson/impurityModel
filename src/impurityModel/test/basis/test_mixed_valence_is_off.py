@@ -36,9 +36,9 @@ def _model():
         ("on", "off", "on", False),
         (False, "auto", "off", False),
         (0, "auto", "off", False),
-        (2, "off", "on", True),
+        (2, "off", "auto", True),  # legacy: auto, not on (review X7)
         ({0: 0}, "auto", "off", False),
-        ({0: 1}, "auto", "on", True),
+        ({0: 1}, "off", "auto", True),
     ],
 )
 def test_the_resolver_mapping_table(value, default, mode, noted):

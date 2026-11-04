@@ -116,7 +116,7 @@ class Kind(Enum):
     ENUM = "enum"
     #: A boolean.
     BOOL = "bool"
-    #: ``"auto"``, ``"on"`` or ``"off"``; a boolean (and a legacy integer) is accepted and read as on/off.
+    #: ``"auto"``, ``"on"`` or ``"off"``; a boolean is read as on/off, a legacy integer as off (0) or auto (non-zero).
     TRISTATE = "auto/on/off"
     #: A frequency mesh: ``{min, max, n}``, ``{values = [...]}`` or ``{file = "..."}``.
     MESH = "mesh"
@@ -1029,7 +1029,7 @@ _TABLE_LIST += [
                 "Unset takes the driver's default ('auto' for the self-energy and double counting, off for "
                 "spectra, RIXS and susceptibility). 'auto' never raises: where the ensemble cannot be formed it "
                 "falls back to the winning sector with a warning; 'on' raises instead. A legacy integer is read "
-                "as off (0) or on (non-zero); it no longer widens the seed.",
+                "as off (0) or auto (non-zero); it no longer widens the seed.",
             ),
         ),
     ),

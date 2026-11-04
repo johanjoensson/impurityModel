@@ -22,7 +22,8 @@ _MODES = ("auto", "on", "off")
 #: One-line note for a legacy positive integer / dict value (the seed-width meaning is gone).
 LEGACY_NOTE = (
     "mixed_valence: an integer used to widen the seed's impurity window; that is gone. A non-zero value now "
-    "means 'on' (the charge-sector ensemble); use true/false/'auto'."
+    "means 'auto' (the charge-sector ensemble where it can be formed, else the winning sector with a warning); "
+    "write 'on' to make a refused ensemble an error, or false/'off'."
 )
 
 
@@ -33,8 +34,9 @@ def resolve_mixed_valence(value: Any, *, driver_default: MixedValence) -> tuple[
     ----------
     value : None, bool, int, str or dict
         ``None`` takes ``driver_default``. ``"auto"``/``"on"``/``"off"`` (case-insensitive), ``True``/``False``
-        and ``0`` are taken as named. A positive int is ``"on"`` plus a note. A legacy ``{group: int|bool}``
-        dict is ``"off"`` if every entry is falsy, else ``"on"`` plus a note.
+        and ``0`` are taken as named. A positive int is ``"auto"`` plus a note, not ``"on"``: an old input that
+        asked for a wider seed never asked for a refused ensemble to abort the run (review X7). A legacy
+        ``{group: int|bool}`` dict is ``"off"`` if every entry is falsy, else ``"auto"`` plus a note.
     driver_default : {"auto", "on", "off"}
         What ``None`` means for the calling driver (Sigma/DC: ``"auto"``; spectra/RIXS/chi: ``"off"``).
 
@@ -59,13 +61,13 @@ def resolve_mixed_valence(value: Any, *, driver_default: MixedValence) -> tuple[
     if isinstance(value, dict):
         if not all(isinstance(v, (Integral, bool)) or v is None for v in value.values()):
             raise ValueError(f"mixed_valence={value!r}: a dict is accepted only with int/bool values (legacy form)")
-        return ("on", LEGACY_NOTE) if any(bool(v) for v in value.values()) else ("off", None)
+        return ("auto", LEGACY_NOTE) if any(bool(v) for v in value.values()) else ("off", None)
     if isinstance(value, bool):
         return ("on" if value else "off"), None
     if isinstance(value, Integral):
         if int(value) < 0:
             raise ValueError(f"mixed_valence={value!r}: must not be negative")
-        return ("on", LEGACY_NOTE) if int(value) > 0 else ("off", None)
+        return ("auto", LEGACY_NOTE) if int(value) > 0 else ("off", None)
     if isinstance(value, str):
         key = value.strip().lower()
         key = {"true": "on", "false": "off", "0": "off"}.get(key, key)
