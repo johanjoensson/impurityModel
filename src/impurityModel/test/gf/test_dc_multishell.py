@@ -266,3 +266,43 @@ def test_the_cap_probe_seeds_a_bathless_shell_as_the_solve_does(monkeypatch):
     monkeypatch.setattr(gs_connectivity, "_probe", spy)
     gs_connectivity.solver_basis_connectivity(sb, MPI.COMM_WORLD)()
     assert MPI.COMM_WORLD.rank != 0 or seen == [sb.seed_window]
+
+
+def test_n0_does_not_depend_on_which_shell_sits_at_the_higher_input_indices():
+    """With a tiny p-d element the solver may relabel orbitals across shells; n0 is read from the input-basis h0 and so
+    must count the active shell by its input indices. The d shell here has the same level and baths whether it comes
+    first or last, so n0 must agree (review MS3: it was 0.019 vs 1.010)."""
+
+    def build(p_first):
+        p, d = (range(6), range(6, 16)) if p_first else (range(10, 16), range(10))
+        p, d = list(p), list(d)
+        h = np.zeros((20, 20), dtype=complex)
+        for o in p:
+            h[o, o] = -60.0
+        for o in d:
+            h[o, o] = 1.0
+        for b, e in zip(range(16, 20), (-2.0, -2.0, 2.0, 2.0)):
+            h[b, b] = e
+        for o, b in ((d[0], 16), (d[5], 17), (d[1], 18), (d[6], 19)):
+            h[o, b] = h[b, o] = 0.3
+        h[p[0], d[0]] = h[d[0], p[0]] = 1e-7
+        model = ImpurityModel.from_solver_matrix(
+            h,
+            16,
+            dc=np.zeros((16, 16), dtype=complex),
+            u4=np.zeros((16,) * 4, dtype=complex),
+            rot_to_spherical=np.eye(16, dtype=complex),
+            bath_valence_conduction=([16, 17], [18, 19]),
+            shell_ls=(1, 2) if p_first else (2, 1),
+        )
+        basis = BasisOptions(
+            nominal_occ={0: 6, 1: 2} if p_first else {0: 2, 1: 6},
+            mixed_valence=None,
+            tau=1e-2,
+            slater_weight_min=np.sqrt(np.finfo(float).eps),
+            truncation_threshold=int(1e8),
+        )
+        return model, basis, SolverOptions(dense_cutoff=1000)
+
+    n0 = [dc_criteria._prepare_occupation_context(*build(first), comm=MPI.COMM_WORLD).n0 for first in (True, False)]
+    assert n0[0] == pytest.approx(n0[1], abs=1e-6)

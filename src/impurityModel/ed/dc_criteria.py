@@ -2171,7 +2171,12 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     # h0 - dc + U contract; no double counting subtracted before filling), independent of
     # dc_guess and of the trial shift, and of the solver-basis rotation (h0's raw filling is
     # evaluated in the model's input basis).
-    n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
+    # h0_op is in the input basis, so the active orbitals are counted by their input-basis indices (the diagonal
+    # of ``shift_input``): the solver-basis labels in ``impurity_indices`` can be permuted against them (review MS3).
+    n0_indices = impurity_indices
+    if active_indices is not None:
+        n0_indices = [orb for orb, on in zip(sorted(model.impurity_indices), np.diag(shift_input)) if on]
+    n0 = _noninteracting_impurity_occupation(h0_op, n0_indices, model.n_spin_orbitals, tau)
 
     return _OccupationContext(
         h0_op=h0_op,
