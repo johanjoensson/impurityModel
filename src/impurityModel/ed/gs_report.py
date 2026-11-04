@@ -24,6 +24,7 @@ from impurityModel.ed.gs_statistics import (
     save_gs_statistics,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     block_group_labels,
     casimir_operator,
@@ -615,8 +616,14 @@ def report_ground_state(
             "energy_decomposition": energy_decomposition,
             "static_susceptibilities": static_susceptibilities,
         }
-    if rank == 0 and gs_stats is not None and stats_path is not None:
-        save_gs_statistics(gs_stats, stats_path)
+    if stats_path is not None:
+        # Collective, so gated on the replicated path only (gs_stats is None off rank 0): a failed write on
+        # rank 0 (an unserialisable value, a full disk) is raised on every rank; a rank-0-only raise left the
+        # others in the next collective (the GS8 numpy-bool hang).
+        on_root(
+            comm if ground_state_basis.is_distributed else None,
+            lambda: rank == 0 and gs_stats is not None and save_gs_statistics(gs_stats, stats_path),
+        )
 
     if rank == 0:
         # Terse run record: always shown (V_RESULT), independent of the full report below.

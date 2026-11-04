@@ -131,3 +131,17 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
     out = capsys.readouterr().out
     if comm is None or comm.rank == 0:
         assert f"keeps the single N_imp = {final.members[0].total} sector" in out, out
+
+
+@pytest.mark.mpi
+def test_a_failed_statistics_write_on_rank_0_is_raised_on_every_rank(tmp_path, monkeypatch):
+    """Rank 0 alone writes the statistics JSON; a failure there left the other ranks in the next collective
+    (the GS8 numpy-bool hang at -n 2). It must be raised on every rank."""
+    from impurityModel.ed import gs_report
+
+    def failing(stats, path):
+        raise TypeError("not serialisable")
+
+    monkeypatch.setattr(gs_report, "save_gs_statistics", failing)
+    with pytest.raises((TypeError, RuntimeError)):
+        _run(20, MPI.COMM_WORLD, "off", tmp_path)
