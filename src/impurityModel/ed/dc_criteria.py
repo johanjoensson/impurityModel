@@ -2374,7 +2374,8 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
     else:
         ctx.refused_at.pop(mu, None)
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
-    return n_avg, float(e0_s.min()), plan.members[0].total
+    # The sector of the point is the member that realised the lowest energy (review H-MV6), as in calc_gs.
+    return n_avg, float(e0_s.min()), plan.members[int(np.argmin(e0_s))].total
 
 
 def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):

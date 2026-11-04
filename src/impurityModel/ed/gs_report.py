@@ -148,13 +148,24 @@ def _member_states(m):
     return states
 
 
+def union_order(measurements):
+    """The permutation that sorts the concatenated member energies ascending (stable).
+
+    Shared by :func:`merge_measurements` and by any caller that labels the union's states (``state_sector``),
+    so the labels follow the states. The energies are replicated, so the order is the same on every rank.
+    """
+    es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
+    return np.argsort(es, kind="stable")
+
+
 def merge_measurements(measurements):
-    """``(basis, es, psis)`` of the union of the members' thermal manifolds, dominant member first.
+    """``(basis, es, psis)`` of the union of the members' thermal manifolds, ascending in energy.
 
     One member is returned untouched (same objects), which is what makes the single-sector report
-    bit-identical.  With several, ``es`` are concatenated unshifted and ``psis`` become one list of
-    states; the first member (lowest walk energy) supplies the basis, whose only roles downstream are
-    the orbital layout, the communicator and the hash routing, all shared by the members.
+    bit-identical.  With several, ``es`` are concatenated unshifted and sorted (:func:`union_order`), so
+    ``es[0]`` is the global ground state as for one sector (review H-MV13), and ``psis`` become one list of
+    states in the same order.  The basis is the first member's that carries one; its only roles downstream
+    are the orbital layout, the communicator and the hash routing, all shared by the members.
     """
     measurements = list(measurements)
     if not measurements:
@@ -162,19 +173,21 @@ def merge_measurements(measurements):
     first = measurements[0]
     if len(measurements) == 1:
         return first.basis, first.es, first.psis
+    basis = next(m.basis for m in measurements if m.basis is not None)
     es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
     states = []
     for m in measurements:
         states.extend(_member_states(m))
     # Every rank now holds exactly len(es) states (a width-0 block is padded with empty width-1 states), so
     # this check is rank-invariant; the allreduce makes the raise collective in case that invariant breaks.
-    comm = getattr(first.basis, "comm", None)
+    comm = getattr(basis, "comm", None)
     bad = int(len(states) != len(es))
     if comm is not None:
         bad = comm.allreduce(bad, op=MPI.MAX)
     if bad:
         raise RuntimeError(f"merge_measurements: {len(states)} states for {len(es)} energies on at least one rank")
-    return first.basis, es, states
+    order = union_order(measurements)
+    return basis, es[order], [states[k] for k in order]
 
 
 def finalize_ground_state(Hop, measurements, tau, *args, **kwargs):

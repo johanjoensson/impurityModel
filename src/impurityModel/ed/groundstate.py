@@ -12,7 +12,12 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.gs_connectivity import measure_gs_connectivity
-from impurityModel.ed.gs_report import finalize_ground_state, measure_ground_state, report_ground_state
+from impurityModel.ed.gs_report import (
+    finalize_ground_state,
+    measure_ground_state,
+    report_ground_state,
+    union_order,
+)
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
@@ -1616,7 +1621,8 @@ def solve_ground_state_ensemble(
     -------
     plan : EnsemblePlan
     results : list
-        ``consume``'s return value per member, dominant (lowest walk energy) first.
+        ``consume``'s return value per member, in the plan's order (lowest walk energy first; ``calc_gs``
+        reorders by realised energy).
     realised : list of float
         The lowest energy each member's thermal solve actually found.
     """
@@ -1751,21 +1757,19 @@ def solve_ground_state_ensemble(
         if bad is not None:
             break  # the winner, kept alone
     del results[len(plan.members) :], realised[len(plan.members) :]
-    # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. If the thermal
-    # solves find another member lowest, the dominant member -- and so the sector the caller's basis, psis and
-    # report are keyed to -- was mis-ranked. Decided on rank 0 and broadcast.
+    # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. The thermal solves
+    # may find another member lowest; the callers take the dominant member by realised energy (review H-MV6), so
+    # this is a note, not an error, in either mode. Decided on rank 0 and broadcast.
     moved = int(np.argmin(realised)) != 0
     if comm is not None:
         moved = comm.bcast(moved, root=0)
-    if moved:
-        msg = (
-            "the thermal solves rank the charge sectors differently from the walk "
-            f"(realised lowest energies {['%.6f' % e for e in realised]} for totals {[m.total for m in plan.members]})"
+    if moved and (comm is None or comm.rank == 0):
+        print(
+            "NOTE: the thermal solves rank the charge sectors differently from the walk (realised lowest "
+            f"energies {['%.6f' % e for e in realised]} for totals {[m.total for m in plan.members]}); "
+            "the dominant member is the realised lowest.",
+            flush=True,
         )
-        if mode == "on":
-            raise ValueError(f"mixed_valence = 'on': {msg}")
-        if comm is None or comm.rank == 0:
-            print(f"WARNING: {msg}; the ensemble weights are still merged on the realised energies.", flush=True)
     return plan, results, realised
 
 
@@ -1931,8 +1935,11 @@ def _calc_gs_ensemble(
 
     The members are solved one at a time (:func:`solve_ground_state_ensemble`); only each member's eigenpairs are
     kept.  The report then runs once over their union (absolute energies, so the thermal weights *are* the merge
-    ``c_s ~ Z_s exp(-(e0_s - e0)/tau)``).  Returns the contract of ``calc_gs`` for the dominant member --
-    ``(psis, es, basis)`` -- with the merged ``thermal_rho`` and ``gs_info["ensemble"]``.
+    ``c_s ~ Z_s exp(-(e0_s - e0)/tau)``), with the union's states ascending in energy.  The dominant member is the
+    one whose thermal solve realised the lowest energy; ``gs_info["ensemble"]["members"]`` and
+    ``gs_info["member_results"]`` are in that order.  Returns the contract of ``calc_gs`` for the dominant member
+    -- ``(psis, es, basis)`` -- with the merged ``thermal_rho``, and ``gs_info["ensemble"]`` whose ``es`` and
+    ``state_sector`` describe the union that ``gs_info["rhos"]`` belongs to.
     """
     kept = []  # (member, SectorMeasurement-args, truncation report, convergence report)
     hooked = []  # member_hook's return per member
@@ -1974,6 +1981,14 @@ def _calc_gs_ensemble(
     )
     # A member refused after its thermal solve (H-MV11) leaves the winner alone; drop anything consumed after it.
     del kept[len(plan.members) :], hooked[len(plan.members) :]
+    # The dominant member is the one whose thermal solve realised the lowest energy, not the walk's lowest
+    # (review H-MV6): the members, their hook results and their energies are ordered by realised energy, so
+    # members[0] holds the global ground state. Stable, and the energies are replicated: one order everywhere.
+    order = [int(k) for k in np.argsort(np.asarray(realised), kind="stable")]
+    kept = [kept[k] for k in order]
+    realised = [realised[k] for k in order]
+    if hooked:
+        hooked = [hooked[k] for k in order]
     tau = basis_setup["tau"]
     measurements = [k[1] for k in kept]
     z = np.array([np.exp(-(m.es - m.es.min()) / tau).sum() for m in measurements])
@@ -1986,6 +2001,9 @@ def _calc_gs_ensemble(
         if conv["limited_by"] is None:
             bad = [k[0].total for k, ok in zip(kept, converged) if not ok]
             conv["limited_by"] = f"ensemble member N_imp = {bad[0]}"
+    union = union_order(measurements)
+    union_es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
+    labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
     info = {
         "mode": mode,
         "tau": tau,
@@ -2006,7 +2024,10 @@ def _calc_gs_ensemble(
             }
             for (member, m, trunc, _), w, e0, ok in zip(kept, c, realised, converged)
         ],
-        "state_sector": [m.total for m in measurements for _ in range(len(m.es))],
+        # Per state of the merged union, which is ascending in energy (gs_report.union_order); "es" is that
+        # union, the energies `rhos` belongs to (review H-MV4).
+        "state_sector": [int(labels[k]) for k in union],
+        "es": [float(e) for e in union_es[union]],
     }
     psis, es, basis, thermal_rho, gs_info = finalize_ground_state(
         Hop,
@@ -2024,8 +2045,10 @@ def _calc_gs_ensemble(
     )
     gs_info["ensemble"] = info
     gs_info["member_results"] = hooked
-    n_dominant = len(measurements[0].es)
-    return psis[:n_dominant], es[:n_dominant], basis, thermal_rho, gs_info
+    # The dominant member's states, as the single-sector contract hands them on (the union is sorted, so they
+    # need not be contiguous): selected by their sector label, in ascending energy.
+    dominant = [k for k, total in enumerate(info["state_sector"]) if total == kept[0][0].total]
+    return [psis[k] for k in dominant], np.asarray(es)[dominant], basis, thermal_rho, gs_info
 
 
 def redistributed_states(basis, psis):

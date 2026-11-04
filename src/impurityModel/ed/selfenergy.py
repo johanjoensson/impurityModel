@@ -1042,7 +1042,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "gs_realaxis": gs_realaxis_full,
         "thermal_rho": thermal_rho,
         "rhos": gs_info["rhos"],
-        "gs_energies": np.asarray(es),
+        # The energies `rhos` belongs to: the union of the members' thermal states, ascending, labelled by
+        # gs_ensemble["state_sector"] (review H-MV4); one sector: that sector's.
+        "gs_energies": np.asarray(ensemble["es"]) if ensemble is not None else np.asarray(es),
         "block_structure": block_structure,
         # None unless the truncation_threshold bound the ground-state basis; a dict with
         # the fixed-budget CIPSI refinement summary otherwise (see CIPSISolver.expand).

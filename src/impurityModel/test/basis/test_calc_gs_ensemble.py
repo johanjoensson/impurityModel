@@ -208,3 +208,52 @@ def test_only_a_bound_basis_or_a_current_large_residual_refuses_a_member(comm, s
         assert got[1] == by_cap and "N_imp = 2" in got[0]
     elif state.get("converged") is False and (comm is None or comm.rank == 0):
         assert "is not certified" in capsys.readouterr().out
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("index", [3, 33])
+def test_the_union_is_ascending_labelled_and_the_dominant_member_holds_the_ground(comm, index, tmp_path):
+    """H-MV4/MV6/MV13: rhos, the union energies and their sector labels line up; the union is ascending (es[0] is
+    the global ground state); members[0] is the realised lowest and the returned states are all its own."""
+    (psis, es, _basis, _rho, info), _, _ = _run(index, comm, "on", tmp_path)
+    ens = info["ensemble"]
+    union = np.asarray(ens["es"])
+    assert len(union) == len(ens["state_sector"]) == len(info["rhos"]) > len(es)
+    assert np.all(np.diff(union) >= 0)
+    e0 = [m["e0"] for m in ens["members"]]
+    assert e0[0] == min(e0) == union[0]
+    dominant = ens["members"][0]["total"]
+    mine = union[[k for k, total in enumerate(ens["state_sector"]) if total == dominant]]
+    assert np.array_equal(np.asarray(es), mine) and len(psis) == len(es)
+    assert {m["total"] for m in ens["members"]} == set(ens["state_sector"])
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(comm, tmp_path, monkeypatch):
+    """H-MV6: the plan is walk-ordered. With it reversed, the realised lowest member is solved second; calc_gs must
+    still put it first, its hook result with it, and hand back its states."""
+    import dataclasses
+
+    from impurityModel.ed import groundstate
+
+    real = groundstate.plan_ensemble
+
+    def reversed_plan(solved, tau, mode, **kw):
+        plan = real(solved, tau, mode, **kw)
+        return plan if plan.needs else dataclasses.replace(plan, members=plan.members[::-1])
+
+    monkeypatch.setattr(groundstate, "plan_ensemble", reversed_plan)
+    h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
+    hooks = []
+    _, es, _, _, info = calc_gs(
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs2.json"),
+        member_hook=lambda member, *_: hooks.append(member.total) or member.total,
+    )  # fmt: skip
+    ens = info["ensemble"]
+    e0 = [m["e0"] for m in ens["members"]]
+    assert e0[0] == min(e0)
+    assert info["member_results"] == [m["total"] for m in ens["members"]]  # the hook results follow the members
+    assert hooks == [m["total"] for m in ens["members"]][::-1]  # solved in the reversed plan's order
+    assert min(es) == min(ens["es"])
