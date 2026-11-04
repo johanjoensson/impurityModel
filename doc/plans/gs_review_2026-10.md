@@ -707,3 +707,40 @@ step 5 (MV 1).
   - MS F1 freezes a shell only if the user declares it core, never on its own.
 - **O6. Parameters still to choose:** B1's margin; the J3 weight-error threshold; MV decision K (KMS); the CI
   runtime budget of the promoted oracle. (The J1/O5 commutator warning tolerance: `PARITY_TERM_TOL`, step 4.)
+
+## 9. Cross-cutting review 2026-11 (ground state × mixed valence × multishell)
+
+Four read-only Opus reviews (one per theme plus a cross-cutting lens) over `9f1b0609..HEAD`; findings confirmed
+by probe or by reading, fixed in single-concern commits with a test that fails on the old code. Nothing pushed.
+
+**Fixed** (review id: effect)
+
+| id | defect | fix |
+|---|---|---|
+| (earlier) | seed truncation cut orbits over a part of the basis | `964b60b9` truncate over the whole basis |
+| GS1/MV3 | rank-0-only blocks and merges hung the other ranks on an exception | `on_root` / `on_every_rank` (`174da019`, `18f288b9`) |
+| MS1 | χ did not pass the bath-less shell's `seed_window` to the GS | `b8ba3844` |
+| MS2 | cap connectivity probe seeded without the frozen window | `666dda3f` |
+| MS3 | `n0` read input-basis `h0` at solver-basis indices | `ccdb4426` |
+| GS9 | `DC_DE2_MIN=0` treated as unset | `10af5449` |
+| X1 | `attainable` pinned window groups at the nominal filling | `dfd4e03f` |
+| MV2 | a refused ensemble fed the cap ladder although the cap was not the cause | `2c7e1daa` (`EnsemblePlan.refused_by_cap`) |
+| GS8 | split / incomplete / uncertified manifold reported `converged` | `858adaa5` |
+| GS10 | seed-size truncation orbits built without the spin layout | `fa1b977a` |
+| GS11 | `Orbits.notes` degradations silent | `381b68b8` (printed once, rank 0) |
+| MV7 | `gs_info["truncation"]` was the dominant member's | `b3867376` (`worst_truncation`) |
+| docs | X3, X4, X5, MV10, GS7, MS5 | doc/test hygiene commits |
+
+**Refuted / not needed:** GS2, GS3, GS4, GS5 (optional hardening only), GS6, MV1.
+
+**Open, for the owner's decision (not changed):**
+H-MV12 (`auto` DC mode can raise a false `DoubleCountingUnreachable`), H-MV4 (`gs_energies` is the dominant
+member's, `rhos` the union), H-MV6 (dominant member by walk energy, not realised energy), H-MV11 (should `on`
+raise on a cap-bound thermal member; should `auto` keep the winner), H-MS4 (DC sector splits for a SeedWindow
+are not shell-keyed), H-MS6 (tolerance mismatch refusing p–d couplings ≥ 1e-5), H-MS7 (rank-local rotate/refusal
+decision), X7 (legacy `mv N>0` meaning), default-verbosity visibility of an uncertified winner, H-MV5
+(streaming K-member merges), impmod_interface X6/X8 (header "Mixed valence |> None", `_parse_mv("-1")`).
+
+**Not run in this pass:** the profile set P1–P4 (NiO/SMO/CrI3, off vs auto), the C-series bug-injection round and
+the R-series rank-divergence probes beyond those behind the fixes above. The `-n 3` gate growth (35→58 min) is
+unexplained.
