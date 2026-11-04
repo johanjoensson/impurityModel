@@ -3043,28 +3043,20 @@ def _handoff_run(refuse=None, occupation=1.0):
 
 def test_the_self_energy_reuses_the_dc_ground_state_and_gets_the_same_answer(capsys):
     fresh, reused, handoff = _handoff_run()
-    out = capsys.readouterr().out
-    if MPI.COMM_WORLD.rank == 0:  # the note is printed by rank 0 only
-        assert "Reusing the double counting's ground state" in out
-    else:
-        assert out == ""
+    assert "Reusing the double counting's ground state" in capsys.readouterr().out
     assert not handoff.filled  # consumed: it held a ground state's RAM
-    if MPI.COMM_WORLD.rank == 0:  # the self-energy arrays are returned on rank 0 only
-        np.testing.assert_allclose(reused["gs_energies"], fresh["gs_energies"], atol=1e-8)
-        np.testing.assert_allclose(reused["sigma"], fresh["sigma"], atol=1e-6)
-        np.testing.assert_allclose(reused["thermal_rho"], fresh["thermal_rho"], atol=1e-8)
+    np.testing.assert_allclose(reused["gs_energies"], fresh["gs_energies"], atol=1e-8)
+    np.testing.assert_allclose(reused["sigma"], fresh["sigma"], atol=1e-6)
+    np.testing.assert_allclose(reused["thermal_rho"], fresh["thermal_rho"], atol=1e-8)
 
 
 @pytest.mark.parametrize("what", ["dc", "spec"])
 def test_a_handoff_for_another_dc_or_spec_is_refused_and_the_self_energy_is_solved_fresh(what, capsys):
     fresh, reused, handoff = _handoff_run(refuse=what)
     out = capsys.readouterr().out
-    assert "Reusing the double counting's" not in out
-    if MPI.COMM_WORLD.rank == 0:  # the note is printed by rank 0 only
-        assert "is not reused" in out
+    assert "is not reused" in out and "Reusing the double counting's" not in out
     assert not handoff.filled
-    if MPI.COMM_WORLD.rank == 0:
-        np.testing.assert_allclose(reused["sigma"], fresh["sigma"], atol=1e-10)
+    np.testing.assert_allclose(reused["sigma"], fresh["sigma"], atol=1e-10)
 
 
 def test_a_reused_ground_state_means_the_self_energy_runs_no_ground_state_solve(monkeypatch):
