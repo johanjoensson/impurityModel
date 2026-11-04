@@ -59,7 +59,7 @@ def _exact_gc_green(tau, z, orbital=0, dropped=()):
     return g
 
 
-def _run(comm, mixed_valence, tau, gf_min_weight=None):
+def _run(comm, mixed_valence, tau, gf_min_weight=None, gf_settle_retry=None):
     basis = BasisOptions(
         nominal_occ={0: 1},
         mixed_valence=mixed_valence,
@@ -70,7 +70,13 @@ def _run(comm, mixed_valence, tau, gf_min_weight=None):
         slater_weight_min=1e-10,
         tau=tau,
     )
-    solver = SolverOptions(dense_cutoff=500, sparse_green=True, gf_method="lanczos", gf_min_weight=gf_min_weight)
+    solver = SolverOptions(
+        dense_cutoff=500,
+        sparse_green=True,
+        gf_method="lanczos",
+        gf_min_weight=gf_min_weight,
+        gf_settle_retry=gf_settle_retry,
+    )
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         res = calc_selfenergy(_siam_model(), _meshes(), basis, solver, comm=comm, verbosity=0)
@@ -190,3 +196,30 @@ def test_a_later_member_that_realised_the_lowest_energy_keeps_its_ground_manifol
     assert _holds_the_global_ground(True, [0.0, 1.0], 0.0)
     assert not _holds_the_global_ground(False, [0.5, 1.0], 0.0)  # an ordinary minority member
     assert _holds_the_global_ground(False, [-0.5, 1.0], 0.0)  # a mis-ranked walk: it is the global minimum
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("retry", [True, None])
+def test_the_settle_retry_runs_once_per_member_on_that_members_own_run(monkeypatch, retry):
+    """Each member's Green's function is attributed and (when asked) re-solved on its own ``GFRun``: one
+    ``_settle_retry`` call per member, each with a live run and the user's ``gf_settle_retry``. Skipping later members
+    fails the count, dropping the run fails the live-run check; default off hands no run at all."""
+    from impurityModel.ed import selfenergy
+
+    calls = []
+    real = selfenergy._settle_retry
+
+    def spy(**kw):
+        calls.append((kw["retry"], id(kw["run"]) if kw["run"] is not None else None))
+        return real(**kw)
+
+    monkeypatch.setattr(selfenergy, "_settle_retry", spy)
+    res = _run(MPI.COMM_WORLD, "on", 0.2, gf_settle_retry=retry)
+    n_members = len(res["gs_ensemble"]["members"])
+    assert n_members == 3 and len(calls) == n_members, calls
+    assert all(flag is bool(retry) for flag, _ in calls), calls
+    runs = [r for _, r in calls]
+    if retry:
+        assert all(r is not None for r in runs)
+    else:
+        assert all(r is None for r in runs)
