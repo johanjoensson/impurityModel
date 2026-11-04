@@ -1154,3 +1154,30 @@ def test_a_degraded_manifold_is_not_reported_converged(check, why):
     _record_union_cut(solver, None, None, 10)
     assert solver.convergence_report["converged"] is (why is None)
     assert solver.convergence_report["limited_by"] == why
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_an_uncertified_ground_state_sector_is_announced_once_at_every_verbosity(comm, monkeypatch, capsys):
+    """B10: the walk names an uncertified sector only under verbose; the ground state built on it says so always."""
+    from impurityModel.ed.groundstate import solve_ground_state
+    from impurityModel.ed.sector_solver import SectorPlanStore
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    store = SectorPlanStore()
+
+    def solve():
+        solve_ground_state(
+            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, tau=0.01, slaterWeightMin=0, comm=comm,
+            verbose=0, plan_store=store,
+        )  # fmt: skip
+        return capsys.readouterr().out
+
+    monkeypatch.setenv("GS_CERTIFY_MAX_SEED", "1")
+    first, second = solve(), solve()
+    root = comm is None or comm.rank == 0
+    assert (first.count("not certified: its seed is above GS_CERTIFY_MAX_SEED") == 1) == root
+    assert "GS_CERTIFY_MAX_SEED" not in second  # once per sector and store
+    monkeypatch.delenv("GS_CERTIFY_MAX_SEED")
+    store.clear()
+    assert "not certified: its seed" not in solve()  # a certified sector is not announced

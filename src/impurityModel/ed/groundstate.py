@@ -1357,6 +1357,28 @@ def _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm):
             )
 
 
+def _announce_uncertified(plan_store, key, comm):
+    """One rank-0 WARNING, at every verbosity, when the thermal ground state's sector was never certified.
+
+    A seed above ``GS_CERTIFY_MAX_SEED`` is solved by a single expansion, which can close in an excited symmetry
+    class. The sector walk says so only under ``verbose``. For the sector the calculation then rests on, it is
+    said always, once per sector and store. The store's sets are replicated, so the condition is too; nothing
+    collective depends on it.
+    """
+    if plan_store is None or key in plan_store.announced_uncertified:
+        return
+    if not any(isinstance(k, tuple) and k[0] == key for k in plan_store.uncertified):
+        return
+    plan_store.announced_uncertified.add(key)
+    if comm is None or comm.rank == 0:
+        print(
+            f"WARNING: the ground-state sector {key} was solved by a single expansion, not certified: its seed is "
+            "above GS_CERTIFY_MAX_SEED, so the expansion may have closed in an excited symmetry class. Raise "
+            "GS_CERTIFY_MAX_SEED to certify it.",
+            flush=True,
+        )
+
+
 def _thermal_state(
     search,
     h_op,
@@ -1410,6 +1432,7 @@ def _thermal_state(
     # imp_change=None, i.e. unconstrained), so its determinants span several impurity occupations --
     # measured {1, 2, 3} on a split-block toy whose winning sector is 2.
     basis.ground_state_occupation = dict(search.occupation)
+    _announce_uncertified(plan_store, sector_key(search.occupation, frozen_occupations), comm)
     # The resolved cap policy, read-only and immutable, for the Green's-function stage to size its
     # unit bases from (gf_units.gf_cap). Deliberately not `basis.truncation_threshold`: the memory
     # guard may lower that one for the ground state, and a GF unit must not inherit it.

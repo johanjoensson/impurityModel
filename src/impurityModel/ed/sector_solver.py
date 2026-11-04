@@ -1523,6 +1523,8 @@ class SectorPlanStore:
         self.active_orbitals = None if active_orbitals is None else tuple(int(o) for o in active_orbitals)
         #: Sectors solved by a single expansion because their seed was too large to certify.
         self.uncertified = set()
+        #: Sectors whose uncertified thermal ground state was already announced (one WARNING per sector, B10).
+        self.announced_uncertified = set()
         #: Sectors certified again because a solve contradicted the record (:meth:`violated`).
         self.recertified = set()
         #: The largest :func:`window_overtake` ratio of any certification.
@@ -1544,6 +1546,7 @@ class SectorPlanStore:
     def clear(self):
         self.records.clear()
         self.uncertified.clear()
+        self.announced_uncertified.clear()
         self.recertified.clear()
         self.overtake = None
 
