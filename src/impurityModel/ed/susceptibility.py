@@ -575,6 +575,9 @@ def calc_susceptibility_workflow(
         "comm": comm,
         "spin_layout": sb.spin_layout,
     }
+    if sb.seed_window is not None:
+        # A bath-less shell beside a correlated one: its seed is a window, as in calc_selfenergy (review MS1).
+        basis_information["frozen_occupations"] = sb.seed_window
     matsubara_mesh = bosonic_matsubara_mesh(tau, n_matsubara) if n_matsubara > 0 else None
 
     def chi_of(psis, es, ground_state_basis):

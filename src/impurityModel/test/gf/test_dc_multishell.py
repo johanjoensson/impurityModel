@@ -218,3 +218,27 @@ def test_a_rotated_d_shell_keeps_the_shift_on_the_d_orbitals_in_both_bases():
     assert ctx.active_indices == D_ORBS
     np.testing.assert_array_equal(ctx.dc(0.7)[:6, :6], np.zeros((6, 6)))
     np.testing.assert_allclose(ctx.dc(0.7)[6:, 6:], 0.7 * np.identity(10))
+
+
+def test_chi_hands_the_seed_window_of_a_bathless_shell_to_the_ground_state(monkeypatch):
+    """calc_selfenergy seeds the deep p shell as a window; the chi driver used to seed the whole p+d space and so solved
+    a different ground state (review MS1)."""
+    from impurityModel.ed import groundstate, susceptibility
+    from impurityModel.ed.basis_generation import SeedWindow
+    from impurityModel.ed.model import Meshes
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def spy(_h, basis_information, *_args, **_kwargs):
+        seen["frozen"] = basis_information.get("frozen_occupations")
+        raise Stop
+
+    monkeypatch.setattr(groundstate, "calc_gs", spy)
+    model, basis, solver = _p_plus_d()
+    meshes = Meshes(iw=None, w=np.linspace(-3.0, 3.0, 5), delta=0.1)
+    with pytest.raises(Stop):
+        susceptibility.calc_susceptibility_workflow(model, meshes, basis, solver, comm=MPI.COMM_WORLD)
+    assert isinstance(seen["frozen"], SeedWindow)
