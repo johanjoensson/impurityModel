@@ -134,6 +134,35 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
 
 
 @pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("mode", ["auto", "on"])
+def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, mode, tmp_path, capsys):
+    """H-MV11: at a cap of 10 the walk admits N = 1 and 2 unflagged, but both thermal solves are cap-bound."""
+    h_op, setup, bs, rot, _, _ = _setup(3, comm, mode)
+    setup["truncation_threshold"] = 10
+    hooks = []
+
+    def hook(member, *_):
+        hooks.append(member.total)
+
+    run = lambda: calc_gs(  # noqa: E731
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
+    )
+    if mode == "on":
+        with pytest.raises(ValueError, match="thermal solve is bound by the determinant cap"):
+            run()
+        return
+    *_, info = run()
+    ens = info["ensemble"]
+    assert "thermal solve is bound by the determinant cap" in ens["refused_reason"]
+    assert [m["total"] for m in ens["members"]] == [1] and ens["members"][0]["weight"] == 1.0
+    assert hooks == [1] and len(info["member_results"]) == 1
+    assert set(ens["state_sector"]) == {1}
+    if comm is None or comm.rank == 0:
+        assert "keeps the single N_imp = 1 sector" in capsys.readouterr().out
+
+
+@pytest.mark.mpi
 def test_a_failed_statistics_write_on_rank_0_is_raised_on_every_rank(tmp_path, monkeypatch):
     """Rank 0 alone writes the statistics JSON; a failure there left the other ranks in the next collective
     (the GS8 numpy-bool hang at -n 2). It must be raised on every rank."""

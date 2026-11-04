@@ -1602,7 +1602,10 @@ def solve_ground_state_ensemble(
     Krylov store) has been dropped, on ``consume``'s return value; its return value replaces that entry of
     ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is
     refused (a member is cap-bound, uncertified, or the weights are not fixed to ``ENSEMBLE_WEIGHT_ERROR_MAX``)
-    the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on every rank.
+    the ensemble is the winner alone: ``auto`` warns and goes on, ``on`` raises on every rank. The same holds
+    when a member's own thermal solve, checked before ``consume`` sees it, is cap-bound or unconverged. ``plan``
+    then says so, and ``results`` and ``realised`` are cut to the winner (a member consumed before the refused
+    one is dropped from them).
     ``announce_refusal=False`` silences the ``auto`` warning (a caller that records the refusal
     itself, such as the double-counting search, reports it once per search rather than per trial).
     ``warn_neighbours=False`` likewise silences the single-member neighbour-gap note.
@@ -1720,11 +1723,32 @@ def solve_ground_state_ensemble(
         ground_state = _thermal_state(
             member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single and warn_neighbours, **kw
         )
+        bad = None if single else _thermal_member_defect(member, ground_state, comm)
+        if bad is not None:
+            # The walk certified the plan; the member's own thermal solve did not hold up (review H-MV11). Decided
+            # on rank 0's reports and broadcast, so every rank takes the same branch. A lone winner is still a valid
+            # one-member ensemble, so it is consumed; a later member is not.
+            reason, by_cap = bad
+            if mode == "on":
+                raise ValueError(f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {reason}")
+            if announce_refusal and (comm is None or comm.rank == 0):
+                print(
+                    f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {plan.members[0].total} "
+                    f"sector: {reason}.",
+                    flush=True,
+                )
+            plan = dataclasses.replace(plan, members=plan.members[:1], refused_reason=reason, refused_by_cap=by_cap)
+            if results:
+                del ground_state
+                break
         realised.append(float(np.min(ground_state.es)))
         consumed = consume(member, ground_state)
         del ground_state  # the solver and its Krylov store go before the consumer's own workspace is built
         results.append(consumed if after_release is None else after_release(member, consumed))
         del consumed
+        if bad is not None:
+            break  # the winner, kept alone
+    del results[len(plan.members) :], realised[len(plan.members) :]
     # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. If the thermal
     # solves find another member lowest, the dominant member -- and so the sector the caller's basis, psis and
     # report are keyed to -- was mis-ranked. Decided on rank 0 and broadcast.
@@ -1741,6 +1765,31 @@ def solve_ground_state_ensemble(
         if comm is None or comm.rank == 0:
             print(f"WARNING: {msg}; the ensemble weights are still merged on the realised energies.", flush=True)
     return plan, results, realised
+
+
+def _thermal_member_defect(member, ground_state, comm):
+    """``(reason, by_cap)`` when a member's thermal solve may not enter a merge; ``None`` when it may.
+
+    The plan checked the walk's records. The thermal solve builds its own, larger basis, and that basis can be
+    cap-bound or unconverged where the walk's was not (review H-MV11). The verdict is taken from rank 0's reports
+    and broadcast; the broadcast is unconditional on every rank of ``comm``.
+    """
+    solver = ground_state.solver
+    cap_bound = getattr(solver, "truncation_report", None) is not None
+    convergence = getattr(solver, "convergence_report", None) or {}
+    unconverged = convergence.get("converged") is False
+    verdict = (bool(cap_bound), bool(unconverged), convergence.get("residual_pt2"), convergence.get("limited_by"))
+    if comm is not None:
+        verdict = comm.bcast(verdict, root=0)
+    cap_bound, unconverged, residual, limited_by = verdict
+    if cap_bound:
+        return f"the N_imp = {member.total} member's thermal solve is bound by the determinant cap", True
+    if unconverged:
+        detail = f"residual PT2 {residual:.2e}" if residual is not None else "no residual"
+        if limited_by:
+            detail += f", limited by {limited_by}"
+        return f"the N_imp = {member.total} member's thermal solve is not converged ({detail})", False
+    return None
 
 
 def worst_truncation(reports):
@@ -1904,6 +1953,8 @@ def _calc_gs_ensemble(
         after_release=release,
         **kwargs,
     )
+    # A member refused after its thermal solve (H-MV11) leaves the winner alone; drop anything consumed after it.
+    del kept[len(plan.members) :], hooked[len(plan.members) :]
     tau = basis_setup["tau"]
     measurements = [k[1] for k in kept]
     z = np.array([np.exp(-(m.es - m.es.min()) / tau).sum() for m in measurements])
