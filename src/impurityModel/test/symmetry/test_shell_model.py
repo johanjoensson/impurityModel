@@ -379,3 +379,26 @@ def test_every_rank_solves_in_rank_zeros_rotation(monkeypatch):
     assert np.array_equal(sb.rotation_full, root)
     assert np.array_equal(sb.u_imp, comm.bcast(sb.u_imp, root=0))
     assert sb.block_structure == comm.bcast(sb.block_structure, root=0)
+
+
+def test_the_shell_refusal_names_the_coupling_that_joined_the_shells():
+    """H-MS6: a direct p-d impurity element joins the group just as a shared bath does; the message said 'a bath
+    component hops to more than one shell' in both cases. It now names the element or the bath."""
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+
+    h0, rot = _p_plus_d_model()
+    h0 = dict(h0)
+    h0[((0, "c"), (6, "a"))] = h0[((6, "c"), (0, "a"))] = 1e-5
+    with pytest.raises(ValueError, match=r"spans shells") as direct:
+        prepare_solver_basis(
+            h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+        )
+    assert "input-basis impurity element h[0, 6] = 1e-05 couples shells 0 and 1" in str(direct.value)
+
+    h0, rot = _p_plus_d_model(couple_p=True)
+    with pytest.raises(ValueError, match=r"spans shells|straddle") as bath:
+        prepare_solver_basis(
+            h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
+        )
+    if "spans shells" in str(bath.value):
+        assert "bath orbital 16 hops to both shells" in str(bath.value)

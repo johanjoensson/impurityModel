@@ -133,6 +133,39 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None, impurity_shell
     return alloc
 
 
+def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices, h_input_matrix, input_shell_of):
+    """Name what couples two shells inside one orbital group: a direct impurity element, a shared bath, or both.
+
+    Used only to word the refusal (review H-MS6). Any element above the block-structure threshold joins a group,
+    so a direct p-d element of 1e-5 refuses exactly as a bath hopping to both shells does. The direct element is
+    looked up in the caller's input basis, since the symmetry rotation can carry it onto a bath (a 1e-5 p-d element
+    became a 7.5e-7 hopping from one bath to both shells); the bath is looked up in the solver basis.
+    """
+    h = np.asarray(h_matrix)
+    h_in = np.asarray(h_input_matrix)
+    imp = sorted(impurity_indices)
+    direct = max(
+        ((abs(h_in[a, b]), a, b) for a in imp for b in imp if a < b and input_shell_of[a] != input_shell_of[b]),
+        default=(0.0, None, None),
+    )
+    shared = []
+    for b in sorted(set(range(h.shape[0])) - set(imp)):
+        reached = {shell_of[o]: abs(h[o, b]) for o in group_orbitals if abs(h[o, b]) > 0}
+        if len(reached) > 1:
+            shared.append((min(reached.values()), b))
+    parts = []
+    if direct[0] > 0:
+        a, b = direct[1], direct[2]
+        parts.append(
+            f"the input-basis impurity element h[{a}, {b}] = {direct[0]:.3g} couples shells {input_shell_of[a]} and "
+            f"{input_shell_of[b]} directly"
+        )
+    if shared:
+        weakest, b = max(shared)
+        parts.append(f"bath orbital {b} hops to both shells (the weaker hopping {weakest:.3g})")
+    return " and ".join(parts) if parts else "the block structure joins orbitals of different shells"
+
+
 def prepare_solver_basis(
     h0,
     dc,
@@ -208,6 +241,7 @@ def prepare_solver_basis(
 
     rotate = fill_ratio <= _MAX_ROTATION_FILL
     multishell = shell_ls is not None and len(resolve_shell_ls(rot_to_spherical, shell_ls)) > 1
+    input_rot_to_spherical = rot_to_spherical  # the caller's, before any rotation (for the H-MS6 message)
     if rotate and multishell:
         # A rotation that mixes shells would make "the occupation of shell a" meaningless: keep the input basis.
         try:
@@ -277,12 +311,19 @@ def prepare_solver_basis(
     if multishell:
         local = shell_index_of_orbitals(rot_to_spherical, shell_ls)
         impurity_shell_index = {int(o): int(a) for o, a in zip(impurity_indices, local)}
+        input_shell_index = {
+            int(o): int(a) for o, a in zip(impurity_indices, shell_index_of_orbitals(input_rot_to_spherical, shell_ls))
+        }
         for k, blocks in impurity_orbitals.items():
             shells = {impurity_shell_index[o] for block in blocks for o in block}
             if len(shells) > 1:
+                orbs = [o for block in blocks for o in block]
                 raise ValueError(
-                    f"impurity orbital group {k} spans shells {sorted(shells)}: a bath component hops to more than "
-                    "one shell, so no per-shell occupation window can be set."
+                    f"impurity orbital group {k} spans shells {sorted(shells)}: "
+                    + _shell_coupling(
+                        h_matrix, orbs, impurity_shell_index, impurity_indices, h_input_matrix, input_shell_index
+                    )
+                    + ", so no per-shell occupation window can be set (review H-MS6)."
                 )
     nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix, impurity_shell_index)
 
