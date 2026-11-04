@@ -39,7 +39,6 @@ from impurityModel.ed.groundstate import (
     redistributed_states,
 )
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
-from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import (
     log_peak_vs_predicted,
     resolve_cap_policy,
