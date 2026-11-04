@@ -170,7 +170,7 @@ Format version and forward-compatibility declarations.
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
 | `version` | version | `[1, 0]` | [major, minor]. A major above the reader's is refused outright. The minor decides how an unknown key is treated: at or below ours it can only be a typo (error), above ours it may be a future key (warn and ignore). |
-| `required_features` | string list | `[]` | Semantics a reader must understand to interpret this file correctly. An entry this reader does not recognise is a hard error -- the same contract as the .h0 header (doc/h0_file_format.md), and the reason unknown keys can safely be lenient while this is strict. |
+| `required_features` | string list | `[]` | Semantics a reader must understand to interpret this file correctly. An entry this reader does not recognise is a hard error -- the same contract as the .h0 header (doc/h0_file_format.md), and the reason unknown keys can safely be lenient while this is strict. List `mixed_valence_tristate` in a file whose `mixed_valence` is auto/on/off: a reader from before the charge-sector ensemble took an integer there as a seed-window width. |
 
 ## `[hamiltonian.archive]`
 

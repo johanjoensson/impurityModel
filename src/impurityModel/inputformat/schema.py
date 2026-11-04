@@ -329,7 +329,9 @@ _TABLE_LIST = [
                 "Semantics a reader must understand to interpret this file correctly. An "
                 "entry this reader does not recognise is a hard error -- the same contract "
                 "as the .h0 header (doc/h0_file_format.md), and the reason unknown keys can "
-                "safely be lenient while this is strict.",
+                "safely be lenient while this is strict. List `mixed_valence_tristate` in a file "
+                "whose `mixed_valence` is auto/on/off: a reader from before the charge-sector "
+                "ensemble took an integer there as a seed-window width.",
             ),
         ),
     ),

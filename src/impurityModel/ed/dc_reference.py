@@ -251,6 +251,10 @@ def discretized_impurity_occupation(model, tau):
     today" without duplicating the Fermi fill and its saturation check. Unwarned: the caller is
     expected to have its own reporting (or to be calling this purely to feed a comparison), not to
     silently re-trigger the saturation warning a second time per call.
+
+    It counts the whole impurity. On a multi-shell impurity with a bath-less shell, the double-counting
+    search counts only the shells a bath hops to, so its ``n0`` is smaller than this by the bath-less
+    shell's filling. The RSPt interface never sets ``shell_ls``, so there the two agree.
     """
     return _reference_impurity_occupation(model, tau, warn=False)
 
