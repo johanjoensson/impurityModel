@@ -253,3 +253,19 @@ def test_the_cli_cap_option_tells_not_given_from_auto():
     assert parser.parse_args(["--truncation_threshold", "2e6"]).truncation_threshold == 2_000_000
     with pytest.raises(SystemExit):
         parser.parse_args(["--truncation_threshold", "0"])
+
+
+@pytest.mark.parametrize(
+    "written, expected",
+    [(True, "on"), (False, "off"), (0, "off"), (2, "auto"), ("auto", "auto"), ("TRUE", "on"), ("off", "off")],
+)
+def test_mixed_valence_reads_a_legacy_integer_as_auto(written, expected):
+    """X7: a non-zero integer is the old seed-width spelling; it means auto, as resolve_mixed_valence and the docs
+    say, not 'on' (which would turn a cap-bound member into an abort)."""
+    from impurityModel.ed.sector_ensemble import resolve_mixed_valence
+    from impurityModel.inputformat.reader import _coerce
+
+    key = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "mixed_valence")
+    got = _coerce("many_body_basis.mixed_valence", key, written, {"energy": "eV"}, ".")
+    assert got == expected
+    assert resolve_mixed_valence(got, driver_default="off")[0] == expected

@@ -254,7 +254,8 @@ def _coerce(where, key, value, units, base_dir):
         if isinstance(value, int):
             if value < 0:
                 raise InputError(f"[{where}]: must not be negative, got {value}")
-            return "on" if value else "off"
+            # A legacy integer widened the seed; non-zero now means auto, as in resolve_mixed_valence (review X7).
+            return "auto" if value else "off"
         text = {"true": "on", "false": "off"}.get(str(value).strip().lower(), str(value).strip().lower())
         if text not in ("auto", "on", "off"):
             raise InputError(f"[{where}]: expected 'auto', true/'on' or false/'off', got {value!r}")
