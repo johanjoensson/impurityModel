@@ -748,7 +748,7 @@ runs had missed it: they were run without `--with-mpi`, so the `[mpi]` variants 
 (`bool()`, the encoder writes `np.bool_`) and `67dd4a37` (the statistics write goes through `on_root`, gated on the
 replicated `stats_path`). Every long MPI run since then has been under `timeout` + `systemd-run -p MemoryMax=… -p MemorySwapMax=0`.
 
-**Final gate** (HEAD `23ebf47a`, capped): `-n 1` 4067 passed; `-n 2` 4176 / 4175 passed; `-n 3` 4184 / 4183 / 4183
+**Final gate** (at `67dd4a37`, capped; after it only `6f1c1728`, a type annotation, and `23ebf47a`, one pure-function test run on its own): `-n 1` 4067 passed; `-n 2` 4176 / 4175 passed; `-n 3` 4184 / 4183 / 4183
 passed; 9 xfailed on every rank file. `-n 3` took 46.5 min, against 58 before this pass. `make check` scoped to
 `src` is no worse than the baseline (one mypy annotation added, `6f1c1728`).
 
