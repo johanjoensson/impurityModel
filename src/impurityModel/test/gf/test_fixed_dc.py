@@ -2973,3 +2973,28 @@ def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_
             **{**kwargs, "basis": dataclasses.replace(kwargs["basis"], mixed_valence="auto")},
         )
     assert record.get("ensemble_refused_points", 0) >= 1, record
+
+
+@pytest.mark.parametrize("mode", ["off", "auto", "on"])
+def test_the_occupation_search_is_sector_first_except_in_continuous_mode(mode, monkeypatch):
+    """``on`` makes n(mu) a smooth grand-canonical average: the search is a plain bracketed root (no ``sector_of``,
+    no nominal sector) and resolves mu finer than the single-sector bracket. Restoring the sector-first call or the
+    old bracket width under ``on`` fails this; ``off``/``auto`` must keep both."""
+    seen = {}
+    real = dc_criteria._solve_dc_shift
+
+    def spy(*args, **kw):
+        seen.update(kw)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(dc_criteria, "_solve_dc_shift", spy)
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    basis = dataclasses.replace(kwargs["basis"], mixed_valence=mode)
+    fixed_occupation_dc(occupation=1.0, **{**kwargs, "basis": basis})
+    single = dc_criteria.bracket_width_tol(basis.tau)
+    if mode == "on":
+        assert seen["sector_of"] is None and seen["nominal_sector"] is None
+        assert seen["width_tol"] < single
+    else:
+        assert callable(seen["sector_of"]) and seen["nominal_sector"] is not None
+        assert seen["width_tol"] == single
