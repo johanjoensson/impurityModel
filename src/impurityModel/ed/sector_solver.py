@@ -1184,6 +1184,12 @@ def _record_union_cut(solver, union_cut, cap, retained):
     check = getattr(solver, "manifold_check", None)
     if check is not None:
         conv["manifold_check"] = dict(check)
+        # A state that is known to be incomplete, split or uncertified is not a converged one, whatever the PT2
+        # residual says (review GS8): the flag is what the ensemble plan, the DC record and the report read.
+        why = _manifold_degradation(check)
+        if why is not None and union_cut is None and conv.get("converged") is not False:
+            conv["converged"] = False
+            conv["limited_by"] = conv.get("limited_by") or why
     if union_cut is None:
         return
     report = dict(
@@ -1202,6 +1208,17 @@ def _record_union_cut(solver, union_cut, cap, retained):
     solver.truncation_report = report
     conv["converged"] = False
     conv["limited_by"] = conv.get("limited_by") or "cap"
+
+
+def _manifold_degradation(check):
+    """Why a thermal manifold's ``manifold_check`` says the state is degraded (``None``: it does not)."""
+    if check.get("multiplet_split") is not None:
+        return "multiplet_split"
+    if check.get("found", 0) < check.get("expected", 0) or check.get("window_complete") is False:
+        return "incomplete_manifold"
+    if check.get("certified") is False:
+        return "uncertified"
+    return None
 
 
 def _raise_cap_advice(verdicts, *, widen):
@@ -1421,6 +1438,7 @@ def solve_certified(
     certified = merged.size < dense_cutoff or eig is None or bool(eig.certified)
     split = multiplet_split(plan, verdicts, es, psis, merged, roundoff, certified=certified)
     solver.manifold_check["multiplet_split"] = split
+    solver.manifold_check["certified"] = certified
     if split is not None and (basis.comm is None or basis.comm.rank == 0):
         spins = ", ".join(f"S = {ts / 2:g}" for ts in split["two_s"])
         cause = (

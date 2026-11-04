@@ -1128,3 +1128,29 @@ def test_solve_sector_counts_the_plan_stores_active_orbitals(comm, monkeypatch):
             slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store, shift=mu,
         )  # fmt: skip
     assert seen and all(o == (0, 1) for o in seen), seen
+
+
+@pytest.mark.parametrize(
+    "check, why",
+    [
+        ({"found": 3, "expected": 3, "multiplet_split": {"spread": 1e-3}}, "multiplet_split"),
+        ({"found": 2, "expected": 3, "multiplet_split": None}, "incomplete_manifold"),
+        ({"found": 3, "expected": 3, "window_complete": False}, "incomplete_manifold"),
+        ({"found": 3, "expected": 3, "certified": False}, "uncertified"),
+        ({"found": 3, "expected": 3, "multiplet_split": None, "window_complete": True, "certified": True}, None),
+    ],
+)
+def test_a_degraded_manifold_is_not_reported_converged(check, why):
+    """``converged`` said True while the manifold was split, incomplete or uncertified (review GS8)."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed.sector_solver import _record_union_cut
+
+    solver = SimpleNamespace(
+        convergence_report={"converged": True, "limited_by": None, "residual_pt2": 0.0},
+        manifold_check=check,
+        truncation_report=None,
+    )
+    _record_union_cut(solver, None, None, 10)
+    assert solver.convergence_report["converged"] is (why is None)
+    assert solver.convergence_report["limited_by"] == why
