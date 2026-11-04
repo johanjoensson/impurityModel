@@ -741,6 +741,47 @@ are not shell-keyed), H-MS6 (tolerance mismatch refusing p–d couplings ≥ 1e-
 decision), X7 (legacy `mv N>0` meaning), default-verbosity visibility of an uncertified winner, H-MV5
 (streaming K-member merges), impmod_interface X6/X8 (header "Mixed valence |> None", `_parse_mv("-1")`).
 
-**Not run in this pass:** the profile set P1–P4 (NiO/SMO/CrI3, off vs auto), the C-series bug-injection round and
-the R-series rank-divergence probes beyond those behind the fixes above. The `-n 3` gate growth (35→58 min) is
-unexplained.
+**Hang introduced and fixed in this pass.** GS8 (`858adaa5`) stored a numpy bool in `manifold_check`. Rank 0's
+`save_gs_statistics` then raised `TypeError`, while the other ranks went on into the next collective, so the `-n 2` gate
+stalled on `test_calc_gs_ensemble`. The machine then froze (the journal shows an i915 GPU hang, no OOM). The targeted
+runs had missed it: they were run without `--with-mpi`, so the `[mpi]` variants were skipped. Fixes: `a5c78de9`
+(`bool()`, the encoder writes `np.bool_`) and `67dd4a37` (the statistics write goes through `on_root`, gated on the
+replicated `stats_path`). Every long MPI run since then has been under `timeout` + `systemd-run -p MemoryMax=… -p MemorySwapMax=0`.
+
+**Final gate** (HEAD `23ebf47a`, capped): `-n 1` 4067 passed; `-n 2` 4176 / 4175 passed; `-n 3` 4184 / 4183 / 4183
+passed; 9 xfailed on every rank file. `-n 3` took 46.5 min, against 58 before this pass. `make check` scoped to
+`src` is no worse than the baseline (one mypy annotation added, `6f1c1728`).
+
+**C2 bug injections** (`debug/review_2026-11/probes/c2_inject.py`; one edit at a time, restored from a copy):
+
+| inj | edit | caught by |
+|---|---|---|
+| a | `sector_weights` without `z` | sector-plan GC weights (6), GF GC oracle (2) |
+| b | `_member_coefficients` without `kept_share` | `test_member_coefficients_…`, partly-dropped-member oracle |
+| c1 | admission `<` → `<=` on the cut | **escaped**; caught after `23ebf47a` (`test_a_sector_exactly_on_the_energy_cut_is_not_admitted`) |
+| c2 | `e_min` not the winner's | needs/one-member tests (6) |
+| d | `_active_shift` P = I | multishell DC (6) |
+| e | `DEEP_SEED_WIDTH = 0` | `test_default_width` only (a constant pin) |
+| f | `_group_rows` sorts on the first word only | `test_group_rows_is_the_partition_of_equal_rows` (3) |
+| g | `retain` keeps half an orbit | `test_truncate_keeps_orbits_whole_…` |
+| h | width-0 padding dropped | `test_width_zero_block_…` (at -n 2) |
+| i | intra/inter variance swapped | between-sector variance warning test |
+| j | `_holds_the_global_ground` always False | later-member-realises-lowest test |
+
+**Profiles** (`debug/review_2026-11/logs/prof_*`; `-n 4` unless stated; reference step 7′):
+
+| run | total | walk | thermal | E0 / states / dets | vs reference |
+|---|---|---|---|---|---|
+| NiO 10-bath off | 343 s | 182 s | 146 s | −53.3299644, 3, 710,493 | C4 352.7 s, 7′ 419 s; same E0 |
+| NiO 10-bath off, -n 1 | 405 s | 216 s | 170 s | identical | 7′ 453 s |
+| NiO auto | 4231 s | 188 s | 190 s | K=2: N=8 (0.9999), N=9 (1e-4) | GS ~380 s; ~3850 s are GFs of both members |
+| NiO auto, -n 1 | timeout 5400 s | | | inside the first member's GF | |
+| SMO 4-bath off | 2201 s | 1612 s | 564 s | −11.5651958, quartet 4/4, 489,322 | 7′ 2147 s (+2.5 %), E0 2.5 µRy lower |
+| SMO 4-bath auto | 3562 s | 2012 s | 526 s | K=1 (N=3), 484,890, E0 0.5 µRy above off | walk +25 %: one extra N=1 solve (387 s) |
+| CrI3 off | 2534 s | 1685 s | 825 s | −7.62335438, 2 states, 517,698 | 7′ 2472 s (+2.5 %), identical E |
+
+No `off` regression beyond noise. Two new performance items for decision:
+- **PERF-MV-a.** A member with weight 1e-4 (NiO N=9) gets a full Green's function, the same as the dominant one.
+- **PERF-MV-b.** Under `auto`, a sector admitted provisionally on its optimistic (residual-subtracted) energy makes the plan solve
+  its edge neighbour. On SMO that cost 387 s, and the final ensemble was the winner alone. The doc's prediction of K = 2 on
+  SMO 4-bath did not hold (K = 1). P3 (gate duration attribution) was not needed: `-n 3` is back to 46.5 min.
