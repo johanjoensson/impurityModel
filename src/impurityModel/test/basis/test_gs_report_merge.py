@@ -23,13 +23,14 @@ def test_one_member_is_returned_untouched():
     assert basis is m.basis and es is m.es and psis is m.psis
 
 
-def test_members_concatenate_with_absolute_energies_dominant_first():
+def test_members_concatenate_with_absolute_energies_in_ascending_order():
+    """The union is sorted by energy across members (review H-MV13), and each state follows its energy."""
     a = _member([_det(1), _det(2)], [-2.0, -1.9], 1)
     b = _member([_det(4)], [-1.95], 2)
     basis, es, psis = merge_measurements([a, b])
     assert basis == "basis1"
-    assert list(es) == [-2.0, -1.9, -1.95]
-    assert len(psis) == 3
+    assert list(es) == [-2.0, -1.95, -1.9]
+    assert [list(psi.keys()) for psi in psis] == [[_det(1)], [_det(4)], [_det(2)]]
 
 
 def test_empty_raises():
