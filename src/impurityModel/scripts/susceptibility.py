@@ -81,6 +81,13 @@ def add_arguments(parser):
     )
     add_cap_argument(parser)
     parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
+    parser.add_argument(
+        "--mixed_valence",
+        choices=("auto", "on", "off"),
+        default="off",
+        help="Charge-sector ensemble: off = the ground-state sector only; auto = every sector inside the thermal "
+        "window; on = grand-canonical, continuous in the chemical potential (default: off).",
+    )
     parser.add_argument("--w_min", type=float, default=-5.0, help="Lower edge of the real frequency mesh (eV).")
     parser.add_argument("--w_max", type=float, default=5.0, help="Upper edge of the real frequency mesh (eV).")
     parser.add_argument("--w_n", type=int, default=501, help="Number of real mesh points.")
@@ -143,7 +150,10 @@ def run(args):
             verbose=verbosity > 0,
         )
         basis = BasisOptions(
-            nominal_occ={ls: args.n0imps}, mixed_valence={ls: 0}, tau=args.tau, truncation_threshold=requested_cap(args)
+            nominal_occ={ls: args.n0imps},
+            mixed_valence=args.mixed_valence,
+            tau=args.tau,
+            truncation_threshold=requested_cap(args),
         )
         cluster_label = args.clustername
 

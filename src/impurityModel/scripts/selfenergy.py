@@ -94,6 +94,13 @@ def add_arguments(parser):
         ),
     )
     parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
+    parser.add_argument(
+        "--mixed_valence",
+        choices=("auto", "on", "off"),
+        default="off",
+        help="Charge-sector ensemble: off = the ground-state sector only; auto = every sector inside the thermal "
+        "window; on = grand-canonical, continuous in the chemical potential (default: off).",
+    )
 
     # Real-frequency mesh.
     parser.add_argument("--w_min", type=float, default=-10.0, help="Lower edge of the real frequency mesh (eV).")
@@ -452,7 +459,7 @@ def run(args):
         meshes = Meshes(iw=iw, w=w, delta=args.delta)
         basis = BasisOptions(
             nominal_occ={ls: args.n0imps},
-            mixed_valence={ls: 0},
+            mixed_valence=args.mixed_valence,
             dN=args.dN,
             truncation_threshold=requested_cap(args),
             chain_restrict=args.chain_restrict,

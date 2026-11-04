@@ -394,3 +394,12 @@ def test_the_refine_flags_override_the_archive_record_and_are_cleared_when_leavi
         refined, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
     )
     assert bicg.gf_method == "bicgstab" and bicg.gf_refine_rounds is None
+
+
+@pytest.mark.parametrize("mod", [selfenergy, susceptibility])
+def test_legacy_scripts_take_the_charge_sector_mode_and_default_to_off(mod):
+    assert _parse(mod.add_arguments, ["h0.pickle"]).mixed_valence == "off"
+    for mode in ("auto", "on", "off"):
+        assert _parse(mod.add_arguments, ["h0.pickle", "--mixed_valence", mode]).mixed_valence == mode
+    with pytest.raises(SystemExit):
+        _parse(mod.add_arguments, ["h0.pickle", "--mixed_valence", "maybe"])
