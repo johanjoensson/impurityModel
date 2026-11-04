@@ -510,7 +510,7 @@ def calc_susceptibility_workflow(
     mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="off")
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
-    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
+    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs, redistributed_states
     from impurityModel.ed.gs_connectivity import solver_basis_connectivity
     from impurityModel.ed.memory_estimate import resolve_cap_policy
     from impurityModel.ed.solver_basis import prepare_solver_basis
@@ -596,9 +596,7 @@ def calc_susceptibility_workflow(
 
     def member_chi(member, member_basis, member_es, member_psis, _truncation, _convergence):
         # Collective, run while the member's basis is alive and after its solver is released.
-        from impurityModel.ed.selfenergy import _redistributed_states
-
-        return chi_of(_redistributed_states(member_basis, member_psis), member_es, member_basis)
+        return chi_of(redistributed_states(member_basis, member_psis), member_es, member_basis)
 
     psis, es, ground_state_basis, _thermal_rho, gs_info = calc_gs(
         sb.h,

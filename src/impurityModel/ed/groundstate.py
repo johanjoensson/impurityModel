@@ -16,7 +16,7 @@ from impurityModel.ed.gs_report import finalize_ground_state, measure_ground_sta
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -1899,6 +1899,21 @@ def _calc_gs_ensemble(
     gs_info["member_results"] = hooked
     n_dominant = len(measurements[0].es)
     return psis[:n_dominant], es[:n_dominant], basis, thermal_rho, gs_info
+
+
+def redistributed_states(basis, psis):
+    """The thermal states as the single-sector report hands them on: redistributed onto ``basis``, pruned.
+
+    ``report_ground_state`` does exactly this before anything else touches the states, so a Green's function
+    that starts from these is the one the ``mixed_valence = off`` path starts from (one member: bit-identical).
+    Collective on ``basis.comm``.
+    """
+    n = len(psis) if not isinstance(psis, ManyBodyState) else int(psis.width)
+    block = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
+    block.prune_rows(0.0)
+    states = block.to_states()
+    # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
+    return states if states else [ManyBodyState(width=1) for _ in range(n)]
 
 
 def calc_gs(

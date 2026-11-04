@@ -31,7 +31,13 @@ from impurityModel.ed.greens_function import (
     get_greens_function_moments,
     save_Greens_function,
 )
-from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
+from impurityModel.ed.groundstate import (
+    GS_DE2_MIN,
+    GS_E_PT2_TOL,
+    GroundStateSpec,
+    calc_gs,
+    redistributed_states,
+)
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import (
@@ -475,21 +481,6 @@ def _member_coefficients(weights, kept_shares):
     return [x / total for x in share]
 
 
-def _redistributed_states(basis, psis):
-    """The thermal states as the single-sector report hands them on: redistributed onto ``basis``, pruned.
-
-    ``report_ground_state`` does exactly this before anything else touches the states, so a Green's function
-    that starts from these is the one the ``mixed_valence = off`` path starts from (one member: bit-identical).
-    Collective on ``basis.comm``.
-    """
-    n = len(psis) if not isinstance(psis, ManyBodyState) else int(psis.width)
-    block = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
-    block.prune_rows(0.0)
-    states = block.to_states()
-    # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
-    return states if states else [ManyBodyState(width=1) for _ in range(n)]
-
-
 def _state_list(psis):
     """The thermal states as a list of single-column states (a solve returns them as one block)."""
     return psis.to_states() if isinstance(psis, ManyBodyState) else list(psis)
@@ -920,7 +911,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         shell_ls=sb.shell_ls,
         spec=gs_spec,
         member_hook=lambda member, basis, es, psis, trunc, conv: member_gf(
-            _redistributed_states(basis, psis), es, basis, trunc, conv, label=f"[N_total = {member.total}] "
+            redistributed_states(basis, psis), es, basis, trunc, conv, label=f"[N_total = {member.total}] "
         ),
     )
     _report_phase_time(report, "ground state", t_phase)
