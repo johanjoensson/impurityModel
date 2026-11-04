@@ -339,3 +339,43 @@ def test_a_shell_keyed_nominal_occupation_is_not_read_as_group_keyed_when_the_ke
     shell_index = {**dict.fromkeys(range(10), 1), **dict.fromkeys(range(10, 16), 0)}  # p is shell 0, d is shell 1
     got = _per_group_occupation({0: 2, 1: 8}, impurity_orbitals, impurity_shell_index=shell_index)
     assert got == {0: 8, 1: 2}
+
+
+def _rotating_d_model():
+    """A d shell with a crystal-field mixing of orbitals 0 and 1: the symmetry-adapted rotation is not the identity."""
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+
+    h = np.zeros((12, 12), dtype=complex)
+    for i in range(10):
+        h[i, i] = 1.0 + 0.1 * (i % 5)
+    h[0, 1] = h[1, 0] = 0.05
+    h[5, 6] = h[6, 5] = 0.05
+    h[10, 10], h[11, 11] = -1.0, 2.0
+    h[0, 10] = h[10, 0] = h[5, 11] = h[11, 5] = 0.3
+    return tensors_to_operator(h).to_dict()
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(__import__("mpi4py.MPI").MPI.COMM_WORLD.size == 1, reason="needs a second rank to disagree")
+def test_every_rank_solves_in_rank_zeros_rotation(monkeypatch):
+    """H-MS7: the rotation is a rank-local eigh; a rank whose eigh disagrees must still take rank 0's basis."""
+    from mpi4py import MPI
+
+    from impurityModel.ed import solver_basis
+
+    comm = MPI.COMM_WORLD
+    if comm.rank != 0:
+        # Stand-in for a degenerate block whose eigenvectors came out differently on this rank's BLAS.
+        monkeypatch.setattr(
+            solver_basis,
+            "impurity_symmetry_rotation",
+            lambda op, imp, n_orb=None, h0_matrix=None: (np.eye(n_orb, dtype=complex), np.eye(len(imp), dtype=complex)),
+        )
+    sb = solver_basis.prepare_solver_basis(
+        _rotating_d_model(), {}, {}, {0: list(range(10))}, 8, rot_to_spherical=np.eye(10), verbosity=0, comm=comm
+    )
+    root = comm.bcast(sb.rotation_full, root=0)
+    assert not np.allclose(root, np.eye(root.shape[0])), "the model must rotate, or the test is vacuous"
+    assert np.array_equal(sb.rotation_full, root)
+    assert np.array_equal(sb.u_imp, comm.bcast(sb.u_imp, root=0))
+    assert sb.block_structure == comm.bcast(sb.block_structure, root=0)

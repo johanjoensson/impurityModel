@@ -156,9 +156,11 @@ def prepare_solver_basis(
     solved in. Returns a :class:`SolverBasis`.
 
     ``rank`` gates the report only: every rank computes the identical layout, so without the gate the
-    legend prints once per rank. The one collective is the broadcast of the resolved
-    :attr:`SolverBasis.spin_layout`, made when ``comm`` is given (unconditionally, on every rank of
-    it); without a ``comm`` the layout is resolved rank-locally.
+    legend prints once per rank. When ``comm`` is given, three broadcasts from rank 0 run
+    unconditionally on every rank of it: the symmetry rotation, the decision to solve in it, and the
+    resolved :attr:`SolverBasis.spin_layout`. Rank-local eigenvectors of a degenerate block, or a fill
+    ratio on the threshold, cannot then put the ranks in different bases. Without a ``comm``, all three
+    are rank-local.
 
     ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) marks a multi-shell impurity.
     The symmetry-adapted rotation is then kept only if it maps every orbital into a single shell (otherwise
@@ -196,6 +198,10 @@ def prepare_solver_basis(
     rotation_full, u_imp = impurity_symmetry_rotation(
         h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix
     )
+    if comm is not None:
+        # The rotation comes from a rank-local eigh, and in a degenerate block its eigenvectors depend on the
+        # BLAS build. Every rank must solve in one basis, so they all take rank 0's (review H-MS7).
+        rotation_full, u_imp = comm.bcast((rotation_full, u_imp), root=0)
     h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
     n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
     fill_ratio = len(h_rotated) / max(n_terms_input, 1)
@@ -208,6 +214,9 @@ def prepare_solver_basis(
             shell_index_of_orbitals(u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex), shell_ls)
         except ValueError:
             rotate = False
+    if comm is not None:
+        # The fill ratio and the shell test both sit on a threshold; one decision for every rank.
+        rotate = bool(comm.bcast(bool(rotate), root=0))
     if rotate:
         h = h_rotated
         h0_solve = rotate_hamiltonian(h0_input, rotation_full, tol=_ROTATION_TRIM_TOL)
