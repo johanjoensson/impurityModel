@@ -172,6 +172,7 @@ def build_basis_and_solver(
     total_charge_slack=0,
     manifold,
     dense_cutoff=config.GS_DENSE_CUTOFF,
+    spin_layout=None,
 ):
     basis = Basis(
         impurity_indices,
@@ -192,7 +193,7 @@ def build_basis_and_solver(
     solver = CIPSISolver(basis)
     if basis.size > basis.truncation_threshold:
         # Cutting the seed itself: by whole orbits too. The restrictions are not set yet, so no member is filtered.
-        solver.orbits = _orbits_for(h_op, basis, manifold, None)
+        solver.orbits = _orbits_for(h_op, basis, manifold, spin_layout)
     solver.truncate_initial(h_op, manifold, dense_cutoff=dense_cutoff)
     solver.orbits = None
 
@@ -342,6 +343,7 @@ def solve_sector(
                 slaterWeightMin=slaterWeightMin,
                 manifold=manifold,
                 dense_cutoff=dense_cutoff,
+                spin_layout=spin_layout,
             )
 
         if len(basis) == 0:

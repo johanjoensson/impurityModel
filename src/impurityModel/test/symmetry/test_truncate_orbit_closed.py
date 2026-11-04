@@ -57,3 +57,31 @@ def test_truncate_keeps_orbits_whole_when_members_fall_below_the_slater_weight_c
     solver.expand(H, manifold, dense_cutoff=500, de2_min=0.0, e_pt2_tol=1e-8, slaterWeightMin=SWMIN_DEFAULT)
     assert seen, "the cap must bind: no truncate ran"
     assert max(seen) == 0, seen
+
+
+def test_the_seed_size_truncation_builds_its_orbits_with_the_spin_layout(monkeypatch):
+    """A seed above the cap is cut by whole orbits; the orbits must carry the solve's spin layout (S+- closure),
+    as the expansion's do (review GS10: they were built with spin_layout=None)."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import build_basis_and_solver
+
+    _h0, H, imp, bath = cubic_d_shell(n_bath_sets=1)
+    seen = []
+    real = groundstate._orbits_for
+
+    def spy(h_op, basis, manifold, layout):
+        seen.append(layout)
+        return real(h_op, basis, manifold, layout)
+
+    monkeypatch.setattr(groundstate, "_orbits_for", spy)
+    marker = object()
+    try:
+        build_basis_and_solver(
+            H, imp, bath, {0: 8}, tau=0.0, chain_restrict=False, truncation_threshold=10, comm=None, verbose=False,
+            frozen_occupations=None, weighted_restrictions=None, slaterWeightMin=0, manifold=Within(1.0),
+            spin_layout=marker,
+        )  # fmt: skip
+    except Exception:  # the marker is not a layout: building the orbits may reject it; the call is what is pinned
+        pass
+    assert seen and seen[0] is marker
