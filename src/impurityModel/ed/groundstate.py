@@ -348,6 +348,7 @@ def solve_sector(
         lowest are expanded (:class:`~impurityModel.ed.sector_solver.SectorPlanStore`). A record is
         reused only at the seed size, accuracy and cap it was made with.
     """
+    config.assert_uniform(comm)  # public entry (review H-GS3)
     # One call is one *sector solve* -- the unit the occupation walk and the double-counting search
     # are both counted in. The nested timers say which of build / expand / diagonalize the cost
     # sits in; all are no-ops outside a solver_trace.tracing() block.
@@ -920,6 +921,7 @@ def find_ground_state_sector(
     (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
     """
+    config.assert_uniform(comm)  # public entry (review H-GS3)
     # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
     # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
     # re-resolving it would reprint the cap line and restart the warning counts on every trial of
