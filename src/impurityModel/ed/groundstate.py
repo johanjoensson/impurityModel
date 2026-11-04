@@ -123,9 +123,10 @@ def expand_memory_budget(comm):
     against a 2.45 GiB budget, negative headroom before any work was done, and a first strike
     that locked the threshold there permanently (``doc/plans/dc_smo_memory.md``, round 9).
 
-    Re-sampled on every call, which is per expansion: a process whose RSS has grown gets a
-    budget that has grown with it, and `available` falls by the same amount when the growth is
-    real, so the ceiling tracks the rank's share rather than drifting with allocator history.
+    Sampled once per :func:`solve_sector` and shared by every class expansion and the union expand of
+    that sector (not re-sampled per expansion): the RSS a sector's class runs add is not seen by the
+    later runs of the same sector. A new sector, or a new call, samples again, and `available` falls
+    by the same amount as RSS grows, so the ceiling tracks the rank's share across sectors.
 
     Shared by both call sites on purpose: the budget is a policy, and two copies of a policy
     expressed as arithmetic is how they drift.

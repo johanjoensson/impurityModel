@@ -2323,8 +2323,8 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             ctx.impurity_orbitals,
             ctx.bath_states,
             ctx.N0,
-            # A trial point whose ensemble is refused (or whose sectors re-rank) is a flagged point, not a
-            # failed search: 'on' would raise inside one bracket step and abort the whole DC. The refusal
+            # A trial point whose ensemble is refused is a flagged point (a re-ranked one is only printed),
+            # not a failed search: 'on' would raise inside one bracket step and abort the whole DC. The refusal
             # reason is replicated, so every rank flags the point alike.
             mode="auto",
             consume=consume,

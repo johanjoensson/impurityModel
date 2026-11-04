@@ -482,11 +482,6 @@ def _member_coefficients(weights, kept_shares):
     return [x / total for x in share]
 
 
-def _state_list(psis):
-    """The thermal states as a list of single-column states (a solve returns them as one block)."""
-    return psis.to_states() if isinstance(psis, ManyBodyState) else list(psis)
-
-
 def _drop_low_weight_manifolds(
     psis, es, tau, min_weight, slaterWeightMin, comm=None, *, e_ref=None, z_before=0.0, exempt_ground=True
 ):
