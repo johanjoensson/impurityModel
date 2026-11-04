@@ -190,3 +190,38 @@ def test_the_ensemble_weights_are_the_exact_grand_canonical_sector_weights_and_e
         assert abs(1.0 - exact.max()) > 0.1
     agree = (comm or MPI.COMM_SELF).allgather([float(x) for x in realised])
     assert all(a == agree[0] for a in agree)
+
+
+def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one(monkeypatch):
+    """A SeedWindow group sits where the walk put it (Hartree-Fock's filling), which need not be the nominal one.
+    ``attainable`` used the nominal filling, so the top edge was reported attainable (and the plan refused for it)
+    and the bottom neighbour was treated as closed (review X1)."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed.basis_generation import SeedWindow
+
+    imp = {0: [list(range(6))], 1: [list(range(6, 16))]}  # p (window) 6 orbitals, d 10
+    walked = {0: 5, 1: 10}  # HF put a hole in p
+    nominal = {0: 6, 1: 8}
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    monkeypatch.setattr(
+        groundstate,
+        "find_ground_state_sector",
+        lambda *a, **k: SimpleNamespace(occupation=walked, solved=[]),
+    )
+
+    def spy(solved, tau, mode, attainable):
+        seen["top"], seen["bottom"] = attainable(16), attainable(5)
+        raise Stop
+
+    monkeypatch.setattr(groundstate, "plan_ensemble", spy)
+    with pytest.raises(Stop):
+        groundstate.solve_ground_state_ensemble(
+            None, imp, ({}, {}), nominal, mode="on", consume=None, tau=0.1, slaterWeightMin=0,
+            frozen_occupations=SeedWindow({0}),
+        )  # fmt: skip
+    assert seen == {"top": False, "bottom": True}

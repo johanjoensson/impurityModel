@@ -1597,14 +1597,24 @@ def solve_ground_state_ensemble(
         plan_store = SectorPlanStore()
     max_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
 
-    # Frozen groups are pinned at their nominal filling; the rest range over their capacity.
-    pinned = sum(N0[i] for i in N0 if i in (frozen_occupations or ()))
+    # Frozen groups are pinned at the filling the walk settled on (a window group sits at Hartree-Fock's
+    # filling, which need not be the nominal one); the rest range over their capacity. Until a sector is solved
+    # the nominal filling stands in.
+    def pinned_of(occupation):
+        return sum(occupation[i] for i in occupation if i in (frozen_occupations or ()))
+
+    pinned_box = [pinned_of(N0)]
     free_capacity = sum(
         len(block) for i, blocks in impurity_orbitals.items() if i not in (frozen_occupations or ()) for block in blocks
     )
 
     def attainable(total):
+        pinned = pinned_box[0]
         return 0 <= total <= max_total and pinned <= total <= pinned + free_capacity
+
+    def needs_of(solved):
+        pinned_box[0] = pinned_of(solved[0].trial_N0) if solved else pinned_box[0]
+        return plan_ensemble(solved, tau, mode, attainable=attainable).needs
 
     search = find_ground_state_sector(
         h_op,
@@ -1625,8 +1635,9 @@ def solve_ground_state_ensemble(
         plan_store=plan_store,
         shift=shift,
         spin_layout=spin_layout,
-        extend_sectors=lambda solved: plan_ensemble(solved, tau, mode, attainable=attainable).needs,
+        extend_sectors=needs_of,
     )
+    pinned_box[0] = pinned_of(search.occupation)
     plan = plan_ensemble(search.solved, tau, mode, attainable=attainable)
     if plan.needs and plan.refused_reason is None:
         # An edge that could not be solved leaves the plan provisional, and a provisional plan has skipped the
