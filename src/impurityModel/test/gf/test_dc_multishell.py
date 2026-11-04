@@ -306,3 +306,35 @@ def test_n0_does_not_depend_on_which_shell_sits_at_the_higher_input_indices():
 
     n0 = [dc_criteria._prepare_occupation_context(*build(first), comm=MPI.COMM_WORLD).n0 for first in (True, False)]
     assert n0[0] == pytest.approx(n0[1], abs=1e-6)
+
+
+@pytest.mark.parametrize("dc_d", [0.0, 65.0])
+def test_dc_trial_sectors_keep_the_bath_less_window_at_its_nominal_filling(dc_d):
+    """H-MS4: the DC walk split each trial total by energetic filling over every impurity orbital, so a large d-shell
+    double counting moved the deep p window's six electrons into d (window total 0). The self-energy seeds the window
+    at its nominal filling; the DC's trial sectors must too, at every total around the nominal one."""
+    from mpi4py import MPI
+
+    from impurityModel.ed import dc_criteria
+
+    model, basis, solver = _p_plus_d(u=3.0)
+    dc = np.zeros((16, 16), dtype=complex)
+    dc[6:, 6:] = dc_d * np.eye(10)
+    model = ImpurityModel.from_solver_matrix(
+        np.asarray(dc_criteria.extract_tensors(model.h0, n_orb=20, two_body=False)[0]),
+        16,
+        dc=dc,
+        rot_to_spherical=model.rot_to_spherical,
+        bath_valence_conduction=([16, 17], [18, 19]),
+        shell_ls=(1, 2),
+    )
+    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    window = sorted(ctx.seed_window)
+    nominal = sum(ctx.N0[g] for g in window)
+    assert nominal == 6
+    n_tot = sum(ctx.N0.values())
+    for n in (n_tot - 1, n_tot, n_tot + 1):
+        trial = ctx.trial_occupation(n)
+        assert sum(trial.values()) == n
+        assert sum(trial[g] for g in window) == nominal, (n, trial)
+    assert ctx.trial_occupation(nominal - 1) is None  # below the pinned window: no such sector

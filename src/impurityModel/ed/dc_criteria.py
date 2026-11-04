@@ -766,10 +766,26 @@ class _SectorContext:
         """The per-group occupation of the walk's sector ``n_trial`` (energetic filling over every impurity
         orbital), or ``None`` if it has none. Nothing is frozen on the DC path (review J1), so the split is a
         basis-generation parameter only: the sector is its total. A bath-less shell beside a correlated one is
-        held out of the walk and seeded as a window (:attr:`seed_window`), not frozen."""
-        if not 0 <= int(n_trial) <= sum(len(block) for blocks in self.impurity_orbitals.values() for block in blocks):
+        held out of the walk and seeded as a window (:attr:`seed_window`), not frozen.
+
+        The window's groups keep their nominal filling and only the other groups share the rest of ``n_trial``,
+        as on the self-energy path. Filling every orbital energetically put a deep shell's electrons wherever
+        the unshifted levels said: a d-shell double counting of 65 left the p window empty, so the DC solved
+        sectors the self-energy never seeds (review H-MS4). ``None`` when the rest does not fit the other groups.
+        """
+        n_trial = int(n_trial)
+        if not 0 <= n_trial <= sum(len(block) for blocks in self.impurity_orbitals.values() for block in blocks):
             return None
-        return _per_group_occupation(int(n_trial), self.impurity_orbitals, self.h_solver_matrix)
+        window = set(self.seed_window or ())
+        if not window:
+            return _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
+        pinned = {g: int(self.N0[g]) for g in window}
+        free = {g: blocks for g, blocks in self.impurity_orbitals.items() if g not in window}
+        rest = n_trial - sum(pinned.values())
+        if not 0 <= rest <= sum(len(block) for blocks in free.values() for block in blocks):
+            return None
+        split = {**pinned, **_per_group_occupation(rest, free, self.h_solver_matrix)}
+        return {g: split[g] for g in self.impurity_orbitals}
 
     def _walk_energy(self, h_op, mu, trial):
         """The occupation walk's view of its trial ``trial``: a :class:`groundstate.SectorEnergy` built from
