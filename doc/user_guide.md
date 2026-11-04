@@ -240,7 +240,20 @@ Admission and refusal: sectors whose weight is below the energy cut derived from
 admitted, so at low `tau` even `on` gives a one-member ensemble (no warning). A plan that is cap-bound,
 uncertified or limited by its error bars is *refused*: under `auto` a warning names the sector that is
 kept and the run continues with it; under `on` the run raises on every rank. Under a double-counting
-search an ensemble refused at a trial mu is a flagged point in the record.
+search an ensemble refused at a trial mu is a flagged point in the record. Each member's own thermal solve
+is checked again before it is merged: a cap- or memory-bound basis, or a residual measured on the final
+basis above `e_pt2_tol`, refuses the ensemble the same way. A residual that is stale, or that does not cover
+the whole thermal manifold, only warns. A legacy integer `mixed_valence` (`mv N`) means `auto` when non-zero.
+
+Ordering: the dominant member is the one whose thermal solve realised the lowest energy. The merged
+states are sorted by energy, so `es[0]` is the global ground state. The self-energy's `gs_energies` are
+that union, the energies `rhos` belongs to; `gs_ensemble["state_sector"]` labels each state.
+
+Cost: a member whose weight is below `config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT` (1e-3) gets no Green's
+function. The self-energy merges the others, renormalised, and prints a note at every verbosity. The
+member still enters the ground-state report, `thermal_rho` and `rhos`. Under `auto`, the
+fixed-occupation double counting searches n(mu) continuously (as under `on`) when its sector-first
+bracket collapses between two formed ensembles, which is where the dominant member changes.
 
 How each driver merges the members: linear quantities (G, chi(w), spectra, RIXS maps) are
 computed per member, normalised, and summed with the sector weights on rank 0; nonlinear ones
