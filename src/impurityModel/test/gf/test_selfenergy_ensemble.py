@@ -242,3 +242,30 @@ def test_a_failing_rank0_merge_is_raised_on_every_rank(monkeypatch):
     with pytest.raises((ValueError, RuntimeError)):
         _run(comm, "on", 0.2)
     assert comm.allreduce(1, op=MPI.SUM) == comm.size  # every rank got here
+
+
+@pytest.mark.mpi
+def test_a_member_below_the_member_weight_cut_gets_no_green_function(monkeypatch):
+    """PERF-MV-a: at tau 0.2 the members weigh ~0.986 (N = 1), 1.2% (N = 0) and 0.14% (N = 2). A cut of 0.5% skips the
+    N = 2 member's Green's function only: it is still a member of the ground state, G moves by about its weight, and
+    the note is printed at every verbosity."""
+    from impurityModel.ed import config
+
+    comm = MPI.COMM_WORLD
+    tau = 0.2
+    full = _run(comm, "on", tau)
+    monkeypatch.setattr(config, "ENSEMBLE_GF_MIN_MEMBER_WEIGHT", 5e-3)
+    cut = _run(comm, "on", tau)
+    assert sorted(m["total"] for m in cut["gs_ensemble"]["members"]) == [0, 1, 2]
+    if comm.rank == 0:
+        assert cut["stdout"].count("no Green's function") == 1
+        assert "[N_total = 2]" in cut["stdout"].split("no Green's function")[0].splitlines()[-1]
+        assert "no Green's function" not in full["stdout"]
+        shift = np.abs(_g00(cut) - _g00(full)).max()
+        assert 1e-6 < shift < 1e-2
+
+
+def test_the_default_member_weight_cut_is_the_owners():
+    from impurityModel.ed import config
+
+    assert config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT == 1e-3  # owner decision 2026-11-04 (PERF-MV-a)

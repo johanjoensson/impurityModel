@@ -750,7 +750,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         _report_phase_time(report, "self-energy moments", t_phase)
         return M
 
-    def member_gf(psis, es, ground_state_basis, truncation, convergence, label="", with_moments=True):
+    def member_gf(
+        psis, es, ground_state_basis, truncation, convergence, label="", with_moments=True, member_weight=None
+    ):
         """The interacting Green's function and moments of one set of thermal states (a charge-sector member).
 
         Collective. Returns ``None`` when the drop rule removes every state of the member (a minority member
@@ -760,6 +762,17 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         """
         if running["e_ref"] is None:
             running["e_ref"] = float(np.min(np.real(np.asarray(es))))
+        if member_weight is not None and member_weight < config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT:
+            # A negligible member (PERF-MV-a): no Green's function. Its Boltzmann weight still counts towards the
+            # running sum the drop rule of later members measures against, as for a member gf_min_weight empties.
+            running["z"] += float(np.exp(-(np.real(np.asarray(es)) - running["e_ref"]) / tau).sum())
+            report(
+                f"{label}ensemble member of weight {member_weight:.2e} is below "
+                f"{config.ENSEMBLE_GF_MIN_MEMBER_WEIGHT:g}: no Green's function; the self-energy merges the "
+                "other members, renormalised.",
+                level=V_RESULT,  # it changes the result, so it is never hidden
+            )
+            return None
         first = running["z"] == 0.0
         # The auto GF cap is sized once, by the dominant member's first stage, and every later member runs at the
         # same cap: a calculation has one cap, not one per member (the pins live on the basis object).
@@ -906,7 +919,13 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         shell_ls=sb.shell_ls,
         spec=gs_spec,
         member_hook=lambda member, basis, es, psis, trunc, conv: member_gf(
-            redistributed_states(basis, psis), es, basis, trunc, conv, label=f"[N_total = {member.total}] "
+            redistributed_states(basis, psis),
+            es,
+            basis,
+            trunc,
+            conv,
+            label=f"[N_total = {member.total}] ",
+            member_weight=member.weight,
         ),
     )
     _report_phase_time(report, "ground state", t_phase)

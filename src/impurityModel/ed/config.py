@@ -36,6 +36,13 @@ GS_DENSE_CUTOFF = 1000
 #: ensemble is refused (``mixed_valence``: auto -> winner only plus a warning, on -> raises).
 ENSEMBLE_WEIGHT_ERROR_MAX = 0.05
 
+#: A charge-sector ensemble member whose weight is below this gets no Green's function: the self-energy merges
+#: the other members, renormalised, and says so at every verbosity. The weight is the plan's (walk energies,
+#: degeneracy ignored), the only one known before the member's Green's function would be built. A member at
+#: 1e-4 (NiO 10-bath, N = 9) cost a full Green's function, ~3850 s, for a 1e-4 contribution (review PERF-MV-a).
+#: The member still enters the ground-state report, ``thermal_rho`` and ``rhos``.
+ENSEMBLE_GF_MIN_MEMBER_WEIGHT = 1e-3
+
 __all__ = ["KNOBS", "Knob", "NonUniformKnobError", "assert_uniform", "dump"]
 
 
