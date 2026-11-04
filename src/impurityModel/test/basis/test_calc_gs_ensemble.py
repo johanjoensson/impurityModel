@@ -275,3 +275,32 @@ def test_the_union_order_is_rank_zeros_whatever_the_local_energies():
     order, es = union_order(measurements, comm)
     assert comm.allgather(order.tolist()) == [order.tolist()] * comm.size
     assert np.array_equal(es, comm.bcast(es, root=0))
+
+
+def _failing_member(monkeypatch, total):
+    """The thermal check refuses the member with ``total`` electrons (as rank 0 would broadcast it)."""
+    from impurityModel.ed import groundstate
+
+    real = groundstate._thermal_member_defect
+
+    def check(member, ground_state, comm):
+        verdict = real(member, ground_state, comm)
+        return (f"the N_imp = {total} member's thermal solve is injected", False) if member.total == total else verdict
+
+    monkeypatch.setattr(groundstate, "_thermal_member_defect", check)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_an_ensemble_cut_to_its_winner_still_warns_about_a_near_neighbour(comm, tmp_path, monkeypatch, capsys):
+    """7c: the winner was solved as an ensemble member (no neighbour note); once the cut leaves it alone, the N = 1
+    neighbour at weight ~0.39 is outside the ground state, and the single-sector note says so."""
+    h_op, setup, bs, rot, _, _ = _setup(33, comm, "auto")
+    setup["tau"] = 0.3
+    _failing_member(monkeypatch, 1)
+    *_, info = calc_gs(h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"))
+    assert [m["total"] for m in info["ensemble"]["members"]] == [0]
+    if comm is None or comm.rank == 0:
+        out = capsys.readouterr().out
+        assert "keeps the single N_imp = 0 sector" in out, out
+        assert "neighbouring sector lies within the thermal window (N_imp = 1:" in out, out

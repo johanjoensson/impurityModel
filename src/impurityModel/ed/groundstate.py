@@ -1470,18 +1470,36 @@ def _thermal_state(
         }
         gaps = neighbour_gaps(search.solved, d.winner_total, tau)
         report["sector_diagnostics"]["neighbour_gaps_tau"] = {str(n): g for n, g in gaps.items()}
-        near = {n: g for n, g in gaps.items() if g < NEIGHBOUR_GAP_WARN}
-        if warn_neighbours and near and (comm is None or comm.rank == 0):
-            where = ", ".join(
-                f"N_imp = {n}: {abs(g):.2f} tau {'above' if g >= 0 else 'BELOW'}" for n, g in sorted(near.items())
-            )
-            print(
-                f"WARNING: the thermal state is taken at N_imp = {d.winner_total}, but a neighbouring sector lies "
-                f"within the thermal window ({where} it, tau = {tau:.4g}); its Boltzmann "
-                "weight (> 1e-4) is not in the ground state.",
-                flush=True,
-            )
+        if warn_neighbours:
+            _warn_near_neighbours(search, tau, comm)
     return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
+
+
+def _warn_near_neighbours(search, tau, comm, kept_totals=None):
+    """Warn (rank 0) when a neighbour of the walk's winner lies inside the thermal window but is not kept.
+
+    ``kept_totals`` are the sectors the ground state holds: the winner alone by default, or the members an
+    ensemble kept when it was cut after a member's thermal solve failed (review 7c). The gaps come from the
+    walk's records, which are replicated, so this needs no state and no collective.
+    """
+    d = search.diagnostics
+    if d is None:
+        return
+    kept = {d.winner_total} if kept_totals is None else set(kept_totals)
+    gaps = neighbour_gaps(search.solved, d.winner_total, tau)
+    near = {n: g for n, g in gaps.items() if g < NEIGHBOUR_GAP_WARN and n not in kept}
+    if not near or not (comm is None or comm.rank == 0):
+        return
+    where = ", ".join(
+        f"N_imp = {n}: {abs(g):.2f} tau {'above' if g >= 0 else 'BELOW'}" for n, g in sorted(near.items())
+    )
+    held = f"N_imp = {d.winner_total}" if len(kept) == 1 else f"N_imp = {sorted(kept)}"
+    print(
+        f"WARNING: the thermal state is taken at {held}, but a neighbouring sector lies "
+        f"within the thermal window ({where} N_imp = {d.winner_total}, tau = {tau:.4g}); its Boltzmann "
+        "weight (> 1e-4) is not in the ground state.",
+        flush=True,
+    )
 
 
 def solve_ground_state(
@@ -1742,7 +1760,7 @@ def solve_ground_state_ensemble(
     results, realised = [], []
     single = len(plan.members) == 1
     winner_total = sum(search.occupation.values())
-    for member in plan.members:
+    for index, member in enumerate(plan.members):
         if member.total == winner_total:
             member_search = search
         else:
@@ -1762,13 +1780,18 @@ def solve_ground_state_ensemble(
             reason, by_cap = bad
             if mode == "on":
                 raise ValueError(f"mixed_valence = 'on': the charge-sector ensemble cannot be formed: {reason}")
+            kept_members = plan.members[:1]
             if announce_refusal and (comm is None or comm.rank == 0):
-                print(
-                    f"WARNING: mixed_valence = 'auto' keeps the single N_imp = {plan.members[0].total} "
-                    f"sector: {reason}.",
-                    flush=True,
+                held = (
+                    f"the single N_imp = {kept_members[0].total} sector"
+                    if len(kept_members) == 1
+                    else f"the N_imp = {[m.total for m in kept_members]} members solved before it"
                 )
-            plan = dataclasses.replace(plan, members=plan.members[:1], refused_reason=reason, refused_by_cap=by_cap)
+                print(f"WARNING: mixed_valence = 'auto' keeps {held}: {reason}.", flush=True)
+            if warn_neighbours:
+                # The kept members were solved as ensemble members, without the single-sector note (review 7c).
+                _warn_near_neighbours(search, tau, comm, kept_totals=[m.total for m in kept_members])
+            plan = dataclasses.replace(plan, members=kept_members, refused_reason=reason, refused_by_cap=by_cap)
             if results:
                 del ground_state
                 break
