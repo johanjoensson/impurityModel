@@ -2728,6 +2728,14 @@ def test_dc_de2_min_precedence_argument_beats_knob_beats_default(monkeypatch):
     assert _resolve_dc_de2_min(1e-5) == 1e-5, "the explicit argument must beat the environment"
 
 
+def test_dc_de2_min_zero_is_a_setting_not_unset(monkeypatch):
+    """DC_DE2_MIN=0 means no floor; it must beat the solver's floor like any other value (review GS9)."""
+    from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
+
+    monkeypatch.setenv("DC_DE2_MIN", "0")
+    assert _resolve_dc_de2_min(None, 1e-9) == 0.0
+
+
 def test_dc_de2_min_inherits_the_solver_floor_below_the_knob(monkeypatch):
     """With nothing set on the DC side, the search runs at the production ground state's floor."""
     from impurityModel.ed.dc_criteria import _resolve_dc_de2_min

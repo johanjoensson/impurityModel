@@ -836,7 +836,7 @@ def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None, *, honour_dc_knob=True
     if de2_min is not None:
         return float(de2_min)
     knob = config.DC_DE2_MIN.get() if honour_dc_knob else None
-    if knob:
+    if knob is not None:  # 0 is a setting (no floor), not 'unset'
         return knob
     return GS_DE2_MIN if basis_de2_min is None else float(basis_de2_min)
 
