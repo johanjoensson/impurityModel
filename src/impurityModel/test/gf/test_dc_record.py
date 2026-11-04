@@ -8,6 +8,8 @@ than whatever the search happened to write into its internal report; and the qua
 be printed (the achieved value, the sector, ``chi``) are still there.
 """
 
+import dataclasses
+
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -112,6 +114,8 @@ def test_a_failed_search_still_leaves_a_record(capsys):
     search that could not reach its target is the one whose ``mu``, sector and evaluation count are
     worth having, and a traceback carries none of them."""
     kwargs, _ = common_kwargs(v=0.4, tau=1e-3)
+    # One sector at a time: under auto the grand-canonical n(mu) passes 1.05 continuously at the crossing.
+    kwargs["basis"] = dataclasses.replace(kwargs["basis"], mixed_valence="off")
     with pytest.raises(dc_search.DoubleCountingUnreachable):
         # 1.05 sits on a charge-sector plateau the observable steps across (B3).
         fixed_occupation_dc(occupation=1.05, **kwargs)
@@ -154,8 +158,10 @@ def test_a_failed_search_still_fills_the_report(captured):
     """A caller that passes ``report=`` and catches the raise still learns where the search got to
     -- the same reason the record itself is emitted from a ``finally``."""
     report = {}
+    kwargs = common_kwargs(v=0.4, tau=1e-3)[0]
+    kwargs["basis"] = dataclasses.replace(kwargs["basis"], mixed_valence="off")  # see the test above
     with pytest.raises(dc_search.DoubleCountingUnreachable):
-        fixed_occupation_dc(occupation=1.05, report=report, **common_kwargs(v=0.4, tau=1e-3)[0])
+        fixed_occupation_dc(occupation=1.05, report=report, **kwargs)
     assert report["status"] == "unreachable"
     assert "mu" in report and report["evaluations"] > 1
 

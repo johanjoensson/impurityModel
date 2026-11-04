@@ -646,6 +646,9 @@ def _solve_dc_shift(
 
     record["evaluations"] = len(evaluated)
     record["plateau"] = plateau
+    # Where the observable stepped across the target (a collapsed bracket), for a caller that can tell a
+    # charge-sector step from a re-ranking of ensemble members.
+    record["collapsed_bracket"] = (best_step[0], best_step[2]) if best_step is not None else None
     if best_miss is not None:
         mu, g = best_miss
     if mu is not None:

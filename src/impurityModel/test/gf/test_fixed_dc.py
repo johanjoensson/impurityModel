@@ -3008,3 +3008,28 @@ def test_the_occupation_search_is_sector_first_except_in_continuous_mode(mode, m
     else:
         assert callable(seen["sector_of"]) and seen["nominal_sector"] is not None
         assert seen["width_tol"] == single
+
+
+def test_auto_reaches_a_target_inside_a_member_flip_by_searching_continuously():
+    """H-MV12: at target 0.4 the sector-first search under auto collapsed its bracket where the dominant member
+    changes and raised DoubleCountingUnreachable (n reached 0.353), while 'on' reached 0.398. Both endpoints of
+    that bracket are formed ensembles, so auto now reruns the search continuously and reaches the target."""
+    kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
+    basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
+    record = {}
+    fixed_occupation_dc(occupation=0.4, report=record, **{**kwargs, "basis": basis})
+    assert record.get("continuous_fallback") is True, record
+    assert abs(record["n_gs"] - 0.4) <= record["tol"], record
+
+
+def test_a_collapse_is_a_member_flip_only_between_two_formed_ensembles():
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(mixed_valence="auto", members_at={-1.0: 2, -0.9: 2, 0.5: 1}, refused_at={})
+    assert dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))
+    assert not dc_criteria._member_flip_collapse(ctx, (-0.9, 0.5))  # a one-member endpoint: a real step
+    assert not dc_criteria._member_flip_collapse(ctx, None)
+    ctx.refused_at = {-0.9: "cap"}
+    assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # a refused endpoint carries the winner alone
+    ctx.refused_at, ctx.mixed_valence = {}, "on"
+    assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # 'on' is continuous from the start

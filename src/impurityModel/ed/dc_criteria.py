@@ -2062,6 +2062,8 @@ class _OccupationContext:
     #: ``mu -> reason``: trial points whose ensemble was refused (replicated). Such a point carries the winning
     #: sector alone and is flagged through ``cap_bound_at``; it is reported once per search, not per trial.
     refused_at: dict | None = None
+    #: ``mu -> K``: how many members the ensemble had at each trial point (replicated; auto/on only).
+    members_at: dict | None = None
     cap_bound_at: dict | None = None
     memory_bound_at: dict | None = None
     #: Each sector's certification, shared by every ground state this search solves
@@ -2079,6 +2081,8 @@ class _OccupationContext:
             self.cap_bound_at = {}
         if self.refused_at is None:
             self.refused_at = {}
+        if self.members_at is None:
+            self.members_at = {}
         if self.memory_bound_at is None:
             self.memory_bound_at = {}
         if self.plan_store is None:
@@ -2292,6 +2296,23 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     return n_out, e0, sector
 
 
+def _member_flip_collapse(ctx, bracket):
+    """Whether a collapsed bracket of the ``auto`` occupation search lies between two formed ensembles.
+
+    Then the step is a re-ranking of the members, not a charge-sector step: both endpoints carry the
+    grand-canonical average over at least two members, so ``n(mu)`` is continuous between them and a
+    continuous search can reach a target inside the step (review H-MV12). A refused endpoint carries the
+    winning sector alone, so its step is a real one, and a retry would only repeat the miss at a finer
+    resolution.
+    """
+    if ctx.mixed_valence != "auto" or bracket is None or not ctx.members_at:
+        return False
+    # The search reports the bracket's raw endpoints; the observable ran at their snapped shifts, the nearest
+    # evaluated points.
+    ends = [min(ctx.members_at, key=lambda trial: abs(trial - mu)) for mu in bracket]
+    return all(ctx.members_at[mu] >= 2 and mu not in ctx.refused_at for mu in ends)
+
+
 def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
     """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` auto/on.
 
@@ -2347,6 +2368,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
         ctx.ensemble_variance_at = {}
     ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or plan.refused_by_cap, root=0)
+    ctx.members_at[mu] = len(plan.members)
     if plan.refused_reason is not None:
         ctx.refused_at[mu] = plan.refused_reason
     else:
@@ -2541,11 +2563,11 @@ def fixed_occupation_dc(
 
         # The same bracket-collapse resolution _solve_dc_shift uses below (width_tol); computed once
         # so the trace's chi report filters against the identical value, not a second copy of it.
-        occ_width_tol = bracket_width_tol(ctx.tau)
-        if ctx.mixed_valence == "on":
-            # Continuous mode: n(mu) is smooth over ~tau, so a bracket as wide as tau would read a steep but
-            # continuous step as a discontinuity. Resolve mu to the accuracy that pins n to occ_tol.
-            occ_width_tol = max(occ_width_tol * occ_tol, 1e-6)
+        continuous = ctx.mixed_valence == "on"
+        # Continuous mode: n(mu) is smooth over ~tau, so a bracket as wide as tau would read a steep but
+        # continuous step as a discontinuity. Resolve mu to the accuracy that pins n to occ_tol.
+        continuous_width_tol = max(bracket_width_tol(ctx.tau) * occ_tol, 1e-6)
+        occ_width_tol = continuous_width_tol if continuous else bracket_width_tol(ctx.tau)
 
         target = occupation
         if self_consistent:
@@ -2595,6 +2617,7 @@ def fixed_occupation_dc(
                     sector_at.clear()
                     ctx.plan_store.clear()
                     ctx.refused_at.clear()
+                    ctx.members_at.clear()
                     if ctx.ensemble_variance_at is not None:
                         ctx.ensemble_variance_at.clear()
 
@@ -2618,12 +2641,12 @@ def fixed_occupation_dc(
                 # share, not a decision local to this loop.
                 _clear_occupation_caches()
 
-            try:
-                mu = _solve_dc_shift(
+            def search(width_tol, continuous):
+                return _solve_dc_shift(
                     occupation_observable,
                     target,
                     tol=occ_tol,
-                    width_tol=occ_width_tol,
+                    width_tol=width_tol,
                     initial_step=max(10 * ctx.tau, initial_step),
                     max_shift=max_shift,
                     plateau_ok=True,
@@ -2634,8 +2657,8 @@ def fixed_occupation_dc(
                     # state, so a root at another sector cannot win by sitting nearer mu = 0.
                     # Continuous mode (mixed_valence = on): n(mu) is the grand-canonical average, smooth across a
                     # sector change, so there is no sector boundary to solve inside -- a plain bracketed root.
-                    sector_of=None if ctx.mixed_valence == "on" else sector_at.get,
-                    nominal_sector=None if ctx.mixed_valence == "on" else sum(ctx.N0.values()),
+                    sector_of=None if continuous else sector_at.get,
+                    nominal_sector=None if continuous else sum(ctx.N0.values()),
                     # dn/dmu >= 0: a positive mu lowers the impurity level and raises its occupation.
                     # No analytic magnitude here -- chi is precisely what the plateau/gap question is
                     # about, and assuming a value for it is how a search talks itself past a flat region.
@@ -2648,6 +2671,27 @@ def fixed_occupation_dc(
                     # there too or the branch decisions can diverge between ranks.
                     comm=MPI.COMM_WORLD,
                 )
+
+            try:
+                try:
+                    mu = search(occ_width_tol, continuous)
+                except DoubleCountingUnreachable:
+                    if not _member_flip_collapse(ctx, search_report.get("collapsed_bracket")):
+                        raise
+                    # auto: the bracket collapsed between two formed ensembles. The step is the dominant member
+                    # changing, not a charge-sector step, and the grand-canonical n(mu) is continuous across it, so
+                    # the search is rerun as under 'on' (review H-MV12). The collapse check is replicated: both
+                    # dicts are written from broadcast plans, so every rank takes this branch together.
+                    if rank == 0:
+                        lo, hi = search_report["collapsed_bracket"]
+                        print(
+                            f"fixed_occupation_dc: the occupation steps between mu = {lo:.6f} and {hi:.6f} where the "
+                            "dominant ensemble member changes; searching the grand-canonical n(mu) continuously.",
+                            flush=True,
+                        )
+                    continuous, occ_width_tol = True, continuous_width_tol
+                    mu = search(occ_width_tol, continuous)
+                    dc_rec["continuous_fallback"] = True
             except DoubleCountingUnreachable:
                 # An unreachable target is the likeliest outcome of a refused ensemble (n(mu) then steps with the
                 # winning sector): the record must still say how many trial points were flagged.
@@ -2671,7 +2715,7 @@ def fixed_occupation_dc(
         # winning sector total near a crossing -- that disagreement is itself worth surfacing, not an
         # error. Unconditional on rank 0, matching the other reference-quality warnings in this module.
         nominal_total = sum(ctx.N0.values())
-        if rank == 0 and sector != nominal_total and ctx.mixed_valence != "on":
+        if rank == 0 and sector != nominal_total and not continuous:
             print(
                 f"WARNING: fixed_occupation_dc found mu = {mu:.6f} (dc = dc_guess + mu), but the "
                 f"walk's winning sector there totals {sector}, not the nominal occupation "
@@ -2691,9 +2735,7 @@ def fixed_occupation_dc(
             occupation_at,
             mu,
             width_tol=occ_width_tol,
-            in_sector=(
-                None if ctx.mixed_valence == "on" else (lambda trial: sector_at.get(trial) == sector_at.get(mu))
-            ),
+            in_sector=(None if continuous else (lambda trial: sector_at.get(trial) == sector_at.get(mu))),
         )
         dc_rec.update(
             n_gs=n,
