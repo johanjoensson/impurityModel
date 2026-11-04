@@ -227,3 +227,14 @@ def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one
             frozen_occupations=SeedWindow({0}),
         )  # fmt: skip
     assert seen == {"top": False, "bottom": True}
+
+
+def test_the_ensemble_truncation_report_is_not_the_dominant_members_when_a_lighter_one_is_capped():
+    """``gs_info['truncation']`` took the dominant member's report, hiding a cap-bound lighter member (review MV7)."""
+    from impurityModel.ed.groundstate import worst_truncation
+
+    capped, memory = {"cap": 10}, {"cap": 5, "memory_bound": True}
+    assert worst_truncation([None]) is None
+    assert worst_truncation([capped]) is capped
+    assert worst_truncation([None, capped]) is capped
+    assert worst_truncation([capped, memory]) is memory

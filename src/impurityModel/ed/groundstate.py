@@ -1741,6 +1741,19 @@ def solve_ground_state_ensemble(
     return plan, results, realised
 
 
+def worst_truncation(reports):
+    """The truncation report that describes an ensemble: a memory-bound member's, else the first capped one's.
+
+    The dominant member (``reports[0]``) may be uncapped while a lighter member is cap- or memory-bound; the
+    report that ``gs_info`` carries must not hide that (review MV7). One member: its own report, unchanged.
+    """
+    present = [r for r in reports if r is not None]
+    if not present:
+        return None
+    memory = [r for r in present if r.get("memory_bound")]
+    return memory[0] if memory else present[0]
+
+
 def refined_truncation_report(solver, walk_report):
     """The truncation report that describes the ground state.
 
@@ -1931,7 +1944,7 @@ def _calc_gs_ensemble(
         rot_to_spherical,
         verbose,
         stats_path,
-        kept[0][2],
+        worst_truncation([k[2] for k in kept]),
         conv,
         spin_layout=layout,
         shell_ls=shell_ls,
