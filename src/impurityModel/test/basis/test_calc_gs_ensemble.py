@@ -190,11 +190,12 @@ def _fake_member_state(truncation=None, **convergence):
     [
         (dict(), False, False),
         (dict(truncation={"cap": 10}), True, True),
+        (dict(truncation={"cap": 10, "memory_bound": True}), True, False),  # the memory guard is not a cap verdict
         (dict(converged=False, residual_pt2=3e-3, limited_by="cap"), True, False),
         (dict(converged=False, residual_pt2=3e-9, residual_is_current=False), False, False),
         (dict(converged=False, residual_pt2=1e-9, limited_by="manifold_widened"), False, False),
     ],
-    ids=["converged", "cap-bound", "current-residual-large", "stale-residual", "manifold-widened"],
+    ids=["converged", "cap-bound", "memory-bound", "current-residual-large", "stale-residual", "manifold-widened"],
 )
 def test_only_a_bound_basis_or_a_current_large_residual_refuses_a_member(comm, state, refused, by_cap, capsys):
     """H-MV11 as narrowed by the owner: a stale residual or a widened manifold warns, it does not refuse."""

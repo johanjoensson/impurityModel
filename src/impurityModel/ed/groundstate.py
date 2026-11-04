@@ -1807,11 +1807,14 @@ def _thermal_member_defect(member, ground_state, comm):
     broadcast; the broadcast is unconditional on every rank of ``comm``.
     """
     solver = ground_state.solver
-    cap_bound = getattr(solver, "truncation_report", None) is not None
+    truncation = getattr(solver, "truncation_report", None)
+    cap_bound = truncation is not None
+    memory_bound = bool(cap_bound and truncation.get("memory_bound"))
     convergence = getattr(solver, "convergence_report", None) or {}
     unconverged = convergence.get("converged") is False
     verdict = (
         bool(cap_bound),
+        memory_bound,
         bool(unconverged),
         convergence.get("residual_pt2"),
         convergence.get("limited_by"),
@@ -1819,7 +1822,10 @@ def _thermal_member_defect(member, ground_state, comm):
     )
     if comm is not None:
         verdict = comm.bcast(verdict, root=0)
-    cap_bound, unconverged, residual, limited_by, current = verdict
+    cap_bound, memory_bound, unconverged, residual, limited_by, current = verdict
+    if memory_bound:
+        # Not a cap verdict: the measured-memory guard held the basis, which no other cap would change.
+        return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard", False
     if cap_bound:
         return f"the N_imp = {member.total} member's thermal solve is bound by the determinant cap", True
     if not unconverged:
