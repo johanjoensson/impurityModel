@@ -7,7 +7,8 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 """
 
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from types import SimpleNamespace
 
 import numpy as np
 from mpi4py import MPI
@@ -18,10 +19,15 @@ from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_structure
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.gs_statistics import (
-    compute_entanglement_entropy,
-    compute_gs_statistics,
+    _boltzmann_weights,
+    assemble_gs_statistics,
+    channel_indices_of,
+    compute_impurity_rdm,
+    entanglement_from_blocks,
+    gs_statistics_partials,
     print_gs_statistics,
     save_gs_statistics,
+    union_state_blocks,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_root import on_root
@@ -225,84 +231,188 @@ def redistributed_states(basis, psis):
     return states if states else [ManyBodyState(width=1) for _ in range(n)]
 
 
-def report_ground_state(
+class _LiveSource:
+    """Where :func:`_evaluate` gets its per-state results when the states are in hand.
+
+    With ``tape=None`` this is the one-shot path (:func:`report_ground_state`): every request is computed
+    and returned. With a ``tape`` dict it *records* one charge-sector member (:func:`measure_member`): the same
+    computations run, and each result -- or the exception it raised -- is stored under its key so that
+    :class:`_ReplaySource` can hand it back after the states are gone. The keys are call-site names, never
+    positions, so a member whose evaluation degraded part-way cannot shift the others' results.
+    """
+
+    def __init__(self, basis, es, psis, tau, tape=None):
+        self.basis, self.es, self.psis, self.tau = basis, es, psis, tau
+        self.tape = tape
+        self.recording = tape is not None
+        self.mov_comm = basis.comm if basis.is_distributed else None
+        self.mov_redistribute = basis.redistribute_block if basis.is_distributed else None
+        # Every <m|O|n> is read on the eigenstates' own support, so each apply drops the rest of O|n> as it is
+        # generated. Built collectively and unconditionally, once for all of them.
+        self.support_keep = comm_support_filter([psis], self.mov_comm)
+        self.scales = [1.0]
+        self.order = None
+
+    def part(self, key, compute):
+        """``[compute()]``: the one member's result, taped under ``key`` when recording."""
+        if self.tape is None:
+            return [compute()]
+        try:
+            value = compute()
+        except Exception as exc:
+            self.tape[key] = ("err", exc)
+            raise
+        self.tape[key] = ("ok", value)
+        return [value]
+
+    def once(self, key, compute):
+        return self.part(key, compute)[0]
+
+    def stack(self, parts):
+        return parts[0]
+
+    def values(self, group):
+        """A ``values(op)`` hook for the ``compute_*`` observables: per-state ``<O>`` of ``op`` on the members."""
+        calls = [0]
+
+        def values(op):
+            key = (group, calls[0])
+            calls[0] += 1
+            return self.part(
+                key,
+                lambda: manifold_observable_values(
+                    self.psis, self.es, op, comm=self.mov_comm, redistribute=self.mov_redistribute
+                ),
+            )[0]
+
+        return values
+
+
+class _ReplaySource:
+    """:class:`_LiveSource`'s counterpart over the members' tapes: no states, no collective.
+
+    ``es`` are the union's energies in ascending order of rank 0's copy (``order``); per-state arrays are
+    concatenated in member order and permuted by ``order``. ``scales[k]`` is member ``k``'s share of the
+    union's Boltzmann weight (its tape holds member-normalised weights). One member: no permutation and a
+    scale of exactly 1, so the replay is bit-identical to the one-shot report.
+    """
+
+    recording = False
+    tape = None
+    psis = None
+    support_keep = None
+
+    def __init__(self, members, tau):
+        self.members = list(members)
+        first = self.members[0]
+        self.basis, self.tau = first.basis, tau
+        self.mov_comm = self.basis.comm if self.basis.is_distributed else None
+        if len(self.members) == 1:
+            self.es, self.order, self.scales = first.es, None, [1.0]
+        else:
+            es_cat = np.concatenate([np.asarray(m.es, dtype=float) for m in self.members])
+            es_ref = np.concatenate([np.asarray(m.es_ref, dtype=float) for m in self.members])
+            self.order = np.argsort(es_ref, kind="stable")
+            self.es = es_cat[self.order]
+            w = _boltzmann_weights(es_cat, tau)
+            bounds = np.cumsum([0] + [len(m.es) for m in self.members])
+            self.scales = [float(w[bounds[k] : bounds[k + 1]].sum()) for k in range(len(self.members))]
+
+    def part(self, key, compute=None):
+        out = []
+        for m in self.members:
+            entry = m.tape.get(key)
+            if entry is None:
+                raise RuntimeError(f"charge-sector member N_imp={m.total} did not record {key!r}")
+            kind, value = entry
+            if kind == "err":
+                raise value
+            out.append(value)
+        return out
+
+    def once(self, key, compute=None):
+        kind, value = self.members[0].tape.get(key, ("err", RuntimeError(f"first member did not record {key!r}")))
+        if kind == "err":
+            raise value
+        return value
+
+    def stack(self, parts):
+        if len(parts) == 1:
+            return parts[0]
+        return np.concatenate([np.asarray(p) for p in parts], axis=0)[self.order]
+
+    def values(self, group):
+        calls = [0]
+
+        def values(op):
+            key = (group, calls[0])
+            calls[0] += 1
+            return self.stack(self.part(key))
+
+        return values
+
+
+@dataclass
+class MemberMeasurement:
+    """One charge-sector member's report data, with no state in it.
+
+    ``tape`` holds the member's per-state results (member-normalised weights); ``es`` are its *absolute*
+    energies and ``es_ref`` rank 0's copy of them, which fixes the union's order identically on every rank.
+    ``basis`` is kept for the first member only (its orbital layout and communicator are all that is read).
+    """
+
+    es: np.ndarray
+    es_ref: np.ndarray
+    total: object
+    tape: dict = field(repr=False)
+    basis: object = None
+
+
+def _evaluate(
+    src,
     Hop,
-    ground_state_basis,
-    es,
-    psis,
-    tau,
     block_structure,
     rot_to_spherical,
-    verbose,
-    stats_path,
     gs_truncation_report,
     gs_convergence_report,
     spin_layout=None,
     shell_ls=None,
     ensemble=None,
 ):
-    """Observables of the thermal ground manifold ``(es, psis)``, and the report that prints them.
+    """Every number the report prints, from ``src`` (live states, a recording, or a replay of recordings).
 
-    Collective on ``ground_state_basis.comm``. Returns ``(psis, es, ground_state_basis, thermal_rho,
-    gs_info)`` -- the tuple ``calc_gs`` returns, with ``psis`` redistributed onto the basis and
-    materialized as a list.
-
-    ``spin_layout`` is the :class:`~impurityModel.ed.spin_pairs.SpinLayout` of the solver basis
-    (``calc_gs`` passes the one it solved with); ``None`` resolves it here from ``Hop``.
-    ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) makes every shell-aware
-    observable and the per-shell Casimirs treat a multi-shell impurity shell by shell; ``None`` is one shell.
-    ``ensemble`` (the charge-sector ensemble record of ``calc_gs``) is stored in the statistics as
-    ``charge_sector_ensemble``; its ``state_sector`` gives the sector of each state of ``(es, psis)``.
+    The same code runs in all three, so the sequence of requests cannot drift between a member's recording and
+    the union's replay. A recording suppresses the degrade-to-warning prints (the replay repeats them once).
     """
-    # Redistribute onto the basis as it stands; do not first collapse it onto the support of
-    # `psis`. The basis is also the seed space for the excited/Green's-function expansion
-    # downstream, and shrinking it to the thermal eigenvectors' support throws away exactly the
-    # determinants a transition operator is most likely to reach.
-    # `psis` is the block `get_eigenvectors` returns, so it redistributes as a block --
-    # `*psis` would unpack its determinant KEYS, and at 1 rank `redistribute_psis` no-ops and
-    # hands them straight back rather than raising. `prune_rows(0.0)` matches what
-    # `redistribute_psis` did per column (it pruned each slice, and the caller's `from_states`
-    # re-unioned), so the support is unchanged.
-    psis_blk = ground_state_basis.redistribute_block(
-        psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
-    )
-    psis_blk.prune_rows(0.0)
-    # Shared-support block view of the same redistributed states, built once and used
-    # by every observable diagnostic below (Phase 6a of the state-unification refactor,
-    # doc/plans/manybodystate_block_unification.md) instead of `width` independent
-    # per-state calls. `psis` itself stays a list alongside it: `calc_gs`'s own return
-    # contract is `list[ManyBodyState]`, and it is still needed as a list for
-    # `add_states`/`redistribute_psis` above, so keeping both avoids a redundant
-    # to_states() round trip at the return.
-    # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
-    # seed paths consume it as one), so the list is materialized here from the block rather than
-    # the other way round. Migrating that contract outward is a separate, deliberate step.
-    psis = psis_blk.to_states()
-
-    # The effective restrictions are printed in the ground-state-report overview below.
-    effective_restrictions = get_effective_restrictions(ground_state_basis)
-
+    ground_state_basis, psis_blk, es, tau = src.basis, src.psis, src.es, src.tau
     comm = ground_state_basis.comm
     rank = comm.rank if comm is not None else 0
-    report = Reporter(verbose, rank)
+    # The effective restrictions are printed in the ground-state-report overview below.
+    effective_restrictions = src.once("restrictions", lambda: get_effective_restrictions(ground_state_basis))
+    n_dets = len(ground_state_basis)
     # Single-particle density matrices, built distributed (each rank applies c_orb to its
     # local partition, redistributes, computes local inner products, then Allreduce); the
     # full rho is returned replicated on every rank. No full-state-vector gather needed.
-    rhos = build_density_matrices(ground_state_basis, psis_blk)
+    rhos = src.stack(src.part("rhos", lambda: build_density_matrices(ground_state_basis, psis_blk)))
 
     e_avg = thermal_average_scale_indep(es, es, tau)
     thermal_rho = thermal_average_scale_indep(es, rhos, tau)
 
     # Occupation-weight statistics of the thermal ground state, built distributed
     # (collective call); returns the dict on rank 0 and None elsewhere.
-    gs_stats = compute_gs_statistics(
-        ground_state_basis,
-        psis_blk,
-        es,
-        tau,
-        thermal_rho,
-        ground_state_basis.impurity_spin_orbital_indices,
-    )
+    partials = src.part("stats", lambda: gs_statistics_partials(ground_state_basis, psis_blk, es, tau))
+    gs_stats = None
+    if partials[0] is not None:
+        gs_stats = assemble_gs_statistics(
+            partials,
+            src.scales,
+            es,
+            tau,
+            thermal_rho,
+            ground_state_basis.impurity_spin_orbital_indices,
+            channel_indices_of(ground_state_basis),
+            order=src.order,
+        )
     if gs_stats is not None:
         # Record whether the ground-state basis was truncation-capped (None = not capped),
         # so it lands in the saved statistics JSON alongside the occupation weights.
@@ -314,7 +424,14 @@ def report_ground_state(
     # Many-body impurity-bath entanglement from the impurity RDM (collective call; its
     # memory guard may skip it, deterministically on every rank). Degrades to None.
     try:
-        entanglement = compute_entanglement_entropy(ground_state_basis, psis_blk, es, tau)
+        rdm_blocks = src.part("rdm", lambda: compute_impurity_rdm(ground_state_basis, psis_blk))
+        state_blocks = union_state_blocks(rdm_blocks)
+        if state_blocks is None:
+            entanglement = None
+        else:
+            if src.order is not None:
+                state_blocks = [state_blocks[k] for k in src.order]
+            entanglement = entanglement_from_blocks(state_blocks, es, tau)
     except Exception:
         entanglement = None
     if gs_stats is not None:
@@ -342,11 +459,10 @@ def report_ground_state(
     # every rank — no state-vector gather). The L/S/J operators are built in the
     # spherical basis and rotated to the computational basis via rot_to_spherical
     # (symmetry-plan Phase 5).
-    mov_comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
-    mov_redistribute = ground_state_basis.redistribute_block if ground_state_basis.is_distributed else None
+    mov_comm = src.mov_comm
     # Every <m|O|n> below is read on the eigenstates' own support, so each apply drops the rest of
     # O|n> as it is generated. Built here, collectively and unconditionally, once for all of them.
-    support_keep = comm_support_filter([psis_blk], mov_comm)
+    support_keep = src.support_keep
     s_values = l_values = j_values = None
     s2_thermal = l2_thermal = j2_thermal = None
     # Whether J is a sharp quantum number across the ground manifold (is_j_sharp); True
@@ -389,13 +505,7 @@ def report_ground_state(
             casimir = {}
             for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
                 op2 = casimir_operator(*ops)
-                vals = manifold_observable_values(
-                    psis_blk,
-                    es,
-                    lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep),
-                    comm=mov_comm,
-                    redistribute=mov_redistribute,
-                )
+                vals = src.values("casimir-" + name)(lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep))
                 casimir[name] = (
                     np.array([casimir_to_quantum_number(v) for v in vals]),
                     thermal_observable_value(vals, es, tau),
@@ -409,7 +519,7 @@ def report_ground_state(
             # this rather than reporting a single J that isn't actually well-defined.
             j_sharp = is_j_sharp(j_values, es)
         except Exception as exc:
-            if rank == 0:
+            if rank == 0 and not src.recording:
                 print(f"S^2/L^2/J^2 not reported: {exc}")
             s_values = l_values = j_values = None
             s2_thermal = l2_thermal = j2_thermal = None
@@ -424,20 +534,16 @@ def report_ground_state(
                 entry = {"l": shell_l}
                 for name, ops in (("s2", shell_s_ops), ("l2", shell_l_ops), ("j2", shell_j_ops)):
                     op2 = casimir_operator(*ops)
-                    vals = manifold_observable_values(
-                        psis_blk,
-                        es,
-                        lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep),
-                        comm=mov_comm,
-                        redistribute=mov_redistribute,
+                    vals = src.values(f"shell-{partition}-{name}")(
+                        lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep)
                     )
                     entry[f"{name}_thermal"] = thermal_observable_value(vals, es, tau)
                 shell_casimir[partition] = entry
         except Exception as exc:
-            if rank == 0:
+            if rank == 0 and not src.recording:
                 print(f"per-shell S^2/L^2/J^2 not reported: {exc}")
             shell_casimir = {}
-    if multi_shell and rank == 0:
+    if multi_shell and rank == 0 and not src.recording:
         for a, l_a in enumerate(shell_ls):
             if a not in (per_shell_ops or {}):
                 print(f"Shell {a} (l={l_a}): S^2/L^2/J^2 skipped (partial shell: some orbitals are not in the model)")
@@ -461,14 +567,17 @@ def report_ground_state(
         n_orb = ground_state_basis.num_spin_orbitals
         layout = spin_layout
         if layout is None:
-            layout = resolve_spin_layout(
-                Hop,
-                ground_state_basis.impurity_orbitals,
-                ground_state_basis.bath_states,
-                rot_to_spherical,
-                n_orb,
-                comm=mov_comm,
-                shell_ls=shell_ls,
+            layout = src.once(
+                "layout",
+                lambda: resolve_spin_layout(
+                    Hop,
+                    ground_state_basis.impurity_orbitals,
+                    ground_state_basis.bath_states,
+                    rot_to_spherical,
+                    n_orb,
+                    comm=mov_comm,
+                    shell_ls=shell_ls,
+                ),
             )
         sisb_pairing_approx = not layout.su2
         sisb_pairing_note = layout.sisb_note()
@@ -484,13 +593,7 @@ def report_ground_state(
             ops_imp = make_spin_operators(imp_pairs)
             ops_bath = make_spin_operators(bath_pairs)
             sisb_op = spin_correlation_operator(ops_imp, ops_bath)
-            sisb_raw = manifold_observable_values(
-                psis_blk,
-                es,
-                lambda blk: sisb_op.apply_block(blk, 0, support_keep),
-                comm=mov_comm,
-                redistribute=mov_redistribute,
-            )
+            sisb_raw = src.values("sisb")(lambda blk: sisb_op.apply_block(blk, 0, support_keep))
             sisb_values = np.real(sisb_raw)
             sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
             if sisb_pairing_approx:
@@ -498,13 +601,7 @@ def report_ground_state(
                 # the verified spin labels), reported next to the pairing-dependent full value,
                 # plus its connected form against the thermal single-particle polarizations.
                 sisb_z_op = spin_correlation_operator(ops_imp, ops_bath, z_only=True)
-                sisb_z_raw = manifold_observable_values(
-                    psis_blk,
-                    es,
-                    lambda blk: sisb_z_op.apply_block(blk, 0, support_keep),
-                    comm=mov_comm,
-                    redistribute=mov_redistribute,
-                )
+                sisb_z_raw = src.values("sisb-z")(lambda blk: sisb_z_op.apply_block(blk, 0, support_keep))
                 sisb_z_values = np.real(sisb_z_raw)
                 sisb_z_thermal = np.real(thermal_observable_value(sisb_z_raw, es, tau))
                 sz_imp = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
@@ -534,9 +631,8 @@ def report_ground_state(
             impurity_indices,
             s_z_op=s_ops[2] if l_ops is not None else None,
             l_z_op=l_ops[2] if l_ops is not None else None,
-            comm=mov_comm,
-            redistribute=mov_redistribute,
             keep=support_keep,
+            values=src.values("static"),
         )
     except Exception:
         static_susceptibilities = None
@@ -549,7 +645,7 @@ def report_ground_state(
     energy_decomposition = None
     diagnostics_skip_reason = None
     try:
-        h1, _, _ = extract_tensors(Hop, n_orb=ground_state_basis.num_spin_orbitals, two_body=False)
+        h1 = src.once("h1", lambda: extract_tensors(Hop, n_orb=ground_state_basis.num_spin_orbitals, two_body=False)[0])
         energy_decomposition = compute_energy_decomposition(thermal_rho, h1, impurity_indices, e_avg)
         if spin_pairs is not None:
             imp_pairs, bath_pairs = spin_pairs
@@ -559,9 +655,8 @@ def report_ground_state(
                 tau,
                 thermal_rho,
                 imp_pairs,
-                comm=mov_comm,
-                redistribute=mov_redistribute,
                 keep=support_keep,
+                values=src.values("correlation"),
             )
             # Impurity channels grouped like the N(...) columns (equivalent-block groups),
             # using the same orbital-group labels (e.g. "group 1") as the printed report, not
@@ -592,9 +687,8 @@ def report_ground_state(
                 h1,
                 imp_groups=imp_groups,
                 z_only=sisb_pairing_approx,
-                comm=mov_comm,
-                redistribute=mov_redistribute,
                 keep=support_keep,
+                values=src.values("screening"),
             )
         else:
             diagnostics_skip_reason = "no validated spin pairing (see the <S_imp.S_bath> message)"
@@ -621,8 +715,100 @@ def report_ground_state(
         )
     except Exception as exc:
         state_summary = None
-        if rank == 0:
+        if rank == 0 and not src.recording:
             print(f"per-state summary not reported: {exc}")
+    return SimpleNamespace(
+        corr_diagnostics=corr_diagnostics,
+        diagnostics_skip_reason=diagnostics_skip_reason,
+        e_avg=e_avg,
+        effective_restrictions=effective_restrictions,
+        energy_decomposition=energy_decomposition,
+        entanglement=entanglement,
+        full_impurity_ix=full_impurity_ix,
+        gs_stats=gs_stats,
+        impurity_indices=impurity_indices,
+        impurity_ix=impurity_ix,
+        j_sharp=j_sharp,
+        j2_thermal=j2_thermal,
+        j_values=j_values,
+        l2_thermal=l2_thermal,
+        l_values=l_values,
+        layout=layout,
+        n_dets=n_dets,
+        rhos=rhos,
+        s2_thermal=s2_thermal,
+        s_values=s_values,
+        screening_diagnostics=screening_diagnostics,
+        shell_casimir=shell_casimir,
+        sisb_pairing_approx=sisb_pairing_approx,
+        sisb_pairing_note=sisb_pairing_note,
+        sisb_skip_reason=sisb_skip_reason,
+        sisb_thermal=sisb_thermal,
+        sisb_values=sisb_values,
+        sisb_z_connected=sisb_z_connected,
+        sisb_z_thermal=sisb_z_thermal,
+        sisb_z_values=sisb_z_values,
+        state_summary=state_summary,
+        static_susceptibilities=static_susceptibilities,
+        thermal_rho=thermal_rho,
+    )
+
+
+def _present(
+    R,
+    src,
+    rot_to_spherical,
+    block_structure,
+    verbose,
+    stats_path,
+    gs_convergence_report,
+    shell_ls=None,
+    ensemble=None,
+    partial=None,
+):
+    """Bundle the observables into the statistics, save them, and print the report (rank 0).
+
+    ``partial`` (a header line) marks a report over the members that finished before a failure: it is
+    printed first and the statistics JSON is not written, so a partial file is never mistaken for a result.
+    """
+    ground_state_basis, es, tau = src.basis, src.es, src.tau
+    comm = ground_state_basis.comm
+    rank = comm.rank if comm is not None else 0
+    report = Reporter(verbose, rank)
+    corr_diagnostics = R.corr_diagnostics
+    diagnostics_skip_reason = R.diagnostics_skip_reason
+    e_avg = R.e_avg
+    effective_restrictions = R.effective_restrictions
+    energy_decomposition = R.energy_decomposition
+    full_impurity_ix = R.full_impurity_ix
+    gs_stats = R.gs_stats
+    impurity_indices = R.impurity_indices
+    impurity_ix = R.impurity_ix
+    j_sharp = R.j_sharp
+    j2_thermal = R.j2_thermal
+    j_values = R.j_values
+    l2_thermal = R.l2_thermal
+    l_values = R.l_values
+    layout = R.layout
+    n_dets = R.n_dets
+    rhos = R.rhos
+    s2_thermal = R.s2_thermal
+    s_values = R.s_values
+    screening_diagnostics = R.screening_diagnostics
+    shell_casimir = R.shell_casimir
+    sisb_pairing_approx = R.sisb_pairing_approx
+    sisb_pairing_note = R.sisb_pairing_note
+    sisb_skip_reason = R.sisb_skip_reason
+    sisb_thermal = R.sisb_thermal
+    sisb_values = R.sisb_values
+    sisb_z_connected = R.sisb_z_connected
+    sisb_z_thermal = R.sisb_z_thermal
+    sisb_z_values = R.sisb_z_values
+    state_summary = R.state_summary
+    static_susceptibilities = R.static_susceptibilities
+    thermal_rho = R.thermal_rho
+    if partial and rank == 0:
+        print(partial, flush=True)
     if gs_stats is not None:
         try:
             magnetic_summary = compute_magnetic_summary(
@@ -655,7 +841,7 @@ def report_ground_state(
             "energy_decomposition": energy_decomposition,
             "static_susceptibilities": static_susceptibilities,
         }
-    if stats_path is not None:
+    if stats_path is not None and not partial:
         # Collective, so gated on the replicated path only (gs_stats is None off rank 0): a failed write on
         # rank 0 (an unserialisable value, a full disk) is raised on every rank; a rank-0-only raise left the
         # others in the next collective (the GS8 numpy-bool hang).
@@ -669,7 +855,7 @@ def report_ground_state(
         gs_occ = getattr(ground_state_basis, "ground_state_occupation", None)
         occ_str = f"; ground-state impurity occupation: {sum(gs_occ.values())}" if gs_occ else ""
         print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
-        print(f"{len(ground_state_basis):,} Slater determinants{occ_str}")
+        print(f"{n_dets:,} Slater determinants{occ_str}")
         print(convergence_summary(gs_convergence_report))
         if ensemble is not None:
             print(
@@ -792,19 +978,176 @@ def report_ground_state(
                 print()
         except Exception as exc:
             print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")
-    return (
-        psis,
-        es,
-        ground_state_basis,
-        thermal_rho,
-        {
-            "rhos": rhos,
-            "statistics": gs_stats,
-            "truncation": gs_truncation_report,
-            "convergence": gs_convergence_report,
-            "correlation_diagnostics": corr_diagnostics,
-            "screening_diagnostics": screening_diagnostics,
-            "energy_decomposition": energy_decomposition,
-            "static_susceptibilities": static_susceptibilities,
-        },
+    return R
+
+
+def _info(R, gs_truncation_report, gs_convergence_report):
+    return {
+        "rhos": R.rhos,
+        "statistics": R.gs_stats,
+        "truncation": gs_truncation_report,
+        "convergence": gs_convergence_report,
+        "correlation_diagnostics": R.corr_diagnostics,
+        "screening_diagnostics": R.screening_diagnostics,
+        "energy_decomposition": R.energy_decomposition,
+        "static_susceptibilities": R.static_susceptibilities,
+    }
+
+
+def report_ground_state(
+    Hop,
+    ground_state_basis,
+    es,
+    psis,
+    tau,
+    block_structure,
+    rot_to_spherical,
+    verbose,
+    stats_path,
+    gs_truncation_report,
+    gs_convergence_report,
+    spin_layout=None,
+    shell_ls=None,
+    ensemble=None,
+):
+    """Observables of the thermal ground manifold ``(es, psis)``, and the report that prints them.
+
+    Collective on ``ground_state_basis.comm``. Returns ``(psis, es, ground_state_basis, thermal_rho,
+    gs_info)`` -- the tuple ``calc_gs`` returns, with ``psis`` redistributed onto the basis and
+    materialized as a list.
+
+    ``spin_layout`` is the :class:`~impurityModel.ed.spin_pairs.SpinLayout` of the solver basis
+    (``calc_gs`` passes the one it solved with); ``None`` resolves it here from ``Hop``.
+    ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) makes every shell-aware
+    observable and the per-shell Casimirs treat a multi-shell impurity shell by shell; ``None`` is one shell.
+    ``ensemble`` (the charge-sector ensemble record of ``calc_gs``) is stored in the statistics as
+    ``charge_sector_ensemble``; its ``state_sector`` gives the sector of each state of ``(es, psis)``.
+    """
+    # Redistribute onto the basis as it stands; do not first collapse it onto the support of
+    # `psis`. The basis is also the seed space for the excited/Green's-function expansion
+    # downstream, and shrinking it to the thermal eigenvectors' support throws away exactly the
+    # determinants a transition operator is most likely to reach.
+    # `psis` is the block `get_eigenvectors` returns, so it redistributes as a block --
+    # `*psis` would unpack its determinant KEYS, and at 1 rank `redistribute_psis` no-ops and
+    # hands them straight back rather than raising. `prune_rows(0.0)` matches what
+    # `redistribute_psis` did per column (it pruned each slice, and the caller's `from_states`
+    # re-unioned), so the support is unchanged.
+    psis_blk = ground_state_basis.redistribute_block(
+        psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
     )
+    psis_blk.prune_rows(0.0)
+    # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
+    # seed paths consume it as one), so the list is materialized here from the block.
+    psis = psis_blk.to_states()
+    src = _LiveSource(ground_state_basis, es, psis_blk, tau)
+    R = _evaluate(
+        src,
+        Hop,
+        block_structure,
+        rot_to_spherical,
+        gs_truncation_report,
+        gs_convergence_report,
+        spin_layout=spin_layout,
+        shell_ls=shell_ls,
+        ensemble=ensemble,
+    )
+    _present(
+        R,
+        src,
+        rot_to_spherical,
+        block_structure,
+        verbose,
+        stats_path,
+        gs_convergence_report,
+        shell_ls=shell_ls,
+        ensemble=ensemble,
+    )
+    return psis, es, ground_state_basis, R.thermal_rho, _info(R, gs_truncation_report, gs_convergence_report)
+
+
+def measure_member(
+    Hop,
+    ground_state_basis,
+    es,
+    psis_blk,
+    tau,
+    block_structure,
+    rot_to_spherical,
+    spin_layout=None,
+    shell_ls=None,
+    total=None,
+    keep_basis=True,
+):
+    """One charge-sector member's per-state report data, taken while its states are alive. Collective.
+
+    ``psis_blk`` is the member's thermal block already redistributed onto ``ground_state_basis`` and pruned
+    (the caller owns it and converts it for the driver afterwards). Nothing but small, replicated per-state
+    results is kept, so the states can be freed before the next member is solved; :func:`finalize_members`
+    turns the members into the report. Prints nothing: a quantity that fails here fails again, once, in the
+    replay, which reports it.
+    """
+    tape = {}
+    src = _LiveSource(ground_state_basis, es, psis_blk, tau, tape=tape)
+    _evaluate(
+        src,
+        Hop,
+        block_structure,
+        rot_to_spherical,
+        None,
+        None,
+        spin_layout=spin_layout,
+        shell_ls=shell_ls,
+    )
+    es = np.asarray(es, dtype=float)
+    # Rank 0's copy of the energies fixes the union's order the same way on every rank (the eigensolver's
+    # energies are rank-local, a degenerate multiplet differs in its last bits). One unconditional broadcast.
+    es_ref = ground_state_basis.comm.bcast(es, root=0) if ground_state_basis.is_distributed else es
+    return MemberMeasurement(es, es_ref, total, tape, ground_state_basis if keep_basis else None)
+
+
+def finalize_members(
+    Hop,
+    members,
+    tau,
+    block_structure,
+    rot_to_spherical,
+    verbose,
+    stats_path,
+    gs_truncation_report,
+    gs_convergence_report,
+    spin_layout=None,
+    shell_ls=None,
+    ensemble=None,
+    partial=None,
+):
+    """The ground-state report over the members' :class:`MemberMeasurement`, printed and saved.
+
+    Returns ``(None, es, basis, thermal_rho, gs_info)`` (the states are not held). Collective only through the
+    statistics save, which ``partial`` (a header naming the members that finished) turns off: a partial
+    report is rank-local pure combination and printing, so it cannot deadlock a run in which one rank failed.
+    """
+    src = _ReplaySource(members, tau)
+    R = _evaluate(
+        src,
+        Hop,
+        block_structure,
+        rot_to_spherical,
+        gs_truncation_report,
+        gs_convergence_report,
+        spin_layout=spin_layout,
+        shell_ls=shell_ls,
+        ensemble=ensemble,
+    )
+    _present(
+        R,
+        src,
+        rot_to_spherical,
+        block_structure,
+        verbose,
+        stats_path,
+        gs_convergence_report,
+        shell_ls=shell_ls,
+        ensemble=ensemble,
+        partial=partial,
+    )
+    return None, src.es, src.basis, R.thermal_rho, _info(R, gs_truncation_report, gs_convergence_report)
