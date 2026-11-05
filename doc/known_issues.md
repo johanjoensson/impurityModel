@@ -60,6 +60,9 @@ one had an empty conduction list (fixed; see `test/spectra/test_bath_layout.py`)
 
 ## Σ causality violations at sharp hybridization resonances are a discretization artifact
 
+> 2026-11: `excitation_budget` is no longer a parameter; the excited bases run under bounds derived from the
+> converged ground state. The measurements below were taken with the budget and are kept as the record.
+
 A production self-energy run can hit `sigma.check_greens_function`'s causality check
 (`Im Sigma_ii(omega) > 0`) at a real-frequency point sitting on a sharp hybridization
 resonance. `config.SIGMA_CAUSALITY_TOL` (default `1e-3`, relative, per diagonal orbital) warns

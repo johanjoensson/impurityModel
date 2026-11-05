@@ -594,7 +594,7 @@ def _rixs_map_flat(
         # windows classified the same bath differently (review ledger C8).
         **({} if occ_cutoff is None else {"cutoff": occ_cutoff}),
     )
-    # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
+    # Weighted restrictions (e.g. the excitation bounds) for the core-excited / final bases:
     # widen the ground-state bounds by one orbital weight so a single transition operator stays
     # in-bounds, mirroring greens_function._build_excited_restrictions. None when the GS basis
     # carries none (the clones below then get None explicitly: ``clone(weighted_restrictions=None)`` is unrestricted).

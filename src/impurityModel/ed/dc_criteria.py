@@ -498,7 +498,7 @@ class _SectorContext:
     difference for the peak, the symmetric one for the gap centre. Everything up to and
     including "solve one charge sector at this shift" is identical, and it is precisely the part
     where the DC/ground-state parity conventions live (the walk's ``tau / 100`` and
-    ``sqrt(slaterWeightMin)``, the excitation-budget restriction
+    ``sqrt(slaterWeightMin)``, the weighted-restriction
     list, the memory-derived cap). Those had already drifted once between two open-coded copies;
     a second criterion sharing them by construction is the point of this class.
 
@@ -1062,8 +1062,8 @@ def fixed_peak_dc(
     the total is the only well-defined handle. Energies carry no fixed unit, they follow the inputs
     (e.g. Ry when called from RSPt); the convergence tolerance is ``max(tau, 1e-4)`` in those
     units. All three sectors honor ``BasisOptions.chain_restrict``
-    identically -- the bath-only excitation-budget restriction never references the occupation,
-    so the same restriction list applies regardless of which sector it is evaluated on.
+    identically -- the bath-only weighted restrictions (the observed excitation bounds are attached per solve) never
+    reference the occupation, so the same restriction list applies regardless of which sector it is evaluated on.
 
     Parameters
     ----------

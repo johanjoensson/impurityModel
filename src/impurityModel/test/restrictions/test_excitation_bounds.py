@@ -106,11 +106,17 @@ def test_the_cap_flag_is_carried():
     assert get_effective_excitation_bounds(_basis(_OCCS), cap_bound=True).cap_bound is True
 
 
-def test_an_injected_min_for_max_would_be_caught():
-    # the maxima are over the whole basis: dropping the last determinant must change the answer
-    full = get_effective_excitation_bounds(_basis(_OCCS))
+def test_the_maxima_are_over_the_whole_basis():
+    # the last determinant is the only one with two holes and one electron: dropping it changes the total
+    # (and, for the min-for-max mutation, every value would be the minimum (0, 0, 0) instead)
     short = get_effective_excitation_bounds(_basis(_OCCS[:-1]))
-    assert short.max_holes < full.max_holes or short.max_total < full.max_total
+    full = get_effective_excitation_bounds(_basis(_OCCS))
+    assert (short.max_holes, short.max_electrons, short.max_total) == _brute(_OCCS[:-1]) == (1, 1, 2)
+    assert (full.max_holes, full.max_electrons, full.max_total) == (2, 2, 4)
+
+
+def test_an_empty_basis_gives_none():
+    assert get_effective_excitation_bounds(_basis([])) is None
 
 
 @pytest.mark.mpi
