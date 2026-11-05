@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
-from mpi4py import MPI
 
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
@@ -112,123 +111,6 @@ def degraded_warnings(convergence):
     if diag.get("undecided"):
         out.append(f"the N_imp={diag.get('winner_total')} sector choice is undecided (margin < 1)")
     return out
-
-
-@dataclass(frozen=True)
-class SectorMeasurement:
-    """One charge sector's thermal manifold, as ``measure_ground_state`` hands it to ``finalize_ground_state``.
-
-    ``es`` are *absolute* energies (never shifted per member), so the scale-independent thermal weights
-    taken over the concatenated manifolds are exactly the merge ``c_s ~ Z_s exp(-(e0_s - e0)/tau)``.
-    ``total`` is the member's impurity electron count (``None`` for a lone, untagged member).
-    """
-
-    basis: object
-    es: np.ndarray
-    psis: object
-    total: object = None
-
-
-def measure_ground_state(ground_state_basis, es, psis, *, total=None):
-    """Capture one sector's ``(basis, es, psis)`` for :func:`finalize_ground_state`.
-
-    Pure bookkeeping, no collective and no copy: every observable is evaluated once, over all members
-    together, because the thermal manifolds of different charge sectors have disjoint determinant
-    supports and one block holds them side by side.  Holding only the thermal eigenvectors (not the
-    Krylov store) is what a member costs while the next one is solved.
-    """
-    return SectorMeasurement(ground_state_basis, es, psis, total)
-
-
-def _member_states(m):
-    """The member's thermal states as a list of exactly ``len(m.es)`` width-1 states on every rank.
-
-    ``to_states`` of a width-0 block (a rank that holds no rows of the redistributed block) returns ``[]``;
-    padding with empty states keeps the merged list the same length on every rank, which the collectives
-    that follow rely on.
-    """
-    n = len(m.es)
-    states = m.psis.to_states() if isinstance(m.psis, ManyBodyState) else list(m.psis)
-    if len(states) < n and not states:
-        states = [ManyBodyState(width=1) for _ in range(n)]  # width 1: from_states rejects the width-0 zero
-    return states
-
-
-def union_order(measurements, comm=None):
-    """The permutation that sorts the concatenated member energies ascending (stable), and those energies.
-
-    Shared by :func:`merge_measurements` and by any caller that labels the union's states (``state_sector``),
-    so the labels follow the states. The eigensolver's energies are rank-local, and a degenerate multiplet
-    differs in its last bits between ranks (a ``release`` build gives up bitwise identity across ranks), so
-    a rank-local sort could permute the columns differently on each rank. The energies are therefore taken
-    from rank 0 (one broadcast, unconditional on every rank of ``comm``), and so is the order.
-
-    Returns
-    -------
-    order : ndarray of int
-    es : ndarray of float
-        Rank 0's concatenated energies (unsorted).
-    """
-    es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
-    if comm is not None:
-        es = comm.bcast(es, root=0)
-    return np.argsort(es, kind="stable"), es
-
-
-def merge_measurements(measurements):
-    """``(basis, es, psis)`` of the union of the members' thermal manifolds, ascending in energy.
-
-    One member is returned untouched (same objects), which is what makes the single-sector report
-    bit-identical.  With several, ``es`` are concatenated unshifted and sorted in rank 0's order
-    (:func:`union_order`), so
-    ``es[0]`` is the global ground state as for one sector (review H-MV13), and ``psis`` become one list of
-    states in the same order.  The basis is the first member's that carries one; its only roles downstream
-    are the orbital layout, the communicator and the hash routing, all shared by the members.
-    """
-    measurements = list(measurements)
-    if not measurements:
-        raise ValueError("merge_measurements needs at least one member")
-    first = measurements[0]
-    if len(measurements) == 1:
-        return first.basis, first.es, first.psis
-    basis = next(m.basis for m in measurements if m.basis is not None)
-    es = np.concatenate([np.asarray(m.es, dtype=float) for m in measurements])
-    states = []
-    for m in measurements:
-        states.extend(_member_states(m))
-    # Every rank now holds exactly len(es) states (a width-0 block is padded with empty width-1 states), so
-    # this check is rank-invariant; the allreduce makes the raise collective in case that invariant breaks.
-    comm = getattr(basis, "comm", None)
-    bad = int(len(states) != len(es))
-    if comm is not None:
-        bad = comm.allreduce(bad, op=MPI.MAX)
-    if bad:
-        raise RuntimeError(f"merge_measurements: {len(states)} states for {len(es)} energies on at least one rank")
-    order, _ = union_order(measurements, comm)
-    return basis, es[order], [states[k] for k in order]
-
-
-def finalize_ground_state(Hop, measurements, tau, *args, **kwargs):
-    """:func:`report_ground_state` over the merged members; ``args`` follow ``tau`` there (``block_structure`` ...).
-
-    Collective on the members' (shared) communicator.  With one member this *is* ``report_ground_state``.
-    """
-    basis, es, psis = merge_measurements(measurements)
-    return report_ground_state(Hop, basis, es, psis, tau, *args, **kwargs)
-
-
-def redistributed_states(basis, psis):
-    """The thermal states as the single-sector report hands them on: redistributed onto ``basis``, pruned.
-
-    ``report_ground_state`` does exactly this before anything else touches the states, so a Green's function
-    that starts from these starts from the states the report hands on. Collective on ``basis.comm``.
-    """
-    n = len(psis) if not isinstance(psis, ManyBodyState) else int(psis.width)
-    block = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
-    block.prune_rows(0.0)
-    states = block.to_states()
-    # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
-    return states if states else [ManyBodyState(width=1) for _ in range(n)]
 
 
 class _LiveSource:

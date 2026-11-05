@@ -1262,6 +1262,10 @@ def compute_correlation_diagnostics(
         Support filter of ``psis`` (:func:`~impurityModel.ed.basis_transcription.comm_support_filter`):
         each ``O|n>`` is generated only on the eigenstates' support, which is all that is read.
 
+    values : callable, optional
+        A stand-in for :func:`manifold_observable_values` (same call signature): a replay of values measured
+        while the states were alive, so this function can run without them. ``None`` evaluates them here.
+
     Returns
     -------
     dict
@@ -1352,6 +1356,10 @@ def compute_static_susceptibilities(
     keep : KeyFilter, optional
         Support filter of ``psis`` (:func:`~impurityModel.ed.basis_transcription.comm_support_filter`):
         each ``O|n>`` is generated only on the eigenstates' support, which is all that is read.
+
+    values : callable, optional
+        A stand-in for :func:`manifold_observable_values` (same call signature): a replay of values measured
+        while the states were alive, so this function can run without them. ``None`` evaluates them here.
 
     Returns
     -------
@@ -1487,6 +1495,10 @@ def compute_screening_diagnostics(
         ``{label: [pair, ...]}``; ``None`` skips the channel resolution.
     keep : KeyFilter, optional
         Support filter of ``psis``, as in :func:`compute_static_susceptibilities`.
+
+    values : callable, optional
+        A stand-in for :func:`manifold_observable_values` (same call signature): a replay of values measured
+        while the states were alive, so this function can run without them. ``None`` evaluates them here.
 
     Returns
     -------

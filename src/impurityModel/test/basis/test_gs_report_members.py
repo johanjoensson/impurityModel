@@ -10,14 +10,24 @@ import pytest
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.gs_report import (
     finalize_members,
-    measure_ground_state,
     measure_member,
-    merge_measurements,
     report_ground_state,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.basis.test_calc_gs_ensemble import _hook, _setup
 from impurityModel.test.support.comms import COMMS
+
+
+def _merged(captured, comm):
+    """The oracle: the members' states as one list ascending in rank 0's energies (one member passes through)."""
+    if len(captured) == 1:
+        _, basis, es, psis = captured[0]
+        return basis, es, psis
+    es = np.concatenate([e for _, _, e, _ in captured])
+    es = es if comm is None else comm.bcast(es, root=0)
+    states = [s for _, _, _, ps in captured for s in ps]
+    order = np.argsort(es, kind="stable")
+    return captured[0][1], es[order], [states[k] for k in order]
 
 
 def _numerically_equal(x, y, tol):
@@ -73,7 +83,7 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
     tau = setup["tau"]
     common = dict(verbose=0, stats_path=None, gs_truncation_report=None, gs_convergence_report={"converged": True})
 
-    merged = merge_measurements([measure_ground_state(b, e, p, total=t) for t, b, e, p in captured])
+    merged = _merged(captured, comm)
     _psis, es_ref, _b, rho_ref, info_ref = report_ground_state(h_op, *merged, tau, bs, rot, **common)
 
     members = []
