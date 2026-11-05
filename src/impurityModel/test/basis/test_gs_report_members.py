@@ -80,6 +80,9 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
 
     calc_gs(h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook))
     assert len(captured) == n_members
+    if n_members > 1:  # the union order must really permute the concatenated members
+        union = np.concatenate([e for _, _, e, _ in captured])
+        assert not np.array_equal(np.argsort(union, kind="stable"), np.arange(len(union)))
     tau = setup["tau"]
     common = dict(verbose=0, stats_path=None, gs_truncation_report=None, gs_convergence_report={"converged": True})
 
@@ -103,3 +106,48 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
     assert (a is None) == (b is None)
     if a is not None:
         assert _numerically_equal(_without_zero_rows(a), _without_zero_rows(b), tol)
+
+
+def test_a_taped_failure_does_not_keep_the_states_alive():
+    """The tape outlives the block (it is held until calc_gs returns); a taped exception must not pin it."""
+    import gc
+    import weakref
+
+    from impurityModel.ed.gs_report import _LiveSource
+
+    class Block:
+        pass
+
+    class Boom(RuntimeError):
+        pass
+
+    block = Block()
+    src = object.__new__(_LiveSource)
+    src.psis, src.tape = block, {}
+
+    def compute():
+        held = src.psis  # a frame that references the block, as manifold_observable_values' does
+        raise Boom(f"failed on {type(held).__name__}")
+
+    with pytest.raises(Boom):
+        src.part("k", compute)
+    ref = weakref.ref(block)
+    del block, src.psis
+    gc.collect()
+    assert ref() is None
+    kind, exc = src.tape["k"]
+    assert kind == "err" and isinstance(exc, Boom) and exc.__traceback__ is None and "failed on Block" in str(exc)
+
+
+def test_driver_text_is_held_back_but_warnings_go_to_stderr_at_once(capsys):
+    from impurityModel.ed.groundstate import _HeldBack, _replay_driver_output
+
+    buf, empty = _HeldBack(), _HeldBack()
+    buf.write("plain line\nWARNING: unconverged\npartial")
+    err = capsys.readouterr().err
+    assert "WARNING: unconverged" in err and "plain" not in err
+    buf.write(" line two\n")
+    _replay_driver_output([(1, buf), (2, empty)], True)
+    out = capsys.readouterr().out
+    assert out.startswith("--- N_imp = 1 ---\nplain line\nWARNING: unconverged\npartial line two\n")
+    assert "N_imp = 2" not in out  # a member that wrote nothing gets no header

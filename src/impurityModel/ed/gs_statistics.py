@@ -770,63 +770,87 @@ def compute_entanglement_entropy(basis, psis, es, tau, max_bytes=256 * 1024**2, 
     return entanglement_from_blocks(state_blocks, es, tau, top_k=top_k)
 
 
-def union_state_blocks(member_blocks):
-    """One list of per-state RDM blocks from the members' lists, every state holding every ``N_imp`` block.
+def entanglement_partials(state_blocks, es, tau):
+    """One member's entanglement data from its per-state RDM blocks: small, with no dense per-state block kept.
 
-    Members observe different impurity counts, and :func:`entanglement_from_blocks` reads the sectors off the first
-    state, so a member's states are padded with zero blocks (of the dimension another member built) for the
-    sectors it never saw -- exactly what one :func:`compute_impurity_rdm` over the union would have produced.
-    ``None`` (a member's memory guard tripped) in, ``None`` out.
+    ``es`` are the member's energies; the thermal block uses the member-normalised Boltzmann weights, so the
+    union's thermal block is :math:`\\sum_k c_k\\,\\rho_k` with the members' shares ``c_k`` (the RDM is linear in
+    the weights). ``None`` (the memory guard tripped) in, ``None`` out.
     """
-    if any(blocks is None for blocks in member_blocks):
+    if state_blocks is None:
         return None
-    shapes = {}
-    for blocks in member_blocks:
-        for state in blocks:
-            for n_e, block in state.items():
-                shapes.setdefault(n_e, block.shape)
-    merged = []
-    for blocks in member_blocks:
-        for state in blocks:
-            merged.append({n_e: state[n_e] if n_e in state else np.zeros(shapes[n_e], dtype=complex) for n_e in shapes})
-    return merged
-
-
-def entanglement_from_blocks(state_blocks, es, tau, top_k=8):
-    """The :func:`compute_entanglement_entropy` result from the per-state RDM blocks; no states, no collective."""
     weights = _boltzmann_weights(es, tau)
+    sectors = sorted(state_blocks[0].keys()) if state_blocks else []
+    eigvals, sector_weights = [], []
+    for blocks in state_blocks:
+        ev = np.concatenate([np.linalg.eigvalsh(blocks[n_e]) for n_e in sectors])
+        eigvals.append(np.clip(np.real(ev), 0.0, None))
+        sector_weights.append({int(n_e): float(np.real(np.trace(blocks[n_e]))) for n_e in sectors})
+    thermal = {n_e: sum(w * blocks[n_e] for w, blocks in zip(weights, state_blocks)) for n_e in sectors}
+    return {
+        "dims": {int(n_e): int(thermal[n_e].shape[0]) for n_e in sectors},
+        "eigvals": eigvals,
+        "sector_weights": sector_weights,
+        "thermal": thermal,
+    }
 
-    def _entropy(eigvals):
-        lam = eigvals[eigvals > 1e-14]
+
+def assemble_entanglement(partials, scales, order, es, tau, top_k=8):
+    """The :func:`compute_entanglement_entropy` result from the members' :func:`entanglement_partials`.
+
+    Per-state data are concatenated in member order and permuted by ``order`` (``None``: as is); ``es`` are the
+    union's energies in that order and ``scales[k]`` is member ``k``'s share of the union weight. A sector a
+    member never observed counts as a zero block of the dimension another member built, as one
+    :func:`compute_impurity_rdm` over the union would have produced. Any ``None`` partial gives ``None``.
+    """
+    partials = list(partials)
+    if any(p is None for p in partials):
+        return None
+    dims = {}
+    for p in partials:
+        for n_e, d in p["dims"].items():
+            dims.setdefault(n_e, d)
+    sectors = sorted(dims)
+    entropy, norm, top, sector_weights = [], [], [], []
+
+    def _entropy(ev):
+        lam = ev[ev > 1e-14]
         return float(max(-np.sum(lam * np.log(lam)), 0.0))
 
-    per_state_entropy = []
-    per_state_norm = []
-    spectrum_top = []
-    sector_weights = []
-    sectors = sorted(state_blocks[0].keys()) if state_blocks else []
-    for blocks in state_blocks:
-        eigvals = np.concatenate([np.linalg.eigvalsh(blocks[n_e]) for n_e in sectors])
-        eigvals = np.clip(np.real(eigvals), 0.0, None)
-        per_state_entropy.append(_entropy(eigvals))
-        per_state_norm.append(float(np.sum(eigvals)))
-        spectrum_top.append([float(x) for x in np.sort(eigvals)[::-1][:top_k]])
-        sector_weights.append({int(n_e): float(np.real(np.trace(blocks[n_e]))) for n_e in sectors})
-
-    thermal_blocks = {n_e: sum(w * blocks[n_e] for w, blocks in zip(weights, state_blocks)) for n_e in sectors}
-    thermal_eigvals = np.clip(
-        np.real(np.concatenate([np.linalg.eigvalsh(thermal_blocks[n_e]) for n_e in sectors])), 0.0, None
-    )
+    for p in partials:
+        pad = sum(d for n_e, d in dims.items() if n_e not in p["dims"])
+        for ev, sw in zip(p["eigvals"], p["sector_weights"]):
+            full = np.concatenate([ev, np.zeros(pad)]) if pad else ev
+            entropy.append(_entropy(full))
+            norm.append(float(np.sum(full)))
+            top.append([float(x) for x in np.sort(full)[::-1][:top_k]])
+            sector_weights.append({n_e: sw.get(n_e, 0.0) for n_e in sectors})
+    if order is not None:
+        entropy, norm, top, sector_weights = ([lst[k] for k in order] for lst in (entropy, norm, top, sector_weights))
+    if len(partials) == 1:
+        thermal = partials[0]["thermal"]
+    else:
+        thermal = {}
+        for n_e in sectors:
+            terms = [c * p["thermal"][n_e] for c, p in zip(scales, partials) if n_e in p["thermal"]]
+            thermal[n_e] = sum(terms[1:], terms[0])
+    thermal_eigvals = np.clip(np.real(np.concatenate([np.linalg.eigvalsh(thermal[n_e]) for n_e in sectors])), 0.0, None)
+    weights = _boltzmann_weights(es, tau)
     w_pos = weights[weights > 1e-14]
     return {
-        "per_state_entropy": per_state_entropy,
-        "per_state_norm": per_state_norm,
-        "spectrum_top": spectrum_top,
+        "per_state_entropy": entropy,
+        "per_state_norm": norm,
+        "spectrum_top": top,
         "sector_weights": sector_weights,
         "thermal_entropy": _entropy(thermal_eigvals),
         "mixture_entropy": float(max(-np.sum(w_pos * np.log(w_pos)), 0.0)),
         "n_imp_sectors": [int(x) for x in sectors],
     }
+
+
+def entanglement_from_blocks(state_blocks, es, tau, top_k=8):
+    """The :func:`compute_entanglement_entropy` result from one list of per-state RDM blocks; no collective."""
+    return assemble_entanglement([entanglement_partials(state_blocks, es, tau)], [1.0], None, es, tau, top_k=top_k)
 
 
 def _print_config_table(rows, remaining, file, indent=""):

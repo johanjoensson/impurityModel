@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 import io
+import sys
 from dataclasses import dataclass
 from itertools import product
 from typing import NamedTuple, Optional
@@ -2083,6 +2084,25 @@ class GroundStateSpec:
         )
 
 
+class _HeldBack(io.StringIO):
+    """A driver's stdout, held back until the ground-state report has printed.
+
+    ``WARNING`` lines are also written to stderr at once, so they are not lost if the job is killed.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._line = ""
+
+    def write(self, text):
+        n = super().write(text)
+        *whole, self._line = (self._line + text).split("\n")
+        for line in whole:
+            if line.startswith("WARNING"):
+                print(line, file=sys.stderr, flush=True)
+        return n
+
+
 class _MeasureVisitor:
     """The ground-state report's own visitor: measures each member, then runs the driver's on the same states.
 
@@ -2140,7 +2160,7 @@ class _MeasureVisitor:
                 print(f"[N_imp={member.total}] ground state measured; running the driver ...", flush=True)
             # stdout of the driver is held back on every rank (a split-communicator colour root prints from any
             # rank); stderr, WARNINGs included, stays live.
-            buffer = io.StringIO()
+            buffer = _HeldBack()
             self.captured.append((member.total, buffer))
             with contextlib.redirect_stdout(buffer):
                 driven = self.driver.visit(
@@ -2156,13 +2176,15 @@ def _replay_driver_output(captured, with_headers):
     """Print what the drivers wrote while the members ran (held back by :class:`_MeasureVisitor`), per rank."""
     for total, buffer in captured:
         text = buffer.getvalue()
-        if with_headers and len(captured) > 1:
-            print(f"--- N_imp = {total} ---")
         if text:
+            if with_headers and len(captured) > 1:
+                print(f"--- N_imp = {total} ---")
             print(text, end="" if text.endswith("\n") else "\n", flush=True)
 
 
-def _report_what_exists(measure, exc, Hop, tau, block_structure, rot_to_spherical, verbose, layout, shell_ls):
+def _report_what_exists(
+    measure, exc, Hop, tau, block_structure, rot_to_spherical, verbose, layout, shell_ls, comm=None, stage="solve"
+):
     """Failure path of :func:`calc_gs`: print the reports gathered so far; never raises, never communicates.
 
     A partial ground-state report over the members already measured (rank 0), then every rank's own held-back
@@ -2172,12 +2194,17 @@ def _report_what_exists(measure, exc, Hop, tau, block_structure, rot_to_spherica
     """
     try:
         done = [m.total for m in measure.measured]
-        where = f"N_imp={measure.current}" if measure.current is not None else "a member's ground-state solve"
+        if stage != "solve":
+            where = stage
+        else:
+            where = f"N_imp={measure.current}" if measure.current is not None else "a member's ground-state solve"
         header = (
             f"PARTIAL GROUND-STATE REPORT: members N_imp={done} measured; "
             f"failed at {where} ({type(exc).__name__}: {exc})"
         )
-        if measure.measured:
+        if stage != "solve":
+            header = f"GROUND-STATE REPORT FAILED in {stage} ({type(exc).__name__}: {exc}); driver output follows"
+        if measure.measured and stage == "solve":
             finalize_members(
                 Hop,
                 measure.measured,
@@ -2252,12 +2279,14 @@ def calc_gs(
     visitor : MemberVisitor, optional
         Called collectively as ``visitor.visit(member, state)`` for each charge-sector member (one under
         ``mixed_valence`` off) while its basis is alive; the returns are listed in ``gs_info["member_results"]``,
-        dominant member first.
+        dominant member first. ``state`` is a :class:`DrivenState`: the member's thermal ``states`` (width-1,
+        redistributed onto its basis; the only live copy of them) and no raw ``psis``. What the visitor prints is
+        held back and shown after the ground-state report (``WARNING`` lines also go to stderr at once).
 
     Returns
     -------
-    psis : list of ManyBodyState
-        The low-energy eigenstates.
+    psis : list of ManyBodyState or None
+        The low-energy eigenstates of the dominant member; ``None`` when a ``visitor`` consumed them.
     es : ndarray
         The corresponding eigen-energies.
     ground_state_basis : Basis
@@ -2339,57 +2368,85 @@ def calc_gs(
             **basis_setup,
         )
     except BaseException as exc:
-        _report_what_exists(measure, exc, Hop, tau, block_structure, rot_to_spherical, verbose, layout, shell_ls)
+        _report_what_exists(
+            measure,
+            exc,
+            Hop,
+            tau,
+            block_structure,
+            rot_to_spherical,
+            verbose,
+            layout,
+            shell_ls,
+            comm=basis_setup.get("comm"),
+        )
         raise
-    kept = result.visited
-    measurements = [k[0] for k in kept]
-    converged = [(k[2] or {}).get("converged") is not False for k in kept]
-    # The union's order, from rank 0's copy of the energies (identical on every rank); one member keeps its own.
-    union_es = np.concatenate([m.es_ref for m in measurements])
-    union = np.arange(len(union_es)) if len(measurements) == 1 else np.argsort(union_es, kind="stable")
-    labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
-    info = {
-        "mixed_valence": bool(mixed_valence),
-        "tau": tau,
-        "e0": float(min(result.realised)),
-        "error_bar": result.error_bar,
-        "refused_reason": result.refused_reason,
-        "members": [
-            {
-                "total": member.total,
-                "weight": float(w),
-                "e0": float(e0),
-                "walk_energy": member.walk_energy,
-                "residual_pt2": member.residual,
-                "error_bar": member.error_bar,
-                "n_states": len(m.es),
-                "converged": ok,
-                "truncation": k[1],
-            }
-            for member, w, e0, m, k, ok in zip(
-                result.members, result.weights, result.realised, measurements, kept, converged
-            )
-        ],
-        # Per state of the merged union, which is ascending in energy (rank 0's order); "es" is that
-        # union, the energies `rhos` belongs to (review H-MV4).
-        "state_sector": [int(labels[k]) for k in union],
-        "es": [float(e) for e in union_es[union]],
-    }
-    _, es, basis, thermal_rho, gs_info = finalize_members(
-        Hop,
-        measurements,
-        tau,
-        block_structure,
-        rot_to_spherical,
-        verbose,
-        stats_path,
-        result.truncation,
-        result.convergence,
-        spin_layout=layout,
-        shell_ls=shell_ls,
-        # The statistics and the printed overview describe an ensemble only when one was asked for.
-        ensemble=info if mixed_valence else None,
-    )
+    try:
+        kept = result.visited
+        measurements = [k[0] for k in kept]
+        converged = [(k[2] or {}).get("converged") is not False for k in kept]
+        # The union's order, from rank 0's copy of the energies (identical on every rank); one member keeps its own.
+        union_es = np.concatenate([m.es_ref for m in measurements])
+        union = np.arange(len(union_es)) if len(measurements) == 1 else np.argsort(union_es, kind="stable")
+        labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
+        info = {
+            "mixed_valence": bool(mixed_valence),
+            "tau": tau,
+            "e0": float(min(result.realised)),
+            "error_bar": result.error_bar,
+            "refused_reason": result.refused_reason,
+            "members": [
+                {
+                    "total": member.total,
+                    "weight": float(w),
+                    "e0": float(e0),
+                    "walk_energy": member.walk_energy,
+                    "residual_pt2": member.residual,
+                    "error_bar": member.error_bar,
+                    "n_states": len(m.es),
+                    "converged": ok,
+                    "truncation": k[1],
+                }
+                for member, w, e0, m, k, ok in zip(
+                    result.members, result.weights, result.realised, measurements, kept, converged
+                )
+            ],
+            # Per state of the merged union, which is ascending in energy (rank 0's order); "es" is that
+            # union, the energies `rhos` belongs to (review H-MV4).
+            "state_sector": [int(labels[k]) for k in union],
+            "es": [float(e) for e in union_es[union]],
+        }
+        _, es, basis, thermal_rho, gs_info = finalize_members(
+            Hop,
+            measurements,
+            tau,
+            block_structure,
+            rot_to_spherical,
+            verbose,
+            stats_path,
+            result.truncation,
+            result.convergence,
+            spin_layout=layout,
+            shell_ls=shell_ls,
+            # The statistics and the printed overview describe an ensemble only when one was asked for.
+            ensemble=info if mixed_valence else None,
+        )
+    except BaseException as exc:
+        # Every member is done; what failed is the report itself. The drivers' text must not die with it.
+        _report_what_exists(
+            measure,
+            exc,
+            Hop,
+            tau,
+            block_structure,
+            rot_to_spherical,
+            verbose,
+            layout,
+            shell_ls,
+            comm=basis_setup.get("comm"),
+            stage="the report's assembly",
+        )
+        raise
     gs_info["ensemble"] = info
     gs_info["member_results"] = [k[3] for k in kept]
     _replay_driver_output(measure.captured, mixed_valence)

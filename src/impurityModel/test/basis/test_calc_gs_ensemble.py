@@ -451,3 +451,27 @@ def test_a_failing_second_solve_prints_the_first_members_reports(comm, tmp_path,
     out = capfd.readouterr().out
     if (comm.rank if comm is not None else 0) == 0:
         assert "PARTIAL GROUND-STATE REPORT" in out and "E0 = " in out and "DRIVER-TEXT" in out
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_driver_text_survives_a_failing_report(comm, tmp_path, capfd, monkeypatch):
+    """A failure after every member is done (in the report) must not lose what the drivers printed."""
+    from impurityModel.ed import groundstate
+
+    class Driver:
+        def visit(self, member, state):
+            print(f"DRIVER-TEXT {member.total}")
+            return 0
+
+    def broken(*args, **kwargs):
+        raise _Boom("report broke")
+
+    monkeypatch.setattr(groundstate, "finalize_members", broken)
+    h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
+    with pytest.raises(_Boom):
+        calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver())
+    out = capfd.readouterr().out
+    assert out.count("DRIVER-TEXT") == 2
+    if (comm.rank if comm is not None else 0) == 0:
+        assert "GROUND-STATE REPORT FAILED" in out and "report broke" in out

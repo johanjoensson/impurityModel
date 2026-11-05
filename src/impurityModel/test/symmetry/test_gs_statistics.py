@@ -590,15 +590,23 @@ def test_a_lone_member_is_assembled_bit_identically():
 
 def test_union_entanglement_equals_the_one_shot_entanglement():
     from impurityModel.ed.gs_statistics import (
+        _boltzmann_weights,
+        assemble_entanglement,
         compute_entanglement_entropy,
         compute_impurity_rdm,
-        entanglement_from_blocks,
-        union_state_blocks,
+        entanglement_partials,
     )
 
     a, ea, b, eb = _member_split()
     tau, es = 0.5, np.concatenate([ea, eb])
     expected = compute_entanglement_entropy(_FakeBasis(), a + b, es, tau)
-    blocks = union_state_blocks([compute_impurity_rdm(_FakeBasis(), a), compute_impurity_rdm(_FakeBasis(), b)])
-    assert _numerically_equal(entanglement_from_blocks(blocks, es, tau), expected)
-    assert union_state_blocks([None, []]) is None
+    parts = [entanglement_partials(compute_impurity_rdm(_FakeBasis(), m), e, tau) for m, e in ((a, ea), (b, eb))]
+    w = _boltzmann_weights(es, tau)
+    scales = [float(w[: len(ea)].sum()), float(w[len(ea) :].sum())]
+    assert _numerically_equal(assemble_entanglement(parts, scales, None, es, tau), expected)
+    # In the union's (sorted) order: the same data, permuted; the thermal and mixture entropies do not move.
+    order = np.argsort(es, kind="stable")
+    got = assemble_entanglement(parts, scales, order, es[order], tau)
+    assert _numerically_equal(got["per_state_entropy"], [expected["per_state_entropy"][k] for k in order])
+    assert _numerically_equal(got["thermal_entropy"], expected["thermal_entropy"])
+    assert assemble_entanglement([None, parts[0]], scales, None, es, tau) is None

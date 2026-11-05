@@ -6,6 +6,7 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 :mod:`impurityModel.ed.groundstate`, which only decides *which* state is the ground state.
 """
 
+import copy
 import sys
 from dataclasses import asdict, dataclass, field
 from types import SimpleNamespace
@@ -19,14 +20,14 @@ from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.gs_statistics import (
     _boltzmann_weights,
+    assemble_entanglement,
     assemble_gs_statistics,
     channel_indices_of,
     compute_impurity_rdm,
-    entanglement_from_blocks,
+    entanglement_partials,
     gs_statistics_partials,
     print_gs_statistics,
     save_gs_statistics,
-    union_state_blocks,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_root import on_root
@@ -113,6 +114,16 @@ def degraded_warnings(convergence):
     return out
 
 
+def _detached(exc):
+    """A copy of ``exc`` that references no frame (no traceback, no chained exceptions)."""
+    try:
+        out = copy.copy(exc)
+    except Exception:
+        out = RuntimeError(f"{type(exc).__name__}: {exc}")
+    out.__traceback__, out.__cause__, out.__context__ = None, None, None
+    return out
+
+
 class _LiveSource:
     """Where :func:`_evaluate` gets its per-state results when the states are in hand.
 
@@ -142,7 +153,9 @@ class _LiveSource:
         try:
             value = compute()
         except Exception as exc:
-            self.tape[key] = ("err", exc)
+            # The taped copy carries no traceback: that would pin this frame's `psis` (and the callee's
+            # workspace) for as long as the tape lives, i.e. through every driver.
+            self.tape[key] = ("err", _detached(exc))
             raise
         self.tape[key] = ("ok", value)
         return [value]
@@ -310,14 +323,11 @@ def _evaluate(
     # Many-body impurity-bath entanglement from the impurity RDM (collective call; its
     # memory guard may skip it, deterministically on every rank). Degrades to None.
     try:
-        rdm_blocks = src.part("rdm", lambda: compute_impurity_rdm(ground_state_basis, psis_blk))
-        state_blocks = union_state_blocks(rdm_blocks)
-        if state_blocks is None:
-            entanglement = None
-        else:
-            if src.order is not None:
-                state_blocks = [state_blocks[k] for k in src.order]
-            entanglement = entanglement_from_blocks(state_blocks, es, tau)
+        # Per member the dense blocks are reduced to small partials at once, so none is kept while drivers run.
+        partials = src.part(
+            "rdm", lambda: entanglement_partials(compute_impurity_rdm(ground_state_basis, psis_blk), src.es, tau)
+        )
+        entanglement = assemble_entanglement(partials, src.scales, src.order, es, tau)
     except Exception:
         entanglement = None
     if gs_stats is not None:
