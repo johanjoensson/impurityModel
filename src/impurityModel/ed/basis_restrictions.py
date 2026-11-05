@@ -881,6 +881,28 @@ def cost_budget_restriction(bath_states, budget, dist_matrix, kappa=COST_KAPPA):
 _BOUNDS_CHUNK = 1 << 16
 
 
+def _local_weighted_extrema(basis, weights):
+    """Rank-local ``(min, max)`` over ``basis.local_basis`` of ``bits @ weights.T`` (no communication).
+
+    ``weights`` is ``(n_rows, num_spin_orbitals)``; an empty local basis returns the reduction identities
+    (``int64`` max for the minimum, ``int64`` min for the maximum), so a later ``MIN``/``MAX`` reduce is safe
+    on an empty rank. Processed in :data:`_BOUNDS_CHUNK`-row chunks to bound the transient.
+    """
+    n_orb = basis.num_spin_orbitals
+    weights = np.asarray(weights, dtype=np.int64)
+    lo = np.full(len(weights), np.iinfo(np.int64).max, dtype=np.int64)
+    hi = np.full(len(weights), np.iinfo(np.int64).min, dtype=np.int64)
+    local = basis.local_basis
+    for start in range(0, len(local), _BOUNDS_CHUNK):
+        chunk = [local[i] for i in range(start, min(start + _BOUNDS_CHUNK, len(local)))]
+        raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in chunk), dtype=np.uint8).reshape(len(chunk), -1)
+        bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(np.int64)
+        q = bits @ weights.T
+        lo = np.minimum(lo, q.min(axis=0))
+        hi = np.maximum(hi, q.max(axis=0))
+    return lo, hi
+
+
 def get_effective_weighted_bounds(basis):
     """Observed ``(q_min, q_max)`` of every weighted restriction over the whole ground-state basis (collective).
 
@@ -898,21 +920,11 @@ def get_effective_weighted_bounds(basis):
     cached = getattr(basis, "_effective_bounds_cache", None)
     if cached is not None and stamp[0] is not None and cached[0] == stamp:
         return list(cached[1])
-    n_orb = basis.num_spin_orbitals
-    weights = np.zeros((len(entries), n_orb), dtype=np.int64)
+    weights = np.zeros((len(entries), basis.num_spin_orbitals), dtype=np.int64)
     for k, entry in enumerate(entries):
         for orbital, w in weighted_parts(entry)[0].items():
             weights[k, orbital] = w
-    lo = np.full(len(entries), np.iinfo(np.int64).max, dtype=np.int64)
-    hi = np.full(len(entries), np.iinfo(np.int64).min, dtype=np.int64)
-    local = basis.local_basis
-    for start in range(0, len(local), _BOUNDS_CHUNK):
-        chunk = [local[i] for i in range(start, min(start + _BOUNDS_CHUNK, len(local)))]
-        raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in chunk), dtype=np.uint8).reshape(len(chunk), -1)
-        bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(np.int64)
-        q = bits @ weights.T
-        lo = np.minimum(lo, q.min(axis=0))
-        hi = np.maximum(hi, q.max(axis=0))
+    lo, hi = _local_weighted_extrema(basis, weights)
     if basis.is_distributed:
         basis.comm.Allreduce(MPI.IN_PLACE, lo, op=MPI.MIN)
         basis.comm.Allreduce(MPI.IN_PLACE, hi, op=MPI.MAX)
@@ -922,6 +934,78 @@ def get_effective_weighted_bounds(basis):
     except AttributeError:
         pass
     return result
+
+
+@dataclass(frozen=True)
+class ExcitationBounds:
+    """Bath-excitation counts observed over a converged ground-state basis (replicated ints).
+
+    Relative to the reference "valence baths filled, conduction baths empty": ``max_holes`` is the largest
+    number of holes in the valence baths of any determinant, ``max_electrons`` the largest number of electrons
+    in the conduction baths, ``max_total`` the largest holes + electrons (so ``max_total <= max_holes +
+    max_electrons``). ``cap_bound`` is True when the determinant cap truncated the basis that set them, in
+    which case they depend on the cap (and so on the memory allocation).
+    """
+
+    max_holes: int
+    max_electrons: int
+    max_total: int
+    cap_bound: bool = False
+
+
+def _bath_orbital_lists(bath_states):
+    valence_baths, conduction_baths = bath_states
+    valence = [o for blocks in valence_baths.values() for blk in blocks for o in blk]
+    conduction = [o for blocks in conduction_baths.values() for blk in blocks for o in blk]
+    return valence, conduction
+
+
+def get_effective_excitation_bounds(basis, cap_bound=False):
+    """Largest valence-hole / conduction-electron / total excitation count over the whole basis (collective).
+
+    The excitation analogue of :func:`get_effective_restrictions`: observed over the converged
+    ground-state basis, so the excited-sector window that is derived from it admits every ground-state
+    determinant. One ``Allreduce(MAX)`` of a fixed ``int64[3]`` buffer on every rank (an empty rank contributes
+    the identity). Returns ``None`` when there are no bath orbitals or the global basis is empty
+    (rank-invariant).
+    """
+    valence, conduction = _bath_orbital_lists(basis.bath_states)
+    if not valence and not conduction:
+        return None
+    weights = np.zeros((3, basis.num_spin_orbitals), dtype=np.int64)
+    weights[0, valence] = -1  # q0 = -(valence electrons)
+    weights[1, conduction] = 1  # q1 = conduction electrons
+    weights[2, valence] = -1  # q2 = conduction electrons - valence electrons
+    weights[2, conduction] = 1
+    _lo, hi = _local_weighted_extrema(basis, weights)
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, hi, op=MPI.MAX)
+    if hi[0] == np.iinfo(np.int64).min:  # no determinant anywhere
+        return None
+    n_val = len(valence)
+    return ExcitationBounds(
+        max_holes=int(n_val + hi[0]),
+        max_electrons=int(hi[1]),
+        max_total=int(n_val + hi[2]),
+        cap_bound=bool(cap_bound),
+    )
+
+
+def excitation_bound_restrictions(bath_states, bounds):
+    """The weighted restrictions (list of ``(weights, (q_min, q_max))``) that enforce ``bounds``.
+
+    Valence holes ``<= max_holes``, conduction electrons ``<= max_electrons`` and total ``<= max_total``, each
+    built by :func:`excitation_budget_restriction`. An empty side contributes no entry (the builder returns
+    ``None`` for it), so a model without conduction baths gets the holes and total entries only. Excited bases
+    inherit them through ``widen_weighted_restrictions`` (+1 on each).
+    """
+    valence_baths, conduction_baths = bath_states
+    entries = [
+        excitation_budget_restriction((valence_baths, {}), bounds.max_holes),
+        excitation_budget_restriction(({}, conduction_baths), bounds.max_electrons),
+        excitation_budget_restriction(bath_states, bounds.max_total),
+    ]
+    return [e for e in entries if e is not None]
 
 
 def floor_weighted_restrictions(basis):
