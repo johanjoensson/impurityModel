@@ -463,7 +463,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
             # Collective, run while the member's basis is alive and after its solver is released.
             return spectra_of(state.es, redistributed_states(state.basis, state.psis), state.basis)
 
-    psis, es, ground_state_basis, _rho, gs_info = calc_gs(
+    _psis, es, _basis, _rho, gs_info = calc_gs(
         hOp,
         basis_setup,
         block_structure,

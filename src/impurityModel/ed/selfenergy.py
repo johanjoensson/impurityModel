@@ -750,9 +750,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         _report_phase_time(report, "self-energy moments", t_phase)
         return M
 
-    def member_gf(
-        psis, es, ground_state_basis, truncation, convergence, label="", member_weight=None
-    ):
+    def member_gf(psis, es, ground_state_basis, truncation, convergence, label="", member_weight=None):
         """The interacting Green's function and moments of one set of thermal states (a charge-sector member).
 
         Collective. Returns ``None`` when the drop rule removes every state of the member (a minority member
@@ -969,7 +967,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
 
         # Rank 0 holds the families, the others None: a failure of the merge on one rank is raised on all.
         merged = on_every_rank(comm, _merge)
-    es = merged["es"]
     family_matsubara, family_realaxis = merged["matsubara"], merged["realaxis"]
     retry_note, M = merged["note"], merged["M"]
     gs_matsubara = _impurity_gf(family_matsubara)

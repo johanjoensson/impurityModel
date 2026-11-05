@@ -27,9 +27,7 @@ LEGACY_NOTE = (
 )
 
 
-def resolve_mixed_valence(
-    value: Any, *, driver_default: Any = None, default: bool = True
-) -> tuple[bool, str | None]:
+def resolve_mixed_valence(value: Any, *, driver_default: Any = None, default: bool = True) -> tuple[bool, str | None]:
     """Resolve a user ``mixed_valence`` value to a bool.
 
     Parameters

@@ -16,13 +16,12 @@ from impurityModel.ed.gs_report import (
     finalize_ground_state,
     measure_ground_state,
     redistributed_states,  # noqa: F401  (re-exported: susceptibility, get_spectra)
-    report_ground_state,  # noqa: F401
     union_order,
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -1616,9 +1615,7 @@ def sector_bounds(impurity_orbitals, frozen_occupations):
     """
     frozen = frozen_occupations or ()
     max_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
-    free_capacity = sum(
-        len(block) for i, blocks in impurity_orbitals.items() if i not in frozen for block in blocks
-    )
+    free_capacity = sum(len(block) for i, blocks in impurity_orbitals.items() if i not in frozen for block in blocks)
 
     def pinned_of(occupation):
         return sum(occupation[i] for i in occupation if i in frozen)
@@ -1729,7 +1726,7 @@ class MemberState(NamedTuple):
 
 
 def release(ground_state):
-    """``(MemberState, raw_truncation)`` of a :class:`GroundState`; the caller drops ``ground_state`` (and so the solver).
+    """``(MemberState, raw_truncation)`` of a :class:`GroundState`; the caller then drops it (and so the solver).
 
     ``raw_truncation`` is the solver's own ``truncation_report`` (``None`` when it was not capped), which
     :func:`member_refusal` needs unmixed with the walk's.
@@ -2199,7 +2196,12 @@ def calc_gs(
     # rather than re-listing its keys.
     measure = _MeasureVisitor(visitor)
     result = solve_charge_sector_ensemble(
-        Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, mixed_valence=mixed_valence, visitor=measure, **basis_setup
+        Hop,
+        verbose=verbose,
+        slaterWeightMin=slaterWeightMin,
+        mixed_valence=mixed_valence,
+        visitor=measure,
+        **basis_setup,
     )
     kept = result.visited
     measurements = [k[0] for k in kept]
@@ -2227,7 +2229,9 @@ def calc_gs(
                 "converged": ok,
                 "truncation": k[1],
             }
-            for member, w, e0, m, k, ok in zip(result.members, result.weights, result.realised, measurements, kept, converged)
+            for member, w, e0, m, k, ok in zip(
+                result.members, result.weights, result.realised, measurements, kept, converged
+            )
         ],
         # Per state of the merged union, which is ascending in energy (gs_report.union_order); "es" is that
         # union, the energies `rhos` belongs to (review H-MV4).
