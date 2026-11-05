@@ -358,3 +358,37 @@ def test_run_can_stop_before_solving(tmp_path, monkeypatch, capsys, flag, expect
     assert not (tmp_path / "out").exists(), f"{flag} must not create outputs"
     if MPI.COMM_WORLD.rank == 0:
         assert expected in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------- retired flags
+
+
+@pytest.mark.parametrize(
+    "module_name, flag",
+    [("spectra", "--excitation_budget"), ("selfenergy", "--excitation_budget"), ("selfenergy", "--reort")],
+)
+def test_a_retired_flag_still_parses_but_is_hidden(module_name, flag, capsys):
+    import importlib
+
+    module = importlib.import_module(f"impurityModel.scripts.{module_name}")
+    parser = argparse.ArgumentParser()
+    module.add_arguments(parser)
+    args = parser.parse_args(["h0.h0", flag, "6"])
+    assert getattr(args, flag[2:]) == "6"
+    assert getattr(parser.parse_args(["h0.h0"]), flag[2:]) is None
+    parser.print_help()
+    assert flag not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "module_name, flag",
+    [("spectra", "excitation_budget"), ("selfenergy", "excitation_budget"), ("selfenergy", "reort")],
+)
+def test_a_retired_flag_warns_before_the_run_starts(module_name, flag):
+    import importlib
+
+    module = importlib.import_module(f"impurityModel.scripts.{module_name}")
+    # A bare namespace: run() fails on the first real attribute it needs, after the warning it is testing.
+    with pytest.warns(UserWarning, match="retired and ignored"):
+        with pytest.raises(AttributeError):
+            module.run(argparse.Namespace(**{flag: "6"}))

@@ -33,9 +33,10 @@ def _archive(path, **attrs):
     return path
 
 
-def test_a_retired_excitation_budget_is_neither_replayed_nor_flagged(tmp_path):
+def test_a_retired_excitation_budget_is_reported_not_replayed(tmp_path):
     workload = load_workload(_archive(tmp_path / "a.h5", excitation_budget=8))
     assert "excitation_budget" not in workload and workload["ignored_attrs"] == []
+    assert workload["retired_attrs"] == ["excitation_budget"]  # said aloud, not dropped without a word
     build_options(workload)  # BasisOptions has no such field any more
 
 

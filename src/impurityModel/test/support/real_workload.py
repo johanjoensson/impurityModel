@@ -65,7 +65,6 @@ _CONSUMED_ATTRS = frozenset(
         "gf_refine_tol",
         "gf_refine_swap",
         "gf_min_weight",
-        "excitation_budget",  # retired: recorded by old runs, deliberately not replayed (the bounds are derived)
         "cost_budget",
         "e_pt2_tol",
         "de2_min",
@@ -73,6 +72,10 @@ _CONSUMED_ATTRS = frozenset(
 )
 #: Attributes that describe the bath fit that produced ``H solver`` (or the run's provenance), not the solver
 #: call: the fitted result is the dataset, so a replay does not need them.
+#: Attributes old runs recorded that no longer steer anything. They are reported as ``retired_attrs`` (not
+#: ``ignored_attrs``, which means "a replay would silently solve a different problem"): the replay derives its
+#: excitation bounds from its own ground state, so it can differ from the archived run's basis.
+_RETIRED_ATTRS = frozenset({"excitation_budget"})
 _BATH_FIT_ONLY = frozenset(
     {
         "bath_geometry",
@@ -169,7 +172,8 @@ def load_workload(h5_path, cluster=None, iteration=None):
     return {
         # What the archive recorded and this module does not consume (see _CONSUMED_ATTRS): empty for a
         # faithful replay. Callers that must not solve a different problem should refuse a non-empty list.
-        "ignored_attrs": sorted(set(attrs) - _CONSUMED_ATTRS - _BATH_FIT_ONLY),
+        "ignored_attrs": sorted(set(attrs) - _CONSUMED_ATTRS - _BATH_FIT_ONLY - _RETIRED_ATTRS),
+        "retired_attrs": sorted(set(attrs) & _RETIRED_ATTRS),
         "cost_budget": _optional(attrs, "cost_budget", float),
         "e_pt2_tol": _optional(attrs, "e_pt2_tol", float),
         "de2_min": _optional(attrs, "de2_min", float),
@@ -241,7 +245,7 @@ def build_options(
 
     Split out of :func:`run_selfenergy` so a driver can print exactly what it is about to solve before it
     starts (and diff that against the production run's option table). Every solver-relevant attribute the
-    archive recorded is passed on, the excitation budget included; an attribute the archive does not record
+    archive recorded is passed on (a recorded excitation budget is retired and reported as ``retired_attrs``); an attribute the archive does not record
     is left to the library default. Arguments as in :func:`run_selfenergy`; ``gf_min_weight=None`` takes the
     archive's value (``None`` when unrecorded), and so does ``gf_method=None`` (``"lanczos"`` when unrecorded):
     an archive written by a ``bicgstab`` run is not silently replayed as Lanczos.
@@ -395,9 +399,9 @@ def run_selfenergy(
 
     Notes
     -----
-    The excitation budget, residual-PT2 tolerances and GF admission options the archive recorded are passed
-    on (see :func:`build_options`); before this was done a replay used the library default budget of 4 where
-    a production run had used 8, and solved a ground state 0.61x the size with an E0 1.2 meV too high.
+    The residual-PT2 tolerances and GF admission options the archive recorded are passed
+    on (see :func:`build_options`); an archived excitation budget is retired and not replayed (the bounds are
+    derived from the replay's own ground state), so a replay of an old archive can differ from the archived run.
     """
     model, meshes, basis, solver = build_options(
         workload,
