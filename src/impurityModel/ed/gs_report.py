@@ -267,6 +267,31 @@ class MemberMeasurement:
     basis: object = None
 
 
+def _bounds_records(src, bounds):
+    """JSON-ready ``[{n_imp, max_holes, max_electrons, max_total, cap_bound}, ...]``, one per member.
+
+    Plain ``int``/``bool`` only: the statistics write is collective and an unserialisable value once hung MPI.
+    Members whose solve observed no bath orbitals (``None``) are skipped.
+    """
+    members = getattr(src, "members", None)
+    if members is not None:
+        totals = [m.total for m in members]
+    else:
+        occ = getattr(src.basis, "ground_state_occupation", None)
+        totals = [sum(occ.values()) if occ else None]
+    return [
+        {
+            "n_imp": None if total is None else int(total),
+            "max_holes": int(b.max_holes),
+            "max_electrons": int(b.max_electrons),
+            "max_total": int(b.max_total),
+            "cap_bound": bool(b.cap_bound),
+        }
+        for total, b in zip(totals, bounds)
+        if b is not None
+    ]
+
+
 def _evaluate(
     src,
     Hop,
@@ -289,6 +314,9 @@ def _evaluate(
     # The effective restrictions are printed in the ground-state-report overview below.
     effective_restrictions = src.once("restrictions", lambda: get_effective_restrictions(ground_state_basis))
     n_dets = len(ground_state_basis)
+    # The bath-excitation bounds each member's solve observed (None: no bath orbitals), one per member.
+    excitation_bounds = src.part("excitation_bounds", lambda: getattr(ground_state_basis, "excitation_bounds", None))
+    excitation_bound_records = _bounds_records(src, excitation_bounds)
     # Single-particle density matrices, built distributed (each rank applies c_orb to its
     # local partition, redistributes, computes local inner products, then Allreduce); the
     # full rho is returned replicated on every rank. No full-state-vector gather needed.
@@ -317,6 +345,7 @@ def _evaluate(
         # so it lands in the saved statistics JSON alongside the occupation weights.
         gs_stats["truncation"] = gs_truncation_report
         gs_stats["convergence"] = gs_convergence_report
+        gs_stats["excitation_bounds"] = excitation_bound_records
         if ensemble is not None:
             gs_stats["charge_sector_ensemble"] = ensemble
 
@@ -619,6 +648,7 @@ def _evaluate(
         e_avg=e_avg,
         effective_restrictions=effective_restrictions,
         energy_decomposition=energy_decomposition,
+        excitation_bound_records=excitation_bound_records,
         entanglement=entanglement,
         full_impurity_ix=full_impurity_ix,
         gs_stats=gs_stats,
@@ -676,6 +706,7 @@ def _present(
     e_avg = R.e_avg
     effective_restrictions = R.effective_restrictions
     energy_decomposition = R.energy_decomposition
+    excitation_bound_records = R.excitation_bound_records
     full_impurity_ix = R.full_impurity_ix
     gs_stats = R.gs_stats
     impurity_indices = R.impurity_indices
@@ -752,6 +783,13 @@ def _present(
         occ_str = f"; ground-state impurity occupation: {sum(gs_occ.values())}" if gs_occ else ""
         print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
         print(f"{n_dets:,} Slater determinants{occ_str}")
+        for rec in excitation_bound_records:
+            tag = "" if rec["n_imp"] is None or len(excitation_bound_records) == 1 else f"N_imp = {rec['n_imp']}: "
+            print(
+                f"{tag}effective bath-excitation bounds (max over the GS basis; excited bases run at +1): "
+                f"holes <= {rec['max_holes']}, electrons <= {rec['max_electrons']}, total <= {rec['max_total']}"
+                + (" [cap-bound]" if rec["cap_bound"] else "")
+            )
         print(convergence_summary(gs_convergence_report))
         if ensemble is not None:
             print(
@@ -777,6 +815,16 @@ def _present(
             print("Effective GS restrictions (observed electron count per orbital set):")
             for indices, occupations in effective_restrictions.items():
                 print(f"  {format_index_ranges(indices)} : {occupations[0]}-{occupations[1]}")
+            if excitation_bound_records:
+                print("Effective bath-excitation bounds (valence holes / conduction electrons / total):")
+                for rec in excitation_bound_records:
+                    n_imp = "" if rec["n_imp"] is None else f"N_imp = {rec['n_imp']} : "
+                    print(
+                        f"  {n_imp}valence holes {rec['max_holes']} -> {rec['max_holes'] + 1} | "
+                        f"conduction electrons {rec['max_electrons']} -> {rec['max_electrons'] + 1} | "
+                        f"total {rec['max_total']} -> {rec['max_total'] + 1}"
+                        + ("  [cap-bound]" if rec["cap_bound"] else "")
+                    )
             print("Block structure:")
             print_block_structure(block_structure)
             print_impurity_orbital_groups(
@@ -883,6 +931,7 @@ def _info(R, gs_truncation_report, gs_convergence_report):
         "statistics": R.gs_stats,
         "truncation": gs_truncation_report,
         "convergence": gs_convergence_report,
+        "excitation_bounds": R.excitation_bound_records,
         "correlation_diagnostics": R.corr_diagnostics,
         "screening_diagnostics": R.screening_diagnostics,
         "energy_decomposition": R.energy_decomposition,

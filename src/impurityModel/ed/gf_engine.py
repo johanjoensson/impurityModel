@@ -240,8 +240,26 @@ def print_excited_windows(window, weighted_window):
         print("weight restrictions:")
         for entry in weighted_window:
             weights, sum_rest, _tail = weighted_parts(entry)
-            print(f"{weights}: {sum_rest}")
+            label = _excitation_bound_label(weights, sum_rest)
+            print(f"{label}" if label is not None else f"{weights}: {sum_rest}")
     sys.stdout.flush()
+
+
+def _excitation_bound_label(weights, window):
+    """``bounds: ... <= k`` for a unit-weight bath-excitation entry (see ``excitation_budget_restriction``), else ``None``.
+
+    Valence orbitals weigh -1 and conduction +1, so holes = n_valence + q and electrons = q: the count the
+    window's upper end admits is ``q_max + n_valence`` (holes, total) or ``q_max`` (electrons).
+    """
+    values = set(weights.values())
+    if not weights or not values <= {-1, 1}:
+        return None
+    n_valence = sum(1 for w in weights.values() if w == -1)
+    if values == {-1}:
+        return f"bounds: valence holes <= {window[1] + n_valence} ({len(weights)} orbitals)"
+    if values == {1}:
+        return f"bounds: conduction electrons <= {window[1]} ({len(weights)} orbitals)"
+    return f"bounds: total bath excitations <= {window[1] + n_valence} ({len(weights)} orbitals)"
 
 
 def distinct_windows(windows):

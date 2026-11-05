@@ -470,7 +470,9 @@ class Basis:
         self.comm = comm
         self.restrictions = restrictions
         # Weighted-sum restrictions (e.g. S_z), list of (weights, (q_min, q_max)); see
-        # ManyBodyOperator.set_weighted_restrictions. None = none.
+        # ManyBodyOperator.set_weighted_restrictions. None = none. A thermal ground-state solve
+        # (groundstate.solve_member) appends the three bath-excitation bounds it observed (valence
+        # holes, conduction electrons, total) to this list, which the excited bases then inherit (+1).
         self.weighted_restrictions = weighted_restrictions
         # Adaptive MPI split policy (Phase 7): cap the number of split colors near the
         # participation ratio of the block costs, scaled by split_threshold. Larger =>

@@ -95,6 +95,23 @@ def _marginal(thermal_config, axis):
     }
 
 
+def _excitation_order_distribution(thermal_config, n_valence_orbitals):
+    """Thermal weight per total bath-excitation order ``k = (valence holes) + (conduction electrons)``.
+
+    Shows whether the largest order the ground state reached carries real weight or only the last
+    determinants CIPSI admitted. ``thermal_config`` keys are ``(n_imp, n_val, n_con)``.
+    """
+    dist = defaultdict(float)
+    total = 0.0
+    for (_n_imp, n_val, n_con), weight in thermal_config.items():
+        dist[int(n_valence_orbitals - n_val + n_con)] += weight
+        total += weight
+    if total > 0:
+        for k in dist:
+            dist[k] /= total
+    return [(int(k), float(dist[k])) for k in sorted(dist)]
+
+
 def _participation(weight_map, total):
     """Effective number of entries ``1/Σ p²`` and Shannon entropy ``-Σ p ln p``."""
     if total <= 0:
@@ -414,6 +431,12 @@ def _assemble_stats(
         "conduction": _marginal(thermal_config, 2),
     }
 
+    excitation_order = (
+        _excitation_order_distribution(thermal_config, len(channel_indices["valence"]))
+        if channel_indices is not None
+        else None
+    )
+
     participation = {
         "configurations": _participation(thermal_config, config_total),
         "determinants": _det_participation(sum_w, sum_w2, sum_wlogw),
@@ -449,6 +472,7 @@ def _assemble_stats(
         "thermal_config_weights": {"rows": thermal_rows, "remaining": thermal_remaining},
         "per_state": per_state,
         "marginals": marginals,
+        "excitation_order": excitation_order,
         "participation": participation,
         "natural_orbital_occupations": [float(x) for x in nat_occ],
         "natural_orbital_vectors": nat_vecs,
@@ -891,6 +915,11 @@ def print_gs_statistics(stats, file=None, verbose=1):
         m = stats["marginals"][name]
         dist = "  ".join(f"P({n})={p:.4f}" for n, p in m["distribution"])
         print(f"  {name:>11s}: <N>={m['mean']:7.4f}  Var={m['variance']:7.4f}  | {dist}", file=file)
+
+    order = stats.get("excitation_order")
+    if order:
+        dist = "  ".join(f"P({k})={p:.3g}" for k, p in order)
+        print(f"  bath excitations (valence holes + conduction electrons): {dist}", file=file)
 
     cfg = stats["participation"]["configurations"]
     det = stats["participation"]["determinants"]

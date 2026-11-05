@@ -10,7 +10,12 @@ import numpy as np
 
 from impurityModel.ed import config, solver_trace
 from impurityModel.ed.basis_generation import SeedWindow
-from impurityModel.ed.basis_restrictions import build_excited_restrictions, build_weighted_restrictions
+from impurityModel.ed.basis_restrictions import (
+    build_excited_restrictions,
+    build_weighted_restrictions,
+    excitation_bound_restrictions,
+    get_effective_excitation_bounds,
+)
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
@@ -1439,6 +1444,18 @@ def solve_member(
     # unit bases from (gf_units.gf_cap). Deliberately not `basis.truncation_threshold`: the memory
     # guard may lower that one for the ground state, and a GF unit must not inherit it.
     basis.cap_policy = search.cap_policy
+    # The bath-excitation bounds this ground state needed (valence holes, conduction electrons, total): an
+    # output of the solve, so the excited bases (Green's function, spectra, RIXS, susceptibility) run under them
+    # through the one inheritance step, `widen(floor(basis.weighted_restrictions))` (+1 on each). Collective
+    # (one Allreduce) and unconditional on every rank. The list is REBOUND, never mutated: the caller's list is
+    # shared by every ensemble member and every double-counting trial shift. (The occupation search of
+    # `dc_criteria` also passes through here, so it pays one basis scan per trial on a basis it then discards.)
+    bounds = get_effective_excitation_bounds(basis, cap_bound=solver.truncation_report is not None)
+    basis.excitation_bounds = bounds
+    if bounds is not None:
+        basis.weighted_restrictions = list(basis.weighted_restrictions or []) + excitation_bound_restrictions(
+            bath_states, bounds
+        )
 
     # The residual in `solver.convergence_report` covers the reference states `expand` carried: the
     # states the last selection round scored, not `solver.psi_refs` -- a capped expansion returns the
