@@ -6,6 +6,7 @@ in the current directory. Contract the stored polarization tensors at plot time 
 ``impurityModel plot-spectra`` / ``plot-rixs``.
 """
 
+import argparse
 import warnings
 from collections import OrderedDict
 
@@ -275,7 +276,6 @@ def run(args):
 
 def main():
     """Stand-alone entry point (``python -m impurityModel.scripts.spectra``)."""
-    import argparse
 
     parser = argparse.ArgumentParser(description="Spectroscopy simulations (PS/XPS/NIXS/XAS/RIXS).")
     add_arguments(parser)
