@@ -579,7 +579,7 @@ def _numerically_equal(x, y, tol=1e-12):
 def test_a_lone_member_is_assembled_bit_identically():
     from impurityModel.ed.gs_statistics import assemble_gs_statistics, channel_indices_of, gs_statistics_partials
 
-    a, ea, b, eb = _member_split()
+    a, _ea, b, _eb = _member_split()
     psis, es, tau = a + b, np.array([-1.0, -0.7, -0.4]), 0.5
     thermal_rho = np.zeros((N_ORBS, N_ORBS), dtype=complex)
     one_shot = compute_gs_statistics(_FakeBasis(), psis, es, tau, thermal_rho, IMPURITY)
