@@ -598,11 +598,12 @@ def calc_susceptibility_workflow(
             shell_ls=sb.shell_ls,
         )
 
-    def member_chi(member, member_basis, member_es, member_psis, _truncation, _convergence):
-        # Collective, run while the member's basis is alive and after its solver is released.
-        return chi_of(redistributed_states(member_basis, member_psis), member_es, member_basis)
+    class _SusceptibilityVisitor:
+        def visit(self, _member, state):
+            # Collective, run while the member's basis is alive and after its solver is released.
+            return chi_of(redistributed_states(state.basis, state.psis), state.es, state.basis)
 
-    psis, es, ground_state_basis, _thermal_rho, gs_info = calc_gs(
+    _psis, _es, _basis, _thermal_rho, gs_info = calc_gs(
         sb.h,
         basis_information,
         sb.block_structure,
@@ -611,11 +612,11 @@ def calc_susceptibility_workflow(
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
         spec=gs_spec,
-        member_hook=member_chi,
+        visitor=_SusceptibilityVisitor(),
     )
-    ensemble = gs_info.get("ensemble")
-    if ensemble is None:  # one sector: no hook call
-        result = chi_of(psis, es, ground_state_basis)
+    ensemble = gs_info["ensemble"]
+    if len(gs_info["member_results"]) == 1:  # one member: its response is the result
+        result = gs_info["member_results"][0]
     else:
         result = on_every_rank(
             comm,

@@ -751,7 +751,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         return M
 
     def member_gf(
-        psis, es, ground_state_basis, truncation, convergence, label="", with_moments=True, member_weight=None
+        psis, es, ground_state_basis, truncation, convergence, label="", member_weight=None
     ):
         """The interacting Green's function and moments of one set of thermal states (a charge-sector member).
 
@@ -900,7 +900,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             _check_gf_physical(comm, _impurity_gf(family_matsubara), "Matsubara")
             _check_gf_physical(comm, _impurity_gf(family_realaxis), "Real frequency")
 
-        M = member_moments(psis, es, ground_state_basis) if with_moments else None
+        M = member_moments(psis, es, ground_state_basis)
         return {
             "matsubara": family_matsubara,
             "realaxis": family_realaxis,
@@ -908,15 +908,26 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             "note": retry_note,
             "es": es,
             "kept_share": kept_share,
-            "psis": None if with_moments else psis,
         }
 
     # The thermal ground state and the interacting Green's function. The ground-state solve returns
     # every eigenstate inside the thermal window, certified complete (or says it could not), so the
     # ensemble is never re-requested with a larger count. Under mixed_valence auto/on it returns the
     # dominant charge sector's states, and ``member_gf`` runs once per member inside it.
+    class _GreensFunctionVisitor:
+        def visit(self, member, state):
+            return member_gf(
+                redistributed_states(state.basis, state.psis),
+                state.es,
+                state.basis,
+                state.truncation,
+                state.convergence,
+                label=f"[N_total = {member.total}] ",
+                member_weight=member.weight,
+            )
+
     t_phase = time.perf_counter()
-    psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
+    _psis, _es, _basis, thermal_rho, gs_info = calc_gs(
         h,
         basis_information,
         block_structure,
@@ -925,34 +936,12 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         slaterWeightMin=slaterWeightMin,
         shell_ls=sb.shell_ls,
         spec=gs_spec,
-        member_hook=lambda member, basis, es, psis, trunc, conv: member_gf(
-            redistributed_states(basis, psis),
-            es,
-            basis,
-            trunc,
-            conv,
-            label=f"[N_total = {member.total}] ",
-            member_weight=member.weight,
-        ),
+        visitor=_GreensFunctionVisitor(),
     )
     _report_phase_time(report, "ground state", t_phase)
-    ensemble = gs_info.get("ensemble")
-    if ensemble is None:  # mixed_valence off: one sector, no hook call
-        # One sector: its moments come after the self-energy, as they always did (no basis is released meanwhile).
-        member_results = [
-            member_gf(
-                psis,
-                es,
-                ground_state_basis,
-                gs_info.get("truncation"),
-                gs_info.get("convergence"),
-                with_moments=False,
-            )
-        ]
-        weights = [1.0]
-    else:
-        member_results = gs_info["member_results"]
-        weights = [m["weight"] for m in ensemble["members"]]
+    ensemble = gs_info["ensemble"]
+    member_results = gs_info["member_results"]
+    weights = [m["weight"] for m in ensemble["members"]]
     live = [(wt, r) for wt, r in zip(weights, member_results) if r is not None]
     if len(live) == 1:
         merged = live[0][1]
@@ -973,7 +962,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
                 "matsubara": _combine("matsubara"),
                 "realaxis": _combine("realaxis"),
                 "M": sum(c * r["M"] for c, (_, r) in zip(coeff, live)),
-                "psis": None,
                 "note": "\n".join(r["note"] for _, r in live if r["note"]),
                 "es": live[0][1]["es"],
             }
@@ -1040,8 +1028,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
 
     # High-frequency self-energy moments Sigma_1, Sigma_2 from the spectral moments M, replicated after the
     # reduction (so the conversion and block-symmetrisation below are identical on all ranks: pure numpy).
-    if M is None:
-        M = member_moments(merged["psis"], merged["es"], ground_state_basis)
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
     sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
 
@@ -1070,7 +1056,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "rhos": gs_info["rhos"],
         # The energies `rhos` belongs to: the union of the members' thermal states, ascending, labelled by
         # gs_ensemble["state_sector"] (review H-MV4); one sector: that sector's.
-        "gs_energies": np.asarray(ensemble["es"]) if ensemble is not None else np.asarray(es),
+        "gs_energies": np.asarray(ensemble["es"]),
         "block_structure": block_structure,
         # None unless the truncation_threshold bound the ground-state basis; a dict with
         # the fixed-budget CIPSI refinement summary otherwise (see CIPSISolver.expand).
@@ -1078,6 +1064,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # The ground state's residual PT2 energy against its tolerance (CIPSISolver.expand's
         # `convergence_report`): the error bar on the ground-state energy.
         "gs_convergence": gs_info.get("convergence"),
-        # None unless the charge-sector ensemble was formed: members, weights c_s, global e0 (mixed_valence).
+        # The charge-sector ensemble record: members, weights c_s, global e0 (one member when mixed_valence is off).
         "gs_ensemble": ensemble,
     }

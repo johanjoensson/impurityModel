@@ -15,7 +15,8 @@ from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.gs_report import (
     finalize_ground_state,
     measure_ground_state,
-    report_ground_state,
+    redistributed_states,  # noqa: F401  (re-exported: susceptibility, get_spectra)
+    report_ground_state,  # noqa: F401
     union_order,
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
@@ -1633,216 +1634,17 @@ def _agree_on_switch(mixed_valence, comm):
             raise RuntimeError(f"mixed_valence resolved differently on different ranks: {modes}")
 
 
-def solve_ground_state_ensemble(
-    h_op,
-    impurity_orbitals,
-    bath_states,
-    N0,
-    *,
-    consume,
-    after_release=None,
-    tau,
-    slaterWeightMin,
-    frozen_occupations=None,
-    chain_restrict=False,
-    dense_cutoff=config.GS_DENSE_CUTOFF,
-    comm=None,
-    verbose=False,
-    truncation_threshold=None,
-    weighted_restrictions=None,
-    use_hf_seed=True,
-    de2_min=GS_DE2_MIN,
-    e_pt2_tol=GS_E_PT2_TOL,
-    plan_store=None,
-    shift=0.0,
-    spin_layout=None,
-    announce_refusal=True,
-    warn_neighbours=True,
-):
-    """The grand-canonical thermal ground state: every charge sector inside the thermal window, one at a time.
-
-    The sector walk runs as in
-    :func:`solve_ground_state`, then :func:`~impurityModel.ed.sector_ensemble.plan_ensemble` decides the members
-    (solving an admitted edge member's outer neighbour first, collectively, until the edge is not admitted).
-    Each member is solved for ``Within.thermal(tau)`` in turn and handed to ``consume(member, ground_state)``; the
-    ground state is dropped before the next member is built, so the peak is one member plus whatever ``consume``
-    keeps.  ``after_release(member, consumed)``, when given, runs after the ground state (and so its solver and
-    Krylov store) has been dropped, on ``consume``'s return value; its return value replaces that entry of
-    ``results``.  A heavy consumer (the Green's function) belongs there, not in ``consume``.  When the plan is
-    refused (a member is cap-bound, uncertified, or the weights are not fixed to ``ENSEMBLE_WEIGHT_ERROR_MAX``)
-    the ensemble is the winner alone: a warning is printed and the run goes on. The same holds
-    when a member's own thermal solve, checked before ``consume`` sees it, is cap-bound or unconverged, except
-    that the ensemble is cut at that member rather than to the winner: the members before it, already consumed,
-    are kept. ``plan`` then says so, and ``results`` and ``realised`` hold the kept members.
-    ``announce_refusal=False`` silences that warning (a caller that records the refusal
-    itself, such as the double-counting search, reports it once per search rather than per trial).
-    ``warn_neighbours=False`` likewise silences the single-member neighbour-gap note.
-
-    Returns
-    -------
-    plan : EnsemblePlan
-    results : list
-        ``consume``'s return value per member, in the plan's order (lowest walk energy first; ``calc_gs``
-        reorders by realised energy).
-    realised : list of float
-        The lowest energy each member's thermal solve actually found.
-    """
-    config.assert_uniform(comm)
-    _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
-    if plan_store is None:
-        plan_store = SectorPlanStore()
-    # Frozen groups are pinned at the filling the walk settled on (a window group sits at Hartree-Fock's
-    # filling, which need not be the nominal one); the rest range over their capacity. Until a sector is solved
-    # the nominal filling stands in.
-    max_total, free_capacity, pinned_of = sector_bounds(impurity_orbitals, frozen_occupations)
-    pinned_box = [pinned_of(N0)]
-
-    def attainable(total):
-        pinned = pinned_box[0]
-        return 0 <= total <= max_total and pinned <= total <= pinned + free_capacity
-
-    def needs_of(solved):
-        pinned_box[0] = pinned_of(solved[0].trial_N0) if solved else pinned_box[0]
-        return plan_ensemble(solved, tau, attainable=attainable).needs
-
-    search = find_ground_state_sector(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        N0,
-        frozen_occupations=frozen_occupations,
-        chain_restrict=chain_restrict,
-        dense_cutoff=dense_cutoff,
-        comm=comm,
-        verbose=verbose,
-        truncation_threshold=truncation_threshold,
-        slaterWeightMin=slaterWeightMin,
-        use_hf_seed=use_hf_seed,
-        weighted_restrictions=weighted_restrictions,
-        de2_min=de2_min,
-        e_pt2_tol=e_pt2_tol,
-        plan_store=plan_store,
-        shift=shift,
-        spin_layout=spin_layout,
-        more_totals=needs_of,
-    )
-    pinned_box[0] = pinned_of(search.occupation)
-    plan = plan_ensemble(search.solved, tau, attainable=attainable)
-    if plan.needs and plan.refused_reason is None:
-        # An edge that could not be solved leaves the plan provisional, and a provisional plan has skipped the
-        # cap / certification / error-bar checks: refuse rather than merge unchecked.
-        winner_total = sum(search.occupation.values())
-        # (the winner is the lowest sector, so it is always admitted; should it ever not be, keep the dominant
-        # member rather than an empty plan -- an empty member list would crash every rank in the loop below)
-        plan = dataclasses.replace(
-            plan,
-            members=tuple(m for m in plan.members if m.total == winner_total) or plan.members[:1],
-            refused_reason=f"the edge sector(s) {list(plan.needs)} could not be solved",
-            needs=(),
-        )
-    if plan.refused_reason is not None:
-        if announce_refusal and (comm is None or comm.rank == 0):
-            print(
-                f"WARNING: mixed_valence: keeps the single N_imp = {plan.members[0].total} "
-                f"sector: {plan.refused_reason}.",
-                flush=True,
-            )
-    records = {r.total: r for r in search.solved}
-    kw = dict(
-        tau=tau,
-        chain_restrict=chain_restrict,
-        dense_cutoff=dense_cutoff,
-        comm=comm,
-        verbose=verbose,
-        slaterWeightMin=slaterWeightMin,
-        weighted_restrictions=weighted_restrictions,
-        frozen_occupations=frozen_occupations,
-        de2_min=de2_min,
-        e_pt2_tol=e_pt2_tol,
-        plan_store=plan_store,
-        shift=shift,
-        spin_layout=spin_layout,
-    )
-    results, realised = [], []
-    single = len(plan.members) == 1
-    winner_total = sum(search.occupation.values())
-    for index, member in enumerate(plan.members):
-        if member.total == winner_total:
-            member_search = search
-        else:
-            member_search = search._replace(
-                occupation=dict(member.trial_N0),
-                truncation_report=records[member.total].truncation_report,
-                diagnostics=None,
-            )
-        ground_state = solve_member(
-            member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single and warn_neighbours, **kw
-        )
-        bad = None if single else _thermal_member_defect(member, ground_state, comm)
-        if bad is not None:
-            # The walk certified the plan; the member's own thermal solve did not hold up (review H-MV11). Decided
-            # on rank 0's reports and broadcast, so every rank takes the same branch. The ensemble is cut at this
-            # member: the members before it (the lower sectors, already consumed) stay, so no consumer's work is
-            # thrown away (review 7b, owner decision); this one and those after it go. A failing winner is still a
-            # valid one-member ensemble, so it is consumed alone.
-            reason, by_cap = bad
-            kept_members = plan.members[: max(index, 1)]
-            if announce_refusal and (comm is None or comm.rank == 0):
-                held = (
-                    f"the single N_imp = {kept_members[0].total} sector"
-                    if len(kept_members) == 1
-                    else f"the N_imp = {[m.total for m in kept_members]} members solved before it"
-                )
-                print(f"WARNING: mixed_valence: keeps {held}: {reason}.", flush=True)
-            if warn_neighbours:
-                # The kept members were solved as ensemble members, without the single-sector note (review 7c).
-                _warn_near_neighbours(search, tau, comm, kept_totals=[m.total for m in kept_members])
-            plan = dataclasses.replace(plan, members=kept_members, refused_reason=reason, refused_by_cap=by_cap)
-            if results:
-                del ground_state
-                break
-        realised.append(float(np.min(ground_state.es)))
-        consumed = consume(member, ground_state)
-        del ground_state  # the solver and its Krylov store go before the consumer's own workspace is built
-        results.append(consumed if after_release is None else after_release(member, consumed))
-        del consumed
-        if bad is not None:
-            break  # the winner, kept alone
-    del results[len(plan.members) :], realised[len(plan.members) :]
-    # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. The thermal solves
-    # may find another member lowest; the callers take the dominant member by realised energy (review H-MV6), so
-    # this is a note, not an error, in either mode. Decided on rank 0 and broadcast.
-    moved = int(np.argmin(realised)) != 0
-    if comm is not None:
-        moved = comm.bcast(moved, root=0)
-    if moved and (comm is None or comm.rank == 0):
-        print(
-            "NOTE: the thermal solves rank the charge sectors differently from the walk (realised lowest "
-            f"energies {['%.6f' % e for e in realised]} for totals {[m.total for m in plan.members]}); "
-            "the dominant member is the realised lowest.",
-            flush=True,
-        )
-    return plan, results, realised
-
-
-def _thermal_member_defect(member, ground_state, comm):
+def member_refusal(member, truncation, convergence, comm):
     """``(reason, by_cap)`` when a member's thermal solve may not enter a merge; ``None`` when it may.
 
     The plan checked the walk's records. The thermal solve builds its own, larger basis, and that basis can be
     cap-bound or unconverged where the walk's was not (review H-MV11). Two things refuse the member: a cap- or
     memory-bound basis, or a residual measured on the final basis and above ``e_pt2_tol``. Two weaker verdicts
     only warn (owner decision): a residual not re-measured after the last truncation, and a thermal manifold
-    wider than the reference states the residual covers. The verdict is taken from rank 0's reports and
-    broadcast; the broadcast is unconditional on every rank of ``comm``.
+    wider than the reference states the residual covers. ``truncation`` is the solver's raw ``truncation_report``
+    (``None`` when not capped), ``convergence`` its ``convergence_report``. The verdict is taken from rank 0's
+    reports and broadcast; the broadcast is unconditional on every rank of ``comm``.
     """
-    solver = ground_state.solver
-    return member_refusal(
-        member, getattr(solver, "truncation_report", None), getattr(solver, "convergence_report", None), comm
-    )
-
-
-def member_refusal(member, truncation, convergence, comm):
-    """:func:`_thermal_member_defect` on the solver's reports (``truncation`` the raw ``truncation_report`` or ``None``)."""
     cap_bound = truncation is not None
     memory_bound = bool(cap_bound and truncation.get("memory_bound"))
     convergence = convergence or {}
@@ -2259,156 +2061,23 @@ class GroundStateSpec:
         )
 
 
-def _calc_gs_ensemble(
-    Hop,
-    basis_setup,
-    block_structure,
-    rot_to_spherical,
-    verbose,
-    slaterWeightMin,
-    stats_path,
-    layout,
-    shell_ls,
-    member_hook=None,
-):
-    """``calc_gs`` for a resolved ``mixed_valence`` of ``auto``/``on``: every member's thermal manifold, one report.
+class _MeasureVisitor:
+    """The ground-state report's own visitor: captures each member's measurement, then runs the driver's.
 
-    The members are solved one at a time (:func:`solve_ground_state_ensemble`); only each member's eigenpairs are
-    kept.  The report then runs once over their union (absolute energies, so the thermal weights *are* the merge
-    ``c_s ~ Z_s exp(-(e0_s - e0)/tau)``), with the union's states ascending in energy.  The dominant member is the
-    one whose thermal solve realised the lowest energy; ``gs_info["ensemble"]["members"]`` and
-    ``gs_info["member_results"]`` are in that order.  Returns the contract of ``calc_gs`` for the dominant member
-    -- ``(psis, es, basis)`` -- with the merged ``thermal_rho``, and ``gs_info["ensemble"]`` whose ``es`` and
-    ``state_sector`` describe the union that ``gs_info["rhos"]`` belongs to.
+    ``visit`` returns ``(measurement, truncation, convergence, driver_result)``; only the first visited member keeps
+    its basis (it carries the report), the later members hold their eigenpairs alone.
     """
-    kept = []  # (member, SectorMeasurement-args, truncation report, convergence report)
-    hooked = []  # member_hook's return per member
 
-    def consume(member, gs):
-        keep_basis = gs.basis if not kept else None  # the dominant member's basis carries the report
-        truncation = refined_truncation_report(gs.solver, gs.walk_report)
-        convergence = getattr(gs.solver, "convergence_report", None)
-        kept.append(
-            (
-                member,
-                measure_ground_state(keep_basis, np.array(gs.es), gs.psis, total=member.total),
-                truncation,
-                convergence,
-            )
-        )
-        # Only what the consumer needs, never the solver (reports above were taken from it first).
-        return gs.basis, gs.es, gs.psis, truncation, convergence
+    def __init__(self, driver_visitor=None):
+        self.driver = driver_visitor
+        self.count = 0
 
-    def release(member, consumed):
-        if member_hook is None:
-            return None
-        basis, es, psis, truncation, convergence = consumed
-        # Collective, member by member while this member's basis is alive (a consumer such as the Green's
-        # function needs the states and their basis; it keeps only what it must).
-        hooked.append(member_hook(member, basis, es, psis, truncation, convergence))
-        return None
-
-    kwargs = {k: v for k, v in basis_setup.items() if k not in ("use_hf_seed", "warn_neighbours", "mixed_valence")}
-    kwargs["use_hf_seed"] = basis_setup.get("use_hf_seed", True)
-    plan, _, realised = solve_ground_state_ensemble(
-        Hop,
-        verbose=verbose,
-        slaterWeightMin=slaterWeightMin,
-        consume=consume,
-        after_release=release,
-        **kwargs,
-    )
-    # A member refused after its thermal solve (H-MV11) cuts the ensemble there (7b); drop anything consumed after it.
-    del kept[len(plan.members) :], hooked[len(plan.members) :]
-    # The dominant member is the one whose thermal solve realised the lowest energy, not the walk's lowest
-    # (review H-MV6): the members, their hook results and their energies are ordered by realised energy, so
-    # members[0] holds the global ground state. Stable, and the energies are replicated: one order everywhere.
-    comm = basis_setup.get("comm")
-    if comm is not None:
-        # The realised energies are rank-local (the eigensolver's); a near tie must not order the members
-        # differently on different ranks (the ordering selects the states every rank hands on).
-        realised = comm.bcast([float(e) for e in realised], root=0)
-    order = [int(k) for k in np.argsort(np.asarray(realised), kind="stable")]
-    kept = [kept[k] for k in order]
-    realised = [realised[k] for k in order]
-    if hooked:
-        hooked = [hooked[k] for k in order]
-    tau = basis_setup["tau"]
-    measurements = [k[1] for k in kept]
-    z = np.array([np.exp(-(m.es - m.es.min()) / tau).sum() for m in measurements])
-    c = sector_weights(np.array(realised), z, tau)
-    converged = [(k[3] or {}).get("converged") is not False for k in kept]
-    conv = dict(kept[0][3]) if kept[0][3] is not None else None
-    if conv is not None and len(kept) > 1 and not all(converged):
-        conv["converged"] = False
-        conv.setdefault("limited_by", None)
-        if conv["limited_by"] is None:
-            bad = [k[0].total for k, ok in zip(kept, converged) if not ok]
-            conv["limited_by"] = f"ensemble member N_imp = {bad[0]}"
-    union, union_es = union_order(measurements, comm)
-    if len(measurements) == 1:
-        union = np.arange(len(union_es))  # one member is handed on untouched (merge_measurements), so is its order
-    labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
-    info = {
-        "mixed_valence": True,
-        "tau": tau,
-        "e0": float(min(realised)),
-        "error_bar": plan.error_bar,
-        "refused_reason": plan.refused_reason,
-        "members": [
-            {
-                "total": member.total,
-                "weight": float(w),
-                "e0": float(e0),
-                "walk_energy": member.walk_energy,
-                "residual_pt2": member.residual,
-                "error_bar": member.error_bar,
-                "n_states": len(m.es),
-                "converged": ok,
-                "truncation": trunc,
-            }
-            for (member, m, trunc, _), w, e0, ok in zip(kept, c, realised, converged)
-        ],
-        # Per state of the merged union, which is ascending in energy (gs_report.union_order); "es" is that
-        # union, the energies `rhos` belongs to (review H-MV4).
-        "state_sector": [int(labels[k]) for k in union],
-        "es": [float(e) for e in union_es[union]],
-    }
-    psis, es, basis, thermal_rho, gs_info = finalize_ground_state(
-        Hop,
-        measurements,
-        tau,
-        block_structure,
-        rot_to_spherical,
-        verbose,
-        stats_path,
-        worst_truncation([k[2] for k in kept]),
-        conv,
-        spin_layout=layout,
-        shell_ls=shell_ls,
-        ensemble=info,
-    )
-    gs_info["ensemble"] = info
-    gs_info["member_results"] = hooked
-    # The dominant member's states, as the single-sector contract hands them on (the union is sorted, so they
-    # need not be contiguous): selected by their sector label, in ascending energy.
-    dominant = [k for k, total in enumerate(info["state_sector"]) if total == kept[0][0].total]
-    return [psis[k] for k in dominant], np.asarray(es)[dominant], basis, thermal_rho, gs_info
-
-
-def redistributed_states(basis, psis):
-    """The thermal states as the single-sector report hands them on: redistributed onto ``basis``, pruned.
-
-    ``report_ground_state`` does exactly this before anything else touches the states, so a Green's function
-    that starts from these is the one the ``mixed_valence = off`` path starts from (one member: bit-identical).
-    Collective on ``basis.comm``.
-    """
-    n = len(psis) if not isinstance(psis, ManyBodyState) else int(psis.width)
-    block = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
-    block.prune_rows(0.0)
-    states = block.to_states()
-    # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
-    return states if states else [ManyBodyState(width=1) for _ in range(n)]
+    def visit(self, member, state):
+        keep_basis = state.basis if self.count == 0 else None
+        self.count += 1
+        measurement = measure_ground_state(keep_basis, np.array(state.es), state.psis, total=member.total)
+        driven = None if self.driver is None else self.driver.visit(member, state)
+        return measurement, state.truncation, state.convergence, driven
 
 
 def calc_gs(
@@ -2421,7 +2090,7 @@ def calc_gs(
     stats_path: str = "ground_state_statistics.json",
     shell_ls=None,
     spec: Optional[GroundStateSpec] = None,
-    member_hook=None,
+    visitor=None,
     **kwargs,
 ):
     """
@@ -2459,10 +2128,10 @@ def calc_gs(
     slaterWeightMin : float
         Minimum weight threshold for determinants in the basis.
 
-    member_hook : callable, optional
-        Only under ``mixed_valence`` ``auto``/``on`` (ignored when the sector ensemble is not formed): called
-        collectively as ``member_hook(member, basis, es, psis, truncation_report, convergence_report)`` for each
-        member while its basis is alive; the returns are listed in ``gs_info["member_results"]``.
+    visitor : MemberVisitor, optional
+        Called collectively as ``visitor.visit(member, state)`` for each charge-sector member (one under
+        ``mixed_valence`` off) while its basis is alive; the returns are listed in ``gs_info["member_results"]``,
+        dominant member first.
 
     Returns
     -------
@@ -2528,43 +2197,61 @@ def calc_gs(
     # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
     # rather than re-listing its keys.
-    if mixed_valence:
-        return _calc_gs_ensemble(
-            Hop,
-            basis_setup,
-            block_structure,
-            rot_to_spherical,
-            verbose,
-            slaterWeightMin,
-            stats_path,
-            layout,
-            shell_ls,
-            member_hook=member_hook,
-        )
-    ground_state = solve_ground_state(Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, **basis_setup)
-    ground_state_basis, solver, es, psis = ground_state[:4]
-    # Record whether the truncation_threshold bound the ground-state determination (and how
-    # the fixed-budget refinement resolved it), so a capped GS is auditable downstream
-    # (returned in gs_info and saved to the statistics JSON). None when the cap never bound.
-    # The cap can bind either the final expansion here or the earlier occupation search
-    # (whose final basis may then fit under the cap); report either.
-    gs_truncation_report = refined_truncation_report(solver, ground_state.walk_report)
-    # How far the refinement is from PT2 convergence: `{"residual_pt2", "e_pt2_tol", "converged",
-    # "limited_by"}` (see CIPSISolver.expand). Always present, unlike the truncation report --
-    # an uncapped expansion can still stop short of its tolerance (a `de2_min` floor).
-    gs_convergence_report = getattr(solver, "convergence_report", None)
-    return report_ground_state(
+    measure = _MeasureVisitor(visitor)
+    result = solve_charge_sector_ensemble(
+        Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, mixed_valence=mixed_valence, visitor=measure, **basis_setup
+    )
+    kept = result.visited
+    measurements = [k[0] for k in kept]
+    comm = basis_setup.get("comm")
+    converged = [(k[2] or {}).get("converged") is not False for k in kept]
+    union, union_es = union_order(measurements, comm)
+    if len(measurements) == 1:
+        union = np.arange(len(union_es))  # one member is handed on untouched (merge_measurements), so is its order
+    labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
+    info = {
+        "mixed_valence": bool(mixed_valence),
+        "tau": tau,
+        "e0": float(min(result.realised)),
+        "error_bar": result.error_bar,
+        "refused_reason": result.refused_reason,
+        "members": [
+            {
+                "total": member.total,
+                "weight": float(w),
+                "e0": float(e0),
+                "walk_energy": member.walk_energy,
+                "residual_pt2": member.residual,
+                "error_bar": member.error_bar,
+                "n_states": len(m.es),
+                "converged": ok,
+                "truncation": k[1],
+            }
+            for member, w, e0, m, k, ok in zip(result.members, result.weights, result.realised, measurements, kept, converged)
+        ],
+        # Per state of the merged union, which is ascending in energy (gs_report.union_order); "es" is that
+        # union, the energies `rhos` belongs to (review H-MV4).
+        "state_sector": [int(labels[k]) for k in union],
+        "es": [float(e) for e in union_es[union]],
+    }
+    psis, es, basis, thermal_rho, gs_info = finalize_ground_state(
         Hop,
-        ground_state_basis,
-        es,
-        psis,
+        measurements,
         tau,
         block_structure,
         rot_to_spherical,
         verbose,
         stats_path,
-        gs_truncation_report,
-        gs_convergence_report,
+        result.truncation,
+        result.convergence,
         spin_layout=layout,
         shell_ls=shell_ls,
+        # The statistics and the printed overview describe an ensemble only when one was asked for.
+        ensemble=info if mixed_valence else None,
     )
+    gs_info["ensemble"] = info
+    gs_info["member_results"] = [k[3] for k in kept]
+    # The dominant member's states, as the single-sector contract hands them on (the union is sorted, so they
+    # need not be contiguous): selected by their sector label, in ascending energy.
+    dominant = [k for k, total in enumerate(info["state_sector"]) if total == result.members[0].total]
+    return [psis[k] for k in dominant], np.asarray(es)[dominant], basis, thermal_rho, gs_info

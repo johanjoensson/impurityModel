@@ -422,17 +422,18 @@ def _capture_solve_kwargs(monkeypatch, **call):
     seen = {}
 
     def fake(h_op, **kwargs):
+        kwargs.pop("visitor")  # the report's own visitor object, new per call
         seen.update(kwargs)
         raise _Captured
 
-    monkeypatch.setattr(groundstate, "solve_ground_state", fake)
+    monkeypatch.setattr(groundstate, "solve_charge_sector_ensemble", fake)
     with pytest.raises(_Captured):
         groundstate.calc_gs(None, call.pop("basis_setup"), None, None, 0, **call)
     return seen
 
 
 def test_calc_gs_with_a_spec_hands_solve_ground_state_the_same_keywords_as_the_legacy_dict(monkeypatch):
-    """A1(a): plumbing only -- the spec's values reach ``solve_ground_state`` exactly as the dict keys did."""
+    """A1(a): plumbing only -- the spec's values reach the ground-state solve exactly as the dict keys did."""
     from impurityModel.ed.groundstate import GroundStateSpec
 
     common = {"impurity_orbitals": {0: [[0, 1]]}, "bath_states": ({}, {}), "N0": {0: 1}, "spin_layout": _Layout()}

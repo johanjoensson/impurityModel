@@ -458,9 +458,10 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
             **switches,
         )
 
-    def member_spectra(_member, member_basis, member_es, member_psis, _truncation, _convergence):
-        # Collective, run while the member's basis is alive and after its solver is released.
-        return spectra_of(member_es, redistributed_states(member_basis, member_psis), member_basis)
+    class _SpectraVisitor:
+        def visit(self, _member, state):
+            # Collective, run while the member's basis is alive and after its solver is released.
+            return spectra_of(state.es, redistributed_states(state.basis, state.psis), state.basis)
 
     psis, es, ground_state_basis, _rho, gs_info = calc_gs(
         hOp,
@@ -469,9 +470,9 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         rot_to_spherical,
         verbosity,
         spec=gs_spec,
-        member_hook=member_spectra,
+        visitor=_SpectraVisitor(),
     )
-    ensemble = gs_info.get("ensemble")
+    ensemble = gs_info["ensemble"]
 
     # Save some of the arrays. HDF5-format does not directly support dictionaries.
     h5f = None
@@ -491,8 +492,8 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     report(f"Considering {len(es)} eigenstate(s) for the spectra.", level=V_RESULT)
     report("Calculating spectra ...", level=V_RESULT, flush=True)
     failure = None  # a rank-0 verdict: raising on rank 0 alone would leave the others in the Barrier below
-    if ensemble is None:  # one sector: no hook call
-        datasets = spectra_of(es, psis, ground_state_basis)
+    if len(gs_info["member_results"]) == 1:  # one member: its spectra are the file
+        datasets = gs_info["member_results"][0]
     else:
         datasets = {}
         if rank == 0:

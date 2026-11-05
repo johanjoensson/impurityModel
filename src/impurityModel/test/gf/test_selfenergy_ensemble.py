@@ -96,7 +96,7 @@ def test_the_ensemble_green_function_is_the_exact_grand_canonical_one_and_the_wi
     off = _run(comm, False, tau)
     members = on["gs_ensemble"]["members"]  # replicated
     assert sorted(m["total"] for m in members) == [0, 1, 2]
-    assert off["gs_ensemble"] is None
+    assert len(off["gs_ensemble"]["members"]) == 1 and off["gs_ensemble"]["mixed_valence"] is False
     if comm.rank == 0:
         exact = _exact_gc_green(tau, _meshes().iw)
         assert np.abs(_g00(on) - exact).max() < 1e-4

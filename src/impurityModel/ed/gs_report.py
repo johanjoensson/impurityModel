@@ -211,6 +211,20 @@ def finalize_ground_state(Hop, measurements, tau, *args, **kwargs):
     return report_ground_state(Hop, basis, es, psis, tau, *args, **kwargs)
 
 
+def redistributed_states(basis, psis):
+    """The thermal states as the single-sector report hands them on: redistributed onto ``basis``, pruned.
+
+    ``report_ground_state`` does exactly this before anything else touches the states, so a Green's function
+    that starts from these starts from the states the report hands on. Collective on ``basis.comm``.
+    """
+    n = len(psis) if not isinstance(psis, ManyBodyState) else int(psis.width)
+    block = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
+    block.prune_rows(0.0)
+    states = block.to_states()
+    # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
+    return states if states else [ManyBodyState(width=1) for _ in range(n)]
+
+
 def report_ground_state(
     Hop,
     ground_state_basis,

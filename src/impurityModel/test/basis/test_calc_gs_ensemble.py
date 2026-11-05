@@ -104,7 +104,7 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
 
     h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
     out = calc_gs(
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook)
     )
     assert len(calls) == n_members and out[4]["member_results"] == widths
     assert not any(alive_at_hook)
@@ -145,7 +145,7 @@ def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path,
         hooks.append(member.total)
 
     run = lambda: calc_gs(  # noqa: E731
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook)
     )
     *_, info = run()
     ens = info["ensemble"]
@@ -169,6 +169,16 @@ def test_a_failed_statistics_write_on_rank_0_is_raised_on_every_rank(tmp_path, m
     monkeypatch.setattr(gs_report, "save_gs_statistics", failing)
     with pytest.raises((TypeError, RuntimeError)):
         _run(20, MPI.COMM_WORLD, "off", tmp_path)
+
+
+def _hook(function):
+    """A visitor calling ``function(member, basis, es, psis, truncation, convergence)`` (the pre-visitor hook shape)."""
+
+    class Visitor:
+        def visit(self, member, state):
+            return function(member, state.basis, state.es, state.psis, state.truncation, state.convergence)
+
+    return Visitor()
 
 
 def _fake_member_state(truncation=None, **convergence):
@@ -196,9 +206,10 @@ def test_only_a_bound_basis_or_a_current_large_residual_refuses_a_member(comm, s
     """H-MV11 as narrowed by the owner: a stale residual or a widened manifold warns, it does not refuse."""
     from types import SimpleNamespace
 
-    from impurityModel.ed.groundstate import _thermal_member_defect
+    from impurityModel.ed.groundstate import member_refusal
 
-    got = _thermal_member_defect(SimpleNamespace(total=2), _fake_member_state(**state), comm)
+    solver = _fake_member_state(**state).solver
+    got = member_refusal(SimpleNamespace(total=2), solver.truncation_report, solver.convergence_report, comm)
     assert (got is not None) == refused
     if refused:
         assert got[1] == by_cap and "N_imp = 2" in got[0]
@@ -245,7 +256,7 @@ def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(com
     hooks = []
     _, es, _, _, info = calc_gs(
         h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs2.json"),
-        member_hook=lambda member, *_: hooks.append(member.total) or member.total,
+        visitor=_hook(lambda member, *_: hooks.append(member.total) or member.total),
     )  # fmt: skip
     ens = info["ensemble"]
     e0 = [m["e0"] for m in ens["members"]]
@@ -276,13 +287,13 @@ def _failing_member(monkeypatch, total):
     """The thermal check refuses the member with ``total`` electrons (as rank 0 would broadcast it)."""
     from impurityModel.ed import groundstate
 
-    real = groundstate._thermal_member_defect
+    real = groundstate.member_refusal
 
-    def check(member, ground_state, comm):
-        verdict = real(member, ground_state, comm)
+    def check(member, truncation, convergence, comm):
+        verdict = real(member, truncation, convergence, comm)
         return (f"the N_imp = {total} member's thermal solve is injected", False) if member.total == total else verdict
 
-    monkeypatch.setattr(groundstate, "_thermal_member_defect", check)
+    monkeypatch.setattr(groundstate, "member_refusal", check)
 
 
 @pytest.mark.mpi
@@ -302,7 +313,7 @@ def test_a_failing_later_member_cuts_the_ensemble_there_keeping_the_members_befo
         return member.total
 
     *_, info = calc_gs(
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), member_hook=hook
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook)
     )
     ens = info["ensemble"]
     assert "injected" in ens["refused_reason"]
