@@ -246,7 +246,8 @@ def build_options(
     Split out of :func:`run_selfenergy` so a driver can print exactly what it is about to solve before it
     starts (and diff that against the production run's option table). Every solver-relevant attribute the
     archive recorded is passed on (a recorded excitation budget is retired and reported as ``retired_attrs``);
-    an attribute the archive does not record is left to the library default. Arguments as in :func:`run_selfenergy`; ``gf_min_weight=None`` takes the
+    an attribute the archive does not record is left to the library default. Arguments as in
+    :func:`run_selfenergy`; ``gf_min_weight=None`` takes the
     archive's value (``None`` when unrecorded), and so does ``gf_method=None`` (``"lanczos"`` when unrecorded):
     an archive written by a ``bicgstab`` run is not silently replayed as Lanczos.
     """
