@@ -379,3 +379,26 @@ def test_the_driver_gets_the_only_copy_of_the_thermal_states(comm, index, n_memb
         assert len(state.states) == len(state.es)
     assert psis is None  # a driver consumed the states; none is held for the return
     assert info["member_results"] == [len(d.states) for d in driven]
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("index, n_members", [(20, 1), (3, 2)])
+def test_driver_output_follows_the_ground_state_report(comm, index, n_members, tmp_path, capfd):
+    """Progress lines first, then the ground-state report, then each driver's held-back text (headed when K > 1)."""
+
+    class Driver:
+        def visit(self, member, state):
+            print(f"DRIVER-TEXT {member.total}")
+            return 0
+
+    h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
+    calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver())
+    out = capfd.readouterr().out
+    if (comm.rank if comm is not None else 0) != 0:
+        assert "DRIVER-TEXT" in out and "E0 = " not in out
+        return
+    progress, report, driver = out.find("running the driver"), out.find("E0 = "), out.find("DRIVER-TEXT")
+    assert 0 <= progress < report < driver
+    assert out.count("DRIVER-TEXT") == n_members
+    assert ("--- N_imp =" in out) == (n_members > 1)

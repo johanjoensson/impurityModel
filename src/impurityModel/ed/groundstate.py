@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import io
 from dataclasses import dataclass
 from itertools import product
 from typing import NamedTuple, Optional
@@ -2098,6 +2100,9 @@ class _MeasureVisitor:
         self.report_args = report_args
         self.driver = driver_visitor
         self.count = 0
+        # (total, text) per driven member, in visit order: what each driver printed, held back so the ground-state
+        # report comes first. Appended when the driver returns or raises, so a failing member's text is here too.
+        self.captured = []
 
     def visit(self, member, state):
         basis, n = state.basis, len(state.es)
@@ -2125,12 +2130,29 @@ class _MeasureVisitor:
         states = states if states else [ManyBodyState(width=1) for _ in range(n)]
         driven = None
         if self.driver is not None:
-            driven = self.driver.visit(
-                member,
-                DrivenState(basis, state.es, states, state.occupation, state.truncation, state.convergence),
-            )
+            if basis.comm is None or basis.comm.rank == 0:
+                print(f"[N_imp={member.total}] ground state measured; running the driver ...", flush=True)
+            # stdout of the driver is held back on every rank (a split-communicator colour root prints from any
+            # rank); stderr, WARNINGs included, stays live.
+            buffer = io.StringIO()
+            self.captured.append((member.total, buffer))
+            with contextlib.redirect_stdout(buffer):
+                driven = self.driver.visit(
+                    member,
+                    DrivenState(basis, state.es, states, state.occupation, state.truncation, state.convergence),
+                )
             states = None
         return measurement, state.truncation, state.convergence, driven, states
+
+
+def _replay_driver_output(captured, with_headers):
+    """Print what the drivers wrote while the members ran (held back by :class:`_MeasureVisitor`), per rank."""
+    for total, buffer in captured:
+        text = buffer.getvalue()
+        if with_headers and len(captured) > 1:
+            print(f"--- N_imp = {total} ---")
+        if text:
+            print(text, end="" if text.endswith("\n") else "\n", flush=True)
 
 
 def calc_gs(
@@ -2320,6 +2342,7 @@ def calc_gs(
     )
     gs_info["ensemble"] = info
     gs_info["member_results"] = [k[3] for k in kept]
+    _replay_driver_output(measure.captured, mixed_valence)
     dominant = [k for k, total in enumerate(info["state_sector"]) if total == result.members[0].total]
     if visitor is not None:
         # The driver consumed every member's states; none is held for the return.
