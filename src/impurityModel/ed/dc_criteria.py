@@ -199,6 +199,7 @@ def _active_shift(model, sb, n_imp):
 
 
 def _ctx_spec(ctx):
+    # `mixed_valence` is passed explicitly to `solve_charge_sector_ensemble`, never through this spec.
     """What decides which state a DC context's solves find, as a :class:`~groundstate.GroundStateSpec`.
 
     Built at each solve (like :func:`_ctx_cap_policy`, which it carries) because the cap ladder moves
@@ -2245,100 +2246,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     )
 
 
-def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
-    """Evaluate the true, re-expanding occupation observable at one ``mu``: the identical
-    HF-seed-then-walk :func:`groundstate.find_ground_state_sector` search, refinement, and thermal
-    average :func:`fixed_occupation_dc` performs per trial shift -- not a cheaper approximation.
-    Returns ``(n, E0, sector)``: the achieved thermal impurity occupation, the lowest eigenvalue
-    found, and the *walk's* winning sector total (``sum(mb_basis.ground_state_occupation.values())``
-    -- the integer charge state the search settled on, which need not equal ``round(n)`` when the
-    thermal average mixes competing sectors near a crossing).
-
-    .. note::
-       The observable's own collectives run on ``MPI.COMM_WORLD``, matching
-       :func:`fixed_occupation_dc`'s pre-existing behaviour (not the caller's ``comm`` -- a latent,
-       out-of-scope concern recorded in the campaign plan, not introduced here).
-    """
-    from impurityModel.ed.groundstate import solve_ground_state
-
-    h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.shift_solver, dtype=complex))
-    if ctx.mixed_valence:
-        return _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose)
-
-    # Determine the ground state the SAME way calc_selfenergy will -- literally the same
-    # function, `groundstate.solve_ground_state`, which owns the walk/refine/thermal sequence and
-    # every knob that decides which state comes out. A dc measured on a different state than the
-    # one calc_selfenergy later finds does not just add noise: it locks the downstream
-    # calculation onto the wrong charge state, which is worse than not fixing anything at all.
-    #
-    # N0 stays the *original* nominal occupation on every call (never a carried-forward sector
-    # from the previous mu): feeding the walk its own last answer would make the result
-    # path-dependent on the bracket's evaluation order, which breaks parity by another route.
-    with solver_trace.timed("expand", stage="dc_refine"):
-        ground_state = solve_ground_state(
-            h_op,
-            ctx.impurity_orbitals,
-            ctx.bath_states,
-            ctx.N0,
-            slaterWeightMin=ctx.slaterWeightMin,
-            comm=MPI.COMM_WORLD,
-            verbose=verbose,
-            weighted_restrictions=ctx.weighted_restrictions,
-            warn_neighbours=False,
-            **_ctx_spec(ctx).solve_kwargs(),
-            plan_store=ctx.plan_store,
-            shift=mu,
-            spin_layout=ctx.spin_layout,
-            frozen_occupations=ctx.seed_window,
-        )
-    mb_basis, mb_solver, es, psis = ground_state[:4]
-
-    # Did the determinant cap bind this ground-state determination? Two places can say so, and
-    # both count: the final refinement's own `truncation_report`, and the occupation walk's
-    # sector solves, which hang theirs on the basis (`occupation_search_truncation`) precisely so
-    # a caller that never sees those solvers can still tell. `groundstate.calc_gs` combines the
-    # same pair for its `gs_stats["truncation"]`.
-    #
-    # Broadcast before it is stored: `truncation_report` is rank-local solver state, and the cap
-    # strategy branches on this to decide whether to run a second, collective evaluation. A
-    # rank-local verdict in front of that decision is the deadlock class this module documents.
-    bound_local = bool(
-        getattr(mb_solver, "truncation_report", None) is not None or ground_state.walk_report is not None
-    )
-    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bound_local, root=0)
-    # The memory verdict alongside it, from the same two reports. Broadcast for the same reason:
-    # it is rank-local solver state, and the acceptance check that reads it must be rank-invariant.
-    from impurityModel.ed.groundstate import refined_truncation_report
-
-    report = refined_truncation_report(mb_solver, ground_state.walk_report)
-    memory_local = bool((report or {}).get("memory_bound", False))
-    ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(memory_local, root=0)
-
-    n_out = float(
-        thermal_average_scale_indep(es, state_occupations(mb_basis, psis, ctx.impurity_indices).sum(axis=1), ctx.tau)
-    )
-    e0 = float(es[0])
-    sector = sum(mb_basis.ground_state_occupation.values())
-    return n_out, e0, sector
-
-
-def _member_flip_collapse(ctx, bracket):
-    """Whether a collapsed bracket of the sector-first occupation search lies between two formed ensembles.
-
-    Then the step is a re-ranking of the members, not a charge-sector step: both endpoints carry the
-    grand-canonical average over at least two members, so ``n(mu)`` is continuous between them and a
-    continuous search can reach a target inside the step (review H-MV12). A refused endpoint carries the
-    winning sector alone, so its step is a real one, and a retry would only repeat the miss at a finer
-    resolution.
-    """
-    if not ctx.mixed_valence or bracket is None or not ctx.members_at:
-        return False
-    # The search reports the bracket's raw endpoints; the observable ran at their snapped shifts, the nearest
-    # evaluated points.
-    ends = [min(ctx.members_at, key=lambda trial: abs(trial - mu)) for mu in bracket]
-    return all(ctx.members_at[mu] >= 2 and mu not in ctx.refused_at for mu in ends)
-
-
 class _OccupationVisitor:
     """Level 3 of ``solve_charge_sector_ensemble`` for the occupation search: one member's moments and verdicts."""
 
@@ -2360,16 +2267,28 @@ class _OccupationVisitor:
         )
 
 
-def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
-    """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` on.
+def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
+    """Evaluate the true, re-expanding occupation observable at one ``mu``: the identical
+    HF-seed-then-walk :func:`groundstate.find_ground_state_sector` search, refinement, and thermal
+    average :func:`fixed_occupation_dc` performs per trial shift -- not a cheaper approximation.
+    Returns ``(n, E0, sector)``: the achieved thermal impurity occupation, the lowest eigenvalue
+    found, and the *walk's* winning sector total (``sum(mb_basis.ground_state_occupation.values())``
+    -- the integer charge state the search settled on, which need not equal ``round(n)`` when the
+    thermal average mixes competing sectors near a crossing).
 
-    Every charge sector inside the thermal window is a member; ``n`` is the grand-canonical average
-    ``sum_s c_s n_s`` with ``c_s`` from :func:`~impurityModel.ed.sector_ensemble.sector_weights`, ``E0`` the lowest
-    member's, and ``sector`` the dominant member's total. When the ensemble is refused or has one member
-    this is the single-sector answer. The cap and memory verdicts are those of any member.
+    .. note::
+       The observable's own collectives run on ``MPI.COMM_WORLD``, matching
+       :func:`fixed_occupation_dc`'s pre-existing behaviour (not the caller's ``comm`` -- a latent,
+       out-of-scope concern recorded in the campaign plan, not introduced here).
     """
     from impurityModel.ed.groundstate import solve_charge_sector_ensemble
 
+    h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.shift_solver, dtype=complex))
+    # One evaluation for both settings of `mixed_valence`: with it off the entry's ensemble is the walk's
+    # winner alone, so the thermal average is the single sector's, exactly what `calc_selfenergy` will find.
+    # N0 stays the *original* nominal occupation on every call (never a carried-forward sector from the
+    # previous mu): feeding the walk its own last answer would make the result path-dependent on the
+    # bracket's evaluation order.
     with solver_trace.timed("expand", stage="dc_refine"):
         result = solve_charge_sector_ensemble(
             h_op,
@@ -2378,7 +2297,7 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             ctx.N0,
             # A trial point whose ensemble is refused is a flagged point (a re-ranked one is only printed),
             # not a failed search. The refusal reason is replicated, so every rank flags the point alike.
-            mixed_valence=True,
+            mixed_valence=ctx.mixed_valence,
             visitor=_OccupationVisitor(ctx),
             slaterWeightMin=ctx.slaterWeightMin,
             comm=MPI.COMM_WORLD,
@@ -2392,12 +2311,15 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             announce_refusal=False,
             warn_neighbours=False,
         )
-    n_s, e0_s, _z_s, n2_s, bound, memory = (np.array(col) for col in zip(*result.visited))
+    n_s, _e0_s, _z_s, n2_s, bound, memory = (np.array(col) for col in zip(*result.visited))
     c = result.weights
     n_avg = float(c @ n_s)
-    if ctx.ensemble_variance_at is None:
-        ctx.ensemble_variance_at = {}
-    ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
+    if ctx.mixed_valence:
+        if ctx.ensemble_variance_at is None:
+            ctx.ensemble_variance_at = {}
+        ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
+    # Broadcast before it is stored: the verdicts are rank-local solver state, and the cap strategy branches on
+    # them to decide whether to run a second, collective evaluation.
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or result.refused_by_cap, root=0)
     ctx.members_at[mu] = len(result.members)
     if result.refused_reason is not None:
@@ -2407,6 +2329,23 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
     # The sector of the point is the member that realised the lowest energy (review H-MV6): the result's first.
     return n_avg, float(min(result.realised)), result.members[0].total
+
+
+def _member_flip_collapse(ctx, bracket):
+    """Whether a collapsed bracket of the sector-first occupation search lies between two formed ensembles.
+
+    Then the step is a re-ranking of the members, not a charge-sector step: both endpoints carry the
+    grand-canonical average over at least two members, so ``n(mu)`` is continuous between them and a
+    continuous search can reach a target inside the step (review H-MV12). A refused endpoint carries the
+    winning sector alone, so its step is a real one, and a retry would only repeat the miss at a finer
+    resolution.
+    """
+    if not ctx.mixed_valence or bracket is None or not ctx.members_at:
+        return False
+    # The search reports the bracket's raw endpoints; the observable ran at their snapped shifts, the nearest
+    # evaluated points.
+    ends = [min(ctx.members_at, key=lambda trial: abs(trial - mu)) for mu in bracket]
+    return all(ctx.members_at[mu] >= 2 and mu not in ctx.refused_at for mu in ends)
 
 
 def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):
