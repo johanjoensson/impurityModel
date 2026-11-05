@@ -389,6 +389,5 @@ def test_a_retired_flag_warns_before_the_run_starts(module_name, flag):
 
     module = importlib.import_module(f"impurityModel.scripts.{module_name}")
     # A bare namespace: run() fails on the first real attribute it needs, after the warning it is testing.
-    with pytest.warns(UserWarning, match="retired and ignored"):
-        with pytest.raises(AttributeError):
-            module.run(argparse.Namespace(**{flag: "6"}))
+    with pytest.warns(UserWarning, match="retired and ignored"), pytest.raises(AttributeError):
+        module.run(argparse.Namespace(**{flag: "6"}))
