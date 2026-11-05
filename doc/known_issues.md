@@ -67,6 +67,12 @@ and continues below that threshold instead of raising — sized against a real p
 (see below) that violated at `7.6e-3` — but the mechanism itself is a genuine finite-resolution
 artifact of the excited-state basis and real-axis broadening, not a solver defect.
 
+> **2026-11:** `excitation_budget` is no longer a parameter. The ground state is unbudgeted and the excited
+> bases run under bounds read off the converged ground state (holes, electrons, total; +1 for the excited
+> bases), printed in the ground-state report. The points below were measured with the old budget; read
+> "budget" as "the excitation bounds" and note there is no longer a way to widen the excited window without
+> changing the ground state (`slater_weight_min`, the determinant cap).
+
 **Evidence.** Reproduced serially (no MPI) from a real archived Mn production run
 (`impurityModel_data.h5`, loaded via `test/support/real_workload.load_workload` +
 `calc_selfenergy(..., comm=None)` on a narrow `omega` slice around the violation) — the
@@ -91,7 +97,7 @@ ground state with the Green's function still unconverged) rather than run to a r
 `excitation_budget=3` and `delta=0.020` points above already establish the direction and
 magnitude without it.
 
-**Conclusion.** The excited-state many-body basis (bounded by `excitation_budget` and
+**Conclusion.** The excited-state many-body basis (bounded by the ground-state-derived excitation bounds and
 `slaterWeightMin`) is a discrete approximation to the continuous bath spectral function; near
 a sharp `Im Delta` resonance, evaluated at a broadening `delta` too small to smooth over that
 discreteness, the resulting `G` can be locally narrower than the `G0` built from the full
@@ -110,6 +116,7 @@ explicitly instead of aborting a multi-hour/multi-rank job over an artifact whos
 **What the run now tells you.** On a causality failure `calc_selfenergy` prints, per failing block, the worst point, `Im(G0^-1)` against `Im(G^-1)`, the nearest bath level (a violation within two broadenings of a bath pole is this artefact) and the support settle's own error estimate; if the settle can plausibly be blamed it solves the block's settled units once closure-only and says whether that cured it (`gf_settle_retry`, `doc/gf_support_pipeline.md`).
 
 **If you need it gone for a specific run**, raise `delta` (broadens every other spectral
-feature too) or `excitation_budget` (cost grows combinatorially — budget 6 did not converge
-within 25 minutes serially on this workload, so plan for the full production MPI allocation,
-not a quick local check).
+feature too), or lower `slater_weight_min` (grows the ground state and, through the derived bounds, the
+excited bases; cost grows combinatorially -- a budget-6 run did not converge within 25 minutes serially
+on this workload, so plan for the full production MPI allocation). The determinant cap is the only
+accuracy-safe cost control on metals (restrictions_redux #1: never loosen `slaterWeightMin`).

@@ -50,6 +50,15 @@ Two orthogonal flavors layer on top, from `symmetries.py`:
 - **Weighted restrictions** (`weighted_restriction`, `widen_weighted_restrictions`,
   `sz_weighted_restriction`) — bound a weighted sum of occupations, used to pin `Sz` or an
   eg/t2g ratio without pinning the total.
+- **Effective excitation bounds** (`get_effective_excitation_bounds`, `excitation_bound_restrictions`) —
+  the ground state is found with no excitation budget. Once CIPSI has converged, the maximum number of
+  holes in the valence baths, of electrons in the conduction baths, and of both together, taken over the
+  ground-state basis, are appended to `basis.weighted_restrictions` as three weighted restrictions. The
+  Green's-function, spectra, RIXS and susceptibility bases inherit them widened by one. Each ensemble member
+  carries its own bounds. `max_total` is an order statistic (set by the last determinant CIPSI admitted),
+  so it depends on `e_pt2_tol` and, when the determinant cap binds, on the allocation; the ground-state
+  report prints the bounds, flags `[cap-bound]`, and gives the thermal weight per excitation order.
+
 - **Frozen-shell generation pins** — the core shell (e.g. the 2p in an L-edge model) is
   pinned at generation time so it cannot drain into the valence. Which shell that is comes
   from the model's `core_l`, not from "the shell with no bath states": those coincide for

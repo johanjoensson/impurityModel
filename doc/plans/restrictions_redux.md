@@ -1,5 +1,7 @@
 # restrictions_redux: more restrictions, tighter cutoffs — measured verdict
 
+> **Note (2026-11-05):** `BasisOptions.excitation_budget` was removed. The ground state is no longer budgeted; the excited bases run under holes/electrons/total bounds derived from the converged ground state (`basis_restrictions.get_effective_excitation_bounds`, reported in the GS report). The budget measurements below remain the record of what the old parameter did.
+
 > **Note (2026-10-29):** the GF-side verdict below predates importance-pruned growth and swap refinement, which are now on by default (`doc/gf_support_pipeline.md`, `doc/plans/gf_relevant_support.md`); the cost-budget restriction is opt-in and was measured to do nothing on NiO it.1 (section 9 there).
 
 

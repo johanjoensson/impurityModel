@@ -295,7 +295,8 @@ def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_
         else:
             lines.append(
                 "  support settle: no unit of this block settled, so it is not the cause. "
-                "Lower slater_min, raise excitation_budget, or raise delta (doc/known_issues.md)."
+                "Lower slater_min (it can widen the excitation bounds the excited bases inherit from the ground state) "
+                "or raise delta (doc/known_issues.md)."
             )
         return lines, []
     lines.append(
@@ -448,7 +449,8 @@ def _settle_retry(
                 msg = (
                     f"The closure-only support did not cure it ({worst_before:.2e} -> {worst_after:.2e}; the "
                     "closure-only result is kept and the failure stands), so the settle is not the cause. Lower "
-                    "slater_min, raise excitation_budget, or raise delta; see doc/known_issues.md ('causality "
+                    "slater_min (it can widen the excitation bounds the excited bases inherit from the ground "
+                    "state) or raise delta; see doc/known_issues.md ('causality "
                     "violations at sharp hybridization resonances')."
                 )
         else:
