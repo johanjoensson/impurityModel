@@ -154,6 +154,136 @@ def _local_partials(basis, psis, weights):
     return state_configs, thermal_config, local_det, local_det_info
 
 
+def gs_statistics_partials(basis, psis, es, tau, top_k=10):
+    """The merged (global) partial results of :func:`compute_gs_statistics`, before they are assembled.
+
+    Collective. Computed with the Boltzmann weights of *this* ``es`` (so for one charge-sector member, the
+    member-normalised weights); :func:`assemble_gs_statistics` rescales members onto the weights of their union.
+    Returns the partials on rank 0 and ``None`` on the other ranks of a distributed basis.
+    """
+    weights = _boltzmann_weights(es, tau)
+    state_configs, thermal_config, local_det, local_det_info = _local_partials(basis, psis, weights)
+
+    # Determinant participation/entropy from scalar partials. Each determinant is owned
+    # by a single rank, so summing these scalars across ranks is exact.
+    lw = np.fromiter(local_det.values(), dtype=float, count=len(local_det))
+    local_sum_w = float(lw.sum())
+    local_sum_w2 = float(np.sum(lw**2))
+    local_sum_wlogw = float(np.sum(lw * np.log(lw))) if lw.size else 0.0
+    local_ranked = sorted(local_det.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+    local_top = [(w, local_det_info[key]) for key, w in local_ranked]
+    local_n_dets = len(local_det)
+
+    if basis.is_distributed:
+        comm = basis.comm
+        gathered_state_configs = comm.gather([dict(c) for c in state_configs], root=0)
+        gathered_thermal = comm.gather(dict(thermal_config), root=0)
+        gathered_top = comm.gather(local_top, root=0)
+        sum_w = comm.reduce(local_sum_w, root=0)
+        sum_w2 = comm.reduce(local_sum_w2, root=0)
+        sum_wlogw = comm.reduce(local_sum_wlogw, root=0)
+        n_dets = comm.reduce(local_n_dets, root=0)
+        if comm.rank != 0:
+            return None
+        merged_state_configs = [defaultdict(float) for _ in state_configs]
+        for rank_configs in gathered_state_configs:
+            for n, c in enumerate(rank_configs):
+                for cfg, w in c.items():
+                    merged_state_configs[n][cfg] += w
+        merged_thermal = defaultdict(float)
+        for d in gathered_thermal:
+            for cfg, w in d.items():
+                merged_thermal[cfg] += w
+        top_candidates = [item for sub in gathered_top for item in sub]
+    else:
+        merged_state_configs = state_configs
+        merged_thermal = thermal_config
+        top_candidates = local_top
+        sum_w, sum_w2, sum_wlogw, n_dets = local_sum_w, local_sum_w2, local_sum_wlogw, local_n_dets
+    return {
+        "thermal_config": merged_thermal,
+        "state_configs": merged_state_configs,
+        "top_candidates": top_candidates,
+        "sum_w": sum_w,
+        "sum_w2": sum_w2,
+        "sum_wlogw": sum_wlogw,
+        "n_dets": n_dets,
+    }
+
+
+def channel_indices_of(basis):
+    """The impurity / valence / conduction spin-orbital index lists a statistics dict records."""
+    return {
+        "impurity": [int(i) for i in basis.impurity_spin_orbital_indices],
+        "valence": [int(i) for i in basis.valence_spin_orbital_indices],
+        "conduction": [int(i) for i in basis.conduction_spin_orbital_indices],
+    }
+
+
+def assemble_gs_statistics(
+    partials,
+    scales,
+    es,
+    tau,
+    thermal_rho,
+    impurity_indices,
+    channel_indices,
+    order=None,
+    top_k=10,
+    weight_cutoff=1e-3,
+):
+    """Statistics dict (rank 0) from members' :func:`gs_statistics_partials`; no collective, no states.
+
+    ``partials[k]`` was computed with member ``k``'s own normalised weights and ``scales[k]`` is that member's
+    share of the union's thermal weight, so the union's partials are the scaled sums: configuration weights add,
+    determinants are owner-disjoint across members (different ``N``), ``sum_w`` scales by ``c``, ``sum_w2`` by
+    ``c**2`` and ``sum_wlogw`` by ``c (S + ln c * sum_w)``. A scale of exactly 1 (one member) multiplies nothing,
+    so the lone member's statistics are bit-identical to :func:`compute_gs_statistics`.
+
+    ``es`` are the union's energies *sorted ascending* and ``order`` the permutation from the members' concatenated
+    states to that order (``None``: the concatenation is already in order), which the per-state rows follow.
+    """
+    if len(partials) == 1 and scales[0] == 1.0:
+        merged = partials[0]
+        thermal, state_configs = merged["thermal_config"], merged["state_configs"]
+        top_candidates = merged["top_candidates"]
+        sum_w, sum_w2, sum_wlogw, n_dets = merged["sum_w"], merged["sum_w2"], merged["sum_wlogw"], merged["n_dets"]
+    else:
+        thermal = defaultdict(float)
+        state_configs, top_candidates = [], []
+        sum_w = sum_w2 = sum_wlogw = 0.0
+        n_dets = 0
+        for part, c in zip(partials, scales):
+            for cfg, w in part["thermal_config"].items():
+                thermal[cfg] += c * w
+            state_configs.extend(part["state_configs"])
+            top_candidates.extend((c * w, info) for w, info in part["top_candidates"])
+            sum_w += c * part["sum_w"]
+            sum_w2 += c * c * part["sum_w2"]
+            if c > 0.0:
+                sum_wlogw += c * (part["sum_wlogw"] + np.log(c) * part["sum_w"])
+            n_dets += part["n_dets"]
+    if order is not None:
+        state_configs = [state_configs[k] for k in order]
+    return _assemble_stats(
+        thermal,
+        state_configs,
+        top_candidates,
+        sum_w,
+        sum_w2,
+        sum_wlogw,
+        n_dets,
+        es,
+        _boltzmann_weights(es, tau),
+        tau,
+        thermal_rho,
+        impurity_indices,
+        top_k,
+        weight_cutoff,
+        channel_indices=channel_indices,
+    )
+
+
 def compute_gs_statistics(
     basis,
     psis,
@@ -201,66 +331,19 @@ def compute_gs_statistics(
         Structured statistics on rank 0 (JSON-serialisable via
         :func:`save_gs_statistics`); ``None`` on the other ranks.
     """
-    weights = _boltzmann_weights(es, tau)
-    state_configs, thermal_config, local_det, local_det_info = _local_partials(basis, psis, weights)
-
-    # Determinant participation/entropy from scalar partials. Each determinant is owned
-    # by a single rank, so summing these scalars across ranks is exact.
-    lw = np.fromiter(local_det.values(), dtype=float, count=len(local_det))
-    local_sum_w = float(lw.sum())
-    local_sum_w2 = float(np.sum(lw**2))
-    local_sum_wlogw = float(np.sum(lw * np.log(lw))) if lw.size else 0.0
-    local_ranked = sorted(local_det.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-    local_top = [(w, local_det_info[key]) for key, w in local_ranked]
-    local_n_dets = len(local_det)
-
-    if basis.is_distributed:
-        comm = basis.comm
-        gathered_state_configs = comm.gather([dict(c) for c in state_configs], root=0)
-        gathered_thermal = comm.gather(dict(thermal_config), root=0)
-        gathered_top = comm.gather(local_top, root=0)
-        sum_w = comm.reduce(local_sum_w, root=0)
-        sum_w2 = comm.reduce(local_sum_w2, root=0)
-        sum_wlogw = comm.reduce(local_sum_wlogw, root=0)
-        n_dets = comm.reduce(local_n_dets, root=0)
-        if comm.rank != 0:
-            return None
-        merged_state_configs = [defaultdict(float) for _ in state_configs]
-        for rank_configs in gathered_state_configs:
-            for n, c in enumerate(rank_configs):
-                for cfg, w in c.items():
-                    merged_state_configs[n][cfg] += w
-        merged_thermal = defaultdict(float)
-        for d in gathered_thermal:
-            for cfg, w in d.items():
-                merged_thermal[cfg] += w
-        top_candidates = [item for sub in gathered_top for item in sub]
-    else:
-        merged_state_configs = state_configs
-        merged_thermal = thermal_config
-        top_candidates = local_top
-        sum_w, sum_w2, sum_wlogw, n_dets = local_sum_w, local_sum_w2, local_sum_wlogw, local_n_dets
-
-    return _assemble_stats(
-        merged_thermal,
-        merged_state_configs,
-        top_candidates,
-        sum_w,
-        sum_w2,
-        sum_wlogw,
-        n_dets,
+    partials = gs_statistics_partials(basis, psis, es, tau, top_k)
+    if partials is None:
+        return None
+    return assemble_gs_statistics(
+        [partials],
+        [1.0],
         es,
-        weights,
         tau,
         thermal_rho,
         impurity_indices,
-        top_k,
-        weight_cutoff,
-        channel_indices={
-            "impurity": [int(i) for i in basis.impurity_spin_orbital_indices],
-            "valence": [int(i) for i in basis.valence_spin_orbital_indices],
-            "conduction": [int(i) for i in basis.conduction_spin_orbital_indices],
-        },
+        channel_indices_of(basis),
+        top_k=top_k,
+        weight_cutoff=weight_cutoff,
     )
 
 
@@ -684,6 +767,33 @@ def compute_entanglement_entropy(basis, psis, es, tau, max_bytes=256 * 1024**2, 
     state_blocks = compute_impurity_rdm(basis, psis, max_bytes=max_bytes)
     if state_blocks is None:
         return None
+    return entanglement_from_blocks(state_blocks, es, tau, top_k=top_k)
+
+
+def union_state_blocks(member_blocks):
+    """One list of per-state RDM blocks from the members' lists, every state holding every ``N_imp`` block.
+
+    Members observe different impurity counts, and :func:`entanglement_from_blocks` reads the sectors off the first
+    state, so a member's states are padded with zero blocks (of the dimension another member built) for the
+    sectors it never saw -- exactly what one :func:`compute_impurity_rdm` over the union would have produced.
+    ``None`` (a member's memory guard tripped) in, ``None`` out.
+    """
+    if any(blocks is None for blocks in member_blocks):
+        return None
+    shapes = {}
+    for blocks in member_blocks:
+        for state in blocks:
+            for n_e, block in state.items():
+                shapes.setdefault(n_e, block.shape)
+    merged = []
+    for blocks in member_blocks:
+        for state in blocks:
+            merged.append({n_e: state[n_e] if n_e in state else np.zeros(shapes[n_e], dtype=complex) for n_e in shapes})
+    return merged
+
+
+def entanglement_from_blocks(state_blocks, es, tau, top_k=8):
+    """The :func:`compute_entanglement_entropy` result from the per-state RDM blocks; no states, no collective."""
     weights = _boltzmann_weights(es, tau)
 
     def _entropy(eigvals):

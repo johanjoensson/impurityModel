@@ -517,3 +517,88 @@ def test_numpy_bools_are_written_as_json_booleans(tmp_path):
     save_gs_statistics({"certified": np.bool_(True), "flags": np.array([True, False])}, str(path))
     data = json.loads(path.read_text())
     assert data["certified"] is True and data["flags"] == [True, False]
+
+
+# ---- members: the statistics of a union are the scaled sum of the members' partials -------------------------------
+
+
+def _member_split():
+    """Two disjoint-support members (N_imp = 2 and N_imp = 1) with distinct energies, and their union."""
+    psis = _make_psis()  # state 0 mixes N_imp = 2 and 1 dets; split by determinant instead:
+    member_a = [ManyBodyState({_det([0, 1, 2, 4]): 0.8, _det([0, 1, 3, 5]): 0.6})]
+    member_b = [psis[1], ManyBodyState({_det([1, 2, 5]): 1.0})]
+    return member_a, np.array([-1.0]), member_b, np.array([-0.7, -0.4])
+
+
+def test_union_statistics_equal_the_scaled_member_partials():
+    from impurityModel.ed.gs_statistics import (
+        _boltzmann_weights,
+        assemble_gs_statistics,
+        channel_indices_of,
+        gs_statistics_partials,
+    )
+
+    a, ea, b, eb = _member_split()
+    tau = 0.5
+    es = np.concatenate([ea, eb])
+    thermal_rho = np.zeros((N_ORBS, N_ORBS), dtype=complex)
+    union = compute_gs_statistics(_FakeBasis(), a + b, es, tau, thermal_rho, IMPURITY)
+
+    w = _boltzmann_weights(es, tau)
+    scales = [w[:1].sum(), w[1:].sum()]
+    parts = [
+        gs_statistics_partials(_FakeBasis(), a, ea, tau),
+        gs_statistics_partials(_FakeBasis(), b, eb, tau),
+    ]
+    got = assemble_gs_statistics(parts, scales, es, tau, thermal_rho, IMPURITY, channel_indices_of(_FakeBasis()))
+
+    # The one-shot union lists every config in every state's table, with weight 0 for the configs that state
+    # does not have; a member only knows its own configs.  Compare without those all-zero rows.
+    def _nonzero(stats):
+        stats = dict(stats)
+        stats["per_state"] = [
+            {**st, "rows": [r for r in st["rows"] if r["weight"] != 0.0]} for st in stats["per_state"]
+        ]
+        return stats
+
+    assert _numerically_equal(_nonzero(got), _nonzero(union))
+
+
+def _numerically_equal(x, y, tol=1e-12):
+    if isinstance(x, dict):
+        return x.keys() == y.keys() and all(_numerically_equal(x[k], y[k], tol) for k in x)
+    if isinstance(x, (list, tuple)):
+        return len(x) == len(y) and all(_numerically_equal(p, q, tol) for p, q in zip(x, y))
+    if isinstance(x, (float, np.floating)):
+        return abs(x - y) <= tol * max(1.0, abs(y))
+    if isinstance(x, np.ndarray):
+        return np.allclose(x, y, rtol=0, atol=tol)
+    return x == y
+
+
+def test_a_lone_member_is_assembled_bit_identically():
+    from impurityModel.ed.gs_statistics import assemble_gs_statistics, channel_indices_of, gs_statistics_partials
+
+    a, ea, b, eb = _member_split()
+    psis, es, tau = a + b, np.array([-1.0, -0.7, -0.4]), 0.5
+    thermal_rho = np.zeros((N_ORBS, N_ORBS), dtype=complex)
+    one_shot = compute_gs_statistics(_FakeBasis(), psis, es, tau, thermal_rho, IMPURITY)
+    part = gs_statistics_partials(_FakeBasis(), psis, es, tau)
+    again = assemble_gs_statistics([part], [1.0], es, tau, thermal_rho, IMPURITY, channel_indices_of(_FakeBasis()))
+    assert json.dumps(one_shot, sort_keys=True, default=str) == json.dumps(again, sort_keys=True, default=str)
+
+
+def test_union_entanglement_equals_the_one_shot_entanglement():
+    from impurityModel.ed.gs_statistics import (
+        compute_entanglement_entropy,
+        compute_impurity_rdm,
+        entanglement_from_blocks,
+        union_state_blocks,
+    )
+
+    a, ea, b, eb = _member_split()
+    tau, es = 0.5, np.concatenate([ea, eb])
+    expected = compute_entanglement_entropy(_FakeBasis(), a + b, es, tau)
+    blocks = union_state_blocks([compute_impurity_rdm(_FakeBasis(), a), compute_impurity_rdm(_FakeBasis(), b)])
+    assert _numerically_equal(entanglement_from_blocks(blocks, es, tau), expected)
+    assert union_state_blocks([None, []]) is None

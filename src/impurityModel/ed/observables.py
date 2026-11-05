@@ -1228,7 +1228,9 @@ def expect_casimir(psi, j_plus, j_minus, j_z, comm=None):
     return np.real(val)
 
 
-def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None, keep=None):
+def compute_correlation_diagnostics(
+    psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None, keep=None, values=None
+):
     r"""Correlation-strength diagnostics of the impurity (Mott/Hund physics).
 
     Per impurity spatial orbital ``a`` (one ``(dn, up)`` pair each): the double occupancy
@@ -1264,13 +1266,16 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     -------
     dict
     """
+    if values is None:
+
+        def values(op):
+            return manifold_observable_values(psis, es, op, comm=comm, redistribute=redistribute)
+
     n_sp = len(imp_pairs)
-    docc_values = np.empty((n_sp, psis.width))
+    docc_values = np.empty((n_sp, len(es)))
     for a, (dn, up) in enumerate(imp_pairs):
         op = ManyBodyOperator({((up, "c"), (dn, "c"), (dn, "a"), (up, "a")): 1.0})
-        docc_values[a] = manifold_observable_values(
-            psis, es, lambda blk, _op=op: _op.apply_block(blk, 0, keep), comm=comm, redistribute=redistribute
-        )
+        docc_values[a] = values(lambda blk, _op=op: _op.apply_block(blk, 0, keep))
     docc_thermal = np.array([np.real(thermal_observable_value(docc_values[a], es, tau)) for a in range(n_sp)])
     n_dn = np.array([np.real(thermal_rho[dn, dn]) for dn, _ in imp_pairs])
     n_up = np.array([np.real(thermal_rho[up, up]) for _, up in imp_pairs])
@@ -1278,13 +1283,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
 
     ops_imp = make_spin_operators(imp_pairs)
     sz2_op = spin_correlation_operator(ops_imp, ops_imp, z_only=True)
-    sz2_values = manifold_observable_values(
-        psis,
-        es,
-        lambda blk: sz2_op.apply_block(blk, 0, keep),
-        comm=comm,
-        redistribute=redistribute,
-    )
+    sz2_values = values(lambda blk: sz2_op.apply_block(blk, 0, keep))
     sz2_thermal = float(np.real(thermal_observable_value(sz2_values, es, tau)))
     sz_thermal = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
     chi_zz = (sz2_thermal - sz_thermal**2) / tau
@@ -1294,13 +1293,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     for i in range(n_sp):
         for j in range(i + 1, n_sp):
             corr_op = spin_correlation_operator(orbital_ops[i], orbital_ops[j])
-            vals = manifold_observable_values(
-                psis,
-                es,
-                lambda blk, _op=corr_op: _op.apply_block(blk, 0, keep),
-                comm=comm,
-                redistribute=redistribute,
-            )
+            vals = values(lambda blk, _op=corr_op: _op.apply_block(blk, 0, keep))
             hund[i, j] = hund[j, i] = float(np.real(thermal_observable_value(vals, es, tau)))
 
     return {
@@ -1321,7 +1314,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
 
 
 def compute_static_susceptibilities(
-    psis, es, tau, impurity_indices, s_z_op=None, l_z_op=None, comm=None, redistribute=None, keep=None
+    psis, es, tau, impurity_indices, s_z_op=None, l_z_op=None, comm=None, redistribute=None, keep=None, values=None
 ):
     r"""Static (Curie) susceptibilities of the impurity from the retained thermal manifold.
 
@@ -1364,24 +1357,21 @@ def compute_static_susceptibilities(
     -------
     dict
     """
+    if values is None:
+
+        def values(op):
+            return manifold_observable_values(psis, es, op, comm=comm, redistribute=redistribute)
+
     n_op = ManyBodyOperator({((int(i), "c"), (int(i), "a")): 1.0 for i in impurity_indices})
 
     def thermal_pair(op_a, op_b):
         """Thermal <A B> (A, B commuting) and, for A == B, the pieces for the variance."""
         product = op_a * op_b
-        vals = manifold_observable_values(
-            psis,
-            es,
-            lambda blk: product.apply_block(blk, 0, keep),
-            comm=comm,
-            redistribute=redistribute,
-        )
+        vals = values(lambda blk: product.apply_block(blk, 0, keep))
         return float(np.real(thermal_observable_value(vals, es, tau)))
 
     def thermal_single(op):
-        vals = manifold_observable_values(
-            psis, es, lambda blk: op.apply_block(blk, 0, keep), comm=comm, redistribute=redistribute
-        )
+        vals = values(lambda blk: op.apply_block(blk, 0, keep))
         return float(np.real(thermal_observable_value(vals, es, tau)))
 
     n_th = thermal_single(n_op)
@@ -1471,6 +1461,7 @@ def compute_screening_diagnostics(
     redistribute=None,
     max_bath_correlation_levels=200,
     keep=None,
+    values=None,
 ):
     r"""Channel- and bath-level-resolved impurity-bath spin correlations (Kondo screening).
 
@@ -1501,6 +1492,10 @@ def compute_screening_diagnostics(
     -------
     dict
     """
+    if values is None:
+
+        def values(op):
+            return manifold_observable_values(psis, es, op, comm=comm, redistribute=redistribute)
 
     def corr_op(ops_left, ops_right):
         return spin_correlation_operator(ops_left, ops_right, z_only=z_only)
@@ -1514,13 +1509,7 @@ def compute_screening_diagnostics(
             if not pairs:
                 continue
             op_g = corr_op(make_spin_operators(pairs), ops_bath)
-            vals = manifold_observable_values(
-                psis,
-                es,
-                lambda blk, _op=op_g: _op.apply_block(blk, 0, keep),
-                comm=comm,
-                redistribute=redistribute,
-            )
+            vals = values(lambda blk, _op=op_g: _op.apply_block(blk, 0, keep))
             channels.append((label, float(np.real(thermal_observable_value(vals, es, tau)))))
 
     with_correlation = len(bath_pairs) <= max_bath_correlation_levels
@@ -1538,13 +1527,7 @@ def compute_screening_diagnostics(
         }
         if with_correlation:
             op_b = corr_op(ops_imp, make_spin_operators([(dn, up)]))
-            vals = manifold_observable_values(
-                psis,
-                es,
-                lambda blk, _op=op_b: _op.apply_block(blk, 0, keep),
-                comm=comm,
-                redistribute=redistribute,
-            )
+            vals = values(lambda blk, _op=op_b: _op.apply_block(blk, 0, keep))
             row["sisb"] = float(np.real(thermal_observable_value(vals, es, tau)))
         levels.append(row)
     levels.sort(key=lambda r: 0.5 * (r["eps_dn"] + r["eps_up"]))
