@@ -1528,8 +1528,10 @@ def solve_ground_state(
 ):
     """Find the thermal ground state: a sector walk, then one complete solve of the winning sector.
 
-    **The single definition of "the ground state of this model".** ``calc_gs`` and the
-    double-counting criteria in :mod:`dc_criteria` both go through here, because a ``dc``
+    **The single-sector definition of "the ground state of this model".** ``calc_gs`` and the
+    double-counting criteria in :mod:`dc_criteria` go through :func:`solve_charge_sector_ensemble`,
+    which with ``mixed_valence`` off is exactly this function's state (the walk's winner, one
+    :func:`solve_member`); this function stays as that reference. A ``dc``
     measured on a different state than the one ``calc_selfenergy`` later finds does not
     approximate the requested physics -- it locks the downstream calculation onto the wrong
     charge state. Anything that decides *which* state is found belongs in this signature so the
@@ -2191,7 +2193,7 @@ def calc_gs(
     if note is not None and verbose >= V_SUMMARY and (basis_setup.get("comm") is None or basis_setup["comm"].rank == 0):
         print(note, flush=True)
     # One definition of "the ground state of this model", shared with the double-counting
-    # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice
+    # criteria (see solve_charge_sector_ensemble): it owns the sector walk, its cutoff, the eigensolver choice
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
     # rather than re-listing its keys.
     measure = _MeasureVisitor(visitor)

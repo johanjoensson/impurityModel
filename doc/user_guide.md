@@ -219,7 +219,7 @@ accepts `--from-archive`.
 ## Mixed valence: the charge-sector ensemble
 
 By default a calculation uses the ground state of one charge sector (N particles in the
-impurity-plus-bath system). `[many_body_basis] mixed_valence` (`"off"`, `"auto"`, `"on"`; the
+impurity-plus-bath system). `[many_body_basis] mixed_valence` (`"off"` or `"on"`; `"auto"` is accepted and means on; the
 archive token is `mv`) lets the solver instead form a thermal ensemble over neighbouring
 sectors, weighted by `exp(-(E_s - E_0)/tau)` with `tau` from `[temperature]`.
 
@@ -238,13 +238,13 @@ more than one sector is thermally relevant); susceptibilities, spectra and RIXS 
 
 Admission and refusal: sectors whose weight is below the energy cut derived from `tau` are simply not
 admitted, so at low `tau` even `on` gives a one-member ensemble (no warning). A plan that is cap-bound,
-uncertified or limited by its error bars is *refused*: under `auto` a warning names the sector that is
-kept and the run continues with it; under `on` the run raises on every rank. Under a double-counting
+uncertified or limited by its error bars is *refused*: a warning names the sector that is
+kept and the run continues with it; the run never raises. Under a double-counting
 search an ensemble refused at a trial mu is a flagged point in the record. Each member's own thermal solve
 is checked again before it is merged: a cap- or memory-bound basis, or a residual measured on the final
-basis above `e_pt2_tol`, refuses the ensemble the same way, except that under `auto` the members solved
+basis above `e_pt2_tol`, refuses the ensemble the same way, except that the members solved
 before the failing one are kept (the ensemble is cut at it, not to the winner), and a near neighbour left out
-is named. A residual that is stale, or that does not cover the whole thermal manifold, only warns. A legacy integer `mixed_valence` (`mv N`) means `auto` when non-zero.
+is named. A residual that is stale, or that does not cover the whole thermal manifold, only warns. A legacy integer `mixed_valence` (`mv N`) means on when non-zero.
 
 Ordering: the dominant member is the one whose thermal solve realised the lowest energy. The merged
 states are sorted by energy, so `es[0]` is the global ground state. The self-energy's `gs_energies` are

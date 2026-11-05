@@ -2089,7 +2089,7 @@ class _OccupationContext:
     #: ``mu -> reason``: trial points whose ensemble was refused (replicated). Such a point carries the winning
     #: sector alone and is flagged through ``cap_bound_at``; it is reported once per search, not per trial.
     refused_at: dict | None = None
-    #: ``mu -> K``: how many members the ensemble had at each trial point (replicated; auto/on only).
+    #: ``mu -> K``: how many members the ensemble had at each trial point (replicated; 1 when off).
     members_at: dict | None = None
     cap_bound_at: dict | None = None
     memory_bound_at: dict | None = None
