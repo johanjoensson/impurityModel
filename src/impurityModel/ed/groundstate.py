@@ -2089,7 +2089,10 @@ class GroundStateSpec:
         return kwargs
 
     def weighted_restrictions(self, bath_states, h_op, impurity_orbitals):
-        """The weighted restrictions for ``h_op`` (``None`` when no cost budget is requested; the excitation bounds are an output of the solve, not an input)."""
+        """The weighted restrictions for ``h_op``.
+
+        ``None`` when no cost budget is requested; the excitation bounds are an output of the solve, not an input.
+        """
         return build_weighted_restrictions(
             bath_states,
             cost_budget=self.cost_budget,

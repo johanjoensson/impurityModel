@@ -246,7 +246,8 @@ def print_excited_windows(window, weighted_window):
 
 
 def _excitation_bound_label(weights, window):
-    """``bounds: ... <= k`` for a unit-weight bath-excitation entry (see ``excitation_budget_restriction``), else ``None``.
+    """``bounds: ... <= k`` for a unit-weight bath-excitation entry (see ``excitation_budget_restriction``),
+    else ``None``.
 
     Valence orbitals weigh -1 and conduction +1, so holes = n_valence + q and electrons = q: the count the
     window's upper end admits is ``q_max + n_valence`` (holes, total) or ``q_max`` (electrons).

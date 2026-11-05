@@ -1,6 +1,5 @@
 """``get_effective_excitation_bounds`` / ``excitation_bound_restrictions``: the bounds derived from a basis."""
 
-import numpy as np
 import pytest
 from mpi4py import MPI
 
@@ -11,13 +10,12 @@ from impurityModel.ed.basis_restrictions import (
     get_effective_excitation_bounds,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
 _N = 8
 _VAL = {0, 1, 2, 3}
 _CON = {4, 5, 6, 7}
 _BATHS = ({0: [[0, 1, 2, 3]]}, {0: [[4, 5, 6, 7]]})
-_NO_CON = ({0: [[0, 1, 2, 3]]}, {0: []})
+_NO_CON: tuple[dict[int, list[list[int]]], dict[int, list[list[int]]]] = ({0: [[0, 1, 2, 3]]}, {0: []})
 
 
 def _bytes(occ):

@@ -1,8 +1,8 @@
 r"""A replay of an archived solver call must pass the archive's options on, not the library's defaults.
 
 ``real_workload`` rebuilds a production ``calc_selfenergy`` call from ``impurityModel_data.h5``. It once
-dropped the archive's ``excitation_budget`` (8 for the SrMnO3 run) and ``BasisOptions`` fell back to 4 (the budget is retired now;
-the same rule holds for every option that remains): the
+dropped the archive's ``excitation_budget`` (8 for the SrMnO3 run) and ``BasisOptions`` fell back to 4 (the
+budget is retired now; the same rule holds for every option that remains): the
 replay's ground state had 169k determinants where production's had 277k, E0 sat 1.2 meV high, and every
 Green's-function support came out several times smaller. Nothing failed; the numbers were just for another
 problem. These tests pin that every solver-relevant attribute the archive records reaches the options, and
@@ -11,7 +11,6 @@ that an attribute the helper does not consume is reported instead of vanishing.
 
 import h5py
 import numpy as np
-import pytest
 
 from impurityModel.test.support.real_workload import build_options, load_workload
 

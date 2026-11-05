@@ -453,7 +453,7 @@ def run(args):
             truncation_threshold=requested_cap(args),
             chain_restrict=args.chain_restrict,
             tau=args.tau,
-                cost_budget=args.cost_budget,
+            cost_budget=args.cost_budget,
         )
         solver = SolverOptions(
             dense_cutoff=args.dense_cutoff,

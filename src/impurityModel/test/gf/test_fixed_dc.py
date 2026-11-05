@@ -1802,7 +1802,7 @@ def test_dc_search_applies_weighted_restrictions(monkeypatch):
     for b in captured:
         entries = b.weighted_restrictions or []
         assert len(entries) <= 3
-        assert all(set(abs(w) for w in weights.values()) == {1} for weights, _window in entries)
+        assert all({abs(w) for w in weights.values()} == {1} for weights, _window in entries)
 
     import impurityModel.ed.dc_criteria as dc_module
 

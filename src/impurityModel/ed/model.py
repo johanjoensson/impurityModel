@@ -40,6 +40,7 @@ __all__ = [
     "load_selfenergy_archive",
 ]
 
+
 def atomic_u4(l: int, slater) -> np.ndarray:
     """Assemble the single-shell atomic Coulomb tensor ``u4`` in the RSPt convention.
 
@@ -1168,7 +1169,6 @@ def _archive_mixed_valence(attrs):
     if hasattr(value, "item"):  # numpy scalar
         return value.item()
     return value
-
 
 
 def _archived_excitation_budget(attrs):

@@ -735,8 +735,10 @@ def occupation_convergence_sweep(
     iteration=DEFAULT_ITERATION,
     occ_tol=1e-2,
 ):
-    """Evaluate ``n``/``E0`` at one fixed ``mu`` across a (cap, chain_restrict) grid -- B2's answer to "is the achieved occupation converged with respect to
-    the ED's own truncation, independent of whatever the search happened to do".
+    """Evaluate ``n``/``E0`` at one fixed ``mu`` across a (cap, chain_restrict) grid.
+
+    B2's answer to "is the achieved occupation converged with respect to the ED's own truncation, independent of
+    whatever the search happened to do".
 
     Prints the grid table and, per chain_restrict row-group, the spread of
     ``n`` over the top two caps -- the acceptance criterion the plan sets: converged if that
