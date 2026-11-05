@@ -402,3 +402,69 @@ def test_driver_output_follows_the_ground_state_report(comm, index, n_members, t
     assert 0 <= progress < report < driver
     assert out.count("DRIVER-TEXT") == n_members
     assert ("--- N_imp =" in out) == (n_members > 1)
+
+
+class _Boom(RuntimeError):
+    pass
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_failing_member_prints_the_reports_gathered_so_far(comm, tmp_path, capfd):
+    """A driver failing on member 2 prints a PARTIAL report and member 1's text, writes no JSON, re-raises.
+
+    Every rank raises: with only one failing rank the others would wait in the solve's next collective, which no
+    handler can prevent. The handler itself communicates nothing.
+    """
+
+    class Driver:
+        def __init__(self):
+            self.n = 0
+
+        def visit(self, member, state):
+            self.n += 1
+            print(f"DRIVER-TEXT {member.total}")
+            if self.n == 2:
+                raise _Boom("member two broke")
+            return 0
+
+    stats = tmp_path / "gs.json"
+    h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
+    with pytest.raises(_Boom):
+        calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(stats), visitor=Driver())
+    out = capfd.readouterr().out
+    assert not stats.exists()
+    if (comm.rank if comm is not None else 0) == 0:
+        assert "PARTIAL GROUND-STATE REPORT" in out and "_Boom: member two broke" in out
+        assert "E0 = " in out and out.count("DRIVER-TEXT") == 2
+        assert out.find("PARTIAL") < out.find("DRIVER-TEXT")
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_failing_second_solve_prints_the_first_members_reports(comm, tmp_path, capfd, monkeypatch):
+    """A failure before member 2's visit (in its solve) still prints member 1's report and driver text."""
+    from impurityModel.ed import groundstate
+
+    class Driver:
+        def visit(self, member, state):
+            print(f"DRIVER-TEXT {member.total}")
+            return 0
+
+    real = groundstate._MeasureVisitor.visit
+    seen = []
+
+    def visit(self, member, state):
+        out = real(self, member, state)
+        seen.append(member.total)
+        if len(seen) == 1:
+            raise _Boom("between members")  # after member 1 is measured and driven, before member 2
+        return out
+
+    monkeypatch.setattr(groundstate._MeasureVisitor, "visit", visit)
+    h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
+    with pytest.raises(_Boom):
+        calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver())
+    out = capfd.readouterr().out
+    if (comm.rank if comm is not None else 0) == 0:
+        assert "PARTIAL GROUND-STATE REPORT" in out and "E0 = " in out and "DRIVER-TEXT" in out

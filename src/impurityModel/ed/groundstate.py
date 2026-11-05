@@ -2103,8 +2103,13 @@ class _MeasureVisitor:
         # (total, text) per driven member, in visit order: what each driver printed, held back so the ground-state
         # report comes first. Appended when the driver returns or raises, so a failing member's text is here too.
         self.captured = []
+        # What a failure path can still report: the members measured so far, and the one being visited (None
+        # between visits, i.e. the failure came from a solve).
+        self.measured = []
+        self.current = None
 
     def visit(self, member, state):
+        self.current = member.total
         basis, n = state.basis, len(state.es)
         raw = state.take_psis()
         blk = basis.redistribute_block(raw if isinstance(raw, ManyBodyState) else ManyBodyState.from_states(list(raw)))
@@ -2124,6 +2129,7 @@ class _MeasureVisitor:
             keep_basis=self.count == 0,
         )
         self.count += 1
+        self.measured.append(measurement)
         states = blk.to_states()
         del blk
         # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
@@ -2142,6 +2148,7 @@ class _MeasureVisitor:
                     DrivenState(basis, state.es, states, state.occupation, state.truncation, state.convergence),
                 )
             states = None
+        self.current = None
         return measurement, state.truncation, state.convergence, driven, states
 
 
@@ -2153,6 +2160,45 @@ def _replay_driver_output(captured, with_headers):
             print(f"--- N_imp = {total} ---")
         if text:
             print(text, end="" if text.endswith("\n") else "\n", flush=True)
+
+
+def _report_what_exists(measure, exc, Hop, tau, block_structure, rot_to_spherical, verbose, layout, shell_ls):
+    """Failure path of :func:`calc_gs`: print the reports gathered so far; never raises, never communicates.
+
+    A partial ground-state report over the members already measured (rank 0), then every rank's own held-back
+    driver text (the failing member's up to the failure). No collectives, so it cannot deadlock a run in which
+    only some ranks failed; the statistics JSON is not written. Anything going wrong in here is reduced to one
+    line on stderr so the original exception is the one that propagates.
+    """
+    try:
+        done = [m.total for m in measure.measured]
+        where = f"N_imp={measure.current}" if measure.current is not None else "a member's ground-state solve"
+        header = (
+            f"PARTIAL GROUND-STATE REPORT: members N_imp={done} measured; "
+            f"failed at {where} ({type(exc).__name__}: {exc})"
+        )
+        if measure.measured:
+            finalize_members(
+                Hop,
+                measure.measured,
+                tau,
+                block_structure,
+                rot_to_spherical,
+                verbose,
+                None,
+                None,
+                None,
+                spin_layout=layout,
+                shell_ls=shell_ls,
+                partial=header,
+            )
+        else:
+            print(header, flush=True)
+        _replay_driver_output(measure.captured, True)
+    except BaseException as printing:
+        import sys
+
+        print(f"(partial report not printed: {type(printing).__name__}: {printing})", file=sys.stderr, flush=True)
 
 
 def calc_gs(
@@ -2283,14 +2329,18 @@ def calc_gs(
         },
         visitor,
     )
-    result = solve_charge_sector_ensemble(
-        Hop,
-        verbose=verbose,
-        slaterWeightMin=slaterWeightMin,
-        mixed_valence=mixed_valence,
-        visitor=measure,
-        **basis_setup,
-    )
+    try:
+        result = solve_charge_sector_ensemble(
+            Hop,
+            verbose=verbose,
+            slaterWeightMin=slaterWeightMin,
+            mixed_valence=mixed_valence,
+            visitor=measure,
+            **basis_setup,
+        )
+    except BaseException as exc:
+        _report_what_exists(measure, exc, Hop, tau, block_structure, rot_to_spherical, verbose, layout, shell_ls)
+        raise
     kept = result.visited
     measurements = [k[0] for k in kept]
     converged = [(k[2] or {}).get("converged") is not False for k in kept]
