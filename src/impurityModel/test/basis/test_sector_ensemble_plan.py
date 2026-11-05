@@ -169,19 +169,20 @@ def test_the_ensemble_weights_are_the_exact_grand_canonical_sector_weights_and_e
     kw = dict(slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False, comm=comm, tau=tau)
     kept = []
 
-    def consume(member, gs):
-        kept.append((member.total, np.array(gs.es)))
-        return member.total
+    class Keep:
+        def visit(self, member, state):
+            kept.append((member.total, np.array(state.es)))
+            return member.total
 
-    plan, results, realised = groundstate.solve_ground_state_ensemble(
-        h_op, imp, bath, N0, consume=consume, **kw
-    )
-    assert results == [m.total for m in plan.members] == [m for m, _ in kept]
-    assert sorted(results) == expected
+    result = groundstate.solve_charge_sector_ensemble(h_op, imp, bath, N0, mixed_valence=True, visitor=Keep(), **kw)
+    realised = result.realised
+    assert result.visited == [m.total for m in result.members] == [m for m, _ in kept]
+    assert sorted(result.visited) == expected
     totals = [t for t, _ in kept]
     e0 = np.array([e.min() for _, e in kept])
     z = np.array([np.exp(-(e - e.min()) / tau).sum() for _, e in kept])
     c = sector_weights(e0, z, tau)
+    assert result.weights == pytest.approx(c, abs=1e-12)  # the entry's own weights are these, in this order
     exact, norm = _exact_member_weights(spectra, n_val, tau, totals)
     assert c == pytest.approx(exact, abs=2e-3)
     # the unshifted union is the partition function of the members (to each window's truncation)
@@ -222,8 +223,8 @@ def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one
 
     monkeypatch.setattr(groundstate, "plan_ensemble", spy)
     with pytest.raises(Stop):
-        groundstate.solve_ground_state_ensemble(
-            None, imp, ({}, {}), nominal, consume=None, tau=0.1, slaterWeightMin=0,
+        groundstate.solve_charge_sector_ensemble(
+            None, imp, ({}, {}), nominal, mixed_valence=True, visitor=None, tau=0.1, slaterWeightMin=0,
             frozen_occupations=SeedWindow({0}),
         )  # fmt: skip
     assert seen == {"top": False, "bottom": True}
@@ -246,3 +247,29 @@ def test_a_sector_exactly_on_the_energy_cut_is_not_admitted():
     solved = [_rec(8, 0.0), _rec(9, cut), _rec(7, 5 * cut), _rec(10, 5 * cut)]
     plan = plan_ensemble(solved, TAU, max_error=1e9)
     assert [m.total for m in plan.members] == [8]
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("index", [3, 33])
+def test_the_switched_off_ensemble_is_solve_ground_states_state(comm, index):
+    """``mixed_valence=False`` runs the same loop with the winner alone: one member, weight exactly 1, and the
+    energies ``solve_ground_state`` finds (it is the same walk and the same member solve)."""
+    from impurityModel.test.support.gs_oracle import pinned_model
+
+    h_op, imp, bath, N0, *_ = pinned_model(20261016, index)
+    kw = dict(slaterWeightMin=1e-12, truncation_threshold=np.inf, verbose=False, comm=comm, tau=0.15)
+    seen = []
+
+    class Keep:
+        def visit(self, member, state):
+            seen.append(np.array(state.es))
+            return member.total
+
+    result = groundstate.solve_charge_sector_ensemble(
+        h_op, imp, bath, dict(N0), mixed_valence=False, visitor=Keep(), **kw
+    )
+    reference = groundstate.solve_ground_state(h_op, imp, bath, dict(N0), **kw)
+    assert len(result.members) == 1 and list(result.weights) == [1.0] and result.refused_reason is None
+    assert len(seen) == 1 and seen[0] == pytest.approx(np.asarray(reference.es), abs=1e-9)
+    assert result.visited == [sum(reference.occupation.values())]

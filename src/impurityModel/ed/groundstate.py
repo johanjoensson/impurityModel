@@ -37,6 +37,7 @@ from impurityModel.ed.sector_ensemble import (
     plan_ensemble,
     resolve_mixed_valence,
     sector_weights,
+    winner_plan,
 )
 from impurityModel.ed.sector_solver import (
     WINDOW_OVERTAKE_WARN,
@@ -1379,7 +1380,7 @@ def _announce_uncertified(plan_store, key, comm):
         )
 
 
-def _thermal_state(
+def solve_member(
     search,
     h_op,
     impurity_orbitals,
@@ -1582,7 +1583,7 @@ def solve_ground_state(
         shift=shift,
         spin_layout=spin_layout,
     )
-    return _thermal_state(
+    return solve_member(
         search,
         h_op,
         impurity_orbitals,
@@ -1774,7 +1775,7 @@ def solve_ground_state_ensemble(
                 truncation_report=records[member.total].truncation_report,
                 diagnostics=None,
             )
-        ground_state = _thermal_state(
+        ground_state = solve_member(
             member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single and warn_neighbours, **kw
         )
         bad = None if single else _thermal_member_defect(member, ground_state, comm)
@@ -1835,10 +1836,16 @@ def _thermal_member_defect(member, ground_state, comm):
     broadcast; the broadcast is unconditional on every rank of ``comm``.
     """
     solver = ground_state.solver
-    truncation = getattr(solver, "truncation_report", None)
+    return member_refusal(
+        member, getattr(solver, "truncation_report", None), getattr(solver, "convergence_report", None), comm
+    )
+
+
+def member_refusal(member, truncation, convergence, comm):
+    """:func:`_thermal_member_defect` on the solver's reports (``truncation`` the raw ``truncation_report`` or ``None``)."""
     cap_bound = truncation is not None
     memory_bound = bool(cap_bound and truncation.get("memory_bound"))
-    convergence = getattr(solver, "convergence_report", None) or {}
+    convergence = convergence or {}
     unconverged = convergence.get("converged") is False
     verdict = (
         bool(cap_bound),
@@ -1901,6 +1908,283 @@ def refined_truncation_report(solver, walk_report):
     if walk_report is None:
         return None
     return {**walk_report, "memory_bound": False, "walk_memory_bound": bool(walk_report.get("memory_bound", False))}
+
+
+class MemberState(NamedTuple):
+    """One ensemble member as a visitor sees it: no solver, no Krylov store (they are dropped before the visit).
+
+    ``truncation`` is :func:`refined_truncation_report` (the solve's own report, else the walk's) and
+    ``convergence`` the solver's ``convergence_report``; both are rank-local solver state, read from the solver
+    before it went.
+    """
+
+    basis: Basis
+    es: np.ndarray
+    psis: object
+    occupation: dict
+    truncation: dict | None
+    convergence: dict | None
+
+
+def release(ground_state):
+    """``(MemberState, raw_truncation)`` of a :class:`GroundState`; the caller drops ``ground_state`` (and so the solver).
+
+    ``raw_truncation`` is the solver's own ``truncation_report`` (``None`` when it was not capped), which
+    :func:`member_refusal` needs unmixed with the walk's.
+    """
+    solver = ground_state.solver
+    raw = getattr(solver, "truncation_report", None)
+    state = MemberState(
+        ground_state.basis,
+        ground_state.es,
+        ground_state.psis,
+        ground_state.occupation,
+        refined_truncation_report(solver, ground_state.walk_report),
+        getattr(solver, "convergence_report", None),
+    )
+    return state, raw
+
+
+class EnsembleResult(NamedTuple):
+    """What :func:`solve_charge_sector_ensemble` returns. One order: the realised-lowest member first.
+
+    ``members``, ``weights`` (``c_s``, summing to 1), ``realised`` (each member's lowest thermal energy) and
+    ``visited`` (the visitor's return per member) are parallel. ``truncation`` is :func:`worst_truncation` over the
+    members; ``convergence`` the dominant member's, demoted when another member is unconverged. For K >= 2 the
+    members' ``basis`` objects are not kept: a visitor that needs one reads it in ``visit``.
+    """
+
+    members: tuple
+    weights: np.ndarray
+    realised: list
+    visited: list
+    refused_reason: str | None
+    refused_by_cap: bool
+    error_bar: float
+    truncation: dict | None
+    convergence: dict | None
+    search: object
+
+
+def solve_charge_sector_ensemble(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    *,
+    mixed_valence,
+    visitor,
+    tau,
+    slaterWeightMin,
+    frozen_occupations=None,
+    chain_restrict=False,
+    dense_cutoff=config.GS_DENSE_CUTOFF,
+    comm=None,
+    verbose=False,
+    truncation_threshold=None,
+    weighted_restrictions=None,
+    use_hf_seed=True,
+    de2_min=GS_DE2_MIN,
+    e_pt2_tol=GS_E_PT2_TOL,
+    plan_store=None,
+    shift=0.0,
+    spin_layout=None,
+    announce_refusal=True,
+    warn_neighbours=True,
+):
+    """The thermal ground state: which charge sectors, then each member solved and visited, one at a time.
+
+    **The single definition of "the ground state of this model".** ``calc_gs`` and the double-counting criteria
+    both go through here, because a ``dc`` measured on a different state than the one ``calc_selfenergy`` later
+    finds locks the downstream calculation onto the wrong charge state. Anything that decides *which* state is
+    found belongs in this signature so the callers cannot disagree about it.
+
+    Level 1 of three: this function decides the members (the sector walk, then
+    :func:`~impurityModel.ed.sector_ensemble.plan_ensemble` when ``mixed_valence`` is on, else
+    :func:`~impurityModel.ed.sector_ensemble.winner_plan`: the winner alone, through the same loop);
+    :func:`solve_member` (level 2) solves each member's thermal manifold; ``visitor.visit(member, state)``
+    (level 3) consumes it. The member's solver and Krylov store are dropped before the visit, so the peak is one
+    member plus whatever the visitor keeps.
+
+    When the plan is refused (a member is cap-bound, uncertified, or the weights are not fixed to
+    ``ENSEMBLE_WEIGHT_ERROR_MAX``) the ensemble is the winner alone: a warning is printed (``announce_refusal``)
+    and the run goes on. The same holds when a member's own thermal solve, checked before the visitor sees it,
+    is cap-bound or unconverged, except that the ensemble is cut at that member rather than to the winner: the
+    members before it, already visited, are kept. ``refused_reason`` says so.
+
+    Returns
+    -------
+    EnsembleResult
+    """
+    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
+    mixed_valence = bool(mixed_valence)
+    _agree_on_switch(mixed_valence, comm)
+    _warn_frozen_leak(h_op, impurity_orbitals, frozen_occupations, comm)
+    if plan_store is None:
+        plan_store = SectorPlanStore()
+    max_total, free_capacity, pinned_of = sector_bounds(impurity_orbitals, frozen_occupations)
+    pinned_box = [pinned_of(N0)]
+
+    def attainable(total):
+        pinned = pinned_box[0]
+        return 0 <= total <= max_total and pinned <= total <= pinned + free_capacity
+
+    def needs_of(solved):
+        pinned_box[0] = pinned_of(solved[0].trial_N0) if solved else pinned_box[0]
+        return plan_ensemble(solved, tau, attainable=attainable).needs
+
+    search = find_ground_state_sector(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        frozen_occupations=frozen_occupations,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        slaterWeightMin=slaterWeightMin,
+        use_hf_seed=use_hf_seed,
+        weighted_restrictions=weighted_restrictions,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
+        spin_layout=spin_layout,
+        more_totals=needs_of if mixed_valence else None,
+    )
+    winner_total = sum(search.occupation.values())
+    pinned_box[0] = pinned_of(search.occupation)
+    if mixed_valence:
+        plan = plan_ensemble(search.solved, tau, attainable=attainable)
+        if plan.needs and plan.refused_reason is None:
+            # An edge that could not be solved leaves the plan provisional, and a provisional plan has skipped the
+            # cap / certification / error-bar checks: refuse rather than merge unchecked. (The winner is the lowest
+            # sector, so it is always admitted; should it ever not be, keep the dominant member rather than an
+            # empty plan, which would crash every rank in the loop below.)
+            plan = dataclasses.replace(
+                plan,
+                members=tuple(m for m in plan.members if m.total == winner_total) or plan.members[:1],
+                refused_reason=f"the edge sector(s) {list(plan.needs)} could not be solved",
+                needs=(),
+            )
+        if plan.refused_reason is not None and announce_refusal and (comm is None or comm.rank == 0):
+            print(
+                f"WARNING: mixed_valence: keeps the single N_imp = {plan.members[0].total} "
+                f"sector: {plan.refused_reason}.",
+                flush=True,
+            )
+    else:
+        plan = winner_plan(search.solved, winner_total, tau)
+    records = {r.total: r for r in search.solved}
+    kw = dict(
+        tau=tau,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        slaterWeightMin=slaterWeightMin,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
+        spin_layout=spin_layout,
+    )
+    members = plan.members
+    refused_reason, refused_by_cap = plan.refused_reason, plan.refused_by_cap
+    visited, realised, z, truncations, convergences = [], [], [], [], []
+    single = len(plan.members) == 1
+    for index, member in enumerate(plan.members):
+        if member.total == winner_total:
+            member_search = search
+        else:
+            member_search = search._replace(
+                occupation=dict(member.trial_N0),
+                truncation_report=records[member.total].truncation_report,
+                diagnostics=None,
+            )
+        ground_state = solve_member(
+            member_search, h_op, impurity_orbitals, bath_states, warn_neighbours=single and warn_neighbours, **kw
+        )
+        state, raw_truncation = release(ground_state)
+        del ground_state  # the solver and its Krylov store go before the visitor's own workspace is built
+        bad = None if single else member_refusal(member, raw_truncation, state.convergence, comm)
+        if bad is not None:
+            # The walk certified the plan; the member's own thermal solve did not hold up (review H-MV11). Decided
+            # on rank 0's reports and broadcast, so every rank takes the same branch. The ensemble is cut at this
+            # member: the members before it (the lower sectors, already visited) stay, so no consumer's work is
+            # thrown away (review 7b, owner decision); this one and those after it go. A failing winner is still a
+            # valid one-member ensemble, so it is visited alone.
+            reason, by_cap = bad
+            kept_members = plan.members[: max(index, 1)]
+            if announce_refusal and (comm is None or comm.rank == 0):
+                held = (
+                    f"the single N_imp = {kept_members[0].total} sector"
+                    if len(kept_members) == 1
+                    else f"the N_imp = {[m.total for m in kept_members]} members solved before it"
+                )
+                print(f"WARNING: mixed_valence: keeps {held}: {reason}.", flush=True)
+            if warn_neighbours:
+                # The kept members were solved as ensemble members, without the single-sector note (review 7c).
+                _warn_near_neighbours(search, tau, comm, kept_totals=[m.total for m in kept_members])
+            members, refused_reason, refused_by_cap = kept_members, reason, by_cap
+            if visited:
+                del state
+                break
+        es = np.asarray(state.es)
+        realised.append(float(es.min()))
+        z.append(float(np.exp(-(es - es.min()) / tau).sum()))
+        truncations.append(state.truncation)
+        convergences.append(state.convergence)
+        visited.append(visitor.visit(member, state))
+        del state, es
+        if bad is not None:
+            break  # the winner, kept alone
+    # The realised energies and partition functions are the eigensolver's, rank-local: a near tie must not order
+    # (or weight) the members differently on different ranks. One broadcast, unconditional on every rank.
+    if comm is not None:
+        realised, z = comm.bcast((realised, z), root=0)
+    # The walk ranked the sectors by a lowest level solved with the walk's own (looser) basis. The thermal solves
+    # may find another member lowest; the dominant member is the realised lowest (review H-MV6), so this is a
+    # note, not an error. Computed before the sort.
+    if int(np.argmin(realised)) != 0 and (comm is None or comm.rank == 0):
+        print(
+            "NOTE: the thermal solves rank the charge sectors differently from the walk (realised lowest "
+            f"energies {['%.6f' % e for e in realised]} for totals {[m.total for m in members]}); "
+            "the dominant member is the realised lowest.",
+            flush=True,
+        )
+    order = [int(k) for k in np.argsort(np.asarray(realised), kind="stable")]  # stable: one order everywhere
+    members = tuple(members[k] for k in order)
+    realised = [realised[k] for k in order]
+    z = [z[k] for k in order]
+    visited = [visited[k] for k in order]
+    truncations = [truncations[k] for k in order]
+    convergences = [convergences[k] for k in order]
+    weights = sector_weights(np.array(realised), np.array(z), tau)
+    converged = [(c or {}).get("converged") is not False for c in convergences]
+    convergence = dict(convergences[0]) if convergences[0] is not None else None
+    if convergence is not None and len(members) > 1 and not all(converged):
+        convergence["converged"] = False
+        convergence.setdefault("limited_by", None)
+        if convergence["limited_by"] is None:
+            bad_totals = [m.total for m, ok in zip(members, converged) if not ok]
+            convergence["limited_by"] = f"ensemble member N_imp = {bad_totals[0]}"
+    return EnsembleResult(
+        members,
+        weights,
+        realised,
+        visited,
+        refused_reason,
+        refused_by_cap,
+        plan.error_bar,
+        worst_truncation(truncations),
+        convergence,
+        search,
+    )
 
 
 @dataclass(frozen=True)

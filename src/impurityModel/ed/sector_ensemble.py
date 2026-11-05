@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from numbers import Integral
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 import numpy as np
 
@@ -211,6 +211,31 @@ def plan_ensemble(
             solved_totals=solved_totals,
         )
     return EnsemblePlan(members, e_min, cut, error_bar=error, solved_totals=solved_totals)
+
+
+def winner_plan(solved, winner_total: int, tau: float) -> EnsemblePlan:
+    """The plan of ``mixed_valence`` off: the winning sector alone. Never provisional, never refused."""
+    records = [r for r in solved if r.total == winner_total]
+    if not records:
+        raise ValueError(f"winner_plan: sector {winner_total} was not solved")
+    e_min = float(records[0].energy)
+    return EnsemblePlan(
+        _members(records, tau),
+        e_min,
+        float(energy_cut(tau)),
+        solved_totals=tuple(sorted({r.total for r in solved})),
+    )
+
+
+class MemberVisitor(Protocol):
+    """What a driver does with one ensemble member (level 3 of ``solve_charge_sector_ensemble``).
+
+    ``visit(member, state)`` runs once per member, in plan order, after the member's solver and Krylov store have
+    been dropped; ``state`` is a :class:`~impurityModel.ed.groundstate.MemberState`. It is collective on the
+    ensemble's communicator, on every rank, and its return value is collected in ``EnsembleResult.visited``.
+    """
+
+    def visit(self, member: EnsembleMember, state: Any) -> Any: ...
 
 
 def _members(admitted, tau) -> tuple:

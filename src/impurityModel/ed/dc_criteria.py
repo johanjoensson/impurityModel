@@ -2339,40 +2339,47 @@ def _member_flip_collapse(ctx, bracket):
     return all(ctx.members_at[mu] >= 2 and mu not in ctx.refused_at for mu in ends)
 
 
-def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
-    """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` on.
+class _OccupationVisitor:
+    """Level 3 of ``solve_charge_sector_ensemble`` for the occupation search: one member's moments and verdicts."""
 
-    Every charge sector inside the thermal window is a member; ``n`` is the grand-canonical average
-    ``sum_s c_s n_s`` with ``c_s`` from :func:`~impurityModel.ed.sector_ensemble.sector_weights`, ``E0`` the lowest
-    member's, and ``sector`` the dominant member's total. When the ensemble is refused (``auto``) or has one member
-    this is the single-sector answer. The cap and memory verdicts are those of any member.
-    """
-    from impurityModel.ed.groundstate import refined_truncation_report, solve_ground_state_ensemble
-    from impurityModel.ed.sector_ensemble import sector_weights
+    def __init__(self, ctx):
+        self.ctx = ctx
 
-    def consume(member, gs):
-        occ, occ2 = occupation_moments(gs.basis, gs.psis, ctx.impurity_indices)
-        es = np.asarray(gs.es)
-        bound = bool(getattr(gs.solver, "truncation_report", None) is not None or gs.walk_report is not None)
-        report = refined_truncation_report(gs.solver, gs.walk_report)
+    def visit(self, member, state):
+        ctx = self.ctx
+        occ, occ2 = occupation_moments(state.basis, state.psis, ctx.impurity_indices)
+        es = np.asarray(state.es)
         return (
             float(thermal_average_scale_indep(es, occ, ctx.tau)),
             float(es.min()),
             float(np.exp(-(es - es.min()) / ctx.tau).sum()),
             float(thermal_average_scale_indep(es, occ2, ctx.tau)),
-            bound,
-            bool((report or {}).get("memory_bound", False)),
+            # The final refinement's report or the walk's: either says the cap bound this determination.
+            state.truncation is not None,
+            bool((state.truncation or {}).get("memory_bound", False)),
         )
 
+
+def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
+    """:func:`_evaluate_occupation_and_energy_at_mu` for ``mixed_valence`` on.
+
+    Every charge sector inside the thermal window is a member; ``n`` is the grand-canonical average
+    ``sum_s c_s n_s`` with ``c_s`` from :func:`~impurityModel.ed.sector_ensemble.sector_weights`, ``E0`` the lowest
+    member's, and ``sector`` the dominant member's total. When the ensemble is refused or has one member
+    this is the single-sector answer. The cap and memory verdicts are those of any member.
+    """
+    from impurityModel.ed.groundstate import solve_charge_sector_ensemble
+
     with solver_trace.timed("expand", stage="dc_refine"):
-        plan, results, _ = solve_ground_state_ensemble(
+        result = solve_charge_sector_ensemble(
             h_op,
             ctx.impurity_orbitals,
             ctx.bath_states,
             ctx.N0,
             # A trial point whose ensemble is refused is a flagged point (a re-ranked one is only printed),
             # not a failed search. The refusal reason is replicated, so every rank flags the point alike.
-            consume=consume,
+            mixed_valence=True,
+            visitor=_OccupationVisitor(ctx),
             slaterWeightMin=ctx.slaterWeightMin,
             comm=MPI.COMM_WORLD,
             verbose=verbose,
@@ -2385,21 +2392,21 @@ def _evaluate_ensemble_at_mu(ctx, h_op, mu, verbose):
             announce_refusal=False,
             warn_neighbours=False,
         )
-    n_s, e0_s, z_s, n2_s, bound, memory = (np.array(col) for col in zip(*results))
-    c = sector_weights(e0_s, z_s, ctx.tau)
+    n_s, e0_s, _z_s, n2_s, bound, memory = (np.array(col) for col in zip(*result.visited))
+    c = result.weights
     n_avg = float(c @ n_s)
     if ctx.ensemble_variance_at is None:
         ctx.ensemble_variance_at = {}
     ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
-    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or plan.refused_by_cap, root=0)
-    ctx.members_at[mu] = len(plan.members)
-    if plan.refused_reason is not None:
-        ctx.refused_at[mu] = plan.refused_reason
+    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or result.refused_by_cap, root=0)
+    ctx.members_at[mu] = len(result.members)
+    if result.refused_reason is not None:
+        ctx.refused_at[mu] = result.refused_reason
     else:
         ctx.refused_at.pop(mu, None)
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(memory.any()), root=0)
-    # The sector of the point is the member that realised the lowest energy (review H-MV6), as in calc_gs.
-    return n_avg, float(e0_s.min()), plan.members[int(np.argmin(e0_s))].total
+    # The sector of the point is the member that realised the lowest energy (review H-MV6): the result's first.
+    return n_avg, float(min(result.realised)), result.members[0].total
 
 
 def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):
