@@ -561,7 +561,6 @@ def calc_susceptibility_workflow(
         chain_restrict=basis.chain_restrict,
         dense_cutoff=dense_cutoff,
         truncation_threshold=cap_policy,
-        excitation_budget=basis.excitation_budget,
         cost_budget=basis.cost_budget,
         restriction_slater_weight_min=slaterWeightMin,
         e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,

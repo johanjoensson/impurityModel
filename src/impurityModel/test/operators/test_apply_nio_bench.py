@@ -72,10 +72,10 @@ def _solver_basis():
 
 @pytest.fixture(scope="module")
 def nio():
-    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+    from impurityModel.ed.basis_restrictions import excitation_budget_restriction
 
     _model, sb = _solver_basis()
-    weights, (lo, hi) = build_weighted_restrictions(sb.bath_states, 6)[0]
+    weights, (lo, hi) = excitation_budget_restriction(sb.bath_states, 6)
     weighted = [(weights, (lo - 1, hi + 1))]
     h = sb.h
     h.set_restrictions(CHAIN_WINDOWS)
@@ -144,18 +144,18 @@ def test_nio_block_apply_speed(nio, capsys):
 def test_nio_cost_form_per_row_cost(nio, capsys):
     """What a second weighted form with ~100 groups costs per input row (the cost budget's form), against the
     excitation budget's form alone. The plan coarsens the weight scale if the cost form adds 5 % or more."""
-    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+    from impurityModel.ed.basis_restrictions import build_weighted_restrictions, excitation_budget_restriction
 
     h, weighted, psi = nio
     _model, sb = _solver_basis()
-    both = build_weighted_restrictions(
+    cost_only = build_weighted_restrictions(
         sb.bath_states,
-        6,
         cost_budget=0.3,
         h_op=h,
         impurity_orbitals=sb.impurity_orbitals,
         slater_weight_min=1e-10,
     )
+    both = [excitation_budget_restriction(sb.bath_states, 6)] + cost_only
     assert len(both) == 2
     cost_weights, _cost_bounds = both[1]
     # the bound is irrelevant to the timing; widen it so the form never rejects and the output work is equal

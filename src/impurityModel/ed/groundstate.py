@@ -2039,7 +2039,7 @@ class GroundStateSpec:
     absent: ``comm``, ``verbose``, ``plan_store``, ``shift`` (how, not what), ``shell_ls`` and the
     per-shell N0 (owned by ``SolverBasis``), and the impurity/bath layout (the model).
 
-    The weighted restrictions are stored as their *inputs* (``excitation_budget``, ``cost_budget``,
+    The weighted restrictions are stored as their *inputs* (``cost_budget``,
     ``restriction_slater_weight_min``): the built list depends on ``h_op``, which differs between the
     ``dc_guess`` a DC search builds at and the final ``dc`` a self-energy builds at.
 
@@ -2051,7 +2051,7 @@ class GroundStateSpec:
         As in :func:`solve_ground_state`.
     truncation_threshold : int, float, CapPolicy or None
         The determinant cap, or the caller-resolved policy (P10).
-    excitation_budget, cost_budget, restriction_slater_weight_min :
+    cost_budget, restriction_slater_weight_min :
         Inputs of :func:`~impurityModel.ed.basis_restrictions.build_weighted_restrictions`.
     """
 
@@ -2062,7 +2062,6 @@ class GroundStateSpec:
     e_pt2_tol: float = GS_E_PT2_TOL
     de2_min: float = GS_DE2_MIN
     truncation_threshold: object = None
-    excitation_budget: Optional[int] = None
     cost_budget: Optional[float] = None
     restriction_slater_weight_min: Optional[float] = None
     mixed_valence: object = None
@@ -2090,10 +2089,9 @@ class GroundStateSpec:
         return kwargs
 
     def weighted_restrictions(self, bath_states, h_op, impurity_orbitals):
-        """The weighted restrictions for ``h_op`` (``None`` when no budget is requested)."""
+        """The weighted restrictions for ``h_op`` (``None`` when no cost budget is requested; the excitation bounds are an output of the solve, not an input)."""
         return build_weighted_restrictions(
             bath_states,
-            self.excitation_budget,
             cost_budget=self.cost_budget,
             h_op=h_op,
             impurity_orbitals=impurity_orbitals,

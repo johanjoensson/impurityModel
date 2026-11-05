@@ -402,9 +402,8 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         # None = "as many determinants as fit in RAM", resolved against the per-rank available memory inside
         # find_ground_state_sector (see memory_estimate).
         truncation_threshold=basis.truncation_threshold,
-        # Optional excitation-budget weighted restriction on the ground-state basis; the XAS/PES excited bases
-        # inherit it (widened) via spectra/greens_function; RIXS attaches it explicitly (rixs.py).
-        excitation_budget=basis.excitation_budget,
+        # No excitation budget: solve_member appends the bounds observed on the converged ground state; the
+        # XAS/PES excited bases inherit them (widened) via spectra/greens_function; RIXS attaches them (rixs.py).
         cost_budget=basis.cost_budget,
         restriction_slater_weight_min=basis.slater_weight_min,
         mixed_valence=mixed_valence,

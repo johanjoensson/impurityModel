@@ -1792,61 +1792,32 @@ def test_fixed_occupation_dc_none_threshold_ranks_agree():
 
 
 def test_dc_search_applies_weighted_restrictions(monkeypatch):
-    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
-
+    """The DC search builds its bases with the cost budget the options ask for, and the solve then appends the
+    ground-state-derived excitation bounds -- there is no user-chosen excitation budget in front of them."""
     captured = _capture_prepared_bases(monkeypatch)
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
-    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=2)
     fixed_occupation_dc(occupation=1.0, **kwargs)
-
-    # Both searches now derive bath_states through prepare_solver_basis (the valence/conduction
-    # split at solve time), not model.bath_states directly; recompute it the same way to get the
-    # expected restriction list.
-    model, basis = kwargs["model"], kwargs["basis"]
-    sb = prepare_solver_basis(
-        model.h0,
-        model.dc,
-        model.u4,
-        model.impurity_orbitals,
-        basis.nominal_occ,
-        rot_to_spherical=model.rot_to_spherical,
-        verbosity=0,
-    )
-    expected = build_weighted_restrictions(sb.bath_states, 2)
-    assert captured and all(b.weighted_restrictions == expected for b in captured)
-
-    captured.clear()
-    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
-    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=2)
-    fixed_peak_dc(peak_position=1.2, **kwargs)
     assert captured
-    assert all(b.weighted_restrictions == expected for b in captured)
+    # Nothing was requested, so everything on the bases is a bound entry (holes, electrons, total <= 3).
+    for b in captured:
+        entries = b.weighted_restrictions or []
+        assert len(entries) <= 3
+        assert all(set(abs(w) for w in weights.values()) == {1} for weights, _window in entries)
 
+    import impurityModel.ed.dc_criteria as dc_module
 
-def test_dc_search_excitation_budget_binds():
-    # excitation_budget=0 forbids any bath excitation away from the reference (both valence
-    # baths filled) *within a sector's CIPSI expansion*: occupation=1 must still converge
-    # (trivially, at the guess). occupation=2 is reachable regardless of the budget: the
-    # alternate "free bath electron" sector (module docstring) find_ground_state_sector lands on
-    # is a single, already-complete determinant (both impurity orbitals and both bath orbitals
-    # filled) that needs zero admitted excitations to represent, so excitation_budget=0 does not
-    # block it -- the search converges to the same dc as the unrestricted budget
-    # (test_fixed_occupation_dc_increases_occupation).
-    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
-    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=0)
-    dc = fixed_occupation_dc(occupation=1.0, **kwargs)
-    np.testing.assert_allclose(dc, dc_guess, atol=1e-8)
+    seen = []
+    original = dc_module.build_weighted_restrictions
 
-    kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
-    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=0)
-    dc = fixed_occupation_dc(occupation=2.0, **kwargs)
-    # 2.275, not the 2.5 the bidirectional scan used to return: the impurity saturates at 2
-    # electrons, so the criterion is met on a *plateau* rather than at a point, and the old
-    # answer was simply whichever geometric grid point first landed in it. The search now
-    # returns the plateau's near edge stood off by one `initial_step` -- closest to the
-    # double-counting guess, per the tie-break, but not within the search's own resolution
-    # of the charge-sector boundary that bounds it.
-    np.testing.assert_allclose(dc[0, 0].real, 2.275, atol=0.05)
+    def spy(*args, **kw):
+        seen.append((args, kw.get("cost_budget")))
+        return original(*args, **kw)
+
+    monkeypatch.setattr(dc_module, "build_weighted_restrictions", spy)
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], cost_budget=0.3)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+    assert seen and all(cost == 0.3 and len(args) == 1 for args, cost in seen)  # bath_states only: no budget slot
 
 
 def test_dc_search_chain_restrict_forwarded(monkeypatch):

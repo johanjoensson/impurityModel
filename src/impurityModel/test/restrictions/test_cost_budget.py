@@ -119,22 +119,22 @@ def test_no_weighted_restrictions_means_no_floor():
     assert floor_weighted_restrictions(basis) is None
 
 
-def test_build_weighted_restrictions_ands_the_two_budgets_and_needs_its_inputs():
+def test_build_weighted_restrictions_builds_the_cost_budget_and_needs_its_inputs():
 
     hops = {(0, 1): 1.0, (1, 2): 0.1, (0, 3): 1.0, (3, 4): 0.1}
     op = _chain_op(hops, 5)
     bath = ({0: [[1, 2]]}, {0: [[3, 4]]})
     imp = {0: [[0]]}
-    both = build_weighted_restrictions(bath, 2, cost_budget=1.0, h_op=op, impurity_orbitals=imp, slater_weight_min=1e-6)
-    assert len(both) == 2
+    both = build_weighted_restrictions(bath, cost_budget=1.0, h_op=op, impurity_orbitals=imp, slater_weight_min=1e-6)
+    assert len(both) == 1
     total = round(8 * 1.0 * -np.log(1e-6))
     dist = _dist(hops, 5)
-    assert both[1] == cost_budget_restriction(bath, total, dist)
-    assert len(build_weighted_restrictions(bath, 2)) == 1
+    assert both[0] == cost_budget_restriction(bath, total, dist)
+    assert build_weighted_restrictions(bath) is None  # the excitation budget is no input any more
     with pytest.raises(ValueError, match="needs h_op"):
-        build_weighted_restrictions(bath, None, cost_budget=1.0)
+        build_weighted_restrictions(bath, cost_budget=1.0)
     with pytest.raises(ValueError, match="slater_weight_min > 0"):
-        build_weighted_restrictions(bath, None, cost_budget=1.0, h_op=op, impurity_orbitals=imp, slater_weight_min=0.0)
+        build_weighted_restrictions(bath, cost_budget=1.0, h_op=op, impurity_orbitals=imp, slater_weight_min=0.0)
 
 
 # --- the cost budget through calc_gs ----------------------------------------------------------------
@@ -166,7 +166,7 @@ def _gs_basis(cost_budget, swm=1e-12, comm=None):
 
     op, imp, bath, bs = _chain_siam()
     weighted = build_weighted_restrictions(
-        bath, None, cost_budget=cost_budget, h_op=op, impurity_orbitals=imp, slater_weight_min=swm
+        bath, cost_budget=cost_budget, h_op=op, impurity_orbitals=imp, slater_weight_min=swm
     )
     setup = dict(
         impurity_orbitals=imp,

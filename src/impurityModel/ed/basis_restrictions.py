@@ -1030,7 +1030,6 @@ def floor_weighted_restrictions(basis):
 
 def build_weighted_restrictions(
     bath_states,
-    excitation_budget=None,
     *,
     cost_budget=None,
     h_op=None,
@@ -1039,19 +1038,17 @@ def build_weighted_restrictions(
 ):
     """Assemble the ground-state weighted restrictions a driver enables via its options.
 
-    The optional excitation budget (see :func:`excitation_budget_restriction`) and the optional
-    hopping-cost budget (see :func:`cost_budget_restriction`), returned as a *list* so more weighted
-    restrictions can be appended later and so it matches
-    :meth:`ManyBodyOperator.set_weighted_restrictions`' contract. Both entries, when present, are ANDed
-    by the operator. Returns ``None`` when nothing is requested (the drivers then leave
-    ``Basis.weighted_restrictions`` unset).
+    The optional hopping-cost budget (see :func:`cost_budget_restriction`), returned as a *list* so more
+    weighted restrictions can be appended later and so it matches
+    :meth:`ManyBodyOperator.set_weighted_restrictions`' contract. Returns ``None`` when nothing is requested
+    (the drivers then leave ``Basis.weighted_restrictions`` unset). There is no excitation budget here: the
+    bath-excitation bounds are derived from the converged ground state (see
+    :func:`get_effective_excitation_bounds`) and appended by ``solve_member``.
 
     Parameters
     ----------
     bath_states : tuple of dict
         ``(valence_baths, conduction_baths)`` in the solver basis.
-    excitation_budget : int, optional
-        Maximum total bath excitations; ``None`` disables the budget.
     cost_budget : float, optional
         ``alpha``: the ground-state cost budget is ``round(COST_KAPPA * alpha * -log(slater_weight_min))``,
         i.e. ``alpha`` times the hopping distance at which one excitation's amplitude falls below the
@@ -1069,10 +1066,6 @@ def build_weighted_restrictions(
         A list of ``(weights, (q_min, q_max))`` weighted restrictions, or ``None`` if empty.
     """
     restrictions = []
-    if excitation_budget is not None:
-        budget = excitation_budget_restriction(bath_states, excitation_budget)
-        if budget is not None:
-            restrictions.append(budget)
     if cost_budget is not None:
         if h_op is None or impurity_orbitals is None or slater_weight_min is None:
             raise ValueError("cost_budget needs h_op, impurity_orbitals and slater_weight_min")

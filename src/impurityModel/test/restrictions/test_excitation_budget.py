@@ -134,19 +134,21 @@ def test_budget_composes_in_basis_expand():
 
 def test_build_weighted_restrictions_none_when_unset():
     """No budget -> None, so the drivers leave Basis.weighted_restrictions unset."""
-    assert build_weighted_restrictions(_BATHS, excitation_budget=None) is None
+    assert build_weighted_restrictions(_BATHS) is None
 
 
-def test_build_weighted_restrictions_wraps_budget_in_list():
-    """A budget -> a one-element list holding the excitation-budget restriction."""
-    got = build_weighted_restrictions(_BATHS, excitation_budget=2)
-    assert isinstance(got, list) and len(got) == 1
-    assert got[0] == excitation_budget_restriction(_BATHS, 2)
+def test_build_weighted_restrictions_takes_no_excitation_budget():
+    """The excitation budget is not an input any more (the bounds are derived from the converged ground state):
+    neither the old positional slot nor the old keyword is accepted."""
+    with pytest.raises(TypeError):
+        build_weighted_restrictions(_BATHS, 2)
+    with pytest.raises(TypeError):
+        build_weighted_restrictions(_BATHS, excitation_budget=2)
 
 
-def test_build_weighted_restrictions_none_without_baths():
+def test_excitation_budget_restriction_none_without_baths():
     """No bath orbitals -> nothing to bound even with a budget set."""
-    assert build_weighted_restrictions(({0: [[]]}, {0: [[]]}), excitation_budget=1) is None
+    assert excitation_budget_restriction(({0: [[]]}, {0: [[]]}), 1) is None
 
 
 # ---- calc_gs enforcement (the path calc_selfenergy / run_spectra build the GS with) --
@@ -200,9 +202,10 @@ def _bath_excitations(det, n=6, val=(2, 3), con=(4, 5)):
 
 
 def test_calc_gs_excitation_budget_enforced():
-    """A ground state built with an excitation budget respects it on every determinant."""
+    """A ground state handed an excitation-budget restriction respects it on every determinant (the observed
+    bounds that ``calc_gs`` appends afterwards can only be tighter)."""
     budget = 1
-    weighted = build_weighted_restrictions(({0: [[2, 3]]}, {0: [[4, 5]]}), excitation_budget=budget)
+    weighted = [excitation_budget_restriction(({0: [[2, 3]]}, {0: [[4, 5]]}), budget)]
     _psis, _es, basis, _, _ = _run_calc_gs(weighted)
     for det in basis.local_basis:
         assert _bath_excitations(det) <= budget
@@ -211,7 +214,7 @@ def test_calc_gs_excitation_budget_enforced():
 def test_calc_gs_large_budget_reproduces_unrestricted_energy():
     """A budget >= the largest reachable excitation leaves E0 unchanged (Q=inf oracle)."""
     _, es_free, _, _, _ = _run_calc_gs(None)
-    weighted = build_weighted_restrictions(({0: [[2, 3]]}, {0: [[4, 5]]}), excitation_budget=4)
+    weighted = [excitation_budget_restriction(({0: [[2, 3]]}, {0: [[4, 5]]}), 4)]
     _, es_big, _, _, _ = _run_calc_gs(weighted)
     np.testing.assert_allclose(min(es_free), min(es_big), atol=1e-10)
 
@@ -219,38 +222,40 @@ def test_calc_gs_large_budget_reproduces_unrestricted_energy():
 # ---- calc_selfenergy end-to-end (the driver threading + GF inheritance) --------------
 
 
-def _nio_selfenergy(excitation_budget):
-    """Run calc_selfenergy on the small NiO d-shell workload with the given budget.
+def _nio_selfenergy(monkeypatch, derived_bounds):
+    """Run calc_selfenergy on the small NiO d-shell workload, with or without the derived excitation bounds.
 
-    ``dense_cutoff=500`` (down from a golden-baseline-style 100000): this test only checks
-    that an unset budget and a budget >= the reachable space agree (driver threading + GF
-    inheritance), not exactness against a stored reference, so the dense/iterative choice is
-    free to move. Measured: 500 reproduces the dense_cutoff=100000 answer to ~1e-13 (gs_energies,
-    sigma_real) while cutting this test from ~278s to ~20s per call -- 100000 forced the O(N^3)
-    dense `eigh` branch on the full (~13k-determinant) excited-state basis; TRLM converge
-    to the same eigenpairs iteratively for a fraction of the cost.
+    ``derived_bounds=False`` makes ``solve_member`` attach nothing, which is the unrestricted reference.
+
+    ``dense_cutoff=500`` (down from a golden-baseline-style 100000): this test only checks that the bounds do
+    not move the result (driver threading + GF inheritance), not exactness against a stored reference, so the
+    dense/iterative choice is free to move. Measured: 500 reproduces the dense_cutoff=100000 answer to ~1e-13
+    (gs_energies, sigma_real) while cutting this test from ~278s to ~20s per call -- 100000 forced the O(N^3)
+    dense `eigh` branch on the full (~13k-determinant) excited-state basis; TRLM converge to the same
+    eigenpairs iteratively for a fraction of the cost.
     """
-    import dataclasses
-
+    import impurityModel.ed.groundstate as gs_module
     from impurityModel.ed.selfenergy import calc_selfenergy
     from impurityModel.test.support._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
 
+    if not derived_bounds:
+        monkeypatch.setattr(gs_module, "get_effective_excitation_bounds", lambda *a, **k: None)
     inputs = build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=500, truncation_threshold=100000)
-    args = as_calc_selfenergy_args(inputs)
-    args["basis"] = dataclasses.replace(args["basis"], excitation_budget=excitation_budget)
-    return calc_selfenergy(**args, comm=None)
+    return calc_selfenergy(**as_calc_selfenergy_args(inputs), comm=None)
 
 
-def test_calc_selfenergy_excitation_budget_oracle():
-    """Through calc_selfenergy: an unset budget and a >=max budget give the same self-energy.
+def test_calc_selfenergy_derived_bounds_are_lossless_without_conduction_baths(monkeypatch):
+    """Valence-only NiO: the derived bounds leave the self-energy unchanged.
 
-    Exercises the full driver threading (basis_information -> calc_gs) and the automatic GF
-    inheritance (greens_function widens basis.weighted_restrictions onto the excited bases).
+    Without conduction baths ``holes - electrons = n_imp - n_ref`` (the counting identity), so the bound can
+    only cut states the +1 widening of the excited bases still admits. This is the identity regression: a
+    "Sigma is causal" check alone cannot catch a too-tight bound.
     """
-    base = _nio_selfenergy(None)
-    big = _nio_selfenergy(50)  # 50 >> the 10 valence orbitals: admits everything
-    np.testing.assert_allclose(base["sigma_real"], big["sigma_real"], atol=1e-8)
-    np.testing.assert_allclose(np.min(base["gs_energies"]), np.min(big["gs_energies"]), atol=1e-10)
+    with_bounds = _nio_selfenergy(monkeypatch, True)
+    monkeypatch.undo()
+    free = _nio_selfenergy(monkeypatch, False)
+    np.testing.assert_allclose(with_bounds["sigma_real"], free["sigma_real"], atol=1e-8)
+    np.testing.assert_allclose(np.min(with_bounds["gs_energies"]), np.min(free["gs_energies"]), atol=1e-10)
 
 
 # ---- CHAIN_MAX_HOLES / CHAIN_MAX_ELECTRONS: length-independent per-chain caps ----------

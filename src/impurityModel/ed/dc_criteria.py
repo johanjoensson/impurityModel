@@ -70,7 +70,7 @@ Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state
 derive their determinant budget from available per-rank memory
 (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`) when
 ``BasisOptions.truncation_threshold`` is left at ``None``, and honor
-``BasisOptions.excitation_budget``/``chain_restrict`` through the same
+``BasisOptions.chain_restrict`` through the same
 :func:`impurityModel.ed.basis_restrictions.build_weighted_restrictions` the other ED drivers use
 -- the double counting is otherwise found on a different variational space than the solve that
 will use it.
@@ -988,7 +988,6 @@ def _prepare_sector_context(
         # restrictions find_ground_state_sector applies to its own occupation-scan trials.
         weighted_restrictions=build_weighted_restrictions(
             bath_states,
-            basis.excitation_budget,
             cost_budget=basis.cost_budget,
             h_op=sb.h,
             impurity_orbitals=impurity_orbitals,
@@ -1062,7 +1061,7 @@ def fixed_peak_dc(
     ``eg``/``t2g``), and the many-body basis is filtered on the total impurity charge alone, so
     the total is the only well-defined handle. Energies carry no fixed unit, they follow the inputs
     (e.g. Ry when called from RSPt); the convergence tolerance is ``max(tau, 1e-4)`` in those
-    units. All three sectors honor ``BasisOptions.excitation_budget``/``chain_restrict``
+    units. All three sectors honor ``BasisOptions.chain_restrict``
     identically -- the bath-only excitation-budget restriction never references the occupation,
     so the same restriction list applies regardless of which sector it is evaluated on.
 
@@ -2131,7 +2130,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     N0 = basis.nominal_occ
     mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
     tau = basis.tau
-    excitation_budget = basis.excitation_budget
     chain_restrict = basis.chain_restrict
     slaterWeightMin = basis.slater_weight_min
     dense_cutoff = solver.dense_cutoff
@@ -2229,7 +2227,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         seed_window=sb.seed_window,
         weighted_restrictions=build_weighted_restrictions(
             bath_states,
-            excitation_budget,
             cost_budget=basis.cost_budget,
             h_op=h_op_i,
             impurity_orbitals=impurity_orbitals,
@@ -2354,7 +2351,7 @@ def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosit
     This is the per-``mu`` core of :func:`fixed_occupation_dc`, exposed standalone for B2's
     convergence diagnostic (``test/support/dc_diagnostics.py``'s ``occupation_convergence``
     mode): does the achieved occupation and ground-state energy drift with
-    ``BasisOptions.truncation_threshold``/``excitation_budget``/``chain_restrict`` at a fixed
+    ``BasisOptions.truncation_threshold``/``chain_restrict`` at a fixed
     ``mu``? If ``n`` is not converged with respect to the ED's own variational truncation, the
     search absorbs that drift into ``dc`` rather than into physics -- a fixed-``mu`` sweep across
     the cap ladder is the cheap way to check, since it needs no search at all (Haule 2015's
@@ -2443,7 +2440,7 @@ def fixed_occupation_dc(
     walk leads, including across a change in total electron number (matching
     ``find_ground_state_sector``'s own grand-canonical-style sector search); the reachable
     occupations are limited by the bath, and a tight
-    ``BasisOptions.excitation_budget``/``chain_restrict`` can itself make a requested occupation
+    ``BasisOptions.chain_restrict`` can itself make a requested occupation
     unreachable, or reachable only via a sector the un-walked search could never have found.
 
     Parameters other than the following match :func:`fixed_peak_dc` (``model``, ``basis``,

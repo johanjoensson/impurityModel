@@ -149,3 +149,21 @@ def test_a_gf_cap_binds_the_units_and_leaves_the_ground_state_alone(tmp_path, ca
     assert "GS basis stopped at 300 determinants" in out
     assert "determinant cap: GF unlimited per unit" in out
     assert not np.allclose(gs["gs_energies"], full["gs_energies"], atol=1e-6)
+
+
+def test_derived_excitation_bounds_leave_a_metal_self_energy_alone(tmp_path, monkeypatch):
+    """A model WITH conduction baths against the unrestricted reference.
+
+    The bounds are observed on the converged ground state and the excited bases run at +1, so on a model this small
+    (the whole space is reachable) the self-energy must not move beyond the solver's own floor. The measured gap is
+    the number to watch when the bounds are changed; ``max|dSigma|`` is asserted, not just causality.
+    """
+    import impurityModel.ed.groundstate as gs_module
+
+    toml = write_metal(tmp_path, "m", n_orb=1, n_b=4, U=0.5, n_matsubara=4, real_mesh=(-1.5, 1.5, 21))
+    bounded = fr.run(str(toml), str(tmp_path / "bounded"), verbosity=0)
+    monkeypatch.setattr(gs_module, "get_effective_excitation_bounds", lambda *a, **k: None)
+    free = fr.run(str(toml), str(tmp_path / "free"), verbosity=0)
+    np.testing.assert_allclose(bounded["gs_energies"], free["gs_energies"], atol=1e-8)
+    assert np.max(np.abs(bounded["sigma_real"] - free["sigma_real"])) < 1e-4
+    assert np.max(np.abs(bounded["sigma"] - free["sigma"])) < 1e-4

@@ -606,7 +606,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     truncation_threshold = basis.truncation_threshold
     slaterWeightMin = basis.slater_weight_min
     dN = basis.dN
-    excitation_budget = basis.excitation_budget
     dense_cutoff = solver.dense_cutoff
     sparse_green = solver.sparse_green
     gf_method = solver.gf_method
@@ -684,9 +683,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
         truncation_threshold=cap_policy,
-        # Optional excitation-budget weighted restriction on the ground-state basis; the GF
-        # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
-        excitation_budget=excitation_budget,
+        # The ground state is not budgeted: solve_member appends the excitation bounds it observes, and the GF
+        # excited bases inherit them (widened) via greens_function._build_excited_restrictions.
         cost_budget=basis.cost_budget,
         restriction_slater_weight_min=slaterWeightMin,
         # The residual PT2 energy the ground-state refinement converges to, and its optional
