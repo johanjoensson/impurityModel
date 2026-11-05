@@ -176,7 +176,7 @@ def _hook(function):
 
     class Visitor:
         def visit(self, member, state):
-            return function(member, state.basis, state.es, state.psis, state.truncation, state.convergence)
+            return function(member, state.basis, state.es, state.states, state.truncation, state.convergence)
 
     return Visitor()
 
@@ -341,3 +341,41 @@ def test_an_ensemble_cut_to_its_winner_still_warns_about_a_near_neighbour(comm, 
         out = capsys.readouterr().out
         assert "keeps the single N_imp = 0 sector" in out, out
         assert "neighbouring sector lies within the thermal window (N_imp = 1:" in out, out
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("index, n_members", [(20, 1), (3, 2)])
+def test_the_driver_gets_the_only_copy_of_the_thermal_states(comm, index, n_members, tmp_path, monkeypatch):
+    """The raw block goes to the measure visitor alone; the driver works on converted ``states``, not on the block."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
+    taken, members, driven = [], [], []
+    real_take = groundstate.MemberState.take_psis
+
+    def spy(self):
+        members.append(self)
+        raw = real_take(self)
+        taken.append(raw)
+        return raw
+
+    monkeypatch.setattr(groundstate.MemberState, "take_psis", spy)
+
+    class Driver:
+        def visit(self, member, state):
+            driven.append(state)
+            return len(state.states)
+
+    h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
+    psis, _es, _, _, info = calc_gs(
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver()
+    )
+    assert len(taken) == len(driven) == n_members
+    assert all(m.psis is None for m in members)  # the member holds no reference to its raw block afterwards
+    for raw, state in zip(taken, driven):
+        assert not hasattr(state, "psis") and state.states is not raw
+        assert isinstance(state.states, list) and all(isinstance(s, ManyBodyState) for s in state.states)
+        assert len(state.states) == len(state.es)
+    assert psis is None  # a driver consumed the states; none is held for the return
+    assert info["member_results"] == [len(d.states) for d in driven]

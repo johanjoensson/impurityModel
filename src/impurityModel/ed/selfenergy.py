@@ -36,7 +36,6 @@ from impurityModel.ed.groundstate import (
     GS_E_PT2_TOL,
     GroundStateSpec,
     calc_gs,
-    redistributed_states,
 )
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.memory_estimate import (
@@ -915,7 +914,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     class _GreensFunctionVisitor:
         def visit(self, member, state):
             return member_gf(
-                redistributed_states(state.basis, state.psis),
+                state.states,
                 state.es,
                 state.basis,
                 state.truncation,

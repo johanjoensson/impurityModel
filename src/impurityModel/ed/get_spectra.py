@@ -12,7 +12,7 @@ import numpy as np
 
 from impurityModel.ed import config, spectra
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs, redistributed_states
+from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
 
@@ -461,7 +461,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     class _SpectraVisitor:
         def visit(self, _member, state):
             # Collective, run while the member's basis is alive and after its solver is released.
-            return spectra_of(state.es, redistributed_states(state.basis, state.psis), state.basis)
+            return spectra_of(state.es, state.states, state.basis)
 
     _psis, es, _basis, _rho, gs_info = calc_gs(
         hOp,

@@ -15,7 +15,6 @@ from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.gs_report import (
     finalize_members,
     measure_member,
-    redistributed_states,  # noqa: F401  (re-exported: susceptibility, get_spectra)
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
@@ -1747,10 +1746,6 @@ class DrivenState(NamedTuple):
     occupation: dict
     truncation: dict | None
     convergence: dict | None
-
-    @property
-    def psis(self):
-        return self.states
 
 
 def release(ground_state):

@@ -41,6 +41,16 @@ def _without_zero_rows(stats):
     return stats
 
 
+def _holds_states(obj):
+    if isinstance(obj, ManyBodyState):
+        return True
+    if isinstance(obj, dict):
+        return any(_holds_states(v) for v in list(obj.keys()) + list(obj.values()))
+    if isinstance(obj, (list, tuple)):
+        return any(_holds_states(v) for v in obj)
+    return False
+
+
 def _redistributed(basis, psis):
     blk = basis.redistribute_block(psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis)))
     blk.prune_rows(0.0)
@@ -70,6 +80,8 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
     for k, (total, basis, es, psis) in enumerate(captured):
         blk = _redistributed(basis, psis)
         members.append(measure_member(h_op, basis, es, blk, tau, bs, rot, total=total, keep_basis=k == 0))
+    for m in members:  # a measurement is small replicated per-state data: no state, no block, anywhere in it
+        assert not _holds_states(m.tape)
     none, es_new, _b, rho_new, info_new = finalize_members(h_op, members, tau, bs, rot, **common)
 
     assert none is None

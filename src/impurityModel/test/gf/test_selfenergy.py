@@ -405,11 +405,10 @@ def _fake_calc_gs(psis, es, basis, thermal_rho, gs_info):
 
     def fake(*_args, visitor=None, **_kwargs):
         state = SimpleNamespace(
-            basis=basis, psis=psis, es=np.asarray(es, dtype=float), truncation=None, convergence=None
+            basis=basis, states=psis, es=np.asarray(es, dtype=float), truncation=None, convergence=None
         )
         member = SimpleNamespace(total=0, weight=1.0)
-        with patch("impurityModel.ed.selfenergy.redistributed_states", side_effect=lambda _b, p: p):
-            result = visitor.visit(member, state)
+        result = visitor.visit(member, state)
         info = dict(gs_info)
         info["member_results"] = [result]
         info["ensemble"] = {
