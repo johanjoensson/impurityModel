@@ -280,6 +280,16 @@ def test_from_hdf5_does_not_warn_about_a_missing_solver_line(tmp_path):
     ImpurityModel.from_hdf5(str(archive))  # filterwarnings=error turns any warning into a failure
 
 
+def test_from_hdf5_stays_silent_about_a_retired_budget_that_the_options_reader_would_warn_on(tmp_path):
+    """The retired-budget warning belongs to the options reader (``with_options``) only: the physics-only reader
+    must not warn for the same archive, or ``filterwarnings=error`` consumers of old archives would break."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line="1 1 3 chain", excitation_budget=3)
+    ImpurityModel.from_hdf5(str(archive))  # silent
+    with pytest.warns(UserWarning, match="retired"):
+        load_selfenergy_archive(str(archive))  # the same archive through the options reader does warn
+
+
 def _blocks():
     """A small (2 impurity + 1 bath) block set for the from_blocks / from_solver_matrix tests."""
     H_imp = np.array([[0.5, 0.1], [0.1, 0.5]], dtype=complex)

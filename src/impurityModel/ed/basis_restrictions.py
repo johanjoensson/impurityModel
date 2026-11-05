@@ -890,16 +890,21 @@ def _local_weighted_extrema(basis, weights):
     """
     n_orb = basis.num_spin_orbitals
     weights = np.asarray(weights, dtype=np.int64)
+    # The narrowest integer type whose dot products cannot overflow: the transient is chunk * n_orb * itemsize,
+    # which at int64 was ~315 MB per rank for 600 spin orbitals (this scan now also runs in every solve_member).
+    reach = int(np.abs(weights).sum(axis=1).max(initial=0))
+    work = np.int8 if reach <= 127 else np.int16 if reach <= 32767 else np.int32 if reach < 2**31 else np.int64
+    weights = weights.astype(work)
     lo = np.full(len(weights), np.iinfo(np.int64).max, dtype=np.int64)
     hi = np.full(len(weights), np.iinfo(np.int64).min, dtype=np.int64)
     local = basis.local_basis
     for start in range(0, len(local), _BOUNDS_CHUNK):
         chunk = [local[i] for i in range(start, min(start + _BOUNDS_CHUNK, len(local)))]
         raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in chunk), dtype=np.uint8).reshape(len(chunk), -1)
-        bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(np.int64)
+        bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(work)
         q = bits @ weights.T
-        lo = np.minimum(lo, q.min(axis=0))
-        hi = np.maximum(hi, q.max(axis=0))
+        lo = np.minimum(lo, q.min(axis=0).astype(np.int64))
+        hi = np.maximum(hi, q.max(axis=0).astype(np.int64))
     return lo, hi
 
 

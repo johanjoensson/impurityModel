@@ -105,24 +105,24 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
     a, b = info_new["statistics"], info_ref["statistics"]
     assert (a is None) == (b is None)
     if a is not None:
-        # The one-shot oracle sees only the lead member's basis, so it reports one set of excitation bounds; the
-        # replay reports one per member. Compare the replay against the captured bases instead.
-        assert (
-            a.pop("excitation_bounds", None)
-            == [
-                {
-                    "n_imp": int(total),
-                    "max_holes": int(bnd.max_holes),
-                    "max_electrons": int(bnd.max_electrons),
-                    "max_total": int(bnd.max_total),
-                    "cap_bound": bool(bnd.cap_bound),
-                }
-                for total, basis, _, _ in captured
-                if (bnd := getattr(basis, "excitation_bounds", None)) is not None
-            ]
-            or None
-        )
-        b.pop("excitation_bounds", None)
+        expected = [
+            {
+                "n_imp": int(total),
+                "max_holes": int(bnd.max_holes),
+                "max_electrons": int(bnd.max_electrons),
+                "max_total": int(bnd.max_total),
+                "cap_bound": bool(bnd.cap_bound),
+            }
+            for total, basis, _, _ in captured
+            if (bnd := getattr(basis, "excitation_bounds", None)) is not None
+        ]
+        # The replay reports one record per member, from the captured bases. The one-shot oracle sees only the lead
+        # member's basis, so it can be compared directly only when there is a single member.
+        assert (a.pop("excitation_bounds", None) or []) == expected
+        if n_members > 1:
+            b.pop("excitation_bounds", None)
+        else:
+            assert b.pop("excitation_bounds", None) == expected
         assert _numerically_equal(_without_zero_rows(a), _without_zero_rows(b), tol)
 
 

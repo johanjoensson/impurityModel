@@ -248,8 +248,11 @@ def test_calc_selfenergy_derived_bounds_are_lossless_without_conduction_baths(mo
     """Valence-only NiO: the derived bounds leave the self-energy unchanged.
 
     Without conduction baths ``holes - electrons = n_imp - n_ref`` (the counting identity), so the bound can
-    only cut states the +1 widening of the excited bases still admits. This is the identity regression: a
-    "Sigma is causal" check alone cannot catch a too-tight bound.
+    only cut states the +1 widening of the excited bases still admits. This is the identity regression for
+    that case only. It does NOT detect a missing +1 or a too-tight bound: the causality floor lifts every window
+    back to the observed ground-state extrema before the widening, and with no conduction baths the bound never
+    binds. The +1 is pinned by ``test_the_excited_window_inherits_the_bounds_plus_one`` and the sensitivity of
+    Sigma to it by ``test_metal_models.test_derived_excitation_bounds_leave_a_metal_self_energy_alone``.
     """
     with_bounds = _nio_selfenergy(monkeypatch, True)
     monkeypatch.undo()

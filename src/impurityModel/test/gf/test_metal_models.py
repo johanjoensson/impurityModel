@@ -151,18 +151,34 @@ def test_a_gf_cap_binds_the_units_and_leaves_the_ground_state_alone(tmp_path, ca
 
 
 def test_derived_excitation_bounds_leave_a_metal_self_energy_alone(tmp_path, monkeypatch):
-    """A model WITH conduction baths against the unrestricted reference.
+    """A model WITH conduction baths against the unrestricted reference, with the bounds actually binding.
 
-    The bounds are observed on the converged ground state and the excited bases run at +1, so on a model this small
-    (the whole space is reachable) the self-energy must not move beyond the solver's own floor. The measured gap is
-    the number to watch when the bounds are changed; ``max|dSigma|`` is asserted, not just causality.
+    Measured at this size: the derived bounds plus the +1 widening agree with the unrestricted run to ~1e-6 on the
+    real axis, while the SAME bounds without the widening are off by ~5e-3. So the test fails for a missing +1 as
+    well as for bounds that are too tight, and it asserts the precondition that makes either visible: the bounds
+    must exclude part of the space (``max_total < n_valence + n_conduction``), or the comparison is vacuous.
     """
+    import impurityModel.ed.greens_function as gf_module
     import impurityModel.ed.groundstate as gs_module
 
-    toml = write_metal(tmp_path, "m", n_orb=1, n_b=4, U=0.5, n_matsubara=4, real_mesh=(-1.5, 1.5, 21))
+    toml = write_metal(tmp_path, "m", n_orb=1, n_b=6, v=0.3, U=0.5, n_matsubara=4, real_mesh=(-1.5, 1.5, 21))
+    seen = []
+    observe = gs_module.get_effective_excitation_bounds
+    monkeypatch.setattr(
+        gs_module, "get_effective_excitation_bounds", lambda *a, **k: seen.append(observe(*a, **k)) or seen[-1]
+    )
     bounded = fr.run(str(toml), str(tmp_path / "bounded"), verbosity=0)
+    assert seen and all(b is not None and b.max_total < 12 for b in seen)  # 6 valence + 6 conduction spin orbitals
+
+    widen = gf_module.widen_weighted_restrictions
+    monkeypatch.setattr(gf_module, "widen_weighted_restrictions", lambda wr, extra=None: wr)
+    unwidened = fr.run(str(toml), str(tmp_path / "unwidened"), verbosity=0)
+    monkeypatch.setattr(gf_module, "widen_weighted_restrictions", widen)
     monkeypatch.setattr(gs_module, "get_effective_excitation_bounds", lambda *a, **k: None)
     free = fr.run(str(toml), str(tmp_path / "free"), verbosity=0)
+
     np.testing.assert_allclose(bounded["gs_energies"], free["gs_energies"], atol=1e-8)
     assert np.max(np.abs(bounded["sigma_real"] - free["sigma_real"])) < 1e-4
     assert np.max(np.abs(bounded["sigma"] - free["sigma"])) < 1e-4
+    # The comparison can see a too-tight window: take the +1 away and the self-energy moves by orders of magnitude.
+    assert np.max(np.abs(unwidened["sigma_real"] - free["sigma_real"])) > 1e-3

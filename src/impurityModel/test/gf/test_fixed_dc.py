@@ -1792,17 +1792,21 @@ def test_fixed_occupation_dc_none_threshold_ranks_agree():
 
 
 def test_dc_search_applies_weighted_restrictions(monkeypatch):
-    """The DC search builds its bases with the cost budget the options ask for, and the solve then appends the
-    ground-state-derived excitation bounds -- there is no user-chosen excitation budget in front of them."""
-    captured = _capture_prepared_bases(monkeypatch)
+    """The DC search builds its bases with the cost budget the options ask for, and every trial solve goes
+    through ``solve_member``, which attaches the ground-state-derived excitation bounds -- there is no
+    user-chosen excitation budget in front of them. (The bases ``_capture_prepared_bases`` sees are the ones
+    handed TO the solve, so the bounds can only be observed where they are computed.)"""
+    import impurityModel.ed.groundstate as gs_module
+
+    attached = []
+    observe = gs_module.get_effective_excitation_bounds
+    monkeypatch.setattr(
+        gs_module, "get_effective_excitation_bounds", lambda *a, **k: attached.append(observe(*a, **k)) or attached[-1]
+    )
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     fixed_occupation_dc(occupation=1.0, **kwargs)
-    assert captured
-    # Nothing was requested, so everything on the bases is a bound entry (holes, electrons, total <= 3).
-    for b in captured:
-        entries = b.weighted_restrictions or []
-        assert len(entries) <= 3
-        assert all({abs(w) for w in weights.values()} == {1} for weights, _window in entries)
+    assert attached  # one scan per trial solve
+    assert any(b is not None for b in attached)  # the model has bath orbitals: bounds exist
 
     import impurityModel.ed.dc_criteria as dc_module
 
