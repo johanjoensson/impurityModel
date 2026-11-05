@@ -273,3 +273,43 @@ def test_the_switched_off_ensemble_is_solve_ground_states_state(comm, index):
     assert len(result.members) == 1 and list(result.weights) == [1.0] and result.refused_reason is None
     assert len(seen) == 1 and seen[0] == pytest.approx(np.asarray(reference.es), abs=1e-9)
     assert result.visited == [sum(reference.occupation.values())]
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("mixed_valence", [False, True])
+def test_only_the_ensemble_asks_the_walk_to_solve_edge_sectors(comm, mixed_valence, monkeypatch):
+    """The walk is told to extend to the plan's missing edge sectors (``more_totals``) only when the ensemble is on;
+    off solves the winner's neighbourhood and nothing more, so the switched-off run costs what ``solve_ground_state``
+    costs."""
+    from impurityModel.test.support.gs_oracle import pinned_model
+
+    h_op, imp, bath, N0, *_ = pinned_model(20261016, 3)
+    seen = []
+    real = groundstate.find_ground_state_sector
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("more_totals"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(groundstate, "find_ground_state_sector", spy)
+
+    class Keep:
+        def visit(self, member, state):
+            return member.total
+
+    groundstate.solve_charge_sector_ensemble(
+        h_op,
+        imp,
+        bath,
+        dict(N0),
+        mixed_valence=mixed_valence,
+        visitor=Keep(),
+        slaterWeightMin=1e-12,
+        truncation_threshold=np.inf,
+        verbose=False,
+        comm=comm,
+        tau=0.15,
+    )
+    assert len(seen) == 1
+    assert (seen[0] is not None) is mixed_valence
