@@ -269,3 +269,18 @@ def test_mixed_valence_reads_a_legacy_integer_as_auto(written, expected):
     got = _coerce("many_body_basis.mixed_valence", key, written, {"energy": "eV"}, ".")
     assert got == expected
     assert resolve_mixed_valence(got, driver_default="off")[0] is (expected != "off")
+
+
+@pytest.mark.parametrize("example", ["NiO_selfenergy", "NiO_susceptibility", "NiO_CF_spectra"])
+def test_an_unset_mixed_valence_is_on_for_every_calculation(example):
+    """D2: no calculation table overrides the default, so an input that does not write ``mixed_valence`` leaves it
+    unset and every driver resolves that to on (the self-energy and susceptibility tables used to pin off)."""
+    from pathlib import Path
+
+    from impurityModel.ed.sector_ensemble import resolve_mixed_valence
+    from impurityModel.inputformat.reader import load_input
+
+    root = Path(schema.__file__).resolve().parents[3]
+    given = load_input(str(root / "examples" / f"{example}.toml")).get("many_body_basis", "mixed_valence")
+    assert given is None
+    assert resolve_mixed_valence(given, driver_default="on")[0] is True

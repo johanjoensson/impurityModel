@@ -97,9 +97,9 @@ def add_arguments(parser):
     parser.add_argument(
         "--mixed_valence",
         choices=("auto", "on", "off"),
-        default="off",
-        help="Charge-sector ensemble: off = the ground-state sector only; auto = every sector inside the thermal "
-        "window; on = grand-canonical, continuous in the chemical potential (default: off).",
+        default="on",
+        help="Charge-sector ensemble: on = every sector inside the thermal window, weighted by exp(-dE/tau) "
+        "(auto is the same); off = the ground-state sector only (default: on).",
     )
 
     # Real-frequency mesh.

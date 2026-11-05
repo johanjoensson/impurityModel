@@ -218,10 +218,11 @@ accepts `--from-archive`.
 
 ## Mixed valence: the charge-sector ensemble
 
-By default a calculation uses the ground state of one charge sector (N particles in the
-impurity-plus-bath system). `[many_body_basis] mixed_valence` (`"off"` or `"on"`; `"auto"` is accepted and means on; the
-archive token is `mv`) lets the solver instead form a thermal ensemble over neighbouring
-sectors, weighted by `exp(-(E_s - E_0)/tau)` with `tau` from `[temperature]`.
+By default a calculation forms a thermal ensemble over the charge sectors (N particles in the
+impurity-plus-bath system) that lie inside the thermal window; with one relevant sector this is just the
+ground state of that sector. `[many_body_basis] mixed_valence` (`"on"` or `"off"`; `"auto"` is accepted and
+means on; the archive token is `mv`) switches it; `"off"` keeps the ground-state sector alone. The ensemble is
+over neighbouring sectors, weighted by `exp(-(E_s - E_0)/tau)` with `tau` from `[temperature]`.
 
 Two different physical situations are easy to confuse:
 

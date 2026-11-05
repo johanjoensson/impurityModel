@@ -33,7 +33,7 @@ GS_DENSE_CUTOFF = 1000
 
 #: Largest tolerated error bar, in electrons, on the ensemble-averaged impurity occupation that the solved sectors'
 #: residual PT2 energies leave (sum over members of p_s |N_s - <N>| err_s / tau). Above it the charge-sector
-#: ensemble is refused (``mixed_valence``: auto -> winner only plus a warning, on -> raises).
+#: ensemble is refused (``mixed_valence``: cut at the failing member, or the winner alone, with a warning).
 ENSEMBLE_WEIGHT_ERROR_MAX = 0.05
 
 #: A charge-sector ensemble member whose weight is below this gets no Green's function: the self-energy merges
