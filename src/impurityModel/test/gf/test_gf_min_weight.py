@@ -103,7 +103,8 @@ def test_dropping_a_manifold_moves_sigma_by_the_order_of_its_weight():
     off, _ = _run({})
     cut, text = _run({"gf_min_weight": 1e-2})
     if MPI.COMM_WORLD.rank == 0:
-        assert len(cut["gs_energies"]) == 2
+        # gs_energies is the thermal union (the energies `rhos` belongs to), not the states left after the drop.
+        assert len(cut["gs_energies"]) == 4
         assert "dropped 2 of 4 thermal state(s)" in text
         dropped_weight = 2 * 0.00167
         for key in ("sigma", "sigma_real"):

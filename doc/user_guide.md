@@ -232,9 +232,9 @@ Two different physical situations are easy to confuse:
   Only here is the ensemble physical. `on` is meaningful when `tau` is comparable to the sector
   gap; at low `tau` the extra sectors have weight ~`exp(-gap/tau)` and are dropped.
 
-Defaults per driver: self-energy and double counting use `auto` (form the ensemble only when
-more than one sector is thermally relevant); susceptibilities, spectra and RIXS use `off`.
-`auto` with one relevant sector is bit-identical to `off`.
+Default: every driver (self-energy, double counting, susceptibilities, spectra, RIXS) uses `on`: the
+ensemble is formed only when more than one sector is thermally relevant. `on` with one relevant sector
+is bit-identical to `off`; write `mixed_valence = "off"` to pin the winning sector alone.
 
 Admission and refusal: sectors whose weight is below the energy cut derived from `tau` are simply not
 admitted, so at low `tau` even `on` gives a one-member ensemble (no warning). A plan that is cap-bound,

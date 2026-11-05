@@ -267,7 +267,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     # Replicated input: a malformed value raises on every rank before any collective.  Spectra default to 'off'.
-    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="off")
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
     rank = comm.rank if comm is not None else 0
     if verbosity is None:
         verbosity = V_RESULT

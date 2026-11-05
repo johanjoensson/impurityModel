@@ -2165,7 +2165,7 @@ def calc_gs(
     mv_given = basis_setup.pop("mixed_valence", None)
     if mv_given is None and spec is not None:
         mv_given = spec.mixed_valence
-    mixed_valence, mv_note = resolve_mixed_valence(mv_given, driver_default="off")
+    mixed_valence, mv_note = resolve_mixed_valence(mv_given, driver_default="on")
     _agree_on_switch(mixed_valence, basis_setup.get("comm"))
     if mv_note is not None and (basis_setup.get("comm") is None or basis_setup["comm"].rank == 0):
         print(mv_note, flush=True)

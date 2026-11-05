@@ -600,7 +600,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     w = meshes.w
     delta = meshes.delta
     nominal_occ = basis.nominal_occ
-    mixed_valence, mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="auto")
+    mixed_valence, mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
     tau = basis.tau
     chain_restrict = basis.chain_restrict
     occ_cutoff = basis.occ_cutoff

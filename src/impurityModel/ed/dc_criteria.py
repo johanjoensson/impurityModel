@@ -910,7 +910,7 @@ def _prepare_sector_context(
 
     # Peak/gap measure the winning sector alone under every mode (auto, on and off): the switch is resolved here,
     # so a malformed value raises on every rank before any collective, but it no longer reaches the basis layer.
-    resolve_mixed_valence(basis.mixed_valence, driver_default="auto")
+    resolve_mixed_valence(basis.mixed_valence, driver_default="on")
 
     # Derive the same solver-basis layout calc_selfenergy uses (root cause 3 of the original
     # DC<->GS mismatch: the fit valence/conduction split model.bath_states carries is not
@@ -2129,7 +2129,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     u = model.u4
     n_imp = len(model.impurity_indices)
     N0 = basis.nominal_occ
-    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="auto")
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
     tau = basis.tau
     excitation_budget = basis.excitation_budget
     chain_restrict = basis.chain_restrict

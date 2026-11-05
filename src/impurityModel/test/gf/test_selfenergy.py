@@ -1,4 +1,5 @@
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -395,6 +396,32 @@ def test_get_sigma_non_full_width_block_uses_matching_orbitals():
     assert np.max(np.abs(sigma_wrong[0])) > 0.1
 
 
+def _fake_calc_gs(psis, es, basis, thermal_rho, gs_info):
+    """A ``calc_gs`` stand-in with the real contract: one member, handed to the caller's visitor.
+
+    ``calc_selfenergy`` no longer receives states back to work on; it passes a visitor and reads the per-member
+    results and the ensemble record from ``gs_info``. The fake calls the visitor once and fills both.
+    """
+
+    def fake(*_args, visitor=None, **_kwargs):
+        state = SimpleNamespace(
+            basis=basis, psis=psis, es=np.asarray(es, dtype=float), truncation=None, convergence=None
+        )
+        member = SimpleNamespace(total=0, weight=1.0)
+        with patch("impurityModel.ed.selfenergy.redistributed_states", side_effect=lambda _b, p: p):
+            result = visitor.visit(member, state)
+        info = dict(gs_info)
+        info["member_results"] = [result]
+        info["ensemble"] = {
+            "members": [{"weight": 1.0, "total": 0, "e0": float(np.min(es))}],
+            "es": list(es),
+            "mixed_valence": False,
+        }
+        return psis, es, basis, thermal_rho, info
+
+    return fake
+
+
 def _identity_moments(n_corr=1, max_order=3):
     """A stand-in for get_greens_function_moments in the mocked orchestration tests."""
     M = np.zeros((max_order + 1, n_corr, n_corr), dtype=complex)
@@ -407,7 +434,7 @@ def _identity_moments(n_corr=1, max_order=3):
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
 def test_calc_selfenergy(mock_get_gf, mock_calc_gs, mock_moments):
     # Setup mocks
-    mock_calc_gs.return_value = (
+    mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],  # psis
         [0.0],  # es
         MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),  # ground_state_basis
@@ -440,7 +467,7 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs, mock_moments):
 def test_calc_selfenergy_solves_the_ground_state_once(mock_get_gf, mock_calc_gs, mock_moments):
     """The ground-state solve returns every state inside the thermal window, certified, so a
     diagnostics report asking for "more states" must not re-run ``calc_gs`` (the walk included)."""
-    mock_calc_gs.return_value = (
+    mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],
         [0.0],
         MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),
@@ -467,7 +494,7 @@ def test_calc_selfenergy_solves_the_ground_state_once(mock_get_gf, mock_calc_gs,
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
 def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs, mock_moments):
-    mock_calc_gs.return_value = (
+    mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],
         [0.0],
         MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),
@@ -487,7 +514,7 @@ def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs, mock_moments):
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
 def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
     # Test Unphysical greens function in matsubara
-    mock_calc_gs.return_value = (
+    mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],
         [0.0],
         MagicMock(restrictions={((0,),): (0, 1)}, impurity_orbitals={0: [[0]]}),
@@ -505,12 +532,14 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
         selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
 
+@patch("impurityModel.ed.selfenergy.get_greens_function_moments", return_value=None)
 @patch("impurityModel.ed.selfenergy.save_Greens_function")
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
 @patch("impurityModel.ed.sigma_estimators.get_sigma")
-def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf):
-    mock_calc_gs.return_value = (
+def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf, mock_moments):
+    mock_moments.return_value = _identity_moments()
+    mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],
         [0.0],
         MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),
@@ -675,7 +704,7 @@ def test_greens_function_moments_hubbard_atom():
 def test_calc_selfenergy_hands_the_default_pruning_and_refinement_to_the_green_function(
     mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf, solver_kwargs, prune, rounds
 ):
-    mock_calc_gs.return_value = (
+    mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],
         [0.0],
         MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),

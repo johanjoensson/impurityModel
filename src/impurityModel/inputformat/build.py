@@ -680,7 +680,7 @@ def _build_basis(resolved):
 
     mixed = table["mixed_valence"]
     # Every driver forms the ensemble now; a malformed value is an input error here, on every rank, before any solve.
-    resolve_mixed_valence(mixed, driver_default="off")
+    resolve_mixed_valence(mixed, driver_default="on")
 
     budget = table["excitation_budget"]
     threshold = table["truncation_threshold"]

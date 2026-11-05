@@ -508,7 +508,7 @@ def calc_susceptibility_workflow(
     """
     config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
     # Resolved before any collective (a malformed value raises on every rank); the default is 'off' here.
-    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="off")
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs, redistributed_states
