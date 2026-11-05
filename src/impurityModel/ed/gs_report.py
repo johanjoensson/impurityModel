@@ -305,7 +305,9 @@ class _ReplaySource:
     def __init__(self, members, tau):
         self.members = list(members)
         first = self.members[0]
-        self.basis, self.tau = first.basis, tau
+        # The member that kept its basis (the first visited; after the sort by energy it need not be first).
+        self.lead = next(m for m in self.members if m.basis is not None)
+        self.basis, self.tau = self.lead.basis, tau
         self.mov_comm = self.basis.comm if self.basis.is_distributed else None
         if len(self.members) == 1:
             self.es, self.order, self.scales = first.es, None, [1.0]
@@ -331,7 +333,9 @@ class _ReplaySource:
         return out
 
     def once(self, key, compute=None):
-        kind, value = self.members[0].tape.get(key, ("err", RuntimeError(f"first member did not record {key!r}")))
+        kind, value = self.lead.tape.get(
+            key, ("err", RuntimeError(f"member N_imp={self.lead.total} did not record {key!r}"))
+        )
         if kind == "err":
             raise value
         return value

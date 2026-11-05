@@ -13,15 +13,14 @@ from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.gs_report import (
-    finalize_ground_state,
-    measure_ground_state,
+    finalize_members,
+    measure_member,
     redistributed_states,  # noqa: F401  (re-exported: susceptibility, get_spectra)
-    union_order,
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -1711,12 +1710,14 @@ def refined_truncation_report(solver, walk_report):
     return {**walk_report, "memory_bound": False, "walk_memory_bound": bool(walk_report.get("memory_bound", False))}
 
 
-class MemberState(NamedTuple):
+@dataclass
+class MemberState:
     """One ensemble member as a visitor sees it: no solver, no Krylov store (they are dropped before the visit).
 
     ``truncation`` is :func:`refined_truncation_report` (the solve's own report, else the walk's) and
     ``convergence`` the solver's ``convergence_report``; both are rank-local solver state, read from the solver
-    before it went.
+    before it went. ``psis`` is the raw thermal block as the eigensolver returned it; :meth:`take_psis` hands it
+    to its one consumer and clears the field, so the member does not keep a second reference to it.
     """
 
     basis: Basis
@@ -1725,6 +1726,31 @@ class MemberState(NamedTuple):
     occupation: dict
     truncation: dict | None
     convergence: dict | None
+
+    def take_psis(self):
+        """The raw thermal block; this member no longer references it afterwards."""
+        psis, self.psis = self.psis, None
+        return psis
+
+
+class DrivenState(NamedTuple):
+    """What a driver visitor of :func:`calc_gs` gets for one member: the thermal ``states`` it works on.
+
+    ``states`` are the member's width-1 states redistributed onto ``basis`` and pruned -- the states the
+    ground-state report was measured on, and the only copy of them that is alive (``len(es)`` of them on every
+    rank). The other fields are those of :class:`MemberState`.
+    """
+
+    basis: Basis
+    es: np.ndarray
+    states: list
+    occupation: dict
+    truncation: dict | None
+    convergence: dict | None
+
+    @property
+    def psis(self):
+        return self.states
 
 
 def release(ground_state):
@@ -2061,22 +2087,55 @@ class GroundStateSpec:
 
 
 class _MeasureVisitor:
-    """The ground-state report's own visitor: captures each member's measurement, then runs the driver's.
+    """The ground-state report's own visitor: measures each member, then runs the driver's on the same states.
 
-    ``visit`` returns ``(measurement, truncation, convergence, driver_result)``; only the first visited member keeps
-    its basis (it carries the report), the later members hold their eigenpairs alone.
+    The member's raw block is taken from its :class:`MemberState` (which then holds no reference), redistributed
+    and pruned once, measured (:func:`~impurityModel.ed.gs_report.measure_member`: only small per-state results
+    are kept) and converted once to the width-1 ``states`` the driver works on. No other copy of the thermal
+    states is alive while the driver runs, and none is kept after it returns unless there is no driver
+    (``states`` is then the caller's return value).
+
+    ``visit`` returns ``(measurement, truncation, convergence, driver_result, states)``; only the first visited
+    member keeps its basis (it carries the report), ``states`` is ``None`` when a driver consumed them.
     """
 
-    def __init__(self, driver_visitor=None):
+    def __init__(self, report_args, driver_visitor=None):
+        self.report_args = report_args
         self.driver = driver_visitor
         self.count = 0
 
     def visit(self, member, state):
-        keep_basis = state.basis if self.count == 0 else None
+        basis, n = state.basis, len(state.es)
+        raw = state.take_psis()
+        blk = basis.redistribute_block(raw if isinstance(raw, ManyBodyState) else ManyBodyState.from_states(list(raw)))
+        del raw
+        blk.prune_rows(0.0)
+        measurement = measure_member(
+            self.report_args["Hop"],
+            basis,
+            np.array(state.es),
+            blk,
+            self.report_args["tau"],
+            self.report_args["block_structure"],
+            self.report_args["rot_to_spherical"],
+            spin_layout=self.report_args["spin_layout"],
+            shell_ls=self.report_args["shell_ls"],
+            total=member.total,
+            keep_basis=self.count == 0,
+        )
         self.count += 1
-        measurement = measure_ground_state(keep_basis, np.array(state.es), state.psis, total=member.total)
-        driven = None if self.driver is None else self.driver.visit(member, state)
-        return measurement, state.truncation, state.convergence, driven
+        states = blk.to_states()
+        del blk
+        # A rank that received no rows holds a width-0 block whose to_states() is []: keep len(es) states on every rank.
+        states = states if states else [ManyBodyState(width=1) for _ in range(n)]
+        driven = None
+        if self.driver is not None:
+            driven = self.driver.visit(
+                member,
+                DrivenState(basis, state.es, states, state.occupation, state.truncation, state.convergence),
+            )
+            states = None
+        return measurement, state.truncation, state.convergence, driven, states
 
 
 def calc_gs(
@@ -2196,7 +2255,17 @@ def calc_gs(
     # criteria (see solve_charge_sector_ensemble): it owns the sector walk, its cutoff, the eigensolver choice
     # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
     # rather than re-listing its keys.
-    measure = _MeasureVisitor(visitor)
+    measure = _MeasureVisitor(
+        {
+            "Hop": Hop,
+            "tau": tau,
+            "block_structure": block_structure,
+            "rot_to_spherical": rot_to_spherical,
+            "spin_layout": layout,
+            "shell_ls": shell_ls,
+        },
+        visitor,
+    )
     result = solve_charge_sector_ensemble(
         Hop,
         verbose=verbose,
@@ -2207,11 +2276,10 @@ def calc_gs(
     )
     kept = result.visited
     measurements = [k[0] for k in kept]
-    comm = basis_setup.get("comm")
     converged = [(k[2] or {}).get("converged") is not False for k in kept]
-    union, union_es = union_order(measurements, comm)
-    if len(measurements) == 1:
-        union = np.arange(len(union_es))  # one member is handed on untouched (merge_measurements), so is its order
+    # The union's order, from rank 0's copy of the energies (identical on every rank); one member keeps its own.
+    union_es = np.concatenate([m.es_ref for m in measurements])
+    union = np.arange(len(union_es)) if len(measurements) == 1 else np.argsort(union_es, kind="stable")
     labels = np.concatenate([np.full(len(m.es), m.total) for m in measurements])
     info = {
         "mixed_valence": bool(mixed_valence),
@@ -2235,12 +2303,12 @@ def calc_gs(
                 result.members, result.weights, result.realised, measurements, kept, converged
             )
         ],
-        # Per state of the merged union, which is ascending in energy (gs_report.union_order); "es" is that
+        # Per state of the merged union, which is ascending in energy (rank 0's order); "es" is that
         # union, the energies `rhos` belongs to (review H-MV4).
         "state_sector": [int(labels[k]) for k in union],
         "es": [float(e) for e in union_es[union]],
     }
-    psis, es, basis, thermal_rho, gs_info = finalize_ground_state(
+    _, es, basis, thermal_rho, gs_info = finalize_members(
         Hop,
         measurements,
         tau,
@@ -2257,7 +2325,13 @@ def calc_gs(
     )
     gs_info["ensemble"] = info
     gs_info["member_results"] = [k[3] for k in kept]
-    # The dominant member's states, as the single-sector contract hands them on (the union is sorted, so they
-    # need not be contiguous): selected by their sector label, in ascending energy.
     dominant = [k for k, total in enumerate(info["state_sector"]) if total == result.members[0].total]
-    return [psis[k] for k in dominant], np.asarray(es)[dominant], basis, thermal_rho, gs_info
+    if visitor is not None:
+        # The driver consumed every member's states; none is held for the return.
+        return None, np.asarray(es)[dominant], basis, thermal_rho, gs_info
+    # No driver: the dominant member's states, as the single-sector contract hands them on, in ascending energy
+    # (the union's order restricted to the member; one member keeps its own order).
+    states = kept[0][4]
+    if len(kept) > 1:
+        states = [states[k] for k in np.argsort(measurements[0].es_ref, kind="stable")]
+    return states, np.asarray(es)[dominant], basis, thermal_rho, gs_info
