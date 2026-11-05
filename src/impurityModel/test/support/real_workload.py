@@ -65,7 +65,7 @@ _CONSUMED_ATTRS = frozenset(
         "gf_refine_tol",
         "gf_refine_swap",
         "gf_min_weight",
-        "excitation_budget",
+        "excitation_budget",  # retired: recorded by old runs, deliberately not replayed (the bounds are derived)
         "cost_budget",
         "e_pt2_tol",
         "de2_min",
@@ -170,7 +170,6 @@ def load_workload(h5_path, cluster=None, iteration=None):
         # What the archive recorded and this module does not consume (see _CONSUMED_ATTRS): empty for a
         # faithful replay. Callers that must not solve a different problem should refuse a non-empty list.
         "ignored_attrs": sorted(set(attrs) - _CONSUMED_ATTRS - _BATH_FIT_ONLY),
-        "excitation_budget": _optional(attrs, "excitation_budget", int),
         "cost_budget": _optional(attrs, "cost_budget", float),
         "e_pt2_tol": _optional(attrs, "e_pt2_tol", float),
         "de2_min": _optional(attrs, "de2_min", float),
@@ -276,9 +275,9 @@ def build_options(
         slater_weight_min=workload["slaterWeightMin"],
         tau=workload["tau"],
     )
-    # Only what the archive recorded: BasisOptions' own defaults (excitation budget 4, residual-PT2 tolerance)
-    # apply to a field it does not carry, exactly as for a run that never set it.
-    for key in ("excitation_budget", "e_pt2_tol", "de2_min"):
+    # Only what the archive recorded: BasisOptions' own defaults (residual-PT2 tolerance) apply to a field it does
+    # not carry, exactly as for a run that never set it.
+    for key in ("e_pt2_tol", "de2_min"):
         if workload.get(key) is not None:
             basis_kwargs[key] = workload[key]
     if cost_budget is None:

@@ -38,7 +38,7 @@ or directly::
 A second mode, ``occupation_convergence`` (B2), answers a different question: is the achieved
 occupation converged with respect to the ED's own variational truncation, at a FIXED mu -- not
 whether the search's answer is stable across caps. It needs no search (`mu` is given, not solved
-for), so it is affordable across a full (cap, excitation_budget, chain_restrict) grid where the
+for), so it is affordable across a full (cap, chain_restrict) grid where the
 search-based ladder above is not::
 
     RUN_DC_DIAG=1 DC_DIAG_MODE=occupation_convergence DC_DIAG_WORKLOAD=nio_15 DC_DIAG_MU=0.41 \\
@@ -70,7 +70,6 @@ from impurityModel.test.support.restriction_diagnostics import DEFAULT_ITERATION
 
 DEFAULT_CAPS = (2000, 4000, 8000)
 DEFAULT_CONVERGENCE_CAPS = (2000, 4000, 8000, 16000)
-DEFAULT_EXCITATION_BUDGETS = (3, 4, 5)
 DEFAULT_CHAIN_RESTRICTS = (True, False)
 
 
@@ -664,29 +663,28 @@ def print_ladder(rows):
 # its own variational truncation. Both caps in the ladder ran the same 7 evaluations on a
 # deterministic grid, so identical mu only shows both first crossed |g| <= tol at the same grid
 # point -- it says nothing about whether the *achieved n* would still agree at a materially
-# different truncation_threshold/excitation_budget/chain_restrict. If it does not, dc is
+# different truncation_threshold/chain_restrict. If it does not, dc is
 # absorbing the ED's own variational error, which is exactly the truncation-as-fitting-parameter
 # pathology Haule (2015) warns about, and it would drift with the charge density across a CSC
 # loop for reasons that have nothing to do with the physics.
 #
 # This needs no search at all, which is why it is affordable where the cap ladder was not:
 # occupation_and_energy_at_mu evaluates ONE fixed mu, so the whole grid below costs
-# len(caps) * len(excitation_budgets) * len(chain_restricts) solves, not search-many-times-that.
+# len(caps) * len(chain_restricts) solves, not search-many-times-that.
 
 
 def run_occupation_at_fixed_mu(
     workload_key,
     mu,
     cap,
-    excitation_budget,
     chain_restrict,
     comm=None,
     verbosity=0,
     iteration=DEFAULT_ITERATION,
 ):
-    """One (cap, excitation_budget, chain_restrict) point of the B2 convergence grid at fixed mu.
+    """One (cap, chain_restrict) point of the B2 convergence grid at fixed mu.
 
-    Returns a dict: ``cap``, ``excitation_budget``, ``chain_restrict``, ``n``, ``E0``, ``sector``,
+    Returns a dict: ``cap``, ``chain_restrict``, ``n``, ``E0``, ``sector``,
     ``seconds``. ``sector`` is the walk's winning charge state (M1) -- worth watching alongside
     ``n``, since a converged thermal occupation can still hide the walk landing on a different
     sector at a different cap.
@@ -695,7 +693,6 @@ def run_occupation_at_fixed_mu(
     trial_basis = replace(
         basis,
         truncation_threshold=cap,
-        excitation_budget=excitation_budget,
         chain_restrict=chain_restrict,
     )
     start = perf_counter()
@@ -706,7 +703,6 @@ def run_occupation_at_fixed_mu(
         "label": label,
         "mu": mu,
         "cap": cap,
-        "excitation_budget": excitation_budget,
         "chain_restrict": chain_restrict,
         "n": n,
         "E0": e0,
@@ -717,7 +713,6 @@ def run_occupation_at_fixed_mu(
 
 _CONVERGENCE_COLUMNS = (
     ("cap", 9, "{cap:>9}"),
-    ("budget", 7, "{excitation_budget:>7}"),
     ("chain_r", 8, "{chain_restrict!s:>8}"),
     ("seconds", 10, "{seconds:>10.1f}"),
     ("n", 12, "{n:>12.6f}"),
@@ -734,48 +729,44 @@ def occupation_convergence_sweep(
     workload_key,
     mu,
     caps=DEFAULT_CONVERGENCE_CAPS,
-    excitation_budgets=DEFAULT_EXCITATION_BUDGETS,
     chain_restricts=DEFAULT_CHAIN_RESTRICTS,
     comm=None,
     verbosity=0,
     iteration=DEFAULT_ITERATION,
     occ_tol=1e-2,
 ):
-    """Evaluate ``n``/``E0`` at one fixed ``mu`` across a (cap, excitation_budget,
-    chain_restrict) grid -- B2's answer to "is the achieved occupation converged with respect to
+    """Evaluate ``n``/``E0`` at one fixed ``mu`` across a (cap, chain_restrict) grid -- B2's answer to "is the achieved occupation converged with respect to
     the ED's own truncation, independent of whatever the search happened to do".
 
-    Prints the grid table and, per (excitation_budget, chain_restrict) row-group, the spread of
+    Prints the grid table and, per chain_restrict row-group, the spread of
     ``n`` over the top two caps -- the acceptance criterion the plan sets: converged if that
     spread is below ``occ_tol``.
     """
     rank = comm.rank if comm is not None else 0
     rows = []
-    for excitation_budget in excitation_budgets:
-        for chain_restrict in chain_restricts:
-            for cap in caps:
-                row = run_occupation_at_fixed_mu(
-                    workload_key,
-                    mu,
-                    cap,
-                    excitation_budget,
-                    chain_restrict,
-                    comm=comm,
-                    verbosity=verbosity,
-                    iteration=iteration,
-                )
-                rows.append(row)
-                if rank == 0:
-                    # Print as we go: the grid can take a long time, and a run killed by a wall
-                    # clock limit should still have published everything below it.
-                    print(f"[dc-occ-convergence] {_format_convergence_row(row)}", flush=True)
+    for chain_restrict in chain_restricts:
+        for cap in caps:
+            row = run_occupation_at_fixed_mu(
+                workload_key,
+                mu,
+                cap,
+                chain_restrict,
+                comm=comm,
+                verbosity=verbosity,
+                iteration=iteration,
+            )
+            rows.append(row)
+            if rank == 0:
+                # Print as we go: the grid can take a long time, and a run killed by a wall
+                # clock limit should still have published everything below it.
+                print(f"[dc-occ-convergence] {_format_convergence_row(row)}", flush=True)
     if rank == 0:
         print_occupation_convergence(rows, occ_tol=occ_tol)
     return rows
 
 
 def print_occupation_convergence(rows, occ_tol=1e-2):
-    """The (cap, budget, chain_restrict) grid, and a converged/drifts verdict per group."""
+    """The (cap, chain_restrict) grid, and a converged/drifts verdict per group."""
     if not rows:
         return
     head = rows[0]
@@ -786,10 +777,10 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
 
     groups = {}
     for row in rows:
-        groups.setdefault((row["excitation_budget"], row["chain_restrict"]), []).append(row)
+        groups.setdefault(row["chain_restrict"], []).append(row)
 
     print()
-    for (excitation_budget, chain_restrict), group_rows in groups.items():
+    for chain_restrict, group_rows in groups.items():
         by_cap = sorted(group_rows, key=lambda row: row["cap"])
         top_two = by_cap[-2:]
         if len(top_two) < 2:
@@ -808,7 +799,7 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
             else f" -- SECTOR CHANGED ({top_two[0]['sector']} -> {top_two[-1]['sector']})"
         )
         print(
-            f"excitation_budget={excitation_budget}, chain_restrict={chain_restrict}: "
+            f"chain_restrict={chain_restrict}: "
             f"top-two-cap spread n={n_spread:.4f}, E0={e0_spread:.4f} ({verdict}){sector_note}"
         )
     print("", flush=True)
@@ -837,14 +828,10 @@ def test_dc_baseline():
         caps = [int(c) for c in os.environ.get("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(
             DEFAULT_CONVERGENCE_CAPS
         )
-        budgets = [int(b) for b in os.environ.get("DC_DIAG_EXCITATION_BUDGETS", "").split(",") if b.strip()] or list(
-            DEFAULT_EXCITATION_BUDGETS
-        )
         occupation_convergence_sweep(
             key,
             float(mu_env),
             caps=caps,
-            excitation_budgets=budgets,
             comm=MPI.COMM_WORLD,
             verbosity=verbosity,
             iteration=iteration,
@@ -869,8 +856,7 @@ def main(argv, environ, comm=None):
     positional substitutes in this module's own usage text (``DC_DIAG_WORKLOAD`` is ``argv[1]``,
     ``DC_DIAG_CAPS`` is ``argv[2:]``). That parity is the point: ``criterion`` used to be missing,
     so the documented direct invocation ran the ``"occupation"`` default whatever
-    ``DC_DIAG_CRITERION`` said, and ``excitation_budgets`` was missing the same way, so a sweep ran
-    the default grid whatever ``DC_DIAG_EXCITATION_BUDGETS`` said. Both announced themselves only
+    ``DC_DIAG_CRITERION`` said. It announced itself only
     in output printed *after* the run -- which on SMO is half an hour. A wrong knob has to fail
     before the compute, not after it.
     """
@@ -883,14 +869,10 @@ def main(argv, environ, comm=None):
         if mu_env is None:
             raise RuntimeError("DC_DIAG_MODE=occupation_convergence needs DC_DIAG_MU set.")
         caps = [int(c) for c in argv[2:]] or list(DEFAULT_CONVERGENCE_CAPS)
-        budgets = [int(b) for b in environ.get("DC_DIAG_EXCITATION_BUDGETS", "").split(",") if b.strip()] or list(
-            DEFAULT_EXCITATION_BUDGETS
-        )
         occupation_convergence_sweep(
             key,
             float(mu_env),
             caps=caps,
-            excitation_budgets=budgets,
             comm=comm,
             verbosity=verbosity,
             iteration=iteration,

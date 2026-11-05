@@ -41,14 +41,11 @@ G_cv = [0.0, 5.0, 0.0, 2.8]
 
 [many_body_basis]
 # This model needs its basis bounded, and that is physics, not a workaround. With 50 valence
-# and 10 conduction bath orbitals, the default excitation_budget of 4 admits roughly C(50,4) x
-# C(10,4) bath excitations per impurity configuration -- of order 1e9 determinants -- and the
-# basis build is killed by the OOM killer long before the RAM-derived cap can apply. A budget
-# of 2 with an explicit determinant cap gives 11,576 determinants and E0 = -903.98 eV.
-#
-# Validate the budget on this system before trusting a production number: 4 is the measured
-# lossless default for the smaller workloads, not for this one.
-excitation_budget = 2
+# and 10 conduction bath orbitals the unrestricted space holds of order 1e9 determinants per
+# impurity configuration. The ground state is no longer budgeted (the excitation bounds the
+# excited bases run under are read off the converged ground state and printed in its report),
+# so the explicit determinant cap below is what keeps the expansion bounded. Validate the cap
+# on this system before trusting a production number.
 truncation_threshold = 300000
 
 [double_counting.mlft]

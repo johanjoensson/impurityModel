@@ -371,6 +371,12 @@ def test_a_retired_key_is_ignored_with_a_warning(write_input):
     assert any("'reort' is retired" in w for w in resolved.warnings)
 
 
+def test_the_retired_excitation_budget_key_is_ignored_with_a_warning(write_input):
+    text = MINIMAL_SELFENERGY.replace("[selfenergy]", "[many_body_basis]\nexcitation_budget = 4\n[selfenergy]")
+    resolved = load_input(write_input(text))
+    assert any("'excitation_budget' is retired" in w and "delete the line" in w for w in resolved.warnings)
+
+
 # ---- every refusal has a message that names the problem --------------------------------------
 #
 # Each case is one small edit of MINIMAL_SELFENERGY. Before this table most of these raises had

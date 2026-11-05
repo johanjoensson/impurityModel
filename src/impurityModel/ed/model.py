@@ -17,6 +17,7 @@ without pulling in the many-body machinery.
 import ast
 import math
 import os
+import re
 import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -30,7 +31,6 @@ from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
 
 __all__ = [
-    "EXCITATION_BUDGET_DEFAULT",
     "BasisOptions",
     "ImpurityModel",
     "Meshes",
@@ -38,28 +38,7 @@ __all__ = [
     "SpectraOptions",
     "atomic_u4",
     "load_selfenergy_archive",
-    "resolve_excitation_budget",
 ]
-
-# Default cap on the total number of bath excitations per determinant (see
-# ``BasisOptions.excitation_budget``). 4 is the tightest measured-lossless value: on the
-# metallic tier (FCC Ni) it shrinks the ground-state basis 1.43x at eigenvector rotation
-# ~2e-4 (budget 3 is 3.45x but rotates the ground state past the 1e-3 accuracy bar), and on
-# localized insulators the basis already carries fewer excitations so it is inert. A negative
-# value (CLI) or ``None`` disables the budget entirely; see doc/plans/restrictions_redux.md.
-EXCITATION_BUDGET_DEFAULT = 4
-
-
-def resolve_excitation_budget(value: Optional[int]) -> Optional[int]:
-    """Map a CLI-style excitation budget to ``BasisOptions.excitation_budget``.
-
-    ``None`` (flag not given) resolves to ``EXCITATION_BUDGET_DEFAULT``; a negative value
-    means "explicitly disabled" and resolves to ``None``.
-    """
-    if value is None:
-        return EXCITATION_BUDGET_DEFAULT
-    return value if value >= 0 else None
-
 
 def atomic_u4(l: int, slater) -> np.ndarray:
     """Assemble the single-shell atomic Coulomb tensor ``u4`` in the RSPt convention.
@@ -1191,30 +1170,20 @@ def _archive_mixed_valence(attrs):
     return value
 
 
-_MISSING = object()
 
+def _archived_excitation_budget(attrs):
+    """The excitation budget an archive records, or ``None``: the attribute, else the third token of the old grammar.
 
-def _excitation_budget_from_solver_line(attrs, name):
-    """Excitation budget of an archive that predates the ``excitation_budget`` attribute.
-
-    The RSPt interface wrote every solver-line option except the budget, which is the line's
-    mandatory third token (``N0 nBaths excitation_budget ...``). Falling back to
-    ``EXCITATION_BUDGET_DEFAULT`` instead silently reproduces a differently restricted problem
-    (an SrMnO3 archive recorded ``solver line '3 3 8 peeled'`` and read back as budget 4), so
-    recover it from the stored line, and warn when even that is unavailable.
+    The budget is retired (the excited bases run under bounds derived from the converged ground state), so this is
+    only read to tell the replayer that its run will differ from the archived one.
     """
+    recorded = _archive_attr(attrs, "excitation_budget")
+    if recorded is not None:
+        return int(recorded), "attribute"
     tokens = str(attrs.get("solver line", "")).split("!")[0].split("#")[0].split()
-    if len(tokens) >= 3:
-        try:
-            return int(tokens[2])
-        except ValueError:
-            pass
-    warnings.warn(
-        f"archive group {name!r} records no excitation budget (neither the attribute nor a parseable "
-        f"'solver line'); assuming the default {EXCITATION_BUDGET_DEFAULT}, which may not be what the run used",
-        stacklevel=4,
-    )
-    return EXCITATION_BUDGET_DEFAULT
+    if len(tokens) >= 3 and re.fullmatch(r"-?\d+", tokens[2]):
+        return int(tokens[2]), f"solver line {' '.join(tokens)!r}"
+    return None
 
 
 def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -> dict:
@@ -1274,15 +1243,15 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
     dN = _archive_attr(attrs, "dN")
     if dN is not None:
         dN = int(dN)
-    # A stored negative value means the producing run explicitly disabled the budget.
-    excitation_budget = _archive_attr(attrs, "excitation_budget", _MISSING)
-    if excitation_budget is _MISSING:
-        # The physics-only reader (from_hdf5) has no use for the budget, so it neither parses
-        # the solver line nor warns about a missing one.
-        excitation_budget = _excitation_budget_from_solver_line(attrs, name) if with_options else None
-    if excitation_budget is not None:
-        # A negative value is kept: BasisOptions disables the budget and says so.
-        excitation_budget = int(excitation_budget)
+    recorded_budget = _archived_excitation_budget(attrs) if with_options else None
+    if recorded_budget is not None:
+        value, where = recorded_budget
+        warnings.warn(
+            f"archive records excitation_budget={value} (from its {where}), which is retired: this replay derives "
+            "the excitation bounds from its own converged ground state (see the ground-state report), so its basis "
+            "and Sigma can differ from the archived run's.",
+            stacklevel=2,
+        )
 
     recorded_reort = _archive_attr(attrs, "reort") if with_options else None
     if recorded_reort is not None:
@@ -1315,7 +1284,6 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "truncation_threshold": truncation_threshold,
         "slater_weight_min": float(_archive_attr(attrs, "slater_min", 0.0)),
         "dN": dN,
-        "excitation_budget": excitation_budget,
         # Absent from archives written before the cost budget existed: those runs had none.
         "cost_budget": _optional_float(_archive_attr(attrs, "cost_budget")),
         # Absent from archives written before it was recorded: those runs used the default.
@@ -1389,7 +1357,6 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         occ_cutoff=raw["occ_cutoff"],
         slater_weight_min=raw["slater_weight_min"],
         tau=raw["tau"],
-        excitation_budget=raw["excitation_budget"],
         cost_budget=raw["cost_budget"],
         e_pt2_tol=raw["e_pt2_tol"],
     )
@@ -1472,21 +1439,11 @@ class BasisOptions:
         Minimum Slater-determinant weight retained.
     tau : float
         Fundamental temperature ``k_B * T`` (eV).
-    excitation_budget : int or None
-        Cap on the total number of bath excitations (holes in filled-valence + electrons in
-        empty-conduction orbitals) a determinant may carry, enforced as a weighted
-        restriction on the ground-state basis and inherited (widened) by the
-        Green's-function / spectra excited bases. Defaults to ``EXCITATION_BUDGET_DEFAULT``
-        (4, the tightest measured-lossless value); ``None`` disables it, and so does a negative
-        value (with a warning -- it would otherwise build an empty admissible window). A memory
-        lever on metals; judge its accuracy on the eigenvector/spectral criterion, not ``E0``
-        (see ``doc/plans/restrictions_redux.md``).
     cost_budget : float or None
         ``alpha`` of the hopping-cost budget: a weighted restriction whose per-bath-orbital cost is
         ``round(8 * (d(o) - d_min))`` on the coupling distance ``d`` (``-log`` of the best-path product of
         hoppings), bounded by ``round(COST_KAPPA * alpha * -log(slater_weight_min))`` and widened for the
-        Green's-function bases to contain the whole ground-state basis. Composes (AND) with
-        ``excitation_budget``. ``None`` (default) disables it.
+        Green's-function bases to contain the whole ground-state basis. ``None`` (default) disables it.
     e_pt2_tol : float or None
         Residual Epstein-Nesbet PT2 energy the ground-state CIPSI expansion is converged to (the
         *summed* PT2 contribution of every determinant left out, which is what the energy error
@@ -1509,7 +1466,6 @@ class BasisOptions:
     occ_cutoff: float = 1e-12
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002
-    excitation_budget: Optional[int] = EXCITATION_BUDGET_DEFAULT
     cost_budget: Optional[float] = None
     e_pt2_tol: Optional[float] = None
     de2_min: Optional[float] = None
@@ -1521,12 +1477,6 @@ class BasisOptions:
             raise ValueError(f"de2_min must be non-negative (or None for the default), got {self.de2_min}")
         if self.cost_budget is not None and not self.cost_budget > 0:
             raise ValueError(f"cost_budget must be positive (or None to disable it), got {self.cost_budget}")
-        if self.excitation_budget is not None and self.excitation_budget < 0:
-            warnings.warn(
-                f"excitation_budget={self.excitation_budget} is negative: the excitation budget is disabled",
-                stacklevel=3,
-            )
-            object.__setattr__(self, "excitation_budget", None)
 
 
 #: The Green's-function support options a run uses when the options leave them unset (``gf_method="lanczos"``):

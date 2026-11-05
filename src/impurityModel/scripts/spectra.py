@@ -6,6 +6,7 @@ in the current directory. Contract the stored polarization tensors at plot time 
 ``impurityModel plot-spectra`` / ``plot-rixs``.
 """
 
+import warnings
 from collections import OrderedDict
 
 import numpy as np
@@ -13,7 +14,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.average import k_B
 from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
-from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT, BasisOptions, SpectraOptions, resolve_excitation_budget
+from impurityModel.ed.model import BasisOptions, SpectraOptions
 from impurityModel.scripts._cap import add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
@@ -141,21 +142,10 @@ def add_arguments(parser):
         help=(
             "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
             "bounded by round(COST_KAPPA*alpha*-log(slater_weight_min)), COST_KAPPA = 8. "
-            "Composes with --excitation_budget; "
             "default: off (see doc/plans/gf_relevant_support.md)."
         ),
     )
-    parser.add_argument(
-        "--excitation_budget",
-        type=int,
-        default=None,
-        help=(
-            "Maximum total bath excitations (holes in filled-valence + electrons in "
-            f"empty-conduction orbitals) per determinant. Default: {EXCITATION_BUDGET_DEFAULT} "
-            "(measured lossless); pass a negative value to disable. Validate accuracy on the "
-            "target system (see doc/plans/restrictions_redux.md)."
-        ),
-    )
+    parser.add_argument("--excitation_budget", type=str, default=None, help=argparse.SUPPRESS)  # retired; warns
     parser.add_argument(
         "--no-auto-block-structure",
         dest="auto_block_structure",
@@ -218,6 +208,12 @@ def _validate(args):
 
 def run(args):
     """Build the model and option groups from ``args`` and run the spectra calculation."""
+    if getattr(args, "excitation_budget", None) is not None:
+        warnings.warn(
+            "--excitation_budget is retired and ignored: the excitation bounds are derived from the converged "
+            "ground state and printed in the ground-state report.",
+            stacklevel=2,
+        )
     if getattr(args, "emit_toml", False):
         # Before convert_energy_args: the emitted file declares the unit that was typed and
         # keeps the numbers as typed, rather than silently rewriting them all into eV.
@@ -272,7 +268,6 @@ def run(args):
         truncation_threshold=requested_cap(args),
         occ_cutoff=1e-6,
         tau=k_B * args.T,
-        excitation_budget=resolve_excitation_budget(args.excitation_budget),
         cost_budget=args.cost_budget,
     )
     run_spectra(model, spectra_options, basis, comm, verbosity=verbosity)

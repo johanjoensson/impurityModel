@@ -670,7 +670,7 @@ _DC_APPLICABILITY = {
 
 #: Tables an archive supplies itself. Writing one alongside ``[hamiltonian.archive]`` would
 #: be silently ignored: the loader restores the recorded model, meshes and options and the
-#: driver honours only the Green's-function kernel and excitation budget on top.
+#: driver honours only the Green's-function kernel on top.
 _ARCHIVE_SUPPLIES = ("many_body_basis", "temperature", "shell", "interaction", "double_counting")
 
 

@@ -463,7 +463,7 @@ def test_chi_solves_the_ground_state_under_the_basis_options_like_sigma(monkeypa
     )
     spec = seen["spec"]
     assert spec.chain_restrict is True and spec.e_pt2_tol == 1e-7 and spec.de2_min == 1e-10
-    assert spec.excitation_budget == basis.excitation_budget and spec.cost_budget == basis.cost_budget
+    assert spec.cost_budget == basis.cost_budget
     if MPI.COMM_WORLD.rank == 0:
         assert result["operators"]["spin_z"]["curie_coefficient"] == pytest.approx(0.2412685545777933, abs=1e-8)
 

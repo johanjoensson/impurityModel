@@ -51,9 +51,6 @@ J = {J!r}
 
 [double_counting.nominal]
 
-[many_body_basis]
-excitation_budget = "none"
-
 [temperature]
 tau = {tau!r}
 

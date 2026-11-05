@@ -17,13 +17,11 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.model import (
-    EXCITATION_BUDGET_DEFAULT,
     BasisOptions,
     Meshes,
     SolverOptions,
     load_model,
     load_selfenergy_archive,
-    resolve_excitation_budget,
 )
 from impurityModel.ed.selfenergy import calc_selfenergy
 from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap
@@ -123,22 +121,10 @@ def add_arguments(parser):
         help=(
             "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
             "bounded by round(COST_KAPPA*alpha*-log(slater_weight_min)), COST_KAPPA = 8. "
-            "Composes with --excitation_budget; "
             "default: off (see doc/plans/gf_relevant_support.md)."
         ),
     )
-    parser.add_argument(
-        "--excitation_budget",
-        type=int,
-        default=None,
-        help=(
-            "Maximum total bath excitations per determinant (holes in filled-valence + "
-            f"electrons in empty-conduction orbitals). Default: {EXCITATION_BUDGET_DEFAULT} "
-            "(measured lossless), or the value recorded in the archive with --from-archive; "
-            "pass a negative value to disable. Validate accuracy on the target system "
-            "(see doc/plans/restrictions_redux.md)."
-        ),
-    )
+    parser.add_argument("--excitation_budget", type=str, default=None, help=argparse.SUPPRESS)  # retired; warns
     parser.add_argument(
         "--no-chain-restrict",
         dest="chain_restrict",
@@ -398,6 +384,12 @@ def apply_solver_overrides(solver, args):
 
 def run(args):
     """Build the model and option groups from ``args``, solve, and save the results on rank 0."""
+    if getattr(args, "excitation_budget", None) is not None:
+        warnings.warn(
+            "--excitation_budget is retired and ignored: the excitation bounds are derived from the converged "
+            "ground state and printed in the ground-state report.",
+            stacklevel=2,
+        )
     if getattr(args, "reort", None) is not None:
         warnings.warn(
             "--reort is retired and ignored: the Green's-function path runs without reorthogonalization "
@@ -427,9 +419,6 @@ def run(args):
             args.from_archive, cluster=args.cluster, iteration=args.iteration
         )
         solver = apply_solver_overrides(solver, args)
-        if args.excitation_budget is not None:
-            # An explicitly passed flag overrides the archived budget (negative disables).
-            basis = replace(basis, excitation_budget=resolve_excitation_budget(args.excitation_budget))
         if args.cost_budget is not None:
             basis = replace(basis, cost_budget=args.cost_budget)
         if args.truncation_threshold is not CAP_NOT_GIVEN:
@@ -464,8 +453,7 @@ def run(args):
             truncation_threshold=requested_cap(args),
             chain_restrict=args.chain_restrict,
             tau=args.tau,
-            excitation_budget=resolve_excitation_budget(args.excitation_budget),
-            cost_budget=args.cost_budget,
+                cost_budget=args.cost_budget,
         )
         solver = SolverOptions(
             dense_cutoff=args.dense_cutoff,

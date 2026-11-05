@@ -58,6 +58,10 @@ RETIRED_KEYS = {
         "the Green's-function path always runs without reorthogonalization and the ground-state "
         "eigensolver always reorthogonalizes fully; the key is ignored"
     ),
+    ("many_body_basis", "excitation_budget"): (
+        "the ground state is no longer budgeted; the excited bases run under excitation bounds derived from the "
+        "converged ground state and printed in its report. The value is ignored; delete the line"
+    ),
 }
 
 
@@ -965,24 +969,14 @@ _TABLE_LIST += [
                 minimum=1,
             ),
             Key(
-                "excitation_budget",
-                Kind.AUTO_COUNT,
-                "auto",
-                "Maximum total bath excitations per determinant. 'auto' takes the solver's "
-                "measured-lossless default; 'none' disables it. Prefer omitting to writing the "
-                "number: the default is documented as the tightest MEASURED value and is "
-                "expected to be re-measured, so a copy here would freeze a stale one.",
-                choices=("auto", "none"),
-            ),
-            Key(
                 "cost_budget",
                 Kind.DIMENSIONLESS,
                 None,
                 "Hopping-cost budget alpha: bath excitations cost by the coupling distance of the orbital "
                 "from the impurity (nearest site free), bounded by COST_KAPPA * alpha * -log(slater_weight_min) "
                 "(COST_KAPPA = 8) "
-                "and widened for the Green's-function bases to contain the ground-state basis. Composes "
-                "with excitation_budget. Absent disables it. Positive.",
+                "and widened for the Green's-function bases to contain the ground-state basis. "
+                "Absent disables it. Positive.",
                 minimum=0.0,
             ),
             Key("chain_restrict", Kind.BOOL, True, "Apply chain occupation restrictions."),

@@ -66,8 +66,7 @@ def test_no_default_duplicates_a_constant_defined_in_ed():
     """N3: a schema default must never be a copied literal of a constant that lives elsewhere.
 
     The first draft wrote ``slater_weight_min = 1.49011612e-8``, a *truncated* copy of
-    ``sqrt(finfo.eps)``, and ``excitation_budget = 4``, a value whose own docstring calls it
-    the tightest *measured* value and expects it to be re-measured. Both must be reached by
+    ``sqrt(finfo.eps)``. It must be reached by
     omission instead, so the single source of truth stays single.
     """
     forbidden = {
@@ -80,8 +79,6 @@ def test_no_default_duplicates_a_constant_defined_in_ed():
                 assert key.default != pytest.approx(
                     value, rel=1e-6
                 ), f"[{path}].{key.name} duplicates {source}; reach it by omission instead"
-    budget = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "excitation_budget")
-    assert budget.default == "auto", "excitation_budget must default to 'auto', not a frozen number"
 
 
 def test_truncation_threshold_keeps_auto_and_unlimited_distinct():

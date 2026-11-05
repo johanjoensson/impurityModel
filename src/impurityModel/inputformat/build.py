@@ -664,7 +664,7 @@ def _build_model(resolved, header, notes, rank, verbose):
 
 
 def _build_basis(resolved):
-    from impurityModel.ed.model import BasisOptions, resolve_excitation_budget
+    from impurityModel.ed.model import BasisOptions
 
     table = resolved.tables["many_body_basis"]
     shells = resolved.shells
@@ -682,7 +682,6 @@ def _build_basis(resolved):
     # Every driver forms the ensemble now; a malformed value is an input error here, on every rank, before any solve.
     resolve_mixed_valence(mixed, driver_default="on")
 
-    budget = table["excitation_budget"]
     threshold = table["truncation_threshold"]
     if table["cost_budget"] is not None and not table["cost_budget"] > 0:
         raise InputError(f"[many_body_basis] cost_budget: must be > 0, got {table['cost_budget']}")
@@ -695,7 +694,6 @@ def _build_basis(resolved):
         truncation_threshold=parse_truncation_threshold(threshold),
         chain_restrict=table["chain_restrict"],
         tau=resolved.tables["temperature"]["tau"],
-        excitation_budget=resolve_excitation_budget(None if budget == "auto" else (-1 if budget == "none" else budget)),
         cost_budget=table["cost_budget"],
     )
     if table["occ_cutoff"] is not None:

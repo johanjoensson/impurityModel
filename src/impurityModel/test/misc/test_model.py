@@ -121,7 +121,7 @@ def test_from_h0_file_matches_nio_workload_inputs():
 
 def _write_synthetic_archive(
     path,
-    solver_line="1 1 6 chain",
+    solver_line="1 1 chain",
     excitation_budget=None,
     e_pt2_tol=None,
     gf_method=None,
@@ -227,44 +227,36 @@ def test_load_selfenergy_archive_recovers_options(tmp_path):
     assert isinstance(model, ImpurityModel)
 
 
-def test_archive_excitation_budget_attribute_is_read(tmp_path):
+def test_archive_excitation_budget_attribute_is_retired_with_a_warning(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line="1 1 6 chain", excitation_budget=3)
-    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-    # The attribute wins over the solver line.
-    assert basis.excitation_budget == 3
+    _write_synthetic_archive(str(archive), solver_line="1 1 chain", excitation_budget=3)
+    with pytest.warns(UserWarning, match=r"excitation_budget=3 \(from its attribute\).*retired"):
+        _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert not hasattr(basis, "excitation_budget")
 
 
-def test_archive_without_budget_attribute_recovers_it_from_the_solver_line(tmp_path):
-    """Archives written before the interface stored the budget must not fall back to the default:
-    the SMO run's '3 3 8 peeled' read back as budget 4 and reproduced a different problem."""
+def test_archive_old_grammar_solver_line_is_retired_with_a_warning(tmp_path):
+    """Archives written before the interface stored the budget carry it as the third solver-line token."""
     archive = tmp_path / "impurityModel_data.h5"
     _write_synthetic_archive(str(archive), solver_line="3 3 8 peeled ! comment 9")
-    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-    assert basis.excitation_budget == 8
+    with pytest.warns(UserWarning, match=r"excitation_budget=8 \(from its solver line.*retired"):
+        load_selfenergy_archive(str(archive))
 
 
-def test_archive_budget_stored_as_none_or_negative_is_disabled(tmp_path):
-    archive = tmp_path / "impurityModel_data_none.h5"
-    _write_synthetic_archive(str(archive), excitation_budget="None")
-    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-    assert basis.excitation_budget is None
-
-    archive = tmp_path / "impurityModel_data_negative.h5"
-    _write_synthetic_archive(str(archive), excitation_budget=-1)
-    with pytest.warns(UserWarning, match="negative: the excitation budget is disabled"):
-        _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-    assert basis.excitation_budget is None
+def test_archive_new_grammar_solver_line_is_silent(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line="3 3 peeled ! comment 9")
+    load_selfenergy_archive(str(archive))  # filterwarnings=error turns any warning into a failure
 
 
 def test_archive_e_pt2_tol_round_trips_and_its_absence_means_the_default(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), excitation_budget=4, e_pt2_tol=1e-6)
+    _write_synthetic_archive(str(archive), e_pt2_tol=1e-6)
     _, _, basis, _, _ = load_selfenergy_archive(str(archive))
     assert basis.e_pt2_tol == 1e-6
 
     archive = tmp_path / "impurityModel_data_old.h5"
-    _write_synthetic_archive(str(archive), excitation_budget=4)
+    _write_synthetic_archive(str(archive))
     _, _, basis, _, _ = load_selfenergy_archive(str(archive))
     assert basis.e_pt2_tol is None
 
@@ -281,29 +273,11 @@ def test_a_negative_de2_min_is_refused_and_zero_means_no_floor():
     assert BasisOptions(nominal_occ={0: 1}, de2_min=0.0).de2_min == 0.0
 
 
-def test_negative_excitation_budget_disables_it_with_a_warning():
-    """A negative budget would build an empty admissible window (q_max < q_min); it disables instead."""
-    with pytest.warns(UserWarning, match="excitation_budget=-2 is negative"):
-        basis = BasisOptions(nominal_occ={0: 1}, excitation_budget=-2)
-    assert basis.excitation_budget is None
-    assert BasisOptions(nominal_occ={0: 1}, excitation_budget=0).excitation_budget == 0
-
-
-def test_from_hdf5_does_not_warn_about_a_missing_budget(tmp_path):
-    """The physics-only reader never uses the budget, so an archive without one must load silently."""
+def test_from_hdf5_does_not_warn_about_a_missing_solver_line(tmp_path):
+    """The physics-only reader never uses the options, so an archive without them must load silently."""
     archive = tmp_path / "impurityModel_data.h5"
     _write_synthetic_archive(str(archive), solver_line=None)
     ImpurityModel.from_hdf5(str(archive))  # filterwarnings=error turns any warning into a failure
-
-
-def test_archive_without_any_budget_record_warns_and_uses_the_default(tmp_path):
-    from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT
-
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line=None)
-    with pytest.warns(UserWarning, match="records no excitation budget"):
-        _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-    assert basis.excitation_budget == EXCITATION_BUDGET_DEFAULT
 
 
 def _blocks():

@@ -1,7 +1,8 @@
 r"""A replay of an archived solver call must pass the archive's options on, not the library's defaults.
 
 ``real_workload`` rebuilds a production ``calc_selfenergy`` call from ``impurityModel_data.h5``. It once
-dropped the archive's ``excitation_budget`` (8 for the SrMnO3 run) and ``BasisOptions`` fell back to 4: the
+dropped the archive's ``excitation_budget`` (8 for the SrMnO3 run) and ``BasisOptions`` fell back to 4 (the budget is retired now;
+the same rule holds for every option that remains): the
 replay's ground state had 169k determinants where production's had 277k, E0 sat 1.2 meV high, and every
 Green's-function support came out several times smaller. Nothing failed; the numbers were just for another
 problem. These tests pin that every solver-relevant attribute the archive records reaches the options, and
@@ -12,7 +13,6 @@ import h5py
 import numpy as np
 import pytest
 
-from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT
 from impurityModel.test.support.real_workload import build_options, load_workload
 
 N_IMP = 10
@@ -34,18 +34,10 @@ def _archive(path, **attrs):
     return path
 
 
-def test_the_excitation_budget_reaches_the_basis_options(tmp_path):
+def test_a_retired_excitation_budget_is_neither_replayed_nor_flagged(tmp_path):
     workload = load_workload(_archive(tmp_path / "a.h5", excitation_budget=8))
-    _model, _meshes, basis, _solver = build_options(workload)
-    assert workload["excitation_budget"] == 8
-    assert basis.excitation_budget == 8, "the archive's budget, not the library default"
-
-
-@pytest.mark.parametrize("recorded", [{}, {"excitation_budget": "None"}])
-def test_an_unrecorded_budget_is_left_to_the_library_default(tmp_path, recorded):
-    workload = load_workload(_archive(tmp_path / "a.h5", **recorded))
-    assert workload["excitation_budget"] is None
-    assert build_options(workload)[2].excitation_budget == EXCITATION_BUDGET_DEFAULT
+    assert "excitation_budget" not in workload and workload["ignored_attrs"] == []
+    build_options(workload)  # BasisOptions has no such field any more
 
 
 def test_the_other_solver_attributes_are_passed_on_too(tmp_path):

@@ -57,7 +57,6 @@ def test_the_written_model_goes_through_the_production_input_pipeline(tmp_path, 
     built = build(load_input(str(toml)))
     assert built.basis.nominal_occ == {0: n_orb}  # half filling
     assert built.basis.truncation_threshold is None  # auto, unless a replay pins it
-    assert built.basis.excitation_budget is None or built.basis.excitation_budget < 0  # the budget is off
     assert len(built.meshes.w) == 301 and len(built.meshes.iw) == 8
 
 
