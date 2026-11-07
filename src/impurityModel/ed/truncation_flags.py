@@ -8,7 +8,9 @@ says only that the cap *was reached at some point*. Two questions need different
   cap move this answer?") needs this.
 * :func:`is_cap_bound` -- the **final state**: does the basis the expansion returned still miss candidates, or
   was it truncated with weight above tolerance by its last cycle? A basis that hit the cap, truncated and then
-  re-admitted everything (discarded PT2 mass zero) is a transient: not cap-bound. The ``[cap-bound]`` display,
+  re-admitted everything (discarded PT2 mass zero) is a transient: not cap-bound. The judgement uses the
+  last selection that ran, which may be on the previous basis: a cap-bound basis the final cycle newly admitted into
+  is not re-measured (``residual_is_current`` says so). The ``[cap-bound]`` display,
   sector verdicts and the ensemble weight interval need this.
 
 A report without the ``cap_bound`` key (an old pickle) falls back to its ``cap_hit`` (cap-bound when that too is

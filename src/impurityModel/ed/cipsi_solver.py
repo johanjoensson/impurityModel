@@ -1191,16 +1191,20 @@ class CIPSISolver:
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
                     )
             cycle_discarded_weight = self.last_truncation["discarded_weight"] if truncated else 0.0
-            basis_cap_bound = bool(
-                cycle_discarded_weight > _discard_weight_tol(slaterWeightMin)
-                or float(sel.get("discarded_de2_mass", 0.0)) > (e_pt2_tol or 0.0)
+            # What this cycle's selection says about the basis it was run ON (the one the refiner may have just
+            # snapshotted), separately from the truncation that produces the NEXT basis.
+            selection_refused = bool(
+                float(sel.get("discarded_de2_mass", 0.0)) > (e_pt2_tol or 0.0)
                 or (
                     self.orbits is not None
                     and n_new == 0
                     and admit_target is not None
                     and sel.get("n_candidates", 0) > 0
                 )
-                or guard.limited
+            )
+            refiner.note_selection_on_snapshot(selection_refused)
+            basis_cap_bound = bool(
+                cycle_discarded_weight > _discard_weight_tol(slaterWeightMin) or selection_refused or guard.limited
             )
             self.basis.add_states(new_Dj)
             # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with `*` iterates

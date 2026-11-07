@@ -66,3 +66,30 @@ def test_the_flag_is_identical_on_every_rank():
     solver = _expand(MPI.COMM_WORLD, 6)
     flags = MPI.COMM_WORLD.allgather(bool(solver.truncation_report["cap_bound"]))
     assert len(set(flags)) == 1
+
+
+def test_a_selection_on_the_snapshot_basis_marks_the_snapshot_cap_bound():
+    """Restoring the best basis must bring back what the cap was measured to do to *that* basis.
+
+    The snapshot is taken before the cycle's selection runs, so it first carries the previous cycle's flag;
+    ``note_selection_on_snapshot`` folds in the selection that ran on the snapshotted basis itself.
+    """
+    import numpy as np
+
+    from impurityModel.ed.cipsi_budget import CapRefiner
+
+    solver = _make_solver(MPI.COMM_SELF, truncation_threshold=None)
+    basis = solver.basis
+    refiner = CapRefiner(e_tol=1e-9, max_cycles=5)
+    refiner.observe(basis, -1.0, None, np.array([-1.0]), 1, cap_bound=False)
+    refiner.note_selection_on_snapshot(True)
+    basis.add_states([])  # the basis is mutated by later cycles
+    refiner.observe(basis, -0.5, None, np.array([-0.5]), 2, cap_bound=False)  # worse: no new snapshot
+    refiner.note_selection_on_snapshot(False)
+    assert refiner._cap_bound is True
+    # A selection after a cycle that did not snapshot must not leak into the older snapshot.
+    refiner2 = CapRefiner(e_tol=1e-9, max_cycles=5)
+    refiner2.observe(basis, -1.0, None, np.array([-1.0]), 1, cap_bound=False)
+    refiner2.observe(basis, -0.5, None, np.array([-0.5]), 2, cap_bound=False)
+    refiner2.note_selection_on_snapshot(True)
+    assert refiner2._cap_bound is False

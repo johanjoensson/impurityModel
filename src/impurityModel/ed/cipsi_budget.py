@@ -213,12 +213,15 @@ class CapRefiner:
         self._e_ref = None
         self._cap_bound = False
         self.restored_cap_bound = False
+        self._snapshot_this_cycle = False
         self._no_improve = 0
 
     def observe(self, basis: Basis, e0, psi_refs, e_ref, cycles, cap_bound=False):
         """Record this cycle's lowest energy; True when refinement should stop (no gain twice, or out of cycles)."""
         improved = self.best_e0 is None or e0 < self.best_e0 - self.e_tol
+        self._snapshot_this_cycle = False
         if self.best_e0 is None or e0 < self.best_e0:
+            self._snapshot_this_cycle = True
             self.best_e0 = e0
             keys = np.empty((len(basis.local_basis), basis.n_bytes), dtype=np.uint8)
             for row, state in enumerate(basis.local_basis):
@@ -227,6 +230,16 @@ class CapRefiner:
             self._cap_bound = bool(cap_bound)
         self._no_improve = 0 if improved else self._no_improve + 1
         return self._no_improve >= 2 or cycles >= self.max_cycles
+
+    def note_selection_on_snapshot(self, cap_bound):
+        """Fold in what the selection of this cycle found *on the basis just snapshotted*.
+
+        The snapshot is taken before the cycle's selection runs, so the flag it carries is the previous cycle's.
+        A selection that shows the cap refusing candidates the snapshotted basis needs belongs to that basis:
+        without this, restoring it would report a basis the cap was measured to hold as not cap-bound.
+        """
+        if self._snapshot_this_cycle and cap_bound:
+            self._cap_bound = True
 
     def restore_if_worse(self, basis: Basis, e0):
         """Put the best basis back when the last cycle left a worse one: ``(psi_refs, e_ref)``, else ``None``.

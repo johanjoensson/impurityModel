@@ -57,7 +57,7 @@ from impurityModel.ed.seed_sectors import _images as seed_images
 from impurityModel.ed.seed_sectors import gather_seed
 from impurityModel.ed.spin_pairs import spin_layout
 from impurityModel.ed.symmetries import PARITY_TERM_TOL
-from impurityModel.ed.truncation_flags import is_cap_bound
+from impurityModel.ed.truncation_flags import cap_ever_hit, is_cap_bound
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
@@ -522,18 +522,18 @@ def solve_sector(
                 # A class may have lost because the cap or the memory guard held it high: say so on the solve
                 # callers read, so a cap-decided comparison is not taken for a converged one. The union's own
                 # report (a cut, say) must not hide that: its memory_bound is the classes' too.
-                capped = [v for v in verdicts if v.cap_bound]
+                capped = [v for v in verdicts if cap_ever_hit(v.truncation_report)]
                 if capped and sector_solver.truncation_report is None:
                     sector_solver.truncation_report = dict(
                         capped[0].truncation_report,
-                        cap_bound=True,
+                        cap_bound=any(v.cap_bound for v in capped),
                         losing_class=repr(capped[0].job),
                         memory_bound=any(v.memory_bound for v in capped),
                     )
                 elif capped:
                     sector_solver.truncation_report = dict(
                         sector_solver.truncation_report,
-                        cap_bound=True,
+                        cap_bound=is_cap_bound(sector_solver.truncation_report) or any(v.cap_bound for v in capped),
                         losing_class=repr(capped[0].job),
                         memory_bound=bool(sector_solver.truncation_report.get("memory_bound"))
                         or any(v.memory_bound for v in capped),
