@@ -1274,3 +1274,30 @@ def test_importance_describes_only_the_class_it_was_measured_on():
     assert _covered_importance(mine, weight, None) is weight
     assert _covered_importance(other, weight, None) is None
     assert _covered_importance(mine, None, None) is None
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="compares a distributed solve with a serial one")
+def test_the_per_label_window_does_not_depend_on_the_rank_count(monkeypatch):
+    """The per-label window solve on all ranks finds the energies and the level a serial solve finds.
+
+    (A rank owning no determinant is not forced here: the d6 fixture spreads over three ranks.)"""
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True)
+
+    def run(comm):
+        r = solve_sector(
+            h_op, imp, baths, {0: 6}, tau=0, chain_restrict=False, dense_cutoff=1000, manifold=Within(1e-6),
+            comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=600,
+        )  # fmt: skip
+        return np.sort(np.real(r.es))[:15], r.solver.manifold_check["found"], r.solver.truncation_report["union_cut"]
+
+    dist = run(MPI.COMM_WORLD)
+    serial = run(MPI.COMM_SELF)
+    assert dist[1] == serial[1] == 15
+    assert dist[2]["per_label"] == serial[2]["per_label"]
+    assert np.allclose(dist[0], serial[0], atol=1e-8)
