@@ -40,7 +40,13 @@ from mpi4py import MPI
 
 from impurityModel.ed import config, label_symmetries, seed_sectors, solver_trace
 from impurityModel.ed.basis_transcription import comm_support_filter
-from impurityModel.ed.cipsi_solver import DEGENERACY_TOL, DEGENERACY_TOL_MARGIN, CIPSISolver, _degeneracy_tol
+from impurityModel.ed.cipsi_solver import (
+    DEGENERACY_TOL,
+    DEGENERACY_TOL_MARGIN,
+    CIPSISolver,
+    _degeneracy_tol,
+    _energy_cut_indices,
+)
 from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.eigensolvers import Lowest, Within, cold_vector
@@ -693,6 +699,13 @@ def certify_sector(
                 None if mirror is None else (position[source], image_of_source(plan.images[mirror]))
                 for source, mirror in order
             ],
+            [
+                (
+                    plan.jobs[mirror if mirror is not None else source].two_sz,
+                    plan.jobs[mirror if mirror is not None else source].parity,
+                )
+                for source, mirror in order
+            ],
         )
         keys.clear()
     _energy, _k, es, psis, class_basis, solver = best
@@ -723,8 +736,11 @@ class KeptClasses(list):
     rather than drop.
     """
 
-    def __init__(self, classes=(), at_winning_level=(), in_window=(), derived=()):
+    def __init__(self, classes=(), at_winning_level=(), in_window=(), derived=(), labels=()):
         super().__init__(classes)
+        #: The hard label ``(2 S_z, parity)`` the rows of class ``i`` live in (a mirror's is its own, not its
+        #: source's): what the per-label window solve groups by. ``None`` when not recorded.
+        self.labels = list(labels) or [None] * len(self)
         self.at_winning_level = list(at_winning_level)
         #: Whether class ``i`` is inside the window by its own error bar (a class admitted only through the
         #: window's inflated margin is not).
@@ -1204,6 +1220,13 @@ def _record_union_cut(solver, union_cut, cap, retained):
             "residual_pt2": float(conv.get("residual_pt2") or 0.0),
         }
     )
+    if "per_label" in union_cut:
+        # Solved label by label (`_solve_window_per_label`): the labels' own flags decide, not the union's size.
+        report.update(cap_hit=True, union_cut=dict(union_cut), retained=int(retained))
+        report.setdefault("cap_bound", False)
+        report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
+        solver.truncation_report = report
+        return
     report.update(cap_hit=True, cap_bound=True, union_cut=dict(union_cut), retained=int(retained))
     report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
     solver.truncation_report = report
@@ -1358,6 +1381,192 @@ def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_or
     return merged, union_cut, cut
 
 
+def _label_blocks(plan, kept, basis, orbits, parities, n_orb):
+    """``(node_of, blocks)``: the blocks the per-label window solve runs in. Collective.
+
+    A node is ``(2 S_z or None, parity)`` (``2 S_z`` is part of the node only without total spin). The orbit group
+    may map a node's determinants onto another node's (a spin flip changes both labels), and a block must hold
+    whole orbits, so the nodes one orbit touches share a block. ``node_of(bits)`` is the node of every row;
+    ``blocks`` maps each in-window node to the frozenset of nodes of its block.
+    """
+    sign = np.zeros(n_orb, dtype=np.int64)
+    for dn, up in plan.pairs:
+        sign[up], sign[dn] = 1, -1
+
+    def node_of(bits):
+        par = parity_labels(bits, parities) if parities else np.zeros((len(bits), 0), dtype=np.int64)
+        sz = np.zeros(len(bits), dtype=np.int64) if plan.su2 else np.asarray(bits, dtype=np.int64) @ sign
+        return [(None if plan.su2 else int(z), tuple(int(c) for c in row)) for z, row in zip(sz, par)]
+
+    nodes = {(None if plan.su2 else lab[0], lab[1]) for lab, w in zip(kept.labels, kept.in_window) if w}
+    joined = []
+    if orbits is not None and not orbits.trivial:
+        probe = []
+        for i, w in enumerate(kept.in_window):
+            if w:
+                probe.extend(list(kept[i].keys())[:64])
+        probe.extend(list(basis.local_basis)[:64])
+        if probe:
+            patterns = np.unique(orbits.pattern(_bits(probe, n_orb)), axis=0)
+            saved, orbits.det_filter = orbits.det_filter, None
+            try:
+                for pattern in patterns:
+                    members = orbits.members(pattern[None, :])
+                    if len(members):
+                        joined.append(sorted(set(node_of(members)), key=repr))
+            finally:
+                orbits.det_filter = saved
+    if basis.comm is not None:
+        joined = [group for part in basis.comm.allgather(joined) for group in part]
+    block = {node: frozenset([node]) for node in nodes}
+    for group in joined:
+        merged = set(group)
+        for node in group:
+            merged |= block.get(node, frozenset([node]))
+        merged = frozenset(merged)
+        for node in merged:
+            block[node] = merged
+        for node in nodes:
+            if block[node] & merged:
+                block[node] = merged
+    return node_of, {node: block[node] for node in nodes}
+
+
+def _solve_window_per_label(
+    h_op,
+    basis,
+    plan,
+    kept,
+    importance,
+    orbits,
+    cap,
+    manifold,
+    *,
+    expand_kwargs,
+    dense_cutoff,
+    slater_weight_min,
+    max_two_sz,
+    n_orb,
+    verbose,
+):
+    """The thermal window solved one hard label at a time: ``(merged, solver, es, psis, info)``. Collective.
+
+    Used when the in-window union of every label does not fit the cap. Labels are exact symmetries, so a label's
+    window problem is unitarily equivalent to its symmetry partner's whether or not the code detected the
+    symmetry: solving each label to convergence under the full cap makes a level whose members live in different
+    labels degenerate to the solves' accuracy, where one common cut of the union split it (FeO: 5 of 15 states).
+
+    One label's solver and basis are alive at a time. ``merged`` holds the window's states only (it is the union of
+    the label bases' keys, enough to hold and measure them, not to expand); it may exceed ``cap``. The states are
+    those within ``manifold.max_energy`` of the lowest over all labels. ``info`` carries ``labels``,
+    ``certified`` and the per-label ``sizes``.
+    """
+    import copy
+
+    comm = basis.comm
+    window = float(manifold.max_energy)
+    parities = conserved_parities(h_op)
+    node_of, block_of = _label_blocks(plan, kept, basis, orbits, parities, n_orb)
+
+    def node(label):
+        return (None if plan.su2 else label[0], label[1])
+
+    groups = sorted({block_of[node(lab)] for lab, w in zip(kept.labels, kept.in_window) if w}, key=repr)
+    energies, states, key_sets, reports, converged, certified, sizes = [], [], [], [], [], [], []
+    for lab in groups:
+        idx = [i for i, other in enumerate(kept.labels) if node(other) in lab]
+        pos = {i: n for n, i in enumerate(idx)}
+        sub = KeptClasses(
+            [kept[i] for i in idx],
+            [kept.at_winning_level[i] for i in idx],
+            [kept.in_window[i] for i in idx],
+            [
+                (
+                    None
+                    if kept.derived[i] is None or kept.derived[i][0] not in pos
+                    else (pos[kept.derived[i][0]], kept.derived[i][1])
+                )
+                for i in idx
+            ],
+            [kept.labels[i] for i in idx],
+        )
+        restrictions = list(basis.weighted_restrictions or [])
+        two_szs = {n[0] for n in lab}
+        if len(two_szs) == 1 and None not in two_szs:
+            restrictions = _label_window(basis, plan.pairs, next(iter(two_szs)))
+        seed = basis.clone(
+            initial_basis=[
+                d for d, nd in zip(basis.local_basis, node_of(_bits(basis.local_basis, n_orb))) if nd in lab
+            ],
+            weighted_restrictions=restrictions,
+        )
+        orbits_l = None
+        if orbits is not None:
+            orbits_l = copy.copy(orbits)
+            orbits_l.weighted_restrictions = list(restrictions)
+            orbits_l.det_filter = lambda bits, lab=lab: np.array([nd in lab for nd in node_of(bits)], dtype=bool)
+        union_l, _cut_dict, _cut = _thermal_union(seed, plan, sub, importance, orbits_l, cap, max_two_sz, n_orb, False)
+        solver_l = CIPSISolver(union_l)
+        solver_l.orbits = orbits_l
+        solver_l.expand(h_op, manifold, **expand_kwargs)
+        es_l, psis_l = solver_l.get_eigenvectors(
+            h_op,
+            manifold,
+            dense_cutoff=dense_cutoff,
+            slaterWeightMin=slater_weight_min,
+            psi_refs=solver_l.psi_refs,
+            reuse_last=True,
+        )
+        es_l = np.real(np.asarray(es_l, dtype=complex))
+        if comm is not None:
+            es_l = comm.bcast(es_l, root=0)
+        eig = getattr(solver_l, "eig", None)
+        certified.append(union_l.size < dense_cutoff or eig is None or bool(eig.certified))
+        conv = solver_l.convergence_report or {}
+        converged.append(bool(conv.get("converged", True)))
+        reports.append(solver_l.truncation_report)
+        sizes.append(int(union_l.size))
+        energies.append(es_l)
+        states.extend(psis_l.to_states())
+        key_sets.append(list(union_l.local_basis))
+        if verbose and (comm is None or comm.rank == 0):
+            print(f"  thermal window, block {lab}: {union_l.size:,} determinants, {len(es_l)} state(s)", flush=True)
+        del solver_l, union_l, psis_l, seed, sub
+    es_all = np.concatenate(energies) if energies else np.zeros(0)
+    order = np.argsort(es_all, kind="stable")
+    keep, _more = _energy_cut_indices(es_all, window, _degeneracy_tol(es_all, slater_weight_min))
+    keep = sorted(keep, key=lambda j: (es_all[j], j))
+    merged = basis.clone(initial_basis=list(basis.local_basis))
+    for keys in key_sets:
+        merged.add_states(keys)
+    del order, key_sets
+    psis = merged.redistribute_block(ManyBodyState.from_states([states[j] for j in keep]))
+    psis.prune_rows(0.0)
+    es = es_all[keep]
+    solver = CIPSISolver(merged)
+    solver.orbits = orbits
+    solver.psi_refs = psis
+    hit = [r for r in reports if r is not None]
+    solver.truncation_report = (
+        dict(
+            hit[0],
+            cap_bound=any(is_cap_bound(r) for r in hit),
+            memory_bound=any(bool(r.get("memory_bound")) for r in hit),
+            retained=int(merged.size),
+        )
+        if hit
+        else None
+    )
+    solver.convergence_report = {
+        "converged": all(converged),
+        "residual_pt2": max([float((r or {}).get("residual_pt2", 0.0)) for r in reports] + [0.0]),
+    }
+    if not all(converged):
+        solver.convergence_report["limited_by"] = "cap" if any(is_cap_bound(r) for r in hit) else "de2_min"
+    info = {"labels": len(groups), "certified": all(certified), "sizes": sizes}
+    return merged, solver, es, psis, info
+
+
 def solve_certified(
     h_op,
     basis,
@@ -1421,31 +1630,56 @@ def solve_certified(
     n_orb = basis.num_spin_orbitals
     cap = basis.truncation_threshold
     with measured_phase("thermal window", comm, verbose=verbose_memory) as phase:
-        merged = basis.clone(initial_basis=list(basis.local_basis))
+        importance = _importance(psis)
         merged, union_cut, cut = _thermal_union(
             basis.clone(initial_basis=list(basis.local_basis)),
             plan,
             kept,
-            _importance(psis),
+            importance,
             orbits,
             cap,
             max_two_sz,
             n_orb,
             verbose,
         )
+        per_label = None
+        if cut and len({lab for lab, w in zip(kept.labels, kept.in_window) if w}) > 1:
+            # The in-window union does not fit and holds several hard labels: solve the window label by label
+            # (review S2). Labels are exact symmetries, so each is its own problem under the full cap, and a
+            # level whose members live in different labels is degenerate to each solve's convergence.
+            del merged
+            merged, solver, es, psis, per_label = _solve_window_per_label(
+                h_op,
+                basis,
+                plan,
+                kept,
+                importance,
+                orbits,
+                cap,
+                manifold,
+                expand_kwargs=expand_kwargs,
+                dense_cutoff=dense_cutoff,
+                slater_weight_min=slater_weight_min,
+                max_two_sz=max_two_sz,
+                n_orb=n_orb,
+                verbose=verbose,
+            )
+            union_cut = dict(union_cut, per_label=per_label["labels"])
         kept.clear()
-        del psis
-        solver = CIPSISolver(merged)
-        solver.orbits = orbits
-        solver.expand(h_op, manifold, **expand_kwargs)
-        es, psis = solver.get_eigenvectors(
-            h_op,
-            manifold,
-            dense_cutoff=dense_cutoff,
-            slaterWeightMin=slater_weight_min,
-            psi_refs=solver.psi_refs,
-            reuse_last=True,
-        )
+        del importance
+        if per_label is None:
+            del psis
+            solver = CIPSISolver(merged)
+            solver.orbits = orbits
+            solver.expand(h_op, manifold, **expand_kwargs)
+            es, psis = solver.get_eigenvectors(
+                h_op,
+                manifold,
+                dense_cutoff=dense_cutoff,
+                slaterWeightMin=slater_weight_min,
+                psi_refs=solver.psi_refs,
+                reuse_last=True,
+            )
         phase.dets = merged.size
     found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
     solver.manifold_check = {"found": found, "expected": expected}
@@ -1453,6 +1687,8 @@ def solve_certified(
     roundoff = roundoff_tol(es_bcast, dense=merged.size < dense_cutoff, slater_weight_min=slater_weight_min)
     eig = getattr(solver, "eig", None)
     certified = merged.size < dense_cutoff or eig is None or bool(eig.certified)
+    if per_label is not None:
+        certified = per_label["certified"]
     split = multiplet_split(plan, verdicts, es, psis, merged, roundoff, certified=certified)
     solver.manifold_check["multiplet_split"] = split
     solver.manifold_check["certified"] = bool(certified)

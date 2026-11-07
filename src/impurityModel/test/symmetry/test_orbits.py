@@ -199,31 +199,30 @@ def _capped_cubic_d7(monkeypatch, cap, closure, comm=None):
 
 @pytest.mark.mpi
 def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_splits_it_without(monkeypatch):
-    """Cubic d7 at a cap of 150 (the uncapped union is 240): the cap binds, and the lowest four states --
-    one degenerate level -- agree to roundoff when selection and truncation act on whole orbits, where
-    per-determinant selection splits them by ~1e-7 (review S2).
-
-    The cap is 150, not 160: at 160 the serial control run stopped splitting (the test lost its teeth); 150 and
-    170 still split it.
+    """Cubic d7 at a cap of 80 (the uncapped union is 240, each label block's 120): the cap binds even when the
+    window is solved per label block, and the lowest four states -- one degenerate level -- agree to roundoff
+    when selection and truncation act on whole orbits, where per-determinant selection loses members of it
+    (review S2). The window used to need a cap of 150 to bind: its single union is 240, but the per-block solves
+    fit it, so only a cap below the block size (120) still cuts.
     """
-    cap = 150
+    cap = 80
     comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
     closed = _capped_cubic_d7(monkeypatch, cap, True, comm)
     report = closed.solver.truncation_report
     assert report is not None and report["cap_hit"] and report["cycles"] > 0, "the cap must bind"
+    check = closed.solver.manifold_check
+    assert check["found"] == check["expected"] == 8, check
     es = np.sort(np.real(closed.es))
     lowest = es[:4] if comm is None else np.sort(np.concatenate(comm.allgather(es)))[:4]
     assert np.ptp(lowest) < 1e-9, lowest
     # The split detection (review S2) is silent on the symmetric solve ...
-    assert closed.solver.manifold_check["multiplet_split"] is None, closed.solver.manifold_check
+    assert check["multiplet_split"] is None, check
     if comm is None:  # how a tie splits depends on the rank count: the control is the serial run
         broken = _capped_cubic_d7(monkeypatch, cap, False)
-        split = np.sort(np.real(broken.es))[:4]
-        assert np.ptp(split) > 1e-8, "per-determinant selection no longer splits the quartet: the test lost its teeth"
-        # ... and fires on the orbit-breaking one: the S = 3/2 quartet came back at more than one energy.
-        check = broken.solver.manifold_check["multiplet_split"]
-        assert check is not None and check["two_s"] == [3], broken.solver.manifold_check
-        assert check["spread"] == pytest.approx(np.ptp(split)) and check["roundoff"] < 1e-8
+        # ... and the orbit-breaking one loses members of the level (per-determinant selection keeps a partner's
+        # support in one block and not the other's).
+        lost = broken.solver.manifold_check
+        assert lost["found"] < lost["expected"], "per-determinant selection no longer breaks the level: no teeth"
 
 
 def test_the_split_rule_tells_a_split_multiplet_from_an_incomplete_level():

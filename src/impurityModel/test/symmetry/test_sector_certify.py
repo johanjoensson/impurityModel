@@ -841,19 +841,19 @@ def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(mo
 
     cap = union - 40  # under what the winning level's classes and their partner rows need
     sizes, capped = _union_size_at_the_window_solve(monkeypatch, cap)
+    # The union does not fit, so the window is solved block by block (hard labels are exact symmetries), each
+    # under the full cap: every expansion starts within the cap and the whole 8-fold level is found.
     assert sizes[-1] <= cap < union, (sizes[-1], cap, union)
-    # The classes at the winning energy are cut by one common share, not one starved for another, and
-    # the shortfall is reported rather than hidden: a cut union cannot hold the whole 8-fold level.
-    assert cap - 20 <= sizes[-1] <= cap
-    found, expected = capped.solver.manifold_check["found"], capped.solver.manifold_check["expected"]
-    assert 0 < found < expected == 8
-    # ... and the cut is on the record (review S3): the report names it and the expansion is not converged.
+    check = capped.solver.manifold_check
+    assert check["found"] == check["expected"] == 8, check
+    assert check["window_complete"], check
     report = capped.solver.truncation_report
-    assert report is not None and report["cap_hit"] and report["union_cut"]["level_cut"]
-    assert capped.solver.convergence_report["converged"] is False
-    assert capped.solver.convergence_report["limited_by"] == "cap"
-    assert capped.solver.convergence_report["manifold_check"] == capped.solver.manifold_check
-    assert not capped.solver.manifold_check["window_complete"]
+    assert report is not None and report["union_cut"]["level_cut"]
+    assert report["union_cut"]["per_label"] == 2
+    assert not report["cap_bound"]
+    es = np.asarray(capped.es)
+    assert np.ptp(es) < 1e-8
+    assert np.allclose(es, np.asarray(wide.es), atol=1e-8)
     assert wide.solver.truncation_report is None or "union_cut" not in wide.solver.truncation_report
     assert wide.solver.convergence_report["manifold_check"]["window_complete"]
 

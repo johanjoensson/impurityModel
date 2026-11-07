@@ -119,6 +119,9 @@ class Orbits:
         self.restrictions = dict(restrictions or {})
         self.weighted_restrictions = list(weighted_restrictions or [])
         self.notes = list(notes)
+        #: Optional ``bits -> bool mask``: a generated member that fails it is not a member. Restricts the orbits to
+        #: one hard label's block (`sector_solver._solve_window_per_label`), where the group maps it onto others.
+        self.det_filter = None
         self.n_cols = self.group.shape[1]
         self._weights = _HASH_WEIGHTS[: self.n_cols] if self.n_cols <= len(_HASH_WEIGHTS) else None
         if self._weights is None:
@@ -189,6 +192,8 @@ class Orbits:
             idx = sorted(weights)
             q = bits[:, idx].astype(np.int64) @ np.array([weights[i] for i in idx], dtype=np.int64)
             keep &= (q >= low) & (q <= high)
+        if self.det_filter is not None:
+            keep &= self.det_filter(bits)
         return keep
 
     def _spin_choices(self, k, two_sz_max):
