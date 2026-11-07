@@ -16,7 +16,7 @@ generators at all, and everything the one-body commutant offers beyond spin is b
 import numpy as np
 
 from impurityModel.ed import atomic_physics
-from impurityModel.ed.lie_algebra import tensors_to_operator
+from impurityModel.ed.lie_algebra import rotate_two_body, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import atomic_u4
 
@@ -25,7 +25,7 @@ SLATER = (9.0, 0.0, 8.0, 0.0, 6.0)
 EG_SPATIAL = (0, 1)
 
 
-def cubic_d_shell(*, n_bath_sets=2, soc=0.0):
+def cubic_d_shell(*, n_bath_sets=2, soc=0.0, real_cubic=False):
     """(h_op, H_full, impurity_orbitals, bath_states) for a cubic d-shell.
 
     ``n_bath_sets=2`` gives the production layout, a valence *and* a conduction bath -- the case
@@ -46,7 +46,12 @@ def cubic_d_shell(*, n_bath_sets=2, soc=0.0):
             h[spatial, spatial + 5] += soc
             h[spatial + 5, spatial] += soc
     h_op = tensors_to_operator(h)
-    u_op = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(atomic_u4(2, SLATER)))
+    u4 = atomic_u4(2, SLATER)
+    if real_cubic:
+        # U in the real cubic harmonics (e_g, e_g, t_2g x3 per spin), where the crystal field above is diagonal: the
+        # octahedral T_1/T_2 multiplets of a d^6 shell then split across hard labels (the FeO shape).
+        u4 = rotate_two_body(u4, np.kron(np.eye(2), atomic_physics.get_spherical_2_cubic_matrix(l=2))).real
+    u_op = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(u4))
     impurity_orbitals = {0: [list(range(N_IMP))]}
     bath_sets = [{0: [[N_IMP * (w + 1) + o for o in range(N_IMP)]]} for w in range(n_bath_sets)]
     while len(bath_sets) < 2:

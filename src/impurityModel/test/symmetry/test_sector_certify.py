@@ -1181,3 +1181,38 @@ def test_an_uncertified_ground_state_sector_is_announced_once_at_every_verbosity
     monkeypatch.delenv("GS_CERTIFY_MAX_SEED")
     store.clear()
     assert "not certified: its seed" not in solve()  # a certified sector is not announced
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("cap", [894, 794, 700, 600])
+def test_a_cubic_d6_level_split_across_labels_stays_whole_under_a_cap_below_the_thermal_union(monkeypatch, cap):
+    """Real-cubic d6 has a 15-fold level whose members live in different hard labels, which no orbit of the
+    detected group ties. One common cut of the thermal union (994 determinants) kept 10 of the 15 (the FeO
+    shape); solving the window per label block, each under the full cap, keeps all of them degenerate."""
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True)
+    result = solve_sector(
+        h_op,
+        imp,
+        baths,
+        {0: 6},
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Within(1e-6),
+        comm=MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-8,
+        truncation_threshold=cap,
+    )
+    check = result.solver.manifold_check
+    assert check["found"] == check["expected"] == 15, check
+    es = np.sort(np.real(result.es))
+    assert np.ptp(es[:15]) < 1e-9 * max(1.0, abs(es[0])), np.ptp(es[:15])
+    assert result.solver.truncation_report["union_cut"]["per_label"] >= 2
