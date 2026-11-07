@@ -135,8 +135,21 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
-def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path, capsys):
-    """H-MV11: at a cap of 10 the walk admits N = 1 and 2 unflagged, but both thermal solves are cap-bound."""
+def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path, capsys, monkeypatch):
+    """H-MV11: at a cap of 10 the walk admits N = 1 and 2 unflagged, but both thermal solves are cap-bound.
+
+    The window is solved per symmetry block there (each block fits the cap), which is complete; the blocks'
+    verdict is forced cap-bound here, since what is under test is the ensemble's refusal of such a member."""
+    from impurityModel.ed import sector_solver
+
+    real = sector_solver._solve_window_per_label
+
+    def cap_bound_blocks(*args, **kwargs):
+        merged, solver, es, psis, info = real(*args, **kwargs)
+        solver.truncation_report = dict(solver.truncation_report or {"cap_hit": True}, cap_bound=True)
+        return merged, solver, es, psis, info
+
+    monkeypatch.setattr(sector_solver, "_solve_window_per_label", cap_bound_blocks)
     h_op, setup, bs, rot, _, _ = _setup(3, comm, True)
     setup["truncation_threshold"] = 10
     hooks = []

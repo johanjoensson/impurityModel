@@ -1472,7 +1472,7 @@ def _solve_window_per_label(
         return (None if plan.su2 else label[0], label[1])
 
     groups = sorted({block_of[node(lab)] for lab, w in zip(kept.labels, kept.in_window) if w}, key=repr)
-    energies, states, key_sets, reports, converged, certified, sizes = [], [], [], [], [], [], []
+    energies, states, key_sets, reports, converged, certified, sizes, references = [], [], [], [], [], [], [], []
     for lab in groups:
         idx = [i for i, other in enumerate(kept.labels) if node(other) in lab]
         pos = {i: n for n, i in enumerate(idx)}
@@ -1526,6 +1526,7 @@ def _solve_window_per_label(
         converged.append(bool(conv.get("converged", True)))
         reports.append(solver_l.truncation_report)
         sizes.append(int(union_l.size))
+        references.append(int((solver_l.last_selection or {}).get("n_references", 0)))
         energies.append(es_l)
         states.extend(psis_l.to_states())
         key_sets.append(list(union_l.local_basis))
@@ -1546,6 +1547,8 @@ def _solve_window_per_label(
     solver = CIPSISolver(merged)
     solver.orbits = orbits
     solver.psi_refs = psis
+    # The references the blocks' last selection rounds scored, together: the merged window is not wider than them.
+    solver.last_selection = {"n_references": int(sum(references))}
     hit = [r for r in reports if r is not None]
     solver.truncation_report = (
         dict(
