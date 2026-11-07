@@ -51,7 +51,7 @@ from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.eigensolvers import Lowest, Within, cold_vector
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
-from impurityModel.ed.memory_estimate import measured_phase
+from impurityModel.ed.memory_estimate import emit_memory_warning, measured_phase
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     casimir_operator,
@@ -1665,6 +1665,19 @@ def solve_certified(
                 verbose=verbose,
             )
             union_cut = dict(union_cut, per_label=per_label["labels"])
+            comm_root = basis.comm is None or basis.comm.rank == 0
+            emit_memory_warning(
+                f"WARNING thermal window: the in-window union of the sector's symmetry classes does not fit the "
+                f"determinant cap of {int(cap):,}, so the window was solved separately in "
+                f"{per_label['labels']} symmetry block(s) "
+                f"(largest {max(per_label['sizes']):,} determinants), each under the full cap, and the states "
+                "merged; a level whose members sit in different blocks stays degenerate to each solve's "
+                "convergence. Raise truncation_threshold above the union size (TOML [many_body_basis] "
+                "truncation_threshold, RSPt `truncation_threshold N`, CLI --truncation_threshold N) to solve it "
+                "in one basis.",
+                root=comm_root,
+                kind="union-split",
+            )
         kept.clear()
         del importance
         if per_label is None:
