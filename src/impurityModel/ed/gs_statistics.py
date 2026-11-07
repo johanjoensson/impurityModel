@@ -1028,8 +1028,10 @@ class _NumpyEncoder(json.JSONEncoder):
 
 #: Version of the JSON layout. 2: ``schema_version`` itself, and the optional ``charge_sector_ensemble`` block
 #: (members, weights, global e0; the per-state sector is ``info["state_sector"]``) when ``mixed_valence`` formed
-#: an ensemble. A file without the key is version 1.
-GS_STATISTICS_SCHEMA_VERSION = 2
+#: an ensemble. A file without the key is version 1. 3: ``truncation`` carries ``cap_bound`` (the final basis is
+#: still missing candidates), and is non-null whenever a cap cycle ran, including a transient one with
+#: ``cap_bound`` false.
+GS_STATISTICS_SCHEMA_VERSION = 3
 
 
 def save_gs_statistics(stats, path):

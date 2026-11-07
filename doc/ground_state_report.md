@@ -180,9 +180,12 @@ record `{"residual_pt2", "residual_is_current", "e_pt2_tol", "converged", "limit
 When a cap, the memory guard or a `de2_min` floor stops the expansion first, a `WARNING` gives
 the residual. The energies are still variational upper bounds, and the residual estimates how far
 above the converged ones they lie. After a binding cap the residual was measured before the last
-truncation (`residual_is_current` is false), so the kept basis may carry more than it shows. If a memory
-cap bound the expansion, a truncation record is also stored in `gs_info["truncation"]` and in
-the JSON (`null` when the cap never bound).
+truncation (`residual_is_current` is false), so the kept basis may carry more than it shows. A truncation record is stored in `gs_info["truncation"]` and in the JSON (`null` when no cap cycle
+ran) whenever the cap was reached at any point or the memory guard limited the expansion. Its `cap_bound` key
+(JSON schema version 3) is the final state: true when the returned basis was truncated with weight above
+tolerance, or still misses candidate PT2 mass, or was held by the memory guard. A cap that was reached and
+whose truncation was re-admitted with nothing lost (a transient) has `cap_bound` false, and the
+report does not flag it `[cap-bound]`.
 
 ## Block structure
 

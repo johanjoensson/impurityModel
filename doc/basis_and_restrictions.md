@@ -57,7 +57,8 @@ Two orthogonal flavors layer on top, from `symmetries.py`:
   Green's-function, spectra, RIXS and susceptibility bases inherit them widened by one. Each ensemble member
   carries its own bounds. `max_total` is an order statistic (set by the last determinant CIPSI admitted),
   so it depends on `e_pt2_tol` and, when the determinant cap binds, on the allocation; the ground-state
-  report prints the bounds, flags `[cap-bound]`, and gives the thermal weight per excitation order.
+  report prints the bounds, flags `[cap-bound]` (the final basis is still truncated or missing candidate PT2 mass;
+  a cap that was reached and fully re-admitted does not count), and gives the thermal weight per excitation order.
 
 - **Frozen-shell generation pins** — the core shell (e.g. the 2p in an L-edge model) is
   pinned at generation time so it cannot drain into the valence. Which shell that is comes
