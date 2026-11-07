@@ -1241,9 +1241,9 @@ def test_a_spin_orbit_window_is_split_by_parity_blocks_when_the_union_exceeds_th
 
 def test_a_per_label_solve_with_a_degraded_manifold_is_not_converged():
     """The blocks converged one by one, but a merged level with missing states is not a converged state."""
-    from impurityModel.ed.sector_solver import _record_union_cut
-
     from types import SimpleNamespace
+
+    from impurityModel.ed.sector_solver import _record_union_cut
 
     def fake(found):
         return SimpleNamespace(
