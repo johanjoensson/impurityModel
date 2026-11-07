@@ -11,7 +11,8 @@ says only that the cap *was reached at some point*. Two questions need different
   re-admitted everything (discarded PT2 mass zero) is a transient: not cap-bound. The ``[cap-bound]`` display,
   sector verdicts and the ensemble weight interval need this.
 
-A report without the ``cap_bound`` key (an old pickle) reads as cap-bound, the conservative answer.
+A report without the ``cap_bound`` key (an old pickle) falls back to its ``cap_hit`` (cap-bound when that too is
+absent), the conservative answer.
 """
 
 
@@ -24,4 +25,4 @@ def is_cap_bound(report):
     """Whether the expansion that wrote ``report`` ended cap-bound (final state); ``False`` for ``None``."""
     if report is None:
         return False
-    return bool(report.get("cap_bound", True))
+    return bool(report.get("cap_bound", report.get("cap_hit", True)))

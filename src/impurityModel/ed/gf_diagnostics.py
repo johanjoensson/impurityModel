@@ -37,6 +37,8 @@ from typing import Optional
 
 import numpy as np
 
+from impurityModel.ed.truncation_flags import is_cap_bound
+
 
 class Severity(IntEnum):
     """Ordered severity levels (higher = worse) so ``max`` selects the worst."""
@@ -724,7 +726,7 @@ def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
         Diagnostic: ``OK`` unless the cap or the memory guard bound the ground state.
     """
     memory_bound = bool(truncation and truncation.get("memory_bound"))
-    cap_bound = bool(truncation and truncation.get("cap_hit"))
+    cap_bound = is_cap_bound(truncation)
     residual = None
     for source in (convergence, truncation):
         if source and source.get("residual_pt2") is not None:

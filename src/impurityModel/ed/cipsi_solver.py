@@ -1288,8 +1288,9 @@ class CIPSISolver:
         """Write ``truncation_report`` (and warn): a cap or the memory guard limited this expansion.
 
         Written when a refinement cycle ran or memory limited the expansion even without one, so a
-        memory-limited expansion never reads as converged (``dc_search.resolve_cap_at_max`` takes
-        ``truncation_report is None`` to mean "unbound").
+        memory-limited expansion never reads as converged. The report's existence is the *history* flag
+        (:func:`~impurityModel.ed.truncation_flags.cap_ever_hit`, which ``dc_search.resolve_cap_at_max`` takes);
+        its ``cap_bound`` key is the final state (:func:`~impurityModel.ed.truncation_flags.is_cap_bound`).
         """
         sel = self.last_selection or {}
         threshold = guard.threshold

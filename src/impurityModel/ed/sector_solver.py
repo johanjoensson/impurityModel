@@ -62,6 +62,7 @@ from impurityModel.ed.symmetries import (
     parity_labels,
     sz_weighted_restriction,
 )
+from impurityModel.ed.truncation_flags import is_cap_bound
 
 #: A class expansion whose state has left its seed span (seed weight below
 #: :data:`seed_sectors.DRIFT_TOL`) stops once its energy has settled (:data:`LEAK_PLATEAU_TOL`) this
@@ -514,7 +515,7 @@ def _expand_job(
     fields = (
         energy,
         residual + tail,
-        bool(solver.truncation_report is not None),
+        is_cap_bound(solver.truncation_report),
         bool(report.get("memory_bound")),
         n_imp,
         leaked,
@@ -1203,7 +1204,7 @@ def _record_union_cut(solver, union_cut, cap, retained):
             "residual_pt2": float(conv.get("residual_pt2") or 0.0),
         }
     )
-    report.update(cap_hit=True, union_cut=dict(union_cut), retained=int(retained))
+    report.update(cap_hit=True, cap_bound=True, union_cut=dict(union_cut), retained=int(retained))
     report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
     solver.truncation_report = report
     conv["converged"] = False

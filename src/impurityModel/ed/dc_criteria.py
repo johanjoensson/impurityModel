@@ -110,6 +110,7 @@ from impurityModel.ed.observables import shell_index_of_orbitals
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
+from impurityModel.ed.truncation_flags import cap_ever_hit
 from impurityModel.ed.utils import matrix_print
 
 #: A bath-less shell the DC shift skips must lie at least this far (in the units of ``h0``) from the Fermi level.
@@ -759,7 +760,7 @@ class _SectorContext:
             # report's contents describe *how* the cap bound, which the cap strategy does not need
             # -- only whether it did. Rank-local until the broadcast below, like everything else
             # in this constructor.
-            cap_bound=bool(sector_solver.truncation_report is not None),
+            cap_bound=cap_ever_hit(sector_solver.truncation_report),
             memory_bound=bool((sector_solver.truncation_report or {}).get("memory_bound", False)),
             residual_pt2=_float_or_none((getattr(sector_solver, "convergence_report", None) or {}).get("residual_pt2")),
             certified=_bool_or_none((getattr(sector_solver, "convergence_report", None) or {}).get("converged")),
@@ -2259,7 +2260,7 @@ class _OccupationVisitor:
             float(np.exp(-(es - es.min()) / ctx.tau).sum()),
             float(thermal_average_scale_indep(es, occ2, ctx.tau)),
             # The final refinement's report or the walk's: either says the cap bound this determination.
-            state.truncation is not None,
+            cap_ever_hit(state.truncation),
             bool((state.truncation or {}).get("memory_bound", False)),
         )
 

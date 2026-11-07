@@ -144,7 +144,8 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
     The alternative to an ascending cap ladder (removed), and the default
     (``DC_CAP_STRATEGY``). Same return shape, so the caller's bookkeeping is unchanged.
 
-    **Why this replaces climbing.** ``CIPSISolver.truncation_report`` is ``None`` exactly when the
+    **Why this replaces climbing.** ``CIPSISolver.truncation_report`` is ``None`` (``cap_ever_hit`` false) exactly when
+    the
     fixed-budget branch never engaged -- i.e. the expansion stopped because its residual PT2
     energy reached ``e_pt2_tol`` (or a ``de2_min`` floor refused the rest), not because it hit the
     cap. A sector that did not bind has

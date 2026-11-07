@@ -274,7 +274,7 @@ def _annotate(record, key, text):
         return f"{text}   (PT2 admission floor of the sector solves; set on the DC line)"
     if key == "dc_cap_bound":
         # The exact, per-sector, single-run answer to "is the cap the limiting factor here" --
-        # `CIPSISolver.truncation_report is None` means the expansion ran out of candidates above
+        # `cap_ever_hit(CIPSISolver.truncation_report)` false means the expansion ran out of candidates above
         # `de2_min` rather than out of budget, so its basis is already the one any larger cap
         # would build. That is why running at the ceiling needs no ladder in the unbound case.
         # An unbound expansion is converged IN THE CAP, not exact: what remains is the

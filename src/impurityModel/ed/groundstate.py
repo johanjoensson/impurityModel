@@ -57,6 +57,7 @@ from impurityModel.ed.seed_sectors import _images as seed_images
 from impurityModel.ed.seed_sectors import gather_seed
 from impurityModel.ed.spin_pairs import spin_layout
 from impurityModel.ed.symmetries import PARITY_TERM_TOL
+from impurityModel.ed.truncation_flags import is_cap_bound
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
@@ -521,16 +522,18 @@ def solve_sector(
                 # A class may have lost because the cap or the memory guard held it high: say so on the solve
                 # callers read, so a cap-decided comparison is not taken for a converged one. The union's own
                 # report (a cut, say) must not hide that: its memory_bound is the classes' too.
-                capped = [v for v in verdicts if v.truncation_report is not None]
+                capped = [v for v in verdicts if v.cap_bound]
                 if capped and sector_solver.truncation_report is None:
                     sector_solver.truncation_report = dict(
                         capped[0].truncation_report,
+                        cap_bound=True,
                         losing_class=repr(capped[0].job),
                         memory_bound=any(v.memory_bound for v in capped),
                     )
                 elif capped:
                     sector_solver.truncation_report = dict(
                         sector_solver.truncation_report,
+                        cap_bound=True,
                         losing_class=repr(capped[0].job),
                         memory_bound=bool(sector_solver.truncation_report.get("memory_bound"))
                         or any(v.memory_bound for v in capped),
@@ -565,9 +568,10 @@ class SectorEnergy(NamedTuple):
     ``residual_pt2`` is the expansion's residual PT2 energy -- the error bar of ``energy`` (``None`` when no round
     ran or the source does not know it) -- and ``certified`` is ``convergence_report["converged"]``: ``True`` when
     that residual was measured on the final basis and is within ``e_pt2_tol``, ``False`` when it is not, ``None``
-    when unknown. ``cap_bound`` says the cap or the memory guard held the basis (``truncation_report`` is not
-    ``None``), which is also what a source that has no report to give (the double-counting search's cached
-    solves) can still tell. All five are rank-replicated.
+    when unknown. ``cap_bound`` says the cap or the memory guard held the final basis
+    (:func:`~impurityModel.ed.truncation_flags.is_cap_bound` of ``truncation_report``), which is also what a
+    source that has no report to give (the double-counting search's cached solves) can still tell.
+    All five are rank-replicated.
     """
 
     energy: float
@@ -644,7 +648,7 @@ def calc_energy(
     # One broadcast carries all three: the residual and the verdict are replicated by construction (allreduced
     # selection statistics), but the energy is replicated only to roundoff, and the pair is read together.
     e0, residual, certified = detail if comm is None else comm.bcast(detail, root=0)
-    return SectorEnergy(e0, solver.truncation_report, residual, certified, solver.truncation_report is not None)
+    return SectorEnergy(e0, solver.truncation_report, residual, certified, is_cap_bound(solver.truncation_report))
 
 
 def hartree_fock_seed_occupation(
@@ -1450,7 +1454,7 @@ def solve_member(
     # (one Allreduce) and unconditional on every rank. The list is REBOUND, never mutated: the caller's list is
     # shared by every ensemble member and every double-counting trial shift. (The occupation search of
     # `dc_criteria` also passes through here, so it pays one basis scan per trial on a basis it then discards.)
-    bounds = get_effective_excitation_bounds(basis, cap_bound=solver.truncation_report is not None)
+    bounds = get_effective_excitation_bounds(basis, cap_bound=is_cap_bound(solver.truncation_report))
     basis.excitation_bounds = bounds
     if bounds is not None:
         basis.weighted_restrictions = list(basis.weighted_restrictions or []) + excitation_bound_restrictions(
@@ -1662,8 +1666,8 @@ def member_refusal(member, truncation, convergence, comm):
     (``None`` when not capped), ``convergence`` its ``convergence_report``. The verdict is taken from rank 0's
     reports and broadcast; the broadcast is unconditional on every rank of ``comm``.
     """
-    cap_bound = truncation is not None
-    memory_bound = bool(cap_bound and truncation.get("memory_bound"))
+    cap_bound = is_cap_bound(truncation)
+    memory_bound = bool(truncation and truncation.get("memory_bound"))
     convergence = convergence or {}
     unconverged = convergence.get("converged") is False
     verdict = (
@@ -1699,7 +1703,7 @@ def member_refusal(member, truncation, convergence, comm):
 
 
 def worst_truncation(reports):
-    """The truncation report that describes an ensemble: a memory-bound member's, else the first capped one's.
+    """The truncation report that describes an ensemble: a memory-bound member's, else a cap-bound one's.
 
     The dominant member (``reports[0]``) may be uncapped while a lighter member is cap- or memory-bound; the
     report that ``gs_info`` carries must not hide that (review MV7). One member: its own report, unchanged.
@@ -1708,7 +1712,10 @@ def worst_truncation(reports):
     if not present:
         return None
     memory = [r for r in present if r.get("memory_bound")]
-    return memory[0] if memory else present[0]
+    if memory:
+        return memory[0]
+    bound = [r for r in present if is_cap_bound(r)]
+    return bound[0] if bound else present[0]
 
 
 def refined_truncation_report(solver, walk_report):
