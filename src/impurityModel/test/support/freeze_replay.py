@@ -34,10 +34,6 @@ for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import numpy as np  # noqa: E402
 
-#: Archive attributes the replay may skip: ``warm_start`` / ``warm_tol`` describe the bath fit that produced
-#: ``H solver``; ``spin_flip_dj`` is a retired option (recorded False by every archive that has it).
-_BATH_FIT_OR_RETIRED = frozenset({"warm_start", "warm_tol", "spin_flip_dj"})
-
 #: Per-orbital quantities :func:`grade` reports, in print order.
 GRADE_FIELDS = ("mats_abs", "real_abs", "real_vs_headroom", "g_real_rel", "g_mats_rel", "worst_im_ref", "worst_im_new")
 
@@ -345,10 +341,7 @@ def run(
     else:
         wl = rw.load_workload(h5_path, cluster=cluster, iteration=iteration)
         if wl["ignored_attrs"]:
-            # warm_start / warm_tol describe the bath fit that produced H solver, not the solver call.
-            extra = set(wl["ignored_attrs"]) - _BATH_FIT_OR_RETIRED
-            if extra:
-                raise SystemExit(f"archive records options this replay does not consume: {sorted(extra)}")
+            raise SystemExit(f"archive records options this replay does not consume: {wl['ignored_attrs']}")
         if swm is not None:
             wl["slaterWeightMin"] = float(swm)
         w_mesh, swm_used = wl["w_mesh"], wl["slaterWeightMin"]

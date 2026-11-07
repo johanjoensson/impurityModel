@@ -47,6 +47,7 @@ _CONSUMED_ATTRS = frozenset(
         "dense_cutoff",
         "chain_restrict",
         "occ_cutoff",
+        "DC ground state cap",
         "truncation_threshold",
         "slater_min",
         "dN",
@@ -75,7 +76,7 @@ _CONSUMED_ATTRS = frozenset(
 #: Attributes old runs recorded that no longer steer anything. They are reported as ``retired_attrs`` (not
 #: ``ignored_attrs``, which means "a replay would silently solve a different problem"): the replay derives its
 #: excitation bounds from its own ground state, so it can differ from the archived run's basis.
-_RETIRED_ATTRS = frozenset({"excitation_budget"})
+_RETIRED_ATTRS = frozenset({"excitation_budget", "spin_flip_dj"})
 _BATH_FIT_ONLY = frozenset(
     {
         "bath_geometry",
@@ -88,6 +89,9 @@ _BATH_FIT_ONLY = frozenset(
         "weight_function",
         "weight_w0",
         "solver line",
+        "warm_start",
+        "warm_tol",
+        "symm_prec",
         "DC damping alpha",
         "DC ground state sector",
         "DC guess fingerprint",
@@ -129,12 +133,13 @@ def load_workload(h5_path, cluster=None, iteration=None):
     import h5py
 
     with h5py.File(h5_path, "r") as f:
+        last_iteration = int(f.attrs.get("last iteration", 1))
         if cluster is None or iteration is None:
             labels = sorted(f.keys())
             if not labels:
                 raise ValueError(f"{h5_path}: archive holds no cluster groups")
         if iteration is None:
-            iteration = int(f.attrs.get("last iteration", 1))
+            iteration = last_iteration
         if cluster is None:
             cluster = labels[0].rsplit(" ", 1)[0]
         name = f"{cluster} {iteration}"
@@ -168,8 +173,23 @@ def load_workload(h5_path, cluster=None, iteration=None):
         dN = int(dN)
     gf_tol = _attr(attrs, "gf_tol")
     gf_real_tol = _attr(attrs, "gf_real_tol")
+    dc_cap = _optional(attrs, "DC ground state cap", int)
+    # Said aloud: a replay of an archive with several iterations used to take the last one without a word.
+    from mpi4py import MPI
+
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"load_workload: replaying {name!r} (archive's last iteration is {last_iteration}; "
+            "pass iteration= for another)",
+            flush=True,
+        )
 
     return {
+        "iteration": iteration,
+        "last_iteration": last_iteration,
+        # The auto cap the double-counting search of this iteration resolved: it can only lower an auto cap
+        # of the replay (impmod_interface.lib._double_counting_cap), never one the archive pinned.
+        "dc_cap": dc_cap,
         # What the archive recorded and this module does not consume (see _CONSUMED_ATTRS): empty for a
         # faithful replay. Callers that must not solve a different problem should refuse a non-empty list.
         "ignored_attrs": sorted(set(attrs) - _CONSUMED_ATTRS - _BATH_FIT_ONLY - _RETIRED_ATTRS),
@@ -423,6 +443,8 @@ def run_selfenergy(
         gf_refine_tol=gf_refine_tol,
         gf_refine_swap=gf_refine_swap,
     )
+    from impurityModel.ed.memory_estimate import CapLedger
+
     return calc_selfenergy(
         model,
         meshes,
@@ -431,4 +453,5 @@ def run_selfenergy(
         comm=comm,
         verbosity=verbosity,
         cluster_label=workload["label"],
+        cap_ledger=CapLedger(ceiling=workload.get("dc_cap")),
     )

@@ -103,3 +103,39 @@ def test_an_explicit_prune_tolerance_replaces_the_archived_settle(tmp_path):
     assert build_options(workload)[3].gf_settle_ratio == 3.0
     solver = build_options(workload, gf_prune_tol=1e-3)[3]
     assert solver.gf_prune_tol == 1e-3 and (solver.gf_settle, solver.gf_settle_ratio) == (None, None)
+
+
+def test_the_bath_fit_and_dc_cap_attributes_are_not_flagged(tmp_path):
+    path = _archive(tmp_path / "a.h5", warm_start=True, warm_tol=1e-3, symm_prec=1e-5, spin_flip_dj=False)
+    workload = load_workload(path)
+    assert workload["ignored_attrs"] == []
+    assert workload["retired_attrs"] == ["spin_flip_dj"]
+    workload = load_workload(_archive(tmp_path / "c.h5", **{"DC ground state cap": 1234}))
+    assert workload["ignored_attrs"] == [] and workload["dc_cap"] == 1234
+
+
+def test_the_replayed_iteration_is_the_one_whose_dc_cap_is_used(tmp_path, capsys):
+    path = tmp_path / "two.h5"
+    _archive(path)
+    with h5py.File(path, "a") as f:
+        f.attrs["last iteration"] = 2
+        f.copy("Mn 1", "Mn 2")
+        f["Mn 1"].attrs["DC ground state cap"] = 111
+        f["Mn 2"].attrs["DC ground state cap"] = 222
+    last = load_workload(path)
+    assert (last["iteration"], last["last_iteration"], last["dc_cap"]) == (2, 2, 222)
+    assert "replaying 'Mn 2'" in capsys.readouterr().out
+    first = load_workload(path, iteration=1)
+    assert (first["iteration"], first["dc_cap"]) == (1, 111)
+
+
+def test_the_archived_dc_cap_reaches_the_cap_ledger(tmp_path, monkeypatch):
+    from impurityModel.test.support import real_workload
+
+    seen = {}
+    monkeypatch.setattr(real_workload, "calc_selfenergy", lambda *a, **kw: seen.update(kw) or {})
+    workload = load_workload(_archive(tmp_path / "a.h5", **{"DC ground state cap": 4321}))
+    real_workload.run_selfenergy(workload, comm=None)
+    assert seen["cap_ledger"].ceiling == 4321
+    real_workload.run_selfenergy(load_workload(_archive(tmp_path / "b.h5")), comm=None)
+    assert seen["cap_ledger"].ceiling is None
