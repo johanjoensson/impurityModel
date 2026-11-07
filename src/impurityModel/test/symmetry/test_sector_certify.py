@@ -1216,3 +1216,46 @@ def test_a_cubic_d6_level_split_across_labels_stays_whole_under_a_cap_below_the_
     es = np.sort(np.real(result.es))
     assert np.ptp(es[:15]) < 1e-9 * max(1.0, abs(es[0])), np.ptp(es[:15])
     assert result.solver.truncation_report["union_cut"]["per_label"] >= 2
+    assert result.solver.convergence_report["converged"] is True
+
+
+@pytest.mark.mpi
+def test_a_spin_orbit_window_is_split_by_parity_blocks_when_the_union_exceeds_the_cap(monkeypatch):
+    """With spin-orbit coupling the labels carry no 2 S_z: a block's node must not either (a node keyed on the
+    determinant's S_z found no label of the window, review S2 H1)."""
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True, soc=0.15)
+    result = solve_sector(
+        h_op, imp, baths, {0: 6}, tau=0, chain_restrict=False, dense_cutoff=1000, manifold=Within(1e-6),
+        comm=MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None, verbose=False, slaterWeightMin=0, de2_min=0,
+        e_pt2_tol=1e-8, truncation_threshold=700,
+    )  # fmt: skip
+    check = result.solver.manifold_check
+    assert check["found"] == check["expected"], check
+    assert result.solver.truncation_report["union_cut"]["per_label"] >= 2
+
+
+def test_a_per_label_solve_with_a_degraded_manifold_is_not_converged():
+    """The blocks converged one by one, but a merged level with missing states is not a converged state."""
+    from impurityModel.ed.sector_solver import _record_union_cut
+
+    class Fake:
+        truncation_report = {"cycles": 1, "cap_bound": False}
+        convergence_report = {"converged": True}
+        manifold_check = {"found": 4, "expected": 5, "multiplet_split": None, "certified": True}
+
+    solver = Fake()
+    _record_union_cut(solver, {"per_label": 2}, 100, 90)
+    assert solver.convergence_report["converged"] is False
+    assert solver.convergence_report["limited_by"] == "incomplete_manifold"
+    assert solver.truncation_report["union_cut"]["per_label"] == 2
+
+    healthy = Fake()
+    healthy.manifold_check = {"found": 5, "expected": 5, "multiplet_split": None, "certified": True}
+    healthy.convergence_report = {"converged": True}
+    _record_union_cut(healthy, {"per_label": 2}, 100, 90)
+    assert healthy.convergence_report["converged"] is True

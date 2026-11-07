@@ -1226,6 +1226,11 @@ def _record_union_cut(solver, union_cut, cap, retained):
         report.setdefault("cap_bound", False)
         report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
         solver.truncation_report = report
+        # The blocks converged one by one; missing or split states of the merged level still degrade the state.
+        why = _manifold_degradation(check) if check is not None else None
+        if why is not None and conv.get("converged") is not False:
+            conv["converged"] = False
+            conv["limited_by"] = conv.get("limited_by") or why
         return
     report.update(cap_hit=True, cap_bound=True, union_cut=dict(union_cut), retained=int(retained))
     report.setdefault("threshold", int(cap) if cap is not None and np.isfinite(cap) else int(retained))
@@ -1384,7 +1389,7 @@ def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_or
 def _label_blocks(plan, kept, basis, orbits, parities, n_orb):
     """``(node_of, blocks)``: the blocks the per-label window solve runs in. Collective.
 
-    A node is ``(2 S_z or None, parity)`` (``2 S_z`` is part of the node only without total spin). The orbit group
+    A node is ``(2 S_z or None, parity)`` (``2 S_z`` is part of the node only when the labels carry one). The orbit group
     may map a node's determinants onto another node's (a spin flip changes both labels), and a block must hold
     whole orbits, so the nodes one orbit touches share a block. ``node_of(bits)`` is the node of every row;
     ``blocks`` maps each in-window node to the frozenset of nodes of its block.
@@ -1395,10 +1400,13 @@ def _label_blocks(plan, kept, basis, orbits, parities, n_orb):
 
     def node_of(bits):
         par = parity_labels(bits, parities) if parities else np.zeros((len(bits), 0), dtype=np.int64)
-        sz = np.zeros(len(bits), dtype=np.int64) if plan.su2 else np.asarray(bits, dtype=np.int64) @ sign
-        return [(None if plan.su2 else int(z), tuple(int(c) for c in row)) for z, row in zip(sz, par)]
+        sz = np.asarray(bits, dtype=np.int64) @ sign if has_sz else np.zeros(len(bits), dtype=np.int64)
+        return [(int(z) if has_sz else None, tuple(int(c) for c in row)) for z, row in zip(sz, par)]
 
-    nodes = {(None if plan.su2 else lab[0], lab[1]) for lab, w in zip(kept.labels, kept.in_window) if w}
+    # 2 S_z is part of the node exactly when the labels carry one (not with total spin, and not with spin-orbit
+    # coupling, where S_z is not conserved): the node of a determinant must be comparable with a label's.
+    has_sz = any(lab[0] is not None for lab in kept.labels)
+    nodes = {(lab[0] if has_sz else None, lab[1]) for lab, w in zip(kept.labels, kept.in_window) if w}
     joined = []
     if orbits is not None and not orbits.trivial:
         probe = []
@@ -1432,6 +1440,11 @@ def _label_blocks(plan, kept, basis, orbits, parities, n_orb):
     return node_of, {node: block[node] for node in nodes}
 
 
+def _block_key(block):
+    """Sort key of a block of nodes that does not depend on set iteration order (replicated across ranks)."""
+    return sorted(repr(node) for node in block)
+
+
 def _solve_window_per_label(
     h_op,
     basis,
@@ -1441,6 +1454,8 @@ def _solve_window_per_label(
     orbits,
     cap,
     manifold,
+    node_of,
+    block_of,
     *,
     expand_kwargs,
     dense_cutoff,
@@ -1465,13 +1480,12 @@ def _solve_window_per_label(
 
     comm = basis.comm
     window = float(manifold.max_energy)
-    parities = conserved_parities(h_op)
-    node_of, block_of = _label_blocks(plan, kept, basis, orbits, parities, n_orb)
+    has_sz = any(lab[0] is not None for lab in kept.labels)
 
     def node(label):
-        return (None if plan.su2 else label[0], label[1])
+        return (label[0] if has_sz else None, label[1])
 
-    groups = sorted({block_of[node(lab)] for lab, w in zip(kept.labels, kept.in_window) if w}, key=repr)
+    groups = sorted({block_of[node(lab)] for lab, w in zip(kept.labels, kept.in_window) if w}, key=_block_key)
     energies, states, key_sets, reports, converged, certified, sizes, references = [], [], [], [], [], [], [], []
     for lab in groups:
         idx = [i for i, other in enumerate(kept.labels) if node(other) in lab]
@@ -1646,7 +1660,12 @@ def solve_certified(
             verbose,
         )
         per_label = None
+        blocks = None
         if cut and len({lab for lab, w in zip(kept.labels, kept.in_window) if w}) > 1:
+            blocks = _label_blocks(plan, kept, basis, orbits, conserved_parities(h_op), n_orb)
+            if len(set(blocks[1].values())) < 2:
+                blocks = None
+        if blocks is not None:
             # The in-window union does not fit and holds several hard labels: solve the window label by label
             # (review S2). Labels are exact symmetries, so each is its own problem under the full cap, and a
             # level whose members live in different labels is degenerate to each solve's convergence.
@@ -1660,6 +1679,7 @@ def solve_certified(
                 orbits,
                 cap,
                 manifold,
+                *blocks,
                 expand_kwargs=expand_kwargs,
                 dense_cutoff=dense_cutoff,
                 slater_weight_min=slater_weight_min,
