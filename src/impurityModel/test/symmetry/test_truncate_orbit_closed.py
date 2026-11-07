@@ -114,3 +114,41 @@ def test_no_orbits_means_nothing_to_report(monkeypatch):
     monkeypatch.setattr(groundstate, "build_orbits", lambda *a, **k: None)
     basis = type("B", (), {"is_distributed": False})()
     assert groundstate._orbits_for(None, basis, Within(1.0), None) is None
+
+
+def test_retain_fills_the_room_with_zero_importance_orbits_whole():
+    """S2b: an orbit with no importance at all used to be dropped even when the cap had room (FeO: 163,974 ->
+    47,200 determinants). The room goes to those orbits in hash order, whole."""
+    _h0, H, imp, bath = cubic_d_shell(n_bath_sets=1)
+    manifold = Within(0.05)
+    basis, solver = build_basis_and_solver(
+        H,
+        imp,
+        bath,
+        {0: 8},
+        tau=0.0,
+        chain_restrict=False,
+        truncation_threshold=None,
+        comm=None,
+        verbose=False,
+        frozen_occupations=None,
+        weighted_restrictions=None,
+        slaterWeightMin=SWMIN_DEFAULT,
+        manifold=manifold,
+        dense_cutoff=500,
+    )
+    orbits = _orbits_for(H, basis, manifold, None)
+    assert orbits is not None
+    solver.orbits = orbits
+    solver.expand(H, manifold, dense_cutoff=500, de2_min=0.0, e_pt2_tol=1e-8, slaterWeightMin=SWMIN_DEFAULT)
+    dets = list(basis.local_basis)
+    importance = np.zeros(len(dets))
+    importance[:3] = 1.0  # only three determinants (a few orbits) carry weight
+    rep, _ = orbits.canonical(orbits.pattern(_bits(dets, orbits.n_orb)))
+    largest = max(len(orbits.members(r[None, :])) for r in np.unique(rep, axis=0))
+    target = len(dets) - 1
+    retained = orbits.retain(basis, dets, importance, target)
+    assert len(dets) - largest <= len(retained) <= target, (len(retained), target, largest)
+    basis.clear()
+    basis.add_states(retained)
+    assert _missing_members(solver) == 0

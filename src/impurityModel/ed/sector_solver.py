@@ -1519,6 +1519,7 @@ def _solve_window_per_label(
     max_two_sz,
     n_orb,
     verbose,
+    group_tol=None,
 ):
     """The thermal window solved one hard label at a time: ``(merged, solver, es, psis, info)``. Collective.
 
@@ -1579,6 +1580,7 @@ def _solve_window_per_label(
         union_l, _cut_dict, _cut = _thermal_union(seed, plan, sub, importance, orbits_l, cap, max_two_sz, n_orb, False)
         solver_l = CIPSISolver(union_l)
         solver_l.orbits = orbits_l
+        solver_l.group_tol = group_tol
         solver_l.expand(h_op, manifold, **expand_kwargs)
         es_l, psis_l = solver_l.get_eigenvectors(
             h_op,
@@ -1703,6 +1705,10 @@ def solve_certified(
     max_two_sz = max(abs(label[0] or 0) for label in plan.labels.values())
     n_orb = basis.num_spin_orbitals
     cap = basis.truncation_threshold
+    # The certification's own error bar: a level split by more than roundoff but less than this is one level.
+    group_tol = _energy_error(
+        min((v for v in verdicts if not v.stopped_early), key=lambda v: v.energy, default=verdicts[0])
+    )
     with measured_phase("thermal window", comm, verbose=verbose_memory) as phase:
         importance = _importance(psis)
         merged, union_cut, cut = _thermal_union(
@@ -1743,6 +1749,7 @@ def solve_certified(
                 max_two_sz=max_two_sz,
                 n_orb=n_orb,
                 verbose=verbose,
+                group_tol=group_tol,
             )
             union_cut = dict(union_cut, per_label=per_label["labels"])
             comm_root = basis.comm is None or basis.comm.rank == 0
@@ -1764,6 +1771,7 @@ def solve_certified(
             del psis
             solver = CIPSISolver(merged)
             solver.orbits = orbits
+            solver.group_tol = group_tol
             solver.expand(h_op, manifold, **expand_kwargs)
             es, psis = solver.get_eigenvectors(
                 h_op,

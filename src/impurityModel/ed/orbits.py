@@ -306,7 +306,8 @@ class Orbits:
 
         Orbits (the present members of each pattern class) are ranked by the sum of their members'
         ``importance`` and kept best first while their present sizes fit ``target``; a tie group goes in whole
-        or not at all, so the cut may keep fewer than ``target``.
+        or not at all, so the cut may keep fewer than ``target`` by less than the largest orbit. Orbits with no
+        importance at all fill the room left, in hash order.
         """
         comm = basis.comm if basis.is_distributed else None
         importance = np.asarray(importance, dtype=float)
@@ -314,6 +315,15 @@ class Orbits:
         total, present = sums[:, 0], np.rint(sums[:, 1]).astype(np.int64)
         rep, _n = self.canonical(reps)
         selected = _select_by_budget(total, present, np.ones(len(total), dtype=bool), target, comm)
+        # Fill to the target. An orbit whose members all carry zero importance is dropped by the ranking above,
+        # which deletes support the cap had room for (measured: 163,974 -> 47,200 determinants on FeO). The room
+        # left goes to those orbits in hash order -- a function of the orbit alone, so the filler is the same on
+        # every rank count and never splits an orbit. It is second-order filler (zero amplitude on the manifold).
+        room = int(target) - _allreduce(comm, int(present[selected].sum()))
+        if room > 0:
+            filler = ~selected & (total <= 0.0)
+            hashed = np.array([d.get_hash() / 2.0**64 + 2.0**-64 for d in self.representative_det(rep)], dtype=float)
+            selected = selected | _select_by_budget(hashed, present, filler, room, comm)
         # Every arrangement, not only |2 S_z| <= M: a present determinant must be found by its own pattern.
         bits = self.members(rep[selected], two_sz_max=self.n_cols if self.pairs is not None else 0, cap_orbits=False)
         routed = basis.redistribute_block(

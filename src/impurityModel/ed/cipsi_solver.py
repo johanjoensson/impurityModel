@@ -460,6 +460,8 @@ class CIPSISolver:
         #: The cap refiner (not the cycle hook) ended the last expansion: a class ranked under a smaller cap than
         #: the full one still has to be ranked, since the hook never voted on it.
         self.refiner_stopped = False
+        #: Wider degeneracy tolerance for :meth:`truncate` (a certified manifold's error bar); ``None``: roundoff.
+        self.group_tol = None
         #: ``Lowest`` solves by Davidson under ``GS_LOWEST_SOLVER=auto`` (a certified class expansion
         #: sets it: :func:`eigensolvers.davidson_lowest` stays in its start's symmetry sector).
         self.davidson = False
@@ -552,7 +554,11 @@ class CIPSISolver:
             amps = np.array(blk)
             norms2 = np.zeros(len(keys), dtype=float)
             if amps.size > 0:
-                for group in degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slaterWeightMin)):
+                # A certified manifold groups at its certification error bar when that is wider than roundoff: a
+                # level split above roundoff by a symmetry the code did not detect is one level, and a partner
+                # scored state by state loses its support to the cut.
+                tol = max(_degeneracy_tol(e_ref, slaterWeightMin), self.group_tol or 0.0)
+                for group in degenerate_groups(e_ref, tol=tol):
                     group_amps = amps[:, group]
                     group_norms2 = np.real(group_amps * np.conj(group_amps)).sum(axis=1)
                     norms2 = np.maximum(norms2, group_norms2)

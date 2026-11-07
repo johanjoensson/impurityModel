@@ -178,6 +178,18 @@ def _capped_cubic_d7(monkeypatch, cap, closure, comm=None):
 
     monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     monkeypatch.setenv("GS_ORBIT_CLOSURE", "1" if closure else "0")
+    if not closure:
+        # The control is the old behaviour: a level is grouped at roundoff only, so per-determinant scoring bites.
+        # (S2b groups a certified manifold at its certification error bar, which alone rescues the level.)
+        from impurityModel.ed import cipsi_solver
+
+        real_truncate = cipsi_solver.CIPSISolver.truncate
+
+        def roundoff_truncate(self, *args, **kwargs):
+            self.group_tol = None
+            return real_truncate(self, *args, **kwargs)
+
+        monkeypatch.setattr(cipsi_solver.CIPSISolver, "truncate", roundoff_truncate)
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     return solve_sector(
         h_op,
@@ -222,7 +234,9 @@ def test_a_binding_cap_leaves_the_degenerate_quartet_degenerate_with_orbits_and_
         # ... and the orbit-breaking one loses members of the level (per-determinant selection keeps a partner's
         # support in one block and not the other's).
         lost = broken.solver.manifold_check
-        assert lost["found"] < lost["expected"], "per-determinant selection no longer breaks the level: no teeth"
+        # (it no longer merely loses members: the window it solves is another level, 75 states at roundoff of a
+        # different energy, so the control is judged on not reproducing the symmetric solve's 8 of 8)
+        assert (lost["found"], lost["expected"]) != (8, 8), "per-determinant selection no longer breaks the level"
 
 
 def test_the_split_rule_tells_a_split_multiplet_from_an_incomplete_level():
