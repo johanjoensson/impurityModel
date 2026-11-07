@@ -586,6 +586,9 @@ def certify_sector(
     verdict_of = {}
     finished = {}  # hard label -> energies its classes reached
     keys = {}
+    #: class -> float32 weights aligned with ``list(keys[class].keys())`` (the class's own lowest state), kept
+    #: only for a window solve: what the thermal union's cut ranks the class's determinants by.
+    weights = {}
     reach = 0.0 if within is None else float(within)
 
     def e_min():
@@ -606,11 +609,14 @@ def certify_sector(
         finished.setdefault((job.two_sz, job.parity), []).append(verdict.energy)
         if verdict.ranked or within is not None:
             keys[k] = class_basis._keys.copy()
+            if within is not None:
+                weights[k] = _aligned_weights(keys[k], psis)
         # Drop the keys of every class that can no longer reach the lowest energy (plus the window):
         # the lowest energy only falls, so a class dropped here stays out.
         floor = e_min()
         for q in [q for q in keys if _bound(verdict_of[q]) - floor > reach + _bound_error(verdict_of[q])]:
             del keys[q]
+            weights.pop(q, None)
         if verbose and rank == 0:
             label = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))}"
             cls = "" if job.seed_class is None else f" class {job.seed_class}"
@@ -645,6 +651,7 @@ def certify_sector(
     for k in candidates:
         if k in keys and verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k]):
             start = keys.pop(k)
+            weights.pop(k, None)
             run(k, ranking=False, start=start)
     # A mirror's problem is its representative's under a verified symmetry: same verdict, its own job.
     mirrored = {k: job.image_of for k, job in enumerate(plan.jobs) if job.image_of in verdict_of}
@@ -706,8 +713,10 @@ def certify_sector(
                 )
                 for source, mirror in order
             ],
+            [weights.get(source) if mirror is None else None for source, mirror in order],
         )
         keys.clear()
+        weights.clear()
     _energy, _k, es, psis, class_basis, solver = best
     class_basis.weighted_restrictions = basis.weighted_restrictions
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
@@ -736,8 +745,11 @@ class KeptClasses(list):
     rather than drop.
     """
 
-    def __init__(self, classes=(), at_winning_level=(), in_window=(), derived=(), labels=()):
+    def __init__(self, classes=(), at_winning_level=(), in_window=(), derived=(), labels=(), importance=()):
         super().__init__(classes)
+        #: ``None`` or float32 weights aligned with ``list(self[i].keys())``: the class's own lowest state's
+        #: ``|amplitude|^2`` per determinant (a mirror has none: it is the image of its source's share).
+        self.importance = list(importance) or [None] * len(self)
         #: The hard label ``(2 S_z, parity)`` the rows of class ``i`` live in (a mirror's is its own, not its
         #: source's): what the per-label window solve groups by. ``None`` when not recorded.
         self.labels = list(labels) or [None] * len(self)
@@ -779,6 +791,20 @@ def _scores(dets, importance=None):
     if importance is None:
         return [det.get_hash() / 2.0**64 for det in dets]
     return [min(1.0, -np.log10(max(importance.get(det, 0.0), 1e-30)) / 30.0) for det in dets]
+
+
+def _aligned_weights(keys, psis):
+    """float32 ``|amplitude|^2`` (max over the columns of ``psis``) of each determinant of ``keys``, in key order."""
+    weight = _importance(psis)
+    return np.fromiter((weight.get(d, 0.0) for d in keys.keys()), dtype=np.float32, count=len(keys))
+
+
+def _class_importance(kept, i, fallback, comm):
+    """The weight map the cut ranks class ``i`` by: its own, else the winner's if that describes it, else ``None``."""
+    own = kept.importance[i]
+    if own is not None:
+        return dict(zip(kept[i].keys(), own.tolist()))
+    return _covered_importance(kept[i], fallback, comm)
 
 
 def _covered_importance(keys, importance, comm):
@@ -831,6 +857,13 @@ def _grow_with(merged, groups):
     return trial
 
 
+def _unit_importance(importance, i, keys, comm):
+    """Unit ``i``'s weight map: ``importance[i]`` if a list (one per unit), else the winner's map for unit 0 only."""
+    if isinstance(importance, list):
+        return importance[i]
+    return _covered_importance(keys, importance, comm) if i == 0 else None
+
+
 def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=None, derived=None):
     """Add classes and their partner rows to ``merged`` within ``cap``: ``(merged, whole)``. Collective.
 
@@ -860,11 +893,7 @@ def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=N
     if not truncate:
         return merged, False
     scores = [
-        (
-            _scores(keys.keys(), _covered_importance(keys, importance, comm) if i == 0 else None)
-            if derived[i] is None
-            else None
-        )
+        (_scores(keys.keys(), _unit_importance(importance, i, keys, comm)) if derived[i] is None else None)
         for i, keys in enumerate(units)
     ]
     best, lo, hi = merged, 0.0, 1.0
@@ -1348,7 +1377,7 @@ def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_or
         level_sources = [i for i in level if kept.derived[i] is None]
         units = [
             _orbit_reps(
-                orbits, merged, kept[i], _covered_importance(kept[i], importance, merged.comm) if n == 0 else None
+                orbits, merged, kept[i], _class_importance(kept, i, importance if n == 0 else None, merged.comm)
             )
             for n, i in enumerate(level_sources)
         ]
@@ -1363,11 +1392,13 @@ def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_or
     else:
         merged, whole = _add_units_within_cap(
             merged,
-            [kept[i] for i in level],
+            [kept[i] for n, i in enumerate(level)],
             rows_of,
             cap,
             truncate=True,
-            importance=importance,
+            importance=[
+                _class_importance(kept, i, importance if n == 0 else None, merged.comm) for n, i in enumerate(level)
+            ],
             derived=[
                 None if kept.derived[i] is None else (local[kept.derived[i][0]], kept.derived[i][1]) for i in level
             ],
@@ -1528,6 +1559,7 @@ def _solve_window_per_label(
                 for i in idx
             ],
             [kept.labels[i] for i in idx],
+            [kept.importance[i] for i in idx],
         )
         restrictions = list(basis.weighted_restrictions or [])
         two_szs = {n[0] for n in lab}
