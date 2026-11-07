@@ -9,6 +9,7 @@ color-split communicator with per-unit basis rebuild + seed redistribution
 :mod:`impurityModel.ed.greens_function`.
 """
 
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -858,6 +859,9 @@ def run_units_distributed(
 
         assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
         local_results = []
+        unit_times = []  # (unit, start, end) seconds from t0, on every rank of the colour
+        basis.comm.Barrier()  # a common origin: perf_counter is per process
+        t0 = time.perf_counter()
         if use_queue:
             # Every color already holds every unit's seeds (the split routes all of them to all
             # colors), so any color can run any unit. The color root takes the next position in
@@ -893,7 +897,9 @@ def run_units_distributed(
                 u = int(order[position[0]])
                 unit_indices.append(u)
                 _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
+                started = time.perf_counter() - t0
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
+                unit_times.append((u, started, time.perf_counter() - t0))
                 release_freed_heap()
             # Rank 0 may run out of units while other colors are still mid-unit: it answers their
             # remaining fetches here, before the collectives below, or they would wait forever.
@@ -920,11 +926,21 @@ def run_units_distributed(
         else:
             for u in unit_indices:
                 _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
+                started = time.perf_counter() - t0
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
+                unit_times.append((u, started, time.perf_counter() - t0))
                 release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
         unit_indices_per_color = gather_distributed_results(
             basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices, dtype=np.int64), is_array=True
         )
+
+        # Collective on every rank (a colour with no unit sends nothing); rank 0 prints the summary.
+        timing = gather_distributed_results(
+            basis.comm, sub_rank, unit_roots, units_per_color, unit_times, is_array=False
+        )
+        if basis.comm.rank == 0:
+            for line in format_unit_timing(list(timing), units_per_color, verbose=bool(verbose)):
+                print(line, flush=True)
 
         results = None
         if reduce_fn is None:
@@ -968,6 +984,39 @@ def run_units_distributed(
         if split_basis is not None and split_basis.comm != basis.comm:
             split_basis.free_comm()
     return results
+
+
+def format_unit_timing(records, units_per_color, verbose=False):
+    """Lines describing where a unit loop's wall time went, from ``(unit, start, end)`` records in colour order.
+
+    ``start``/``end`` are seconds from a common origin. The summary names the makespan, each colour's busy share
+    of it and the longest unit (its share of the makespan): a tail dominated by one unit is visible at once, and
+    the per-unit lines (``verbose``) say which unit and on which colour. Pure.
+    """
+    if not records:
+        return []
+    makespan = max(end for _u, _start, end in records)
+    colour_of, offset = [], 0
+    for colour, count in enumerate(units_per_color):
+        colour_of.extend([colour] * int(count))
+        offset += int(count)
+    busy = [0.0] * len(units_per_color)
+    for (_u, start, end), colour in zip(records, colour_of):
+        busy[colour] += end - start
+    share = [100.0 * b / makespan if makespan > 0 else 0.0 for b in busy]
+    u_long, s_long, e_long = max(records, key=lambda r: r[2] - r[1])
+    longest = e_long - s_long
+    lines = [
+        f"GF unit timing: makespan {makespan:.1f} s; busy per colour {[f'{x:.0f}%' for x in share]}; longest unit "
+        f"#{u_long} {longest:.1f} s ({100.0 * longest / makespan if makespan > 0 else 0.0:.0f}% of the makespan) "
+        f"on colour {colour_of[records.index((u_long, s_long, e_long))]}"
+    ]
+    if verbose:
+        lines.extend(
+            f"  unit #{u}: colour {colour}, {start:.1f} -> {end:.1f} s ({end - start:.1f} s)"
+            for (u, start, end), colour in zip(records, colour_of)
+        )
+    return lines
 
 
 def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin, basis=None):

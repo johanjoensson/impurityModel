@@ -222,6 +222,18 @@ map and only the incoming energies it cannot yet predict are actually solved (me
 The transition operators themselves come from `transition_operators.py` (pure physics
 builders); `rixs.py` owns the whole RIXS half.
 
+## Unit-loop timing summary
+
+`run_units_distributed` records, for every unit, its colour and its start/end offsets from a common
+`t0` (taken after a barrier right before the loop). The records are gathered on every rank and rank 0
+prints one tail summary: the measured makespan, the busy share of each colour, and the longest unit
+with its share of the makespan. With `verbose` it adds one line per unit. Use it to tell a load-balance
+problem (one colour busy, the others idle, as in SMO3 at 1M) from a uniformly slow loop.
+
+Levers for the next plan (not built): longest-processing-time scheduling with a mode-aware cost model,
+queue mode with on-demand seed streaming, hysteresis on the retained/discovered matvec choice, and
+re-splitting idle colours onto the tail unit. The GF cap is never lowered to what the CSR fits.
+
 ## Diagnostics
 
 `gf_diagnostics.py` runs representation-independent checks on the assembled `G` (thermal
