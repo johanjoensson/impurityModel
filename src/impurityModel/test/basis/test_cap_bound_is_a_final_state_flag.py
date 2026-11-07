@@ -93,3 +93,20 @@ def test_a_selection_on_the_snapshot_basis_marks_the_snapshot_cap_bound():
     refiner2.observe(basis, -0.5, None, np.array([-0.5]), 2, cap_bound=False)
     refiner2.note_selection_on_snapshot(True)
     assert refiner2._cap_bound is False
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_refiner_stopped_records_who_ended_the_expansion(comm):
+    """A cycle the cap refiner ends is one the cycle hook never voted on: ``refiner_stopped`` says so (S3.1)."""
+    votes = []
+    solver = _make_solver(comm, truncation_threshold=6)
+    solver.basis.verbose = False
+    solver.cycle_hook = lambda sv, e_ref, psi_refs: votes.append(1) or False
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN)
+    uncapped = _make_solver(comm, truncation_threshold=1000)
+    uncapped.basis.verbose = False
+    uncapped.expand(_hamiltonian(), Within.thermal(uncapped.basis.tau), de2_min=GS_DE2_MIN)
+    assert uncapped.refiner_stopped is False
+    assert solver.refiner_stopped is True, "cap 6 binds for several cycles: the refiner ends it"
+    flags = comm.allgather(solver.refiner_stopped)
+    assert len(set(flags)) == 1

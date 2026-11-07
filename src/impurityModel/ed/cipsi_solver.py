@@ -457,6 +457,9 @@ class CIPSISolver:
         #: rank 0's answer is broadcast, so the ranks cannot disagree. :attr:`stopped_early` records it.
         self.cycle_hook = None
         self.stopped_early = False
+        #: The cap refiner (not the cycle hook) ended the last expansion: a class ranked under a smaller cap than
+        #: the full one still has to be ranked, since the hook never voted on it.
+        self.refiner_stopped = False
         #: ``Lowest`` solves by Davidson under ``GS_LOWEST_SOLVER=auto`` (a certified class expansion
         #: sets it: :func:`eigensolvers.davidson_lowest` stays in its start's symmetry sector).
         self.davidson = False
@@ -1048,6 +1051,9 @@ class CIPSISolver:
         discarded_total = 0.0
         orbit_stalled = False
         self.stopped_early = False
+        #: The cap refiner (not the cycle hook) ended the last expansion: a class ranked under a smaller cap than
+        #: the full one still has to be ranked, since the hook never voted on it.
+        self.refiner_stopped = False
         # Matrix snapshots are kept only while this call runs (see `_build_h_matrix`).
         self._snapshot_budget = memory_budget_bytes
         self._h_matrix = None
@@ -1098,10 +1104,15 @@ class CIPSISolver:
                 residual_pt2=(self.last_selection or {}).get("residual_pt2"),
                 cap_cycles=cap_cycles,
             )
-            if cap_cycles > 0 and refiner.observe(
-                self.basis, e0, psi_refs, e_ref, cap_cycles, cap_bound=basis_cap_bound
-            ):
-                break
+            if cap_cycles > 0:
+                refined = bool(refiner.observe(self.basis, e0, psi_refs, e_ref, cap_cycles, cap_bound=basis_cap_bound))
+                # Rank 0's verdict, broadcast on every rank that gets here (`cap_cycles` is replicated): the
+                # break was per rank before, replicated bitwise only in the `safe` build.
+                if self.basis.is_distributed:
+                    refined = bool(self.basis.comm.bcast(refined, root=0))
+                if refined:
+                    self.refiner_stopped = True  # the cycle hook never voted on this cycle
+                    break
             if self.cycle_hook is not None:
                 stop = bool(self.cycle_hook(self, e_ref, psi_refs))
                 if self.basis.is_distributed:
