@@ -115,6 +115,15 @@ def _eigen_tol(slaterWeightMin):
     return max(min(float(slaterWeightMin), _EIGEN_TOL_MAX), _EIGEN_TOL_FLOOR)
 
 
+def _discard_weight_tol(slaterWeightMin):
+    """Relative eigenvector weight a truncation may discard before the basis counts as cap-bound.
+
+    The eigenvectors were built at amplitude cutoff ``slaterWeightMin``, so weight below its square is below
+    what they resolve; a floor keeps a zero cutoff from turning roundoff into a "cut".
+    """
+    return max(float(slaterWeightMin) ** 2, 1e-12)
+
+
 def _degeneracy_tol(e_ref, slaterWeightMin):
     """The tolerance at which ``e_ref`` may be partitioned into degenerate manifolds.
 
@@ -1055,6 +1064,11 @@ class CIPSISolver:
         # round that neither grew the basis nor was followed by a truncation (a capped cycle scores
         # candidates, then `truncate` drops determinants, so its residual belongs to a basis that is gone).
         residual_current = False
+        # Whether the basis as it now stands is cap-bound (final state, see `truncation_flags`): the last cycle
+        # truncated away weight above tolerance, or its selection left out PT2 mass above `e_pt2_tol`, or
+        # memory limited it. Describes the basis the cycle PRODUCED, so a snapshot taken at the next loop head
+        # carries the flag of the basis it stores.
+        basis_cap_bound = False
         cycle = 0
         _heartbeat = Heartbeat()
         # The kept manifold one cycle back, for the request's growth margin; `None` (no history) is not 0.
@@ -1084,7 +1098,9 @@ class CIPSISolver:
                 residual_pt2=(self.last_selection or {}).get("residual_pt2"),
                 cap_cycles=cap_cycles,
             )
-            if cap_cycles > 0 and refiner.observe(self.basis, e0, psi_refs, e_ref, cap_cycles):
+            if cap_cycles > 0 and refiner.observe(
+                self.basis, e0, psi_refs, e_ref, cap_cycles, cap_bound=basis_cap_bound
+            ):
                 break
             if self.cycle_hook is not None:
                 stop = bool(self.cycle_hook(self, e_ref, psi_refs))
@@ -1174,6 +1190,18 @@ class CIPSISolver:
                         f"------> Basis truncated! (cycle {cap_cycles}: kept "
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
                     )
+            cycle_discarded_weight = self.last_truncation["discarded_weight"] if truncated else 0.0
+            basis_cap_bound = bool(
+                cycle_discarded_weight > _discard_weight_tol(slaterWeightMin)
+                or float(sel.get("discarded_de2_mass", 0.0)) > (e_pt2_tol or 0.0)
+                or (
+                    self.orbits is not None
+                    and n_new == 0
+                    and admit_target is not None
+                    and sel.get("n_candidates", 0) > 0
+                )
+                or guard.limited
+            )
             self.basis.add_states(new_Dj)
             # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with `*` iterates
             # its determinant KEYS (an error at >1 rank, silently wrong at 1). `prune_rows(0.0)` drops a row
@@ -1189,6 +1217,7 @@ class CIPSISolver:
         if restored is not None:
             psi_refs, e_ref = restored
             residual_current = False
+            basis_cap_bound = refiner.restored_cap_bound
         self.psi_refs = psi_refs
         self.memory_warning = guard.warning
         if guard.capped and self.basis.size > guard.threshold and self.psi_refs is not None:
@@ -1197,14 +1226,22 @@ class CIPSISolver:
             guard.note_truncation(self.basis.size)
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
             residual_current = False
+            basis_cap_bound = basis_cap_bound or self.last_truncation["discarded_weight"] > _discard_weight_tol(
+                slaterWeightMin
+            )
+        # One replicated decision: every input is already allreduced, but the flag steers a verdict, so rank 0's
+        # value is broadcast unconditionally (never inside the branch below).
+        basis_cap_bound = bool(basis_cap_bound or guard.limited)
+        if self.basis.is_distributed:
+            basis_cap_bound = bool(self.basis.comm.bcast(basis_cap_bound, root=0))
         if cap_cycles > 0 or guard.limited or orbit_stalled:
-            self._record_truncation(cap_cycles, guard, discarded_total)
+            self._record_truncation(cap_cycles, guard, discarded_total, cap_bound=basis_cap_bound)
 
         # An expansion its cycle hook ended on purpose is not "not converged": say nothing about it.
         self._report_convergence(
             e_pt2_tol,
             de2_min,
-            cap_cycles > 0 or orbit_stalled,
+            basis_cap_bound,
             guard.limited,
             residual_current,
             quiet=self.stopped_early,
@@ -1247,7 +1284,7 @@ class CIPSISolver:
         )
         return peak_rss, anon_rss, shmem_rss, local_min, local_max
 
-    def _record_truncation(self, cap_cycles, guard, discarded_total=0.0):
+    def _record_truncation(self, cap_cycles, guard, discarded_total=0.0, cap_bound=True):
         """Write ``truncation_report`` (and warn): a cap or the memory guard limited this expansion.
 
         Written when a refinement cycle ran or memory limited the expansion even without one, so a
@@ -1258,6 +1295,8 @@ class CIPSISolver:
         threshold = guard.threshold
         self.truncation_report = {
             "cap_hit": True,
+            # Final state (see `truncation_flags`): False for a transient that re-admitted everything it cut.
+            "cap_bound": bool(cap_bound),
             "cycles": cap_cycles,
             "retained": int(self.basis.size),
             # Still `inf` when only an observed round limited the expansion; report where it stopped.
@@ -1274,13 +1313,20 @@ class CIPSISolver:
         # discarded_de2_mass bounds the ground-state error, so this is said at any verbosity: once per
         # calculation (a double-counting search runs dozens of expansions), every time at -vv.
         why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
-        emit_memory_warning(
-            f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
-            f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 importance.",
-            root=rank == 0,
-            kind="gs-cap",
-            force=self.basis.verbose,
-        )
+        if rep["cap_bound"]:
+            emit_memory_warning(
+                f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
+                f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 importance.",
+                root=rank == 0,
+                kind="gs-cap",
+                force=self.basis.verbose,
+            )
+        elif rank == 0 and self.basis.verbose:
+            print(
+                f"  (the cap of {rep['threshold']:,} was reached and the last cycle re-admitted what it cut; "
+                "the final basis is not cap-bound, but its residual was not re-measured on the kept basis)",
+                flush=True,
+            )
         if rank == 0 and self.basis.verbose:
             print(
                 f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "

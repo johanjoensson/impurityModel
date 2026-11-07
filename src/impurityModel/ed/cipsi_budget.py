@@ -211,9 +211,11 @@ class CapRefiner:
         self._keys = None
         self._psis = None
         self._e_ref = None
+        self._cap_bound = False
+        self.restored_cap_bound = False
         self._no_improve = 0
 
-    def observe(self, basis: Basis, e0, psi_refs, e_ref, cycles):
+    def observe(self, basis: Basis, e0, psi_refs, e_ref, cycles, cap_bound=False):
         """Record this cycle's lowest energy; True when refinement should stop (no gain twice, or out of cycles)."""
         improved = self.best_e0 is None or e0 < self.best_e0 - self.e_tol
         if self.best_e0 is None or e0 < self.best_e0:
@@ -222,11 +224,15 @@ class CapRefiner:
             for row, state in enumerate(basis.local_basis):
                 keys[row] = np.frombuffer(bytes(state.to_bytearray()[: basis.n_bytes]), dtype=np.uint8)
             self._keys, self._psis, self._e_ref = keys, psi_refs, e_ref
+            self._cap_bound = bool(cap_bound)
         self._no_improve = 0 if improved else self._no_improve + 1
         return self._no_improve >= 2 or cycles >= self.max_cycles
 
     def restore_if_worse(self, basis: Basis, e0):
-        """Put the best basis back when the last cycle left a worse one: ``(psi_refs, e_ref)``, else ``None``."""
+        """Put the best basis back when the last cycle left a worse one: ``(psi_refs, e_ref)``, else ``None``.
+
+        ``cap_bound`` then describes the restored basis (the flag recorded with its snapshot), not the last cycle.
+        """
         if self._keys is None or not e0 > self.best_e0:
             return None
         basis.clear()
@@ -236,4 +242,5 @@ class CapRefiner:
             psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
         )
         psi_refs.prune_rows(0.0)
+        self.restored_cap_bound = self._cap_bound
         return psi_refs, self._e_ref
