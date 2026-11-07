@@ -294,8 +294,10 @@ def _continuum_fermi_filling(h_dft, delta_w, w, eim, tau):
         ``\int Tr A(w) dw``, which should be close to ``n_orb`` if the mesh/window captures the
         impurity spectral weight; a wide-window fit whose window misses real weight fails this.
     causality_violation : float
-        ``max(0, max Im Delta(w))``; zero iff :math:`\Delta` is causal (``Im Delta <= 0``)
-        everywhere on the mesh.
+        ``max(0, max_w lambda_max((Delta - Delta^dagger) / 2i))``: the largest eigenvalue of the
+        anti-Hermitian part of :math:`\Delta`, which is non-positive iff :math:`\Delta` is causal.
+        (The elementwise ``Im Delta_ij`` is not the right object: a positive off-diagonal imaginary
+        part of a causal matrix is allowed.)
     """
     n_orb = h_dft.shape[0]
     identity = np.eye(n_orb, dtype=complex)
@@ -309,7 +311,8 @@ def _continuum_fermi_filling(h_dft, delta_w, w, eim, tau):
         f = (w < 0).astype(float)
     n = float(np.trapezoid(dos * f, w))
     sum_rule = float(np.trapezoid(dos, w))
-    causality_violation = float(max(0.0, np.max(delta_w.imag)))
+    anti_hermitian = (delta_w - np.conj(np.swapaxes(delta_w, 1, 2))) / 2j
+    causality_violation = float(max(0.0, np.max(np.linalg.eigvalsh(anti_hermitian))))
     return n, sum_rule, causality_violation
 
 
@@ -400,7 +403,8 @@ def report_continuum_reference(h_dft, hyb, hyb_fit, w, eim, tau, n0_disc, *, ran
         f"as eim -> 0) = {fit_consistency_check:+.4f}\n"
         f"  sum rule (expect ~{n_orb}): true {cont_true['sum_rule']:.3f}, "
         f"fitted {cont_fit['sum_rule']:.3f}\n"
-        f"  causality (max Im Delta(w), expect <= 0): true {cont_true['causality_violation']:.2e}, "
+        "  causality (largest eigenvalue of the anti-Hermitian part of Delta(w), expect <= 0): "
+        f"true {cont_true['causality_violation']:.2e}, "
         f"fitted {cont_fit['causality_violation']:.2e}\n"
         f"  dn0/dtau (true continuum) = {dn0_dtau_true:+.4f} per unit tau "
         "(large values flag a metal-like Fermi-smearing sensitivity)",
