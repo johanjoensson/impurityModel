@@ -123,3 +123,20 @@ feature too), or lower `slater_weight_min` (grows the ground state and, through 
 excited bases; cost grows combinatorially -- a budget-6 run did not converge within 25 minutes serially
 on this workload, so plan for the full production MPI allocation). The determinant cap is the only
 accuracy-safe cost control on metals (restrictions_redux #1: never loosen `slaterWeightMin`).
+
+## Thermal window solved per symmetry block: what it does and does not guarantee
+
+When the in-window union of a sector's symmetry classes exceeds `truncation_threshold`, the thermal window is
+solved block by block (a block is the set of hard-label nodes one symmetry orbit touches), each under the full cap,
+and the states are merged (`sector_solver._solve_window_per_label`; a WARNING of kind `union-split` says so). A
+level whose members live in different blocks is then degenerate to each solve's convergence, not split by one
+common cut. Limits:
+
+- The merged basis holds the window's **states only** and may exceed the cap; nothing expands it.
+- **Inside one block** the cut is still a common-share cut (importance from the winner's amplitudes where they
+  describe the class, else hash). It is symmetric only as far as the detected orbit group maps the block onto
+  itself; a level split inside one block by an undetected symmetry (a Kramers pair in one label, e.g. alpha-Ce)
+  can still lose a member. d6 real-cubic: 15 of 15 down to cap 400, spread 4e-7 at caps 500/400 (1e-11 at 600+).
+- Which blocks form, and whether the cut triggers at all, can differ between rank counts at the threshold (the
+  union size is exact, the cut tie-breaks are not rank-invariant at 1e-16).
+- Per-block caps are not yet reduced under a memory guard to keep symmetric blocks equal.
