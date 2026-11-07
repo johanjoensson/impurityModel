@@ -1243,19 +1243,21 @@ def test_a_per_label_solve_with_a_degraded_manifold_is_not_converged():
     """The blocks converged one by one, but a merged level with missing states is not a converged state."""
     from impurityModel.ed.sector_solver import _record_union_cut
 
-    class Fake:
-        truncation_report = {"cycles": 1, "cap_bound": False}
-        convergence_report = {"converged": True}
-        manifold_check = {"found": 4, "expected": 5, "multiplet_split": None, "certified": True}
+    from types import SimpleNamespace
 
-    solver = Fake()
+    def fake(found):
+        return SimpleNamespace(
+            truncation_report={"cycles": 1, "cap_bound": False},
+            convergence_report={"converged": True},
+            manifold_check={"found": found, "expected": 5, "multiplet_split": None, "certified": True},
+        )
+
+    solver = fake(4)
     _record_union_cut(solver, {"per_label": 2}, 100, 90)
     assert solver.convergence_report["converged"] is False
     assert solver.convergence_report["limited_by"] == "incomplete_manifold"
     assert solver.truncation_report["union_cut"]["per_label"] == 2
 
-    healthy = Fake()
-    healthy.manifold_check = {"found": 5, "expected": 5, "multiplet_split": None, "certified": True}
-    healthy.convergence_report = {"converged": True}
+    healthy = fake(5)
     _record_union_cut(healthy, {"per_label": 2}, 100, 90)
     assert healthy.convergence_report["converged"] is True
