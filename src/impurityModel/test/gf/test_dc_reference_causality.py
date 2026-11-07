@@ -27,9 +27,9 @@ def test_acausal_delta_is_flagged_by_its_largest_eigenvalue():
     assert _violation(_const(1j * np.eye(2))) > 0.99
 
 
-def test_complex_hopping_is_handled():
-    # Complex off-diagonal V: anti-Hermitian part [[-1, 0.2i], [-0.2i, -1]] has eigenvalues -1 +- 0.2: causal.
-    delta = np.array([[-1j, 0.2j * 1j], [0.2j * 1j * -1, -1j]])
-    anti = (delta - delta.conj().T) / 2j
-    assert np.linalg.eigvalsh(anti).max() < 0
-    assert _violation(_const(delta)) == 0.0
+def test_an_acausal_delta_whose_elementwise_imaginary_parts_are_all_negative_is_flagged():
+    # No Im Delta_ij is positive, yet the anti-Hermitian part has the
+    # eigenvalue -0.1 + 1 = +0.9: the elementwise test calls this causal.
+    delta = np.array([[-0.1j, 1.0], [-1.0, -0.1j]])
+    assert np.max(_const(delta).imag) <= 0
+    assert _violation(_const(delta)) > 0.8

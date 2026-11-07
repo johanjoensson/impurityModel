@@ -124,7 +124,10 @@ def test_the_replayed_iteration_is_the_one_whose_dc_cap_is_used(tmp_path, capsys
         f["Mn 2"].attrs["DC ground state cap"] = 222
     last = load_workload(path)
     assert (last["iteration"], last["last_iteration"], last["dc_cap"]) == (2, 2, 222)
-    assert "replaying 'Mn 2'" in capsys.readouterr().out
+    from mpi4py import MPI
+
+    if MPI.COMM_WORLD.rank == 0:  # the loader says it on the root only
+        assert "replaying 'Mn 2'" in capsys.readouterr().out
     first = load_workload(path, iteration=1)
     assert (first["iteration"], first["dc_cap"]) == (1, 111)
 
