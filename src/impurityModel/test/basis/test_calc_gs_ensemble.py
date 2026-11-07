@@ -115,18 +115,21 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
 def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tmp_path, monkeypatch, capsys):
     from impurityModel.ed import groundstate
 
-    real = groundstate.plan_ensemble
+    real_plan = groundstate.plan_ensemble
     plans = []
 
-    def refusing(solved, tau, **kw):
-        plan = real(solved, tau, **{**kw, "max_error": -1.0})
-        plans.append(plan)
-        return plan
+    def recording(solved, tau, **kw):
+        plans.append(real_plan(solved, tau, **kw))
+        return plans[-1]
 
-    monkeypatch.setattr(groundstate, "plan_ensemble", refusing)
+    def refusing(member, truncation, convergence, comm):
+        return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard"
+
+    monkeypatch.setattr(groundstate, "plan_ensemble", recording)
+    monkeypatch.setattr(groundstate, "member_refusal", refusing)
     (_, _, _, _, info), _, _ = _run(3, comm, "auto", tmp_path)
     final = plans[-1]
-    assert final.refused_reason is not None and len(final.members) == 1
+    assert len(final.members) > 1 and "measured-memory guard" in info["ensemble"]["refused_reason"]
     assert len(info["ensemble"]["members"]) == 1
     out = capsys.readouterr().out
     if comm is None or comm.rank == 0:
@@ -135,8 +138,8 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
-def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path, capsys, monkeypatch):
-    """H-MV11: at a cap of 10 the walk admits N = 1 and 2 unflagged, but both thermal solves are cap-bound.
+def test_a_member_whose_thermal_solve_is_held_by_the_memory_guard_is_not_merged(comm, tmp_path, capsys, monkeypatch):
+    """H-MV11 (S4): at a cap of 10 the walk admits N = 1 and 2 unflagged, but both thermal solves are held.
 
     The window is solved per symmetry block there (each block fits the cap), which is complete; the blocks'
     verdict is forced cap-bound here, since what is under test is the ensemble's refusal of such a member."""
@@ -146,7 +149,9 @@ def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path,
 
     def cap_bound_blocks(*args, **kwargs):
         merged, solver, es, psis, info = real(*args, **kwargs)
-        solver.truncation_report = dict(solver.truncation_report or {"cap_hit": True}, cap_bound=True)
+        solver.truncation_report = dict(
+            solver.truncation_report or {"cap_hit": True}, cap_bound=True, memory_bound=True
+        )
         return merged, solver, es, psis, info
 
     monkeypatch.setattr(sector_solver, "_solve_window_per_label", cap_bound_blocks)
@@ -162,7 +167,7 @@ def test_a_member_whose_thermal_solve_is_cap_bound_is_not_merged(comm, tmp_path,
     )
     *_, info = run()
     ens = info["ensemble"]
-    assert "thermal solve is bound by the determinant cap" in ens["refused_reason"]
+    assert "held by the measured-memory guard" in ens["refused_reason"]
     assert [m["total"] for m in ens["members"]] == [1] and ens["members"][0]["weight"] == 1.0
     assert hooks == [1] and len(info["member_results"]) == 1
     assert set(ens["state_sector"]) == {1}
@@ -207,9 +212,9 @@ def _fake_member_state(truncation=None, **convergence):
     "state, refused, by_cap",
     [
         (dict(), False, False),
-        (dict(truncation={"cap": 10}), True, True),
-        (dict(truncation={"cap": 10, "memory_bound": True}), True, False),  # the memory guard is not a cap verdict
-        (dict(converged=False, residual_pt2=3e-3, limited_by="cap"), True, False),
+        (dict(truncation={"cap": 10}), False, False),  # S4: a cap-bound basis widens the interval, it does not refuse
+        (dict(truncation={"cap": 10, "memory_bound": True}), True, False),  # only the memory guard refuses
+        (dict(converged=False, residual_pt2=3e-3, limited_by="cap"), False, False),
         (dict(converged=False, residual_pt2=3e-9, residual_is_current=False), False, False),
         (dict(converged=False, residual_pt2=1e-9, limited_by="manifold_widened"), False, False),
     ],
@@ -225,9 +230,9 @@ def test_only_a_bound_basis_or_a_current_large_residual_refuses_a_member(comm, s
     got = member_refusal(SimpleNamespace(total=2), solver.truncation_report, solver.convergence_report, comm)
     assert (got is not None) == refused
     if refused:
-        assert got[1] == by_cap and "N_imp = 2" in got[0]
+        assert "N_imp = 2" in got and "memory guard" in got
     elif state.get("converged") is False and (comm is None or comm.rank == 0):
-        assert "is not certified" in capsys.readouterr().out
+        assert "is not converged" in capsys.readouterr().out
 
 
 @pytest.mark.mpi
@@ -287,7 +292,7 @@ def _failing_member(monkeypatch, total):
 
     def check(member, truncation, convergence, comm):
         verdict = real(member, truncation, convergence, comm)
-        return (f"the N_imp = {total} member's thermal solve is injected", False) if member.total == total else verdict
+        return f"the N_imp = {total} member's thermal solve is injected" if member.total == total else verdict
 
     monkeypatch.setattr(groundstate, "member_refusal", check)
 

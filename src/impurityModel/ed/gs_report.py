@@ -85,13 +85,28 @@ def convergence_summary(convergence):
     if res is not None and tol is not None:
         parts.append(f"residual PT2 {res:.2e} (tol {tol:.0e})")
     if convergence.get("limited_by"):
-        parts.append(f"limited by {convergence['limited_by']}")
+        parts.append(f"limited by {limited_by_words(convergence['limited_by'])}")
     diag = convergence.get("sector_diagnostics")
     if diag and diag.get("winner_total") is not None:
         margin = diag.get("margin")
         tail = "undecided" if diag.get("undecided") else ("margin n/a" if margin is None else f"margin {margin:.2g}")
         parts.append(f"sector N_imp={diag['winner_total']} ({tail})")
     return "convergence: " + "; ".join(parts)
+
+
+_LIMITED_BY_WORDS = {
+    "cap": "the determinant cap (truncation_threshold)",
+    "memory": "the memory guard",
+    "incomplete_manifold": "missing states of the lowest level",
+    "multiplet_split": "a split multiplet",
+    "uncertified": "an uncertified selection",
+    "de2_min": "the PT2 selection threshold",
+}
+
+
+def limited_by_words(token):
+    """A ``limited_by`` token in words for a report line; an unknown token is shown as it is."""
+    return _LIMITED_BY_WORDS.get(token, token)
 
 
 def degraded_warnings(convergence):
@@ -105,7 +120,7 @@ def degraded_warnings(convergence):
     out = []
     if not convergence.get("converged", True):
         res = convergence.get("residual_pt2")
-        why = convergence.get("limited_by") or "unknown"
+        why = limited_by_words(convergence.get("limited_by") or "unknown")
         extra = f" (residual PT2 {res:.2e})" if res is not None else ""
         out.append(f"ground-state expansion is NOT converged, limited by {why}{extra}")
     diag = convergence.get("sector_diagnostics") or {}
@@ -796,6 +811,11 @@ def _present(
                 "charge-sector ensemble: "
                 + ", ".join(f"N_imp = {m['total']} (weight {m['weight']:.4f})" for m in ensemble["members"])
                 + f"; error bar on <N_imp> {ensemble['error_bar']:.3g} e"
+                + (
+                    f"; <N_imp> in [{ensemble['n_imp_interval'][0]:.4f}, {ensemble['n_imp_interval'][1]:.4f}]"
+                    if ensemble.get("n_imp_interval")
+                    else ""
+                )
             )
         for reason in degraded_warnings(gs_convergence_report):
             print(f"WARNING: {reason}", file=sys.stderr, flush=True)

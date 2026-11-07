@@ -797,3 +797,7 @@ spin-orbitals). The full chain of reasoning a reader should be able to reproduce
 5. Correlation measures: configuration $N_\mathrm{eff} = 1.65$ (mixed valence),
    determinant $N_\mathrm{eff} = 6.4 \ll 368$ (a compact multiplet, well inside the
    variational basis — comfortably converged).
+
+The charge-sector ensemble line reports `<N_imp>` with its interval (`ensemble.n_imp_interval = [lo, hi]` in the
+JSON, beside `ensemble.error_bar`). Members are admitted by energy; a cap-bound or uncertified member widens the
+interval rather than dropping the sector.

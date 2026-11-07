@@ -75,6 +75,8 @@ _FIELDS = (
     ("chi_span", "{:.4g}"),
     ("var_n_intra_sector", "{:.4g}"),
     ("var_n_inter_sector", "{:.4g}"),
+    ("ensemble_weight_interval", "{}"),
+    ("ensemble_flagged_points", "{}"),
     ("ensemble_refused_points", "{}"),
     ("ensemble_refusal_reasons", "{}"),
     ("continuous_fallback", "{}"),

@@ -237,15 +237,16 @@ Default: every driver (self-energy, double counting, susceptibilities, spectra, 
 ensemble is formed only when more than one sector is thermally relevant. `on` with one relevant sector
 is bit-identical to `off`; write `mixed_valence = "off"` to pin the winning sector alone.
 
-Admission and refusal: sectors whose weight is below the energy cut derived from `tau` are simply not
-admitted, so at low `tau` even `on` gives a one-member ensemble (no warning). A plan that is cap-bound,
-uncertified or limited by its error bars is *refused*: a warning names the sector that is
-kept and the run continues with it; the run never raises. Under a double-counting
-search an ensemble refused at a trial mu is a flagged point in the record. Each member's own thermal solve
-is checked again before it is merged: a cap- or memory-bound basis, or a residual measured on the final
-basis above `e_pt2_tol`, refuses the ensemble the same way, except that the members solved
-before the failing one are kept (the ensemble is cut at it, not to the winner), and a near neighbour left out
-is named. A residual that is stale, or that does not cover the whole thermal manifold, only warns. A legacy integer `mixed_valence` (`mv N`) means on when non-zero.
+Admission and weights: sectors whose weight is below the energy cut derived from `tau` are simply not
+admitted, so at low `tau` even `on` gives a one-member ensemble (no warning). Admission is by energy alone: a
+sector whose thermal solve is cap-bound, uncertified or has a residual above `e_pt2_tol` is still a member. Its
+truncation widens the interval of `<N_imp>` instead (the energies are upper bounds, so the weight of the sector is
+only bounded below); the JSON carries `n_imp_interval` beside `error_bar`, and a warning is printed when the
+interval is wider than 0.05 e. Raise `truncation_threshold` to narrow it. Only the measured-memory guard refuses a
+member: the ensemble is then cut at it (the members solved before are kept, a near neighbour left out is named
+with the reason). A residual that is stale, or that does not cover the whole thermal manifold, only warns.
+Under a double-counting search the record carries `ensemble_weight_interval` and `ensemble_flagged_points`.
+A legacy integer `mixed_valence` (`mv N`) means on when non-zero.
 
 Ordering: the dominant member is the one whose thermal solve realised the lowest energy. The merged
 states are sorted by energy, so `es[0]` is the global ground state. The self-energy's `gs_energies` are

@@ -21,8 +21,10 @@ class _Member:
 
 def test_member_refusal_ignores_a_transient_report():
     assert member_refusal(_Member(), TRANSIENT, {"converged": True, "residual_pt2": 0.0}, None) is None
-    reason, by_cap = member_refusal(_Member(), BOUND, {"converged": True}, None)
-    assert by_cap and "determinant cap" in reason
+    # a cap-bound basis no longer refuses a member (S4): it widens the weight interval
+    assert member_refusal(_Member(), BOUND, {"converged": True}, None) is None
+    guard = dict(BOUND, memory_bound=True)
+    assert "memory guard" in member_refusal(_Member(), guard, {"converged": True}, None)
 
 
 def test_gf_diagnostic_does_not_flag_a_transient():

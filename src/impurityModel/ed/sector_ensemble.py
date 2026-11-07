@@ -14,7 +14,6 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
-from impurityModel.ed import config
 from impurityModel.ed.average import energy_cut
 
 _SPELLINGS = {"auto": True, "on": True, "true": True, "off": False, "false": False, "0": False}
@@ -120,8 +119,7 @@ class EnsemblePlan:
     solved range that must be solved before membership is decided (an admitted edge member's outer neighbour);
     while it is non-empty the plan is provisional. ``refused_reason`` is set when the ensemble cannot be formed
     (``members`` is then the winner alone, or, when a member's own thermal solve fails after lower members were
-    consumed, the members before it); ``refused_by_cap`` says the refusal is a determinant-cap
-    limit, the one reason a smaller or larger cap bears on; ``error_bar`` is the total error on ``<N_imp>`` in
+    consumed, the members before it); ``error_bar`` is the total error on ``<N_imp>`` in
     electrons.
     """
 
@@ -131,7 +129,6 @@ class EnsemblePlan:
     error_bar: float = 0.0
     needs: tuple = ()
     refused_reason: str | None = None
-    refused_by_cap: bool = False
     solved_totals: tuple = field(default=())
 
 
@@ -140,7 +137,6 @@ def plan_ensemble(
     tau: float,
     *,
     attainable: Callable[[int], bool] = lambda total: True,
-    max_error: float | None = None,
 ) -> EnsemblePlan:
     """Decide the ensemble from the walk's solved sectors.
 
@@ -148,9 +144,8 @@ def plan_ensemble(
     ``E_s - residual_s - E_min < energy_cut(tau)`` with ``E_min`` the lowest walk energy (the winner's). When the
     lowest or highest admitted total has an unsolved
     neighbour that is ``attainable``, the plan reports it in ``needs`` and is provisional: solve it and plan
-    again. Once complete, the plan is refused (members = winner alone, ``refused_reason`` set) when an admitted
-    member is cap-bound or uncertified, or when the error bar on ``<N_imp>`` exceeds ``max_error``
-    (:data:`~impurityModel.ed.config.ENSEMBLE_WEIGHT_ERROR_MAX`).
+    again. Once complete, the plan is never refused: a cap-bound or uncertified member
+    enters, and the weight uncertainty is an interval reported after the solves (:func:`weight_interval`).
 
     Parameters
     ----------
@@ -160,12 +155,9 @@ def plan_ensemble(
         Temperature scale.
     attainable : callable
         ``attainable(total)`` is False for a total the model cannot reach (bounds, frozen groups).
-    max_error : float, optional
-        Overrides the config threshold.
     """
     if not solved:
         raise ValueError("plan_ensemble: no solved sector")
-    limit = config.ENSEMBLE_WEIGHT_ERROR_MAX if max_error is None else max_error
     cut = float(energy_cut(tau))
     records = sorted(solved, key=lambda r: (r.energy, r.total))
     e_min = float(records[0].energy)
@@ -181,33 +173,9 @@ def plan_ensemble(
         return EnsemblePlan(_members(admitted, tau), e_min, cut, needs=tuple(needs), solved_totals=solved_totals)
     members = _members(admitted, tau)
     error = sum(m.error_bar for m in members)
-    reason = None
-    by_cap = False
-    # A lone winner is a one-member ensemble however it was solved: cap / certification matter only when they
-    # would corrupt a merge.
-    for r in admitted if len(admitted) > 1 else ():
-        if r.cap_bound:
-            reason = f"the N_imp = {r.total} sector is bound by the determinant cap"
-            by_cap = True
-            break
-        if r.certified is False:
-            reason = f"the N_imp = {r.total} sector is not certified"
-            break
-    if reason is None and len(members) > 1 and error > limit:
-        reason = (
-            f"the occupation weights are fixed only to {error:.3f} e by the sector energies' truncation error "
-            f"(limit {limit:g} e)"
-        )
-    if reason is not None:
-        return EnsemblePlan(
-            members[:1],
-            e_min,
-            cut,
-            error_bar=error,
-            refused_reason=reason,
-            refused_by_cap=by_cap,
-            solved_totals=solved_totals,
-        )
+    # Admission is by energy alone (review S4): a cap-bound or uncertified member is still a member. What its
+    # truncation does to the weights is an interval, computed from the realised energies after the solves
+    # (:func:`weight_interval`), not a reason to drop the sector.
     return EnsemblePlan(members, e_min, cut, error_bar=error, solved_totals=solved_totals)
 
 
@@ -274,3 +242,41 @@ def sector_weights(e0, z, tau) -> "np.ndarray":
     z = np.asarray(z, dtype=float)
     w = z * np.exp(-(e0 - e0.min()) / tau)
     return w / w.sum()
+
+
+#: How many residual PT2 a member's true energy may lie below its realised one (calibrated, not a bound).
+ENSEMBLE_RESIDUAL_FACTOR = 3.0
+
+
+def weight_interval(n, e0, z, tau, lo_shift, hi_shift=None):
+    """``(lo, hi)`` of ``<N>`` when each sector's energy may lie in ``[e0_s - lo_shift_s, e0_s + hi_shift_s]``.
+
+    ``<N> = sum a_s N_s / sum a_s`` with ``a_s = Z_s exp(-E_s/tau)`` is linear-fractional, hence monotone in each
+    ``a_s``: its extremes sit at box vertices. Sorting by ``N_s``, the maximum puts the sectors of the high-``N``
+    tail at their largest ``a`` and the rest at their smallest (and the minimum the reverse), so a scan over the
+    ``K + 1`` thresholds is exact. ``lo_shift`` is how far a sector's true energy may lie *below* the realised one
+    (truncation leaves energies as upper bounds), ``hi_shift`` above it (default 0).
+    """
+    n = np.asarray(n, dtype=float)
+    e0 = np.asarray(e0, dtype=float)
+    z = np.asarray(z, dtype=float)
+    lo_shift = np.asarray(lo_shift, dtype=float)
+    hi_shift = np.zeros_like(lo_shift) if hi_shift is None else np.asarray(hi_shift, dtype=float)
+    ref = e0.min()
+    a_max = z * np.exp(-(e0 - lo_shift - ref) / tau)
+    a_min = z * np.exp(-(e0 + hi_shift - ref) / tau)
+    order = np.argsort(n, kind="stable")
+    n, a_max, a_min = n[order], a_max[order], a_min[order]
+    k = len(n)
+
+    def extreme(sign):
+        best = None
+        for cut in range(k + 1):
+            high = np.arange(k) >= cut  # the sectors at the heavy end
+            a = np.where(high == (sign > 0), a_max, a_min)
+            value = float(a @ n / a.sum())
+            if best is None or sign * value > sign * best:
+                best = value
+        return best
+
+    return extreme(-1), extreme(+1)

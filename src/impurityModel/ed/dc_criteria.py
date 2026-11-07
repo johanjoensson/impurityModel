@@ -2091,6 +2091,8 @@ class _OccupationContext:
     refused_at: dict | None = None
     #: ``mu -> K``: how many members the ensemble had at each trial point (replicated; 1 when off).
     members_at: dict | None = None
+    #: ``mu -> (lo, hi)``: the interval of the ensemble's <N_imp> at each trial point (replicated; absent when off).
+    interval_at: dict | None = None
     cap_bound_at: dict | None = None
     memory_bound_at: dict | None = None
     #: Each sector's certification, shared by every ground state this search solves
@@ -2110,6 +2112,8 @@ class _OccupationContext:
             self.refused_at = {}
         if self.members_at is None:
             self.members_at = {}
+        if self.interval_at is None:
+            self.interval_at = {}
         if self.memory_bound_at is None:
             self.memory_bound_at = {}
         if self.plan_store is None:
@@ -2318,8 +2322,10 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
         ctx.ensemble_variance_at[mu] = (float(c @ (n2_s - n_s**2)), float(c @ (n_s - n_avg) ** 2))
     # Broadcast before it is stored: the verdicts are rank-local solver state, and the cap strategy branches on
     # them to decide whether to run a second, collective evaluation.
-    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()) or result.refused_by_cap, root=0)
+    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bool(bound.any()), root=0)
     ctx.members_at[mu] = len(result.members)
+    if result.n_imp_interval is not None:
+        ctx.interval_at[mu] = (float(result.n_imp_interval[0]), float(result.n_imp_interval[1]))
     if result.refused_reason is not None:
         ctx.refused_at[mu] = result.refused_reason
     else:
@@ -2714,6 +2720,10 @@ def fixed_occupation_dc(
             chi=occ_chi,
             chi_span=occ_chi_span,
         )
+        flagged = {m: iv for m, iv in ctx.interval_at.items() if iv[1] - iv[0] > config.ENSEMBLE_WEIGHT_ERROR_MAX}
+        if flagged:
+            widest = max(flagged.values(), key=lambda iv: iv[1] - iv[0])
+            dc_rec.update(ensemble_weight_interval=[round(x, 4) for x in widest], ensemble_flagged_points=len(flagged))
         if ctx.refused_at:
             # One note per search (the reasons are replicated, so every rank agrees): at these trial shifts the
             # sector energies did not fix the occupation weights well enough, so the point carries the winning

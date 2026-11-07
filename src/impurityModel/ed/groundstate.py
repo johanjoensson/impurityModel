@@ -40,9 +40,11 @@ from impurityModel.ed.memory_estimate import (
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.orbits import build_orbits
 from impurityModel.ed.sector_ensemble import (
+    ENSEMBLE_RESIDUAL_FACTOR,
     plan_ensemble,
     resolve_mixed_valence,
     sector_weights,
+    weight_interval,
     winner_plan,
 )
 from impurityModel.ed.sector_solver import (
@@ -1498,12 +1500,19 @@ def solve_member(
     return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
 
 
-def _warn_near_neighbours(search, tau, comm, kept_totals=None):
+_SINGLE_SECTOR_WHY = (
+    "this run keeps a single charge sector (mixed_valence = off / RSPt no_mv / --mixed_valence off, "
+    "or the neighbour was not admitted to the ensemble)"
+)
+
+
+def _warn_near_neighbours(search, tau, comm, kept_totals=None, why=None):
     """Warn (rank 0) when a neighbour of the walk's winner lies inside the thermal window but is not kept.
 
     ``kept_totals`` are the sectors the ground state holds: the winner alone by default, or the members an
     ensemble kept when it was cut after a member's thermal solve failed (review 7c). The gaps come from the
-    walk's records, which are replicated, so this needs no state and no collective.
+    walk's records, which are replicated, so this needs no state and no collective. ``why`` names the reason the
+    sector is out (a refused member's reason); by default the run keeps one sector because mixed valence is off.
     """
     d = search.diagnostics
     if d is None:
@@ -1520,7 +1529,7 @@ def _warn_near_neighbours(search, tau, comm, kept_totals=None):
     print(
         f"WARNING: the thermal state is taken at {held}, but a neighbouring sector lies "
         f"within the thermal window ({where} N_imp = {d.winner_total}, tau = {tau:.4g}); its Boltzmann "
-        "weight (> 1e-4) is not in the ground state.",
+        f"weight (> 1e-4) is not in the ground state: {why or _SINGLE_SECTOR_WHY}.",
         flush=True,
     )
 
@@ -1656,47 +1665,35 @@ def _agree_on_switch(mixed_valence, comm):
 
 
 def member_refusal(member, truncation, convergence, comm):
-    """``(reason, by_cap)`` when a member's thermal solve may not enter a merge; ``None`` when it may.
+    """The reason a member's thermal solve may not enter a merge; ``None`` when it may.
 
-    The plan checked the walk's records. The thermal solve builds its own, larger basis, and that basis can be
-    cap-bound or unconverged where the walk's was not (review H-MV11). Two things refuse the member: a cap- or
-    memory-bound basis, or a residual measured on the final basis and above ``e_pt2_tol``. Two weaker verdicts
-    only warn (owner decision): a residual not re-measured after the last truncation, and a thermal manifold
-    wider than the reference states the residual covers. ``truncation`` is the solver's raw ``truncation_report``
-    (``None`` when not capped), ``convergence`` its ``convergence_report``. The verdict is taken from rank 0's
-    reports and broadcast; the broadcast is unconditional on every rank of ``comm``.
+    Admission is by energy (review S4): a cap-bound basis or a residual above ``e_pt2_tol`` no longer refuses a
+    member, it widens the weight interval (:func:`~impurityModel.ed.sector_ensemble.weight_interval`) and is
+    warned about. Only the measured-memory guard refuses: it held the basis below what any cap would, so the
+    member's energy and weight are unreliable in a way the interval does not cover. ``truncation`` is the solver's
+    raw ``truncation_report`` (``None`` when not capped), ``convergence`` its ``convergence_report``. The verdict
+    is taken from rank 0's reports and broadcast; the broadcast is unconditional on every rank of ``comm``.
     """
-    cap_bound = is_cap_bound(truncation)
     memory_bound = bool(truncation and truncation.get("memory_bound"))
     convergence = convergence or {}
-    unconverged = convergence.get("converged") is False
     verdict = (
-        bool(cap_bound),
         memory_bound,
-        bool(unconverged),
+        convergence.get("converged") is False,
         convergence.get("residual_pt2"),
         convergence.get("limited_by"),
-        bool(convergence.get("residual_is_current", True)),
     )
     if comm is not None:
         verdict = comm.bcast(verdict, root=0)
-    cap_bound, memory_bound, unconverged, residual, limited_by, current = verdict
+    memory_bound, unconverged, residual, limited_by = verdict
     if memory_bound:
-        # Not a cap verdict: the measured-memory guard held the basis, which no other cap would change.
-        return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard", False
-    if cap_bound:
-        return f"the N_imp = {member.total} member's thermal solve is bound by the determinant cap", True
-    if not unconverged:
-        return None
-    detail = f"residual PT2 {residual:.2e}" if residual is not None else "no residual"
-    if limited_by:
-        detail += f", limited by {limited_by}"
-    if current and limited_by != "manifold_widened":
-        return f"the N_imp = {member.total} member's thermal solve is not converged ({detail})", False
-    if comm is None or comm.rank == 0:
+        return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard"
+    if unconverged and (comm is None or comm.rank == 0):
+        detail = f"residual PT2 {residual:.2e}" if residual is not None else "no residual"
+        if limited_by:
+            detail += f", limited by {limited_by}"
         print(
-            f"WARNING: the N_imp = {member.total} ensemble member's thermal solve is not certified ({detail}); "
-            "it is merged, since the residual is stale or does not cover the whole manifold rather than large.",
+            f"WARNING: the N_imp = {member.total} ensemble member's thermal solve is not converged ({detail}); "
+            "it is merged, and the occupation weights carry the corresponding interval.",
             flush=True,
         )
     return None
@@ -1808,11 +1805,28 @@ class EnsembleResult(NamedTuple):
     realised: list
     visited: list
     refused_reason: str | None
-    refused_by_cap: bool
     error_bar: float
     truncation: dict | None
     convergence: dict | None
     search: object
+    #: ``(lo, hi)`` of ``<N_imp>`` over the members' energy uncertainty (``None`` for one member).
+    n_imp_interval: tuple | None = None
+
+
+def _ensemble_interval(members, realised, z, residuals, tau, comm):
+    """The ``(lo, hi)`` interval of ``<N_imp>`` over the members' energy uncertainty; ``None`` for one member.
+
+    Each member's true energy may lie below the realised one by ``ENSEMBLE_RESIDUAL_FACTOR`` times its residual
+    PT2 (a calibrated factor, not a bound); an uncertified member is no better. The residuals are rank 0's,
+    broadcast, so every rank returns the same interval.
+    """
+    if len(members) < 2:
+        return None
+    shifts = [ENSEMBLE_RESIDUAL_FACTOR * r for r in residuals]
+    if comm is not None:
+        shifts = comm.bcast(shifts, root=0)
+    n = [m.total for m in members]
+    return weight_interval(n, realised, z, tau, shifts)
 
 
 def solve_charge_sector_ensemble(
@@ -1943,7 +1957,7 @@ def solve_charge_sector_ensemble(
         spin_layout=spin_layout,
     )
     members = plan.members
-    refused_reason, refused_by_cap = plan.refused_reason, plan.refused_by_cap
+    refused_reason = plan.refused_reason
     visited, realised, z, truncations, convergences = [], [], [], [], []
     single = len(plan.members) == 1
     for index, member in enumerate(plan.members):
@@ -1967,7 +1981,7 @@ def solve_charge_sector_ensemble(
             # member: the members before it (the lower sectors, already visited) stay, so no consumer's work is
             # thrown away (review 7b, owner decision); this one and those after it go. A failing winner is still a
             # valid one-member ensemble, so it is visited alone.
-            reason, by_cap = bad
+            reason = bad
             kept_members = plan.members[: max(index, 1)]
             if announce_refusal and (comm is None or comm.rank == 0):
                 held = (
@@ -1978,8 +1992,8 @@ def solve_charge_sector_ensemble(
                 print(f"WARNING: mixed_valence: keeps {held}: {reason}.", flush=True)
             if warn_neighbours:
                 # The kept members were solved as ensemble members, without the single-sector note (review 7c).
-                _warn_near_neighbours(search, tau, comm, kept_totals=[m.total for m in kept_members])
-            members, refused_reason, refused_by_cap = kept_members, reason, by_cap
+                _warn_near_neighbours(search, tau, comm, kept_totals=[m.total for m in kept_members], why=reason)
+            members, refused_reason = kept_members, reason
             if visited:
                 del state
                 break
@@ -2015,6 +2029,7 @@ def solve_charge_sector_ensemble(
     convergences = [convergences[k] for k in order]
     weights = sector_weights(np.array(realised), np.array(z), tau)
     converged = [(c or {}).get("converged") is not False for c in convergences]
+    truncations_residuals = [float((c or {}).get("residual_pt2") or 0.0) for c in convergences]
     convergence = dict(convergences[0]) if convergences[0] is not None else None
     if convergence is not None and len(members) > 1 and not all(converged):
         convergence["converged"] = False
@@ -2022,17 +2037,28 @@ def solve_charge_sector_ensemble(
         if convergence["limited_by"] is None:
             bad_totals = [m.total for m, ok in zip(members, converged) if not ok]
             convergence["limited_by"] = f"ensemble member N_imp = {bad_totals[0]}"
+    interval = _ensemble_interval(members, realised, z, truncations_residuals, tau, comm)
+    n_avg = float(weights @ np.array([m.total for m in members], dtype=float))
+    wide = interval is not None and interval[1] - interval[0] > config.ENSEMBLE_WEIGHT_ERROR_MAX
+    if wide and announce_refusal and (comm is None or comm.rank == 0):
+        print(
+            f"WARNING: the occupation <N_imp> = {n_avg:.3f} is fixed only to [{interval[0]:.3f}, "
+            f"{interval[1]:.3f}] e: the members' energies carry truncation error (residual PT2 times "
+            f"{ENSEMBLE_RESIDUAL_FACTOR:g}, calibrated, not a bound; tau = {tau:.3g}). Raise the determinant "
+            "cap (truncation_threshold) to narrow it.",
+            flush=True,
+        )
     return EnsembleResult(
         members,
         weights,
         realised,
         visited,
         refused_reason,
-        refused_by_cap,
         plan.error_bar,
         worst_truncation(truncations),
         convergence,
         search,
+        interval,
     )
 
 
@@ -2419,6 +2445,7 @@ def calc_gs(
             "tau": tau,
             "e0": float(min(result.realised)),
             "error_bar": result.error_bar,
+            "n_imp_interval": None if result.n_imp_interval is None else [float(x) for x in result.n_imp_interval],
             "refused_reason": result.refused_reason,
             "members": [
                 {

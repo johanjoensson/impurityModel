@@ -584,14 +584,16 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
-    real = groundstate.plan_ensemble
+    real = groundstate.member_refusal
     refuse = {"on": False}
 
-    def planned(solved, tau, **kw):
-        # a negative limit refuses every plan that still has more than one member
-        return real(solved, tau, **({**kw, "max_error": -1.0} if refuse["on"] else kw))
+    def held(member, truncation, convergence, comm):
+        # a memory-guard hold refuses every member of a multi-member plan
+        if refuse["on"]:
+            return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard"
+        return real(member, truncation, convergence, comm)
 
-    monkeypatch.setattr(groundstate, "plan_ensemble", planned)
+    monkeypatch.setattr(groundstate, "member_refusal", held)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     mus = [0.0, 1.5, 1.75]  # 1.5 and 1.75 sit on the crossing (n = 1.25 -> 1.98): two members
     free = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
@@ -601,7 +603,7 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
     capsys.readouterr()
     got = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
     assert sorted(ctx.refused_at) == [1.5, 1.75], ctx.refused_at
-    # an error-bar refusal is not the cap's doing: the cap ladder must not be asked to halve it away (review MV2)
+    # a memory-guard refusal is not the cap's doing: the cap ladder must not be asked to halve it away (review MV2)
     assert [mu for mu, flag in sorted(ctx.cap_bound_at.items()) if flag] == []
     assert dc_criteria._any_cap_bound(ctx) is False
     assert got[0] == free[0]  # the unrefused point is untouched
@@ -2911,11 +2913,10 @@ def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
-    real = groundstate.plan_ensemble
     monkeypatch.setattr(
         groundstate,
-        "plan_ensemble",
-        lambda solved, tau, **kw: real(solved, tau, **{**kw, "max_error": -1.0}),
+        "member_refusal",
+        lambda member, *_: f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard",
     )
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     capsys.readouterr()
@@ -2942,11 +2943,10 @@ def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_
     from impurityModel.ed import groundstate
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
-    real = groundstate.plan_ensemble
     monkeypatch.setattr(
         groundstate,
-        "plan_ensemble",
-        lambda solved, tau, **kw: real(solved, tau, **{**kw, "max_error": -1.0}),
+        "member_refusal",
+        lambda member, *_: f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard",
     )
     record = {}
     # the occupation steps with the winning sector where the ensemble is refused, so 1.6 is unreachable -- but

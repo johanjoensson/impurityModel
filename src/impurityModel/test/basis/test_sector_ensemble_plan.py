@@ -17,7 +17,7 @@ def _rec(total, energy, residual=0.0, certified=True, cap_bound=False):
 def test_a_sector_inside_the_window_is_admitted_and_one_outside_is_not():
     cut = energy_cut(TAU)
     solved = [_rec(8, 0.0), _rec(9, 0.5 * cut), _rec(7, 2.0 * cut), _rec(10, 3 * cut), _rec(6, 3 * cut)]
-    plan = plan_ensemble(solved, TAU, max_error=1.0)
+    plan = plan_ensemble(solved, TAU)
     assert [m.total for m in plan.members] == [8, 9]
     assert plan.needs == () and plan.refused_reason is None
 
@@ -25,7 +25,7 @@ def test_a_sector_inside_the_window_is_admitted_and_one_outside_is_not():
 def test_the_residual_is_optimistic_for_admission():
     cut = energy_cut(TAU)
     far = _rec(9, 1.5 * cut, residual=1.0 * cut)
-    plan = plan_ensemble([_rec(8, 0.0), far, _rec(7, 5 * cut), _rec(10, 5 * cut)], TAU, max_error=1e9)
+    plan = plan_ensemble([_rec(8, 0.0), far, _rec(7, 5 * cut), _rec(10, 5 * cut)], TAU)
     assert [m.total for m in plan.members] == [8, 9]
 
 
@@ -44,21 +44,17 @@ def test_the_winner_alone_needs_nothing_when_its_neighbours_are_solved():
     assert [m.total for m in plan.members] == [8] and plan.needs == () and plan.refused_reason is None
 
 
-@pytest.mark.parametrize(
-    "bad, word",
-    [(dict(cap_bound=True), "cap"), (dict(certified=False), "certified")],
-)
-def test_a_capped_or_uncertified_member_refuses_the_ensemble(bad, word):
+@pytest.mark.parametrize("bad", [dict(cap_bound=True), dict(certified=False), dict(cap_bound=True, certified=False)])
+def test_a_capped_or_uncertified_member_still_enters_the_ensemble(bad):
+    """Admission is by energy alone (S4): the truncation widens the weight interval, it does not drop the sector."""
     cut = energy_cut(TAU)
     solved = [_rec(8, 0.0), _rec(9, 0.4 * cut, **bad), _rec(7, 6 * cut), _rec(10, 6 * cut)]
     plan = plan_ensemble(solved, TAU)
-    assert plan.refused_reason and word in plan.refused_reason
-    assert [m.total for m in plan.members] == [8]  # the winner alone
-    # only a cap-bound member is the cap's doing: the DC cap ladder must not react to an uncertified one (review MV2)
-    assert plan.refused_by_cap is (word == "cap")
+    assert plan.refused_reason is None
+    assert [m.total for m in plan.members] == [8, 9]
 
 
-def test_the_error_bar_refuses_above_the_limit_and_scales_with_the_residual():
+def test_the_error_bar_scales_with_the_residual_and_never_refuses():
     cut = energy_cut(TAU)
 
     def plan(residual):
@@ -66,11 +62,31 @@ def test_the_error_bar_refuses_above_the_limit_and_scales_with_the_residual():
         return plan_ensemble(solved, TAU)
 
     small, large = plan(1e-6), plan(1e-3)
-    assert small.refused_reason is None and small.error_bar < 0.05
-    assert large.refused_reason and "e by the sector energies" in large.refused_reason
+    assert small.refused_reason is None and large.refused_reason is None
     assert large.error_bar == pytest.approx(1e3 * small.error_bar)
     # two equal members: sum_s p_s |N_s - <N>| err_s / tau = 2 * 0.5 * 0.5 * err / tau
     assert large.error_bar == pytest.approx(0.5 * 1e-3 / TAU)
+
+
+def test_the_weight_interval_is_exact_on_a_brute_force_vertex_scan():
+    """<N> is monotone in each sector weight: the sorted scan finds the same extremes as all 2^K vertices."""
+    import itertools
+
+    from impurityModel.ed.sector_ensemble import weight_interval
+
+    n = np.array([6.0, 7.0, 8.0, 9.0])
+    e0 = np.array([0.003, 0.0, 0.002, 0.007])
+    z = np.array([1.3, 1.0, 2.1, 1.0])
+    shift = np.array([0.001, 0.0, 0.004, 0.002])
+    lo, hi = weight_interval(n, e0, z, TAU, shift)
+    values = []
+    for corner in itertools.product([0, 1], repeat=4):
+        a = z * np.exp(-(e0 - shift * np.array(corner) - e0.min()) / TAU)
+        values.append(a @ n / a.sum())
+    assert lo == pytest.approx(min(values)) and hi == pytest.approx(max(values))
+    assert lo < float(sector_weights(e0, z, TAU) @ n) < hi
+    # a sector with no uncertainty and one member: a point
+    assert weight_interval([8.0], [0.0], [1.0], TAU, [0.0]) == (8.0, 8.0)
 
 
 def test_the_merge_weights_are_invariant_under_a_shift_and_a_permutation():
@@ -135,11 +151,11 @@ def test_the_walk_solves_the_totals_the_plan_asks_for_and_every_rank_agrees(comm
     assert sorted(r.total for r in plain.solved) == [0, 1]  # the plain walk stops at the winner's neighbours
 
     def extend(solved):
-        return plan_ensemble(solved, tau, attainable=lambda t: 0 <= t <= 2, max_error=1e9).needs
+        return plan_ensemble(solved, tau, attainable=lambda t: 0 <= t <= 2).needs
 
     wide = groundstate.find_ground_state_sector(_toy(), IMPURITY, BATHS, {0: 0}, more_totals=extend, **kw)
     assert sorted(r.total for r in wide.solved) == [0, 1, 2]
-    plan = plan_ensemble(wide.solved, tau, attainable=lambda t: 0 <= t <= 2, max_error=1e9)
+    plan = plan_ensemble(wide.solved, tau, attainable=lambda t: 0 <= t <= 2)
     assert plan.needs == () and [m.total for m in plan.members] == [0, 1, 2]
     totals = (comm or MPI.COMM_SELF).allgather([m.total for m in plan.members])
     assert all(t == totals[0] for t in totals)
@@ -245,7 +261,7 @@ def test_a_sector_exactly_on_the_energy_cut_is_not_admitted():
     """The window is open at the cut (``E_s - residual - E_min < cut``); the C2 injection ``<`` -> ``<=`` escaped."""
     cut = float(energy_cut(TAU))
     solved = [_rec(8, 0.0), _rec(9, cut), _rec(7, 5 * cut), _rec(10, 5 * cut)]
-    plan = plan_ensemble(solved, TAU, max_error=1e9)
+    plan = plan_ensemble(solved, TAU)
     assert [m.total for m in plan.members] == [8]
 
 
@@ -313,3 +329,36 @@ def test_only_the_ensemble_asks_the_walk_to_solve_edge_sectors(comm, mixed_valen
     )
     assert len(seen) == 1
     assert (seen[0] is not None) is mixed_valence
+
+
+def test_the_alpha_ce_shape_forms_three_members_though_every_sector_is_capped_and_uncertified():
+    """V5.2: on a cap-bound metal every sector is cap-bound and uncertified; the ensemble used to never form."""
+    tau = 0.0015
+    solved = [
+        _rec(1, 0.0, residual=5.7e-6, certified=False, cap_bound=True),
+        _rec(0, 2.64 * tau, residual=5.7e-6, certified=False, cap_bound=True),
+        _rec(2, 3.70 * tau, residual=5.7e-6, certified=False, cap_bound=True),
+        _rec(3, 20 * tau, residual=5.7e-6, certified=False, cap_bound=True),
+        _rec(-1, 20 * tau, residual=5.7e-6, certified=False, cap_bound=True),
+    ]
+    plan = plan_ensemble(solved, tau)
+    assert sorted(m.total for m in plan.members) == [0, 1, 2] and plan.refused_reason is None
+
+
+def test_the_fe_shape_forms_two_members_and_its_interval_is_wide():
+    """The residual (2.3e-3) is 0.9 tau: the neighbour at 0.82 tau is admitted and the interval says how little the
+    weights are worth."""
+    from impurityModel.ed.sector_ensemble import ENSEMBLE_RESIDUAL_FACTOR, weight_interval
+
+    tau = 0.0025
+    res = 2.3e-3
+    solved = [
+        _rec(6, 0.0, res, False, True),
+        _rec(7, 0.82 * tau, res, False, True),
+        _rec(5, 40 * tau, res, False, True),
+        _rec(8, 40 * tau, res, False, True),
+    ]
+    plan = plan_ensemble(solved, tau)
+    assert sorted(m.total for m in plan.members) == [6, 7]
+    lo, hi = weight_interval([6, 7], [0.0, 0.82 * tau], [1.0, 1.0], tau, [ENSEMBLE_RESIDUAL_FACTOR * res] * 2)
+    assert 6.0 <= lo < hi <= 7.0 and hi - lo > 0.3

@@ -180,7 +180,7 @@ def test_convergence_summary_names_residual_limit_and_margin():
             "sector_diagnostics": {"winner_total": 8, "margin": 0.5, "undecided": True},
         }
     )
-    assert "NOT converged" in line and "3.00e-06" in line and "limited by cap" in line
+    assert "NOT converged" in line and "3.00e-06" in line and "limited by the determinant cap" in line
     assert "N_imp=8 (undecided)" in line
     ok = convergence_summary({"converged": True, "residual_pt2": 0.0, "e_pt2_tol": 1e-8})
     assert ok.startswith("convergence: converged;") and "limited" not in ok
@@ -214,4 +214,4 @@ def test_degraded_warnings_only_name_unconverged_or_undecided():
             "sector_diagnostics": {"undecided": True, "winner_total": 8},
         }
     )
-    assert len(got) == 2 and "limited by cap" in got[0] and "N_imp=8" in got[1]
+    assert len(got) == 2 and "limited by the determinant cap" in got[0] and "N_imp=8" in got[1]
