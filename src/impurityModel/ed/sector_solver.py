@@ -781,6 +781,23 @@ def _scores(dets, importance=None):
     return [min(1.0, -np.log10(max(importance.get(det, 0.0), 1e-30)) / 30.0) for det in dets]
 
 
+def _covered_importance(keys, importance, comm):
+    """``importance`` when it describes the class ``keys`` (at least half its determinants carry weight), else ``None``.
+
+    The importance map is one class's amplitudes. Another class (another block of the per-label window solve) has
+    none of those determinants, so every one of its scores would tie at the maximum and no share of it would
+    ever fit; it is ranked by hash instead. Decided on the global counts, so every rank decides alike. Collective.
+    """
+    if importance is None:
+        return None
+    counts = np.array([sum(1 for d in keys.keys() if d in importance), len(keys)], dtype=np.int64)
+    if comm is not None and comm.size > 1:
+        total = np.empty_like(counts)
+        comm.Allreduce(counts, total, op=MPI.SUM)
+        counts = total
+    return importance if 2 * counts[0] >= counts[1] and counts[1] > 0 else None
+
+
 def _score_cut(scores, share, comm):
     """The score below which a ``share`` of all determinants (summed over ranks) lies: a histogram cut. Collective."""
     hist = np.histogram(np.asarray(scores, dtype=float), bins=_SCORE_BINS, range=(0.0, 1.0))[0].astype(np.int64)
@@ -843,7 +860,11 @@ def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=N
     if not truncate:
         return merged, False
     scores = [
-        _scores(keys.keys(), importance if importance is not None and i == 0 else None) if derived[i] is None else None
+        (
+            _scores(keys.keys(), _covered_importance(keys, importance, comm) if i == 0 else None)
+            if derived[i] is None
+            else None
+        )
         for i, keys in enumerate(units)
     ]
     best, lo, hi = merged, 0.0, 1.0
@@ -1326,7 +1347,10 @@ def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_or
         merged, _ = _add_orbits_within_cap(merged, [seed_reps], orbits, None, truncate=False)
         level_sources = [i for i in level if kept.derived[i] is None]
         units = [
-            _orbit_reps(orbits, merged, kept[i], importance if n == 0 else None) for n, i in enumerate(level_sources)
+            _orbit_reps(
+                orbits, merged, kept[i], _covered_importance(kept[i], importance, merged.comm) if n == 0 else None
+            )
+            for n, i in enumerate(level_sources)
         ]
         # A mirror is the same orbits only if its symmetry is in the group (a generator that did not map
         # spin pairs onto pairs, or a group over the cap, leaves it out): its orbits not already there join.
@@ -1389,8 +1413,9 @@ def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_or
 def _label_blocks(plan, kept, basis, orbits, parities, n_orb):
     """``(node_of, blocks)``: the blocks the per-label window solve runs in. Collective.
 
-    A node is ``(2 S_z or None, parity)`` (``2 S_z`` is part of the node only when the labels carry one). The orbit group
-    may map a node's determinants onto another node's (a spin flip changes both labels), and a block must hold
+    A node is ``(2 S_z or None, parity)`` (``2 S_z`` is part of the node only when the labels carry
+    one). The orbit group may map a node's determinants onto another node's (a spin flip changes both labels),
+    and a block must hold
     whole orbits, so the nodes one orbit touches share a block. ``node_of(bits)`` is the node of every row;
     ``blocks`` maps each in-window node to the frozenset of nodes of its block.
     """

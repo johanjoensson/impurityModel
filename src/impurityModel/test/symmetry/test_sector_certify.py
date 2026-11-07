@@ -1261,3 +1261,16 @@ def test_a_per_label_solve_with_a_degraded_manifold_is_not_converged():
     healthy = fake(5)
     _record_union_cut(healthy, {"per_label": 2}, 100, 90)
     assert healthy.convergence_report["converged"] is True
+
+
+def test_importance_describes_only_the_class_it_was_measured_on():
+    """A class that shares no determinant with the winner's amplitudes is ranked by hash, not by a tie of zeros."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+    from impurityModel.ed.sector_solver import _covered_importance
+
+    mine = ManyBodyState.from_keys([SlaterDeterminant.from_bytes(bytes([i])) for i in range(1, 5)])
+    other = ManyBodyState.from_keys([SlaterDeterminant.from_bytes(bytes([i])) for i in range(10, 14)])
+    weight = dict.fromkeys(mine.keys(), 0.1)
+    assert _covered_importance(mine, weight, None) is weight
+    assert _covered_importance(other, weight, None) is None
+    assert _covered_importance(mine, None, None) is None
