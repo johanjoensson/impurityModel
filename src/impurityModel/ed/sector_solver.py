@@ -1276,6 +1276,88 @@ def window_deficit(verdicts, es, within, lowest_expected):
     return found, expected
 
 
+def _thermal_union(merged, plan, kept, importance, orbits, cap, max_two_sz, n_orb, verbose):
+    """Grow ``merged`` (the seed) by the classes of ``kept`` within ``cap``: ``(merged, union_cut, cut)``. Collective.
+
+    The classes at the winning level go in together and are cut together; every later class goes in whole or stops
+    the union. ``union_cut`` is the report dict, ``cut`` the list of messages (empty when everything fit).
+    """
+    cut = []
+
+    def rows_of(dets):
+        return _spin_partner_rows(dets, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
+
+    # The classes at the winning energy make the level the window exists to hold: they go in
+    # together and are cut together. Every later class goes in whole or stops the union.
+    level = [i for i, own in enumerate(kept.in_window) if own or kept.at_winning_level[i]]
+    local = {i: n for n, i in enumerate(level)}
+    if orbits is not None:
+        # Whole symmetry orbits instead of classes plus ladder rows: the seed is closed first, so the union
+        # (and any cut of it) is made of whole orbits. A mirror is the same orbits as its source.
+        seed_reps = _orbit_reps(orbits, merged, ManyBodyState.from_keys(list(merged.local_basis)), None)
+        merged, _ = _add_orbits_within_cap(merged, [seed_reps], orbits, None, truncate=False)
+        level_sources = [i for i in level if kept.derived[i] is None]
+        units = [
+            _orbit_reps(orbits, merged, kept[i], importance if n == 0 else None) for n, i in enumerate(level_sources)
+        ]
+        # A mirror is the same orbits only if its symmetry is in the group (a generator that did not map
+        # spin pairs onto pairs, or a group over the cap, leaves it out): its orbits not already there join.
+        held = {bytes(r) for reps, _s in units for r in reps}
+        for i in (j for j in level if kept.derived[j] is not None):
+            reps, scores = _orbit_reps(orbits, merged, kept[i], None)
+            fresh = np.array([bytes(r) not in held for r in reps], dtype=bool)
+            units.append((reps[fresh], scores[fresh]))
+        merged, whole = _add_orbits_within_cap(merged, units, orbits, cap, truncate=True)
+    else:
+        merged, whole = _add_units_within_cap(
+            merged,
+            [kept[i] for i in level],
+            rows_of,
+            cap,
+            truncate=True,
+            importance=importance,
+            derived=[
+                None if kept.derived[i] is None else (local[kept.derived[i][0]], kept.derived[i][1]) for i in level
+            ],
+        )
+    later = [i for i in range(len(kept)) if i not in local]
+    union_cut = {
+        "level_cut": not whole,
+        "level_classes": len(level),
+        "later_left_out": 0,
+        "later_classes": len(later),
+    }
+    if not whole:
+        cut.append(f"the {len(level)} class(es) inside the window were cut to a common share")
+        union_cut["later_left_out"] = len(later)
+        if later:
+            cut.append(f"{len(later)} class(es) admitted by the margin alone not added: the window did not fit")
+    else:
+        # A source goes in with its mirrors or not at all: an asymmetric union breaks SYM.
+        sources = [i for i in later if kept.derived[i] is None]
+        for pos, i in enumerate(sources):
+            family = [i] + [j for j in later if kept.derived[j] is not None and kept.derived[j][0] == i]
+            if orbits is not None:
+                merged, whole = _add_orbits_within_cap(
+                    merged, [_orbit_reps(orbits, merged, kept[i], None)], orbits, cap, truncate=False
+                )
+            else:
+                merged, whole = _add_units_within_cap(merged, [kept[j] for j in family], rows_of, cap, truncate=False)
+            if not whole:
+                left = sum(
+                    1 + sum(1 for j in later if kept.derived[j] and kept.derived[j][0] == k) for k in sources[pos:]
+                )
+                union_cut["later_left_out"] = left
+                cut.append(f"{left} later class(es) left out")
+                break
+    if cut and (merged.comm is None or merged.comm.rank == 0) and verbose:
+        print(
+            f"  thermal window: held at the cap ({merged.size:,} of {int(cap):,} determinants): " + "; ".join(cut),
+            flush=True,
+        )
+    return merged, union_cut, cut
+
+
 def solve_certified(
     h_op,
     basis,
@@ -1340,85 +1422,19 @@ def solve_certified(
     cap = basis.truncation_threshold
     with measured_phase("thermal window", comm, verbose=verbose_memory) as phase:
         merged = basis.clone(initial_basis=list(basis.local_basis))
-        cut = []
-
-        def rows_of(dets):
-            return _spin_partner_rows(dets, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
-
-        importance = _importance(psis)
-        # The classes at the winning energy make the level the window exists to hold: they go in
-        # together and are cut together. Every later class goes in whole or stops the union.
-        level = [i for i, own in enumerate(kept.in_window) if own or kept.at_winning_level[i]]
-        local = {i: n for n, i in enumerate(level)}
-        if orbits is not None:
-            # Whole symmetry orbits instead of classes plus ladder rows: the seed is closed first, so the union
-            # (and any cut of it) is made of whole orbits. A mirror is the same orbits as its source.
-            seed_reps = _orbit_reps(orbits, merged, ManyBodyState.from_keys(list(merged.local_basis)), None)
-            merged, _ = _add_orbits_within_cap(merged, [seed_reps], orbits, None, truncate=False)
-            level_sources = [i for i in level if kept.derived[i] is None]
-            units = [
-                _orbit_reps(orbits, merged, kept[i], importance if n == 0 else None)
-                for n, i in enumerate(level_sources)
-            ]
-            # A mirror is the same orbits only if its symmetry is in the group (a generator that did not map
-            # spin pairs onto pairs, or a group over the cap, leaves it out): its orbits not already there join.
-            held = {bytes(r) for reps, _s in units for r in reps}
-            for i in (j for j in level if kept.derived[j] is not None):
-                reps, scores = _orbit_reps(orbits, merged, kept[i], None)
-                fresh = np.array([bytes(r) not in held for r in reps], dtype=bool)
-                units.append((reps[fresh], scores[fresh]))
-            merged, whole = _add_orbits_within_cap(merged, units, orbits, cap, truncate=True)
-        else:
-            merged, whole = _add_units_within_cap(
-                merged,
-                [kept[i] for i in level],
-                rows_of,
-                cap,
-                truncate=True,
-                importance=importance,
-                derived=[
-                    None if kept.derived[i] is None else (local[kept.derived[i][0]], kept.derived[i][1]) for i in level
-                ],
-            )
-        later = [i for i in range(len(kept)) if i not in local]
-        union_cut = {
-            "level_cut": not whole,
-            "level_classes": len(level),
-            "later_left_out": 0,
-            "later_classes": len(later),
-        }
-        if not whole:
-            cut.append(f"the {len(level)} class(es) inside the window were cut to a common share")
-            union_cut["later_left_out"] = len(later)
-            if later:
-                cut.append(f"{len(later)} class(es) admitted by the margin alone not added: the window did not fit")
-        else:
-            # A source goes in with its mirrors or not at all: an asymmetric union breaks SYM.
-            sources = [i for i in later if kept.derived[i] is None]
-            for pos, i in enumerate(sources):
-                family = [i] + [j for j in later if kept.derived[j] is not None and kept.derived[j][0] == i]
-                if orbits is not None:
-                    merged, whole = _add_orbits_within_cap(
-                        merged, [_orbit_reps(orbits, merged, kept[i], None)], orbits, cap, truncate=False
-                    )
-                else:
-                    merged, whole = _add_units_within_cap(
-                        merged, [kept[j] for j in family], rows_of, cap, truncate=False
-                    )
-                if not whole:
-                    left = sum(
-                        1 + sum(1 for j in later if kept.derived[j] and kept.derived[j][0] == k) for k in sources[pos:]
-                    )
-                    union_cut["later_left_out"] = left
-                    cut.append(f"{left} later class(es) left out")
-                    break
-        if cut and (basis.comm is None or basis.comm.rank == 0) and verbose:
-            print(
-                f"  thermal window: held at the cap ({merged.size:,} of {int(cap):,} determinants): " + "; ".join(cut),
-                flush=True,
-            )
+        merged, union_cut, cut = _thermal_union(
+            basis.clone(initial_basis=list(basis.local_basis)),
+            plan,
+            kept,
+            _importance(psis),
+            orbits,
+            cap,
+            max_two_sz,
+            n_orb,
+            verbose,
+        )
         kept.clear()
-        del importance, psis
+        del psis
         solver = CIPSISolver(merged)
         solver.orbits = orbits
         solver.expand(h_op, manifold, **expand_kwargs)
