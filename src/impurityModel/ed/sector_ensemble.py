@@ -262,18 +262,20 @@ def weight_interval(n, e0, z, tau, lo_shift, hi_shift=None):
     z = np.asarray(z, dtype=float)
     lo_shift = np.asarray(lo_shift, dtype=float)
     hi_shift = np.zeros_like(lo_shift) if hi_shift is None else np.asarray(hi_shift, dtype=float)
-    ref = e0.min()
-    a_max = z * np.exp(-(e0 - lo_shift - ref) / tau)
-    a_min = z * np.exp(-(e0 + hi_shift - ref) / tau)
+    # Log weights: each vertex is normalised by its own largest term, so neither a wide box (exp overflow)
+    # nor a vertex whose terms all sit far below the reference (0 / 0) can produce a NaN.
+    log_max = np.log(z) - (e0 - lo_shift) / tau
+    log_min = np.log(z) - (e0 + hi_shift) / tau
     order = np.argsort(n, kind="stable")
-    n, a_max, a_min = n[order], a_max[order], a_min[order]
+    n, log_max, log_min = n[order], log_max[order], log_min[order]
     k = len(n)
 
     def extreme(sign):
         best = None
         for cut in range(k + 1):
             high = np.arange(k) >= cut  # the sectors at the heavy end
-            a = np.where(high == (sign > 0), a_max, a_min)
+            log_a = np.where(high == (sign > 0), log_max, log_min)
+            a = np.exp(log_a - log_a.max())
             value = float(a @ n / a.sum())
             if best is None or sign * value > sign * best:
                 best = value

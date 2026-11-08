@@ -1596,7 +1596,7 @@ def _solve_window_per_label(
         eig = getattr(solver_l, "eig", None)
         certified.append(union_l.size < dense_cutoff or eig is None or bool(eig.certified))
         conv = solver_l.convergence_report or {}
-        converged.append(bool(conv.get("converged", True)))
+        converged.append(conv.get("converged") is not False)
         reports.append(solver_l.truncation_report)
         sizes.append(int(union_l.size))
         references.append(int((solver_l.last_selection or {}).get("n_references", 0)))
@@ -1608,7 +1608,7 @@ def _solve_window_per_label(
         del solver_l, union_l, psis_l, seed, sub
     es_all = np.concatenate(energies) if energies else np.zeros(0)
     order = np.argsort(es_all, kind="stable")
-    keep, _more = _energy_cut_indices(es_all, window, _degeneracy_tol(es_all, slater_weight_min))
+    keep, _more = _energy_cut_indices(es_all, window, max(_degeneracy_tol(es_all, slater_weight_min), group_tol or 0.0))
     keep = sorted(keep, key=lambda j: (es_all[j], j))
     merged = basis.clone(initial_basis=list(basis.local_basis))
     for keys in key_sets:

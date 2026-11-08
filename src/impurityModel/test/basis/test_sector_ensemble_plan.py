@@ -362,3 +362,15 @@ def test_the_fe_shape_forms_two_members_and_its_interval_is_wide():
     assert sorted(m.total for m in plan.members) == [6, 7]
     lo, hi = weight_interval([6, 7], [0.0, 0.82 * tau], [1.0, 1.0], tau, [ENSEMBLE_RESIDUAL_FACTOR * res] * 2)
     assert 6.0 <= lo < hi <= 7.0 and hi - lo > 0.3
+
+
+def test_weight_interval_does_not_overflow_for_a_wide_energy_box():
+    # exp(+3 * residual / tau) overflows when the box reaches far below the lowest realised energy
+    import numpy as np
+
+    from impurityModel.ed.sector_ensemble import weight_interval
+
+    lo, hi = weight_interval(
+        np.array([1.0, 2.0]), np.array([0.0, 0.5]), np.array([1.0, 1.0]), 1e-3, np.array([2.0, 0.0])
+    )
+    assert np.isfinite(lo) and np.isfinite(hi) and 1.0 <= lo <= hi <= 2.0

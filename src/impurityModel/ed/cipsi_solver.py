@@ -1102,6 +1102,10 @@ class CIPSISolver:
             if len(e_ref) == 0:
                 break
             e0 = float(np.min(e_ref))
+            if self.basis.is_distributed:
+                # Rank 0's value on every rank: the refiner's snapshot and its restore (collectives) decide on it,
+                # and `e_ref` is bitwise replicated only in the `safe` build.
+                e0 = float(self.basis.comm.bcast(e0, root=0))
             _trace_note(
                 "cipsi_energy",
                 cycle=cycle,
