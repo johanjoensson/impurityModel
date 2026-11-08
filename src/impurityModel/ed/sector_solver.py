@@ -107,18 +107,7 @@ RANK_FLOOR = 1e-3
 RANK_KAPPA = 2.0
 
 
-def effective_ranking_cap(cap):
-    """The cap pass 1 of a certification ranks under, or ``None`` (rank at the full cap).
-
-    ``GS_RANKING_CAP``: ``off`` (``None``), ``auto`` (``max(cap // 8, 20000)``) or an integer; never above
-    ``cap``, and ``None`` for an infinite cap. Resolved from the cap in force, so it follows the DC ladder.
-    """
-    setting = str(config.GS_RANKING_CAP.get()).strip().lower()
-    if setting in ("off", "0", "none", "false") or cap is None or not np.isfinite(cap):
-        return None
-    ranking = max(int(cap) // 8, 20_000) if setting == "auto" else int(setting)
-    ranking = min(ranking, int(cap))
-    return None if ranking >= int(cap) else ranking
+effective_ranking_cap = config.effective_ranking_cap
 
 
 def _cap_tail(energies, selection):
@@ -826,6 +815,11 @@ def _ranking_contenders(verdict_of, candidates, reach):
         return set()
     floor = min(v.energy for v in verdict_of.values())
     contenders = {k for k in capped if verdict_of[k].lower - floor <= reach + _bound_error(verdict_of[k])}
+    # A class that was not stopped at the ranking cap is final: it anchors the tie closure when it reaches the
+    # floor, so a capped degenerate partner of the (converged) lowest class is continued with it.
+    anchors = contenders | {
+        k for k, v in verdict_of.items() if v.ranking_cap is None and v.energy - floor <= reach + _energy_error(v)
+    }
     grown = True
     while grown:
         grown = False
@@ -835,9 +829,10 @@ def _ranking_contenders(verdict_of, candidates, reach):
             vk = verdict_of[k]
             if any(
                 abs(vk.energy - verdict_of[c].energy) <= _energy_error(vk) + _energy_error(verdict_of[c])
-                for c in contenders
+                for c in anchors
             ):
                 contenders.add(k)
+                anchors.add(k)
                 grown = True
     return contenders
 

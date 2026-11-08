@@ -226,6 +226,31 @@ RETIRED_KNOBS = {
 }
 
 
+def effective_ranking_cap(cap):
+    """The cap pass 1 of a certification ranks under, or ``None`` (rank at the full cap).
+
+    ``GS_RANKING_CAP``: ``off`` (``None``), ``auto`` (``max(cap // 8, 20000)``) or a positive integer; never
+    above ``cap``, and ``None`` for an infinite cap. Resolved from the cap in force, so it follows the DC
+    ladder. A malformed value raises ``ValueError`` naming the knob.
+    """
+    import math
+
+    setting = str(GS_RANKING_CAP.get()).strip().lower()
+    if setting in ("off", "0", "none", "false") or cap is None or not math.isfinite(cap):
+        return None
+    if setting == "auto":
+        ranking = max(int(cap) // 8, 20_000)
+    else:
+        try:
+            ranking = int(float(setting))
+        except ValueError:
+            ranking = 0
+        if ranking <= 0:
+            raise ValueError(f"GS_RANKING_CAP must be 'auto', 'off' or a positive integer, got {setting!r}")
+    ranking = min(ranking, int(cap))
+    return None if ranking >= int(cap) else ranking
+
+
 def warn_retired_knobs():
     """Warn once per call for every retired knob still set in ``os.environ``."""
     import warnings

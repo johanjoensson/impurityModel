@@ -1478,12 +1478,12 @@ def _ranking_sentence(policy):
     """The ranking-cap wording of the ``determinant cap:`` line; empty when certification or ranking is off."""
     if not config.GS_SECTOR_CERTIFY.get() or not math.isfinite(float(policy.gs)):
         return ""
-    setting = str(config.GS_RANKING_CAP.get()).strip().lower()
-    if setting in ("off", "0", "none", "false"):
+    try:
+        ranking = config.effective_ranking_cap(float(policy.gs))
+    except ValueError:
+        # Rank 0 alone prints this line: the malformed knob is raised on every rank at the solve itself.
         return ""
-    gs = int(policy.gs)
-    ranking = min(max(gs // 8, 20_000) if setting == "auto" else int(setting), gs)
-    if ranking >= gs:
+    if ranking is None:
         return ""
     return (
         f"; symmetry classes are first ranked at {ranking:,} (cap/8, at least 20,000; GS_RANKING_CAP=auto|off|N) "

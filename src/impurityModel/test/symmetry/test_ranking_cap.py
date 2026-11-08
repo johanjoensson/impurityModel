@@ -217,3 +217,41 @@ def test_a_pass_2_solve_replaces_the_pass_1_solve_of_the_same_class_even_when_it
     )
     assert winner.pass_2 and winner.truncation_threshold == 1000
     assert verdicts[0].ranking_cap is None
+
+
+def test_a_capped_partner_of_a_converged_lowest_class_is_continued_with_it():
+    """The converged lowest class anchors the tie closure: a capped class whose bound misses the floor but which
+    is tied with it within the error bars is a degenerate partner and must be continued (review finding 2)."""
+    jobs = [CertificationJob(None, (k,), None, 1) for k in range(2)]
+    verdicts = {
+        0: ClassVerdict(jobs[0], -1.0, 50, 1e-4, False, False),
+        1: _capped(jobs[1], -0.9999, 1e-6),  # lower = -0.999901: misses the floor by more than its own bar
+    }
+    assert verdicts[1].lower - (-1.0) > sector_solver._bound_error(
+        verdicts[1]
+    )  # the first test alone would not select it
+    assert _ranking_contenders(verdicts, [1], reach=0.0) == {1}
+
+
+@pytest.mark.parametrize("setting", ["20k", "-5", "banana", "1e-3"])
+def test_a_malformed_ranking_cap_raises_and_the_cap_line_survives_it(monkeypatch, setting):
+    from types import SimpleNamespace as NS
+
+    from impurityModel.ed.memory_estimate import describe_gs_cap
+
+    monkeypatch.setenv("GS_RANKING_CAP", setting)
+    with pytest.raises(ValueError, match="GS_RANKING_CAP"):
+        effective_ranking_cap(1_000_000)
+    # Rank 0 alone prints the line: it must not raise there while the other ranks carry on.
+    assert "ranked" not in describe_gs_cap(NS(source="auto", gs=1_000_000))
+
+
+def test_the_cap_line_names_the_ranking_cap(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    from impurityModel.ed.memory_estimate import describe_gs_cap
+
+    monkeypatch.setenv("GS_RANKING_CAP", "auto")
+    assert "first ranked at 125,000" in describe_gs_cap(NS(source="auto", gs=1_000_000))
+    monkeypatch.setenv("GS_RANKING_CAP", "off")
+    assert "ranked" not in describe_gs_cap(NS(source="auto", gs=1_000_000))

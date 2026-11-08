@@ -1136,7 +1136,7 @@ class CIPSISolver:
                     break
 
             admit_target = guard.admission_target()
-            if self.stop_at_cap and admit_target is not None:
+            if self.stop_at_cap and admit_target is not None and not (guard.limited or guard.bound):
                 admit_target = max(int(guard.threshold) - self.basis.size, 1)
             old_size = self.basis.size
             # Look-ahead: bound this cycle's admission by what the *next* selection round can afford,
