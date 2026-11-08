@@ -888,7 +888,7 @@ def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energ
         return verdict, np.array([verdict.energy]), None, SimpleNamespace(_keys={}, weighted_restrictions=None), None
 
     monkeypatch.setattr(sector_solver, "_expand_job", fake_expand_job)
-    basis = SimpleNamespace(is_distributed=False, comm=None, weighted_restrictions=None)
+    basis = SimpleNamespace(is_distributed=False, comm=None, weighted_restrictions=None, truncation_threshold=np.inf)
     h_op = SimpleNamespace(set_weighted_restrictions=lambda w: None)
     certify_sector(h_op, basis, plan, expand_kwargs={}, dense_cutoff=1000, slater_weight_min=0)
     assert ((1, False) in calls) == rerun, calls

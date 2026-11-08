@@ -1474,14 +1474,32 @@ def resolve_cap_policy(
     return resolved, budget
 
 
+def _ranking_sentence(policy):
+    """The ranking-cap wording of the ``determinant cap:`` line; empty when certification or ranking is off."""
+    if not config.GS_SECTOR_CERTIFY.get() or not math.isfinite(float(policy.gs)):
+        return ""
+    setting = str(config.GS_RANKING_CAP.get()).strip().lower()
+    if setting in ("off", "0", "none", "false"):
+        return ""
+    gs = int(policy.gs)
+    ranking = min(max(gs // 8, 20_000) if setting == "auto" else int(setting), gs)
+    if ranking >= gs:
+        return ""
+    return (
+        f"; symmetry classes are first ranked at {ranking:,} (cap/8, at least 20,000; GS_RANKING_CAP=auto|off|N) "
+        "and the ones that can still win re-solved at the full cap"
+    )
+
+
 def describe_gs_cap(policy, held_by_ceiling=None):
     """The ground-state half of a :class:`CapPolicy`, in words, for the ``determinant cap:`` line.
 
     ``held_by_ceiling`` is ``(sized, ceiling)`` when an earlier call's :class:`CapLedger` ceiling lowered this
     auto cap below what the memory probe alone would have allowed; the line then says so.
     """
+    ranking = _ranking_sentence(policy)
     if policy.source == "user":
-        return f"GS {int(policy.gs):,} (set by you; final -- memory checks warn, never lower it)"
+        return f"GS {int(policy.gs):,} (set by you; final -- memory checks warn, never lower it){ranking}"
     if policy.source == "unlimited":
         return "GS unlimited (the measured-memory guard may still hold a basis lower)"
     held = (
@@ -1494,7 +1512,7 @@ def describe_gs_cap(policy, held_by_ceiling=None):
     )
     return (
         f"GS {int(policy.gs):,} (auto, sized from available memory for the ground state alone{held}; "
-        "the measured-memory guard may hold it lower)"
+        f"the measured-memory guard may hold it lower){ranking}"
     )
 
 

@@ -456,6 +456,10 @@ class CIPSISolver:
         #: (collective; every rank calls it). ``True`` ends the expansion there, as converged would;
         #: rank 0's answer is broadcast, so the ranks cannot disagree. :attr:`stopped_early` records it.
         self.cycle_hook = None
+        #: Ranking mode (:func:`sector_solver._expand_job`): admit at most the room left under
+        #: ``basis.truncation_threshold`` and never truncate, so a cycle hook can end the expansion when the
+        #: cap is first reached, on a basis whose last selection round is a standard PT2 estimate.
+        self.stop_at_cap = False
         self.stopped_early = False
         #: The cap refiner (not the cycle hook) ended the last expansion: a class ranked under a smaller cap than
         #: the full one still has to be ranked, since the hook never voted on it.
@@ -1132,6 +1136,8 @@ class CIPSISolver:
                     break
 
             admit_target = guard.admission_target()
+            if self.stop_at_cap and admit_target is not None:
+                admit_target = max(int(guard.threshold) - self.basis.size, 1)
             old_size = self.basis.size
             # Look-ahead: bound this cycle's admission by what the *next* selection round can afford,
             # predicted from this round's own measured transient.
@@ -1197,7 +1203,7 @@ class CIPSISolver:
             guard.after_cycle(peak_rss, anon_rss, shmem_rss)
 
             truncated = False
-            if guard.capped and self.basis.size + n_new > guard.threshold:
+            if guard.capped and not self.stop_at_cap and self.basis.size + n_new > guard.threshold:
                 # Fixed-budget cycle: make room by dropping the currently least important determinants
                 # (by eigenvector amplitude), then admit the de2-ranked candidates; the loop head
                 # re-diagonalizes and the cycle repeats until the energy stabilizes.
@@ -1245,7 +1251,7 @@ class CIPSISolver:
             basis_cap_bound = refiner.restored_cap_bound
         self.psi_refs = psi_refs
         self.memory_warning = guard.warning
-        if guard.capped and self.basis.size > guard.threshold and self.psi_refs is not None:
+        if guard.capped and not self.stop_at_cap and self.basis.size > guard.threshold and self.psi_refs is not None:
             # Enforce the hard threshold on exit. `e_ref` must describe the *current* `psi_refs`: after a
             # restore that is the best cycle's, not the last one's.
             guard.note_truncation(self.basis.size)

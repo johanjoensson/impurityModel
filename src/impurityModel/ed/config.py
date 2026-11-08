@@ -695,6 +695,21 @@ GS_CERTIFY_MAX_SEED = Knob(
     seed is solved by a single expansion, uncertified.""",
 )
 
+GS_RANKING_CAP = Knob(
+    name="GS_RANKING_CAP",
+    kind="str",
+    default="auto",
+    group="groundstate",
+    doc="""Determinant cap under which the sector certifier first *ranks* its symmetry classes. Pass 1 stops
+    a class once its basis reaches this size (the cap binds only there: nothing is truncated) and bounds
+    what it may still fall to; pass 2 continues only the classes that can still win, from their pass-1
+    determinants, under the full ``truncation_threshold``. On a cap-bound system (a metal) every class
+    otherwise runs to the full cap before any is compared. ``auto`` (default): ``max(cap // 8, 20000)``,
+    never above the cap; ``off`` ranks at the full cap (no pass-1 stop); an integer sets it. A class
+    inside the ranking tail of the lowest, or tied with a contender within the error bars, is always
+    continued, so a degenerate level keeps every member.""",
+)
+
 GS_CERTIFY_WINDOW = Knob(
     name="GS_CERTIFY_WINDOW",
     kind="float",
@@ -1082,6 +1097,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_SECTOR_CERTIFY,
     GS_LOWEST_SOLVER,
     GS_CERTIFY_MAX_SEED,
+    GS_RANKING_CAP,
     GS_CERTIFY_WINDOW,
     GS_CERTIFY_WINDOW_FACTOR,
     GS_CERTIFY_LABEL_SYMMETRY,

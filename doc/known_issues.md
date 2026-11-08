@@ -140,3 +140,15 @@ common cut. Limits:
 - Which blocks form, and whether the cut triggers at all, can differ between rank counts at the threshold (the
   union size is exact, the cut tie-breaks are not rank-invariant at 1e-16).
 - Per-block caps are not yet reduced under a memory guard to keep symmetric blocks equal.
+
+## Sector certification ranks at a ranking cap
+
+Pass 1 of the certification stops a class once its basis reaches the ranking cap (`GS_RANKING_CAP=auto|off|N`;
+auto = max(cap/8, 20,000), never above the cap), nothing truncated; pass 2 re-solves the contenders at the full
+cap (`sector_solver.effective_ranking_cap`, `_cap_tail`, `_ranking_contenders`). Limits:
+
+- A ranked class's energy is an upper bound with a calibrated tail (`RANK_KAPPA` x residual PT2, not a rigorous
+  bound). A class whose growth was still falling steeply at the ranking cap is a contender automatically.
+- The contender set is frozen on pass-1 energies and closed under ties within both error bars, so degenerate
+  partners are always re-solved together (SYM). It is the same set at every rank count.
+- `GS_RANKING_CAP=off` restores ranking at the full cap. Seed-spin-trap models (NiO d6) are covered by the tail.

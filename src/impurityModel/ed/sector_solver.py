@@ -100,6 +100,42 @@ RANK_RATIO_CAP = 0.9
 #: Added to that tail: what a ranked class's energy may still fall by, beyond the extrapolation.
 RANK_FLOOR = 1e-3
 
+#: A class pass 1 stops at the ranking cap has not settled: what it may still fall by is this multiple of its
+#: PT2 estimate (residual plus the mass the cap left out), at least :data:`RANK_FLOOR`, at least the geometric
+#: tail of its last drops, or -- when its trajectory is not monotone or too short to extrapolate -- as much as
+#: it has already fallen. A calibrated margin, not a bound.
+RANK_KAPPA = 2.0
+
+
+def effective_ranking_cap(cap):
+    """The cap pass 1 of a certification ranks under, or ``None`` (rank at the full cap).
+
+    ``GS_RANKING_CAP``: ``off`` (``None``), ``auto`` (``max(cap // 8, 20000)``) or an integer; never above
+    ``cap``, and ``None`` for an infinite cap. Resolved from the cap in force, so it follows the DC ladder.
+    """
+    setting = str(config.GS_RANKING_CAP.get()).strip().lower()
+    if setting in ("off", "0", "none", "false") or cap is None or not np.isfinite(cap):
+        return None
+    ranking = max(int(cap) // 8, 20_000) if setting == "auto" else int(setting)
+    ranking = min(ranking, int(cap))
+    return None if ranking >= int(cap) else ranking
+
+
+def _cap_tail(energies, selection):
+    """How far a class stopped at the ranking cap may still fall (:data:`RANK_KAPPA`; see there)."""
+    selection = selection or {}
+    pt2 = abs(float(selection.get("residual_pt2") or 0.0)) + abs(float(selection.get("discarded_de2_mass") or 0.0))
+    tail = max(RANK_KAPPA * pt2, RANK_FLOOR)
+    drops = [energies[i] - energies[i + 1] for i in range(len(energies) - 1)]
+    recent = drops[len(drops) - RANK_PATIENCE :]
+    if len(recent) == RANK_PATIENCE and min(recent) >= -1e-9:
+        ratios = [recent[i] / recent[i - 1] for i in range(1, len(recent)) if recent[i - 1] > 1e-12]
+        if not any(r > 1.0 for r in ratios):
+            rho = min(max([RANK_RATIO_CAP] + ratios), 1.0 - 1e-6)
+            return max(tail, RANK_KAPPA * max(recent) * rho / (1.0 - rho))
+    # Not monotone, or too short to extrapolate: it may fall as far again as it already has.
+    return max(tail, float(energies[0] - energies[len(energies) - 1]) if energies else 0.0)
+
 
 def _ranking_remaining(energies):
     """How far a class's energy may still fall, once its trajectory has settled; ``None`` before.
@@ -165,6 +201,10 @@ class ClassVerdict:
     #: state, a weaker but sound bound); empty otherwise. They are the class's penalised Ritz values, measured from
     #: its own penalised lowest, not from ``energy``.
     levels: tuple = ()
+    #: Pass 1 stopped this class when its basis reached this size (:func:`effective_ranking_cap`), and pass 2 did
+    #: not continue it: ``energy`` is an upper bound at that size, ``lower`` what it may still fall to. ``None``
+    #: for a class that converged, settled, or was continued at the full cap.
+    ranking_cap: int | None = None
 
 
 @dataclass(frozen=True)
@@ -437,11 +477,14 @@ def _expand_job(
     keys=None,
     window=None,
     occupation_orbitals=None,
+    ranking_cap=None,
 ):
     """One class expansion: ``(verdict, es, psis, class_basis, solver)`` (collective).
 
     ``rank`` stops it once settled (pass 1, :func:`_ranking_remaining`); ``keys`` continues it from
-    those determinants instead of its seed (pass 2).
+    those determinants instead of its seed (pass 2). With ``ranking_cap`` a ranking class is also stopped
+    when its basis reaches that size (nothing is truncated), bounded by :func:`_cap_tail`; the basis
+    carries the cap only for this expansion, so a pass 2 clone from the seed basis runs at the full one.
 
     ``window`` (a thermal window width) makes a finished class report the energies of its basis within it of
     its lowest state (:func:`_class_window_levels`, review C7), which the verdict counts.
@@ -453,7 +496,13 @@ def _expand_job(
         initial_basis=_job_keys(plan, job, basis) if keys is None else list(keys.keys()),
         weighted_restrictions=_label_window(basis, plan.pairs, job.two_sz),
     )
+    # A seed already at the ranking cap is ranked like any other: the cap would truncate it at once.
+    capped = bool(rank) and ranking_cap is not None and class_basis.size < ranking_cap
+    if capped:
+        class_basis.truncation_threshold = ranking_cap
     solver = CIPSISolver(class_basis)
+    solver.stop_at_cap = capped
+    at_cap = [False]
     # The penalty holds the expansion in its class, so the faster solver that stays in its start's
     # symmetry sector is the right one there (GS_LOWEST_SOLVER=auto). A whole-label job has no
     # penalty: it is a plain expansion inside the hard label, where spin and orbital traps remain
@@ -480,6 +529,12 @@ def _expand_job(
         if not stop and rank:
             remaining[0] = _ranking_remaining(energies)
             stop = remaining[0] is not None
+            if not stop and capped and sv.basis.size >= ranking_cap:
+                # The cap first binds: rank on what the basis gives (the last selection round is a standard
+                # PT2 estimate of it), continue only if it can still win.
+                remaining[0] = _cap_tail(energies, sv.last_selection)
+                at_cap[0] = True
+                stop = True
         return stop
 
     if cls is not None or rank:
@@ -488,7 +543,9 @@ def _expand_job(
         solver.expand(h_op, Lowest(), **expand_kwargs)
         fields["n_dets"] = len(class_basis)
         fields["stopped_early"] = bool(solver.stopped_early)
+        fields["ranking_cap"] = int(ranking_cap) if capped else None
     solver.cycle_hook = None
+    solver.stop_at_cap = False
     levels = ()
     if window is not None and not rank and not solver.stopped_early:
         levels = _class_window_levels(solver, h_op, window, dense_cutoff, slater_weight_min)
@@ -529,6 +586,7 @@ def _expand_job(
         ranked,
         energy - tail if ranked else float("nan"),
         levels,
+        int(ranking_cap) if ranked and at_cap[0] else None,
     )
     if comm is not None:
         fields = comm.bcast(fields, root=0)
@@ -563,6 +621,7 @@ def certify_sector(
     within=None,
     only=None,
     occupation_orbitals=None,
+    ranking_cap=None,
 ):
     """Expand every job of ``plan`` from ``basis`` (the seed) and return the lowest.
 
@@ -579,10 +638,18 @@ def certify_sector(
     ``within`` (an energy window) also returns, as a sixth element, the determinant keys of every
     class inside the window above the winner -- the winner's first. ``only`` (job indices)
     restricts the expansions to those jobs (:meth:`SectorPlanStore.jobs_at`).
+
+    ``ranking_cap`` (:func:`effective_ranking_cap`) ends a pass-1 expansion when its basis reaches that size,
+    bounded by :func:`_cap_tail`. The contenders for pass 2 among those classes are fixed once, on the pass-1
+    energies, and closed under "tied within both error bars" -- the members of a degenerate level are
+    continued together or not at all -- because the lowest energy falls during pass 2 and would otherwise
+    cut a class on a margin that one member's head start made. Pass 2 runs at the basis's full cap, from the
+    pass-1 keys, and its solve replaces the pass-1 one of the same job even when it is not lower.
     """
     comm = basis.comm if basis.is_distributed else None
     rank = comm.rank if comm is not None else 0
     best = None
+    frozen = set()
     verdict_of = {}
     finished = {}  # hard label -> energies its classes reached
     keys = {}
@@ -603,6 +670,7 @@ def certify_sector(
         verdict, es, psis, class_basis, solver = _expand_job(
             h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm,
             rank=ranking, keys=start, window=within, occupation_orbitals=occupation_orbitals,
+            ranking_cap=ranking_cap if ranking else None,
         )  # fmt: skip
         verdict_of[k] = verdict
         timings.setdefault(k, []).append(time.perf_counter() - t_class)
@@ -612,9 +680,15 @@ def certify_sector(
             if within is not None:
                 weights[k] = _aligned_weights(keys[k], psis)
         # Drop the keys of every class that can no longer reach the lowest energy (plus the window):
-        # the lowest energy only falls, so a class dropped here stays out.
+        # the lowest energy only falls, so a class dropped here stays out. A class stopped at the ranking cap
+        # is decided once, between the passes (:func:`_ranking_contenders`): a class tied with a contender is
+        # continued with it even though its own bound does not reach the lowest energy.
         floor = e_min()
-        for q in [q for q in keys if _bound(verdict_of[q]) - floor > reach + _bound_error(verdict_of[q])]:
+        for q in [
+            q
+            for q in keys
+            if verdict_of[q].ranking_cap is None and _bound(verdict_of[q]) - floor > reach + _bound_error(verdict_of[q])
+        ]:
             del keys[q]
             weights.pop(q, None)
         if verbose and rank == 0:
@@ -627,7 +701,9 @@ def certify_sector(
                 f"determinants{bound}, PT2 {verdict.residual_pt2:.1e}, {timings[k][-1]:.0f} s){note}",
                 flush=True,
             )
-        if best is None or verdict.energy < best[0]:
+        # A pass-2 solve of the job whose pass-1 solve is `best` replaces it: the continued basis is the one at
+        # the full cap, and the variational energy cannot have risen beyond noise.
+        if best is None or verdict.energy < best[0] or (not ranking and best[1] == k):
             best = (verdict.energy, k, es, psis, class_basis, solver)
 
     # A mirror job is never expanded: asking for it asks for the job it is the image of.
@@ -639,18 +715,29 @@ def certify_sector(
     candidates = sorted(
         (k for k, v in verdict_of.items() if v.ranked and not v.stopped_early), key=lambda k: verdict_of[k].lower
     )
+    frozen.update(_ranking_contenders(verdict_of, candidates, reach))
+    for q in [q for q in keys if verdict_of[q].ranking_cap is not None and q not in frozen]:
+        del keys[q]
+        weights.pop(q, None)
+
+    def reaches(k):
+        # A class stopped at the ranking cap is a contender by the pass-1 verdict (frozen); any other by the
+        # lowest energy found so far.
+        if verdict_of[k].ranking_cap is not None:
+            return k in frozen
+        return verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k])
+
     if verbose and rank == 0 and candidates:
-        n_in = sum(
-            1 for k in candidates if k in keys and verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k])
-        )
+        n_in = sum(1 for k in candidates if k in keys and reaches(k))
         print(
             f"  pass 2: {n_in} of {len(candidates)} ranked class(es) reach E_min + {reach:.4g} (+ their error bars); "
             f"{len(candidates) - n_in} cut",
             flush=True,
         )
     for k in candidates:
-        if k in keys and verdict_of[k].lower - e_min() <= reach + _bound_error(verdict_of[k]):
+        if k in keys and reaches(k):
             start = keys.pop(k)
+            frozen.discard(k)
             weights.pop(k, None)
             run(k, ranking=False, start=start)
     # A mirror's problem is its representative's under a verified symmetry: same verdict, its own job.
@@ -718,11 +805,41 @@ def certify_sector(
         keys.clear()
         weights.clear()
     _energy, _k, es, psis, class_basis, solver = best
+    # The winner carries the full cap whatever pass solved it: later users of its basis (the thermal window,
+    # the sector's state) grow it under the cap the caller asked for.
+    class_basis.truncation_threshold = basis.truncation_threshold
     class_basis.weighted_restrictions = basis.weighted_restrictions
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
     if within is not None:
         return es, psis, class_basis, solver, verdicts, kept
     return es, psis, class_basis, solver, verdicts
+
+
+def _ranking_contenders(verdict_of, candidates, reach):
+    """The jobs among ``candidates`` stopped at the ranking cap that pass 2 must continue, fixed on pass-1 energies.
+
+    A class is a contender when its lower bound reaches the lowest pass-1 energy (plus ``reach`` and its error
+    bar); any capped class tied with a contender within both error bars joins it, to a fixed point.
+    """
+    capped = [k for k in candidates if verdict_of[k].ranking_cap is not None]
+    if not capped:
+        return set()
+    floor = min(v.energy for v in verdict_of.values())
+    contenders = {k for k in capped if verdict_of[k].lower - floor <= reach + _bound_error(verdict_of[k])}
+    grown = True
+    while grown:
+        grown = False
+        for k in capped:
+            if k in contenders:
+                continue
+            vk = verdict_of[k]
+            if any(
+                abs(vk.energy - verdict_of[c].energy) <= _energy_error(vk) + _energy_error(verdict_of[c])
+                for c in contenders
+            ):
+                contenders.add(k)
+                grown = True
+    return contenders
 
 
 def _classes_in_window(verdict_of, keys, floor, within):
@@ -1671,6 +1788,7 @@ def solve_certified(
     """
     comm = basis.comm
     verbose_memory = bool(verbose) and (comm is None or comm.rank == 0)
+    ranking_cap = effective_ranking_cap(basis.truncation_threshold)
     if isinstance(manifold, Lowest):
         with measured_phase("class expansions", comm, verbose=verbose_memory) as phase:
             result = certify_sector(
@@ -1683,6 +1801,7 @@ def solve_certified(
                 verbose=verbose,
                 only=only,
                 occupation_orbitals=occupation_orbitals,
+                ranking_cap=ranking_cap,
             )
             phase.dets = result[2].size
         return result
@@ -1698,6 +1817,7 @@ def solve_certified(
             within=float(manifold.max_energy),
             only=only,
             occupation_orbitals=occupation_orbitals,
+            ranking_cap=ranking_cap,
         )
         phase.dets = winner_basis.size
     del es, _solver, winner_basis
