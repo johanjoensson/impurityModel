@@ -1003,7 +1003,38 @@ def _reconciled(block_structure, op, imp, m, merge=True, report=None):
     return block_structure
 
 
-def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
+def _spin_consistent_rotation(h_imp, rot_to_spherical, tol=1e-6):
+    """Joint eigenbasis of the spin partners of ``h_imp``, or ``None`` when the pairing is not clean.
+
+    See :func:`impurity_symmetry_rotation`. ``h_imp`` is the sorted impurity block; the pairs are
+    positions in it.
+    """
+    from impurityModel.ed.spin_pairs import _pairs_from_rotated_splus
+
+    n = h_imp.shape[0]
+    if rot_to_spherical is None or not isinstance(rot_to_spherical, np.ndarray) or rot_to_spherical.shape != (n, n):
+        return None
+    pairs = _pairs_from_rotated_splus(list(range(n)), rot_to_spherical)
+    if pairs is None:
+        return None
+    dn = np.array([d for d, _ in pairs])
+    up = np.array([u for _, u in pairs])
+    if np.abs(h_imp[np.ix_(dn, up)]).max(initial=0.0) > tol:
+        return None  # the spins mix (spin-orbit coupling): there is no spin-diagonal rotation
+    h_avg = 0.5 * (h_imp[np.ix_(dn, dn)] + h_imp[np.ix_(up, up)])
+    import scipy.sparse as sp
+
+    n_comp, labels = sp.csgraph.connected_components(np.abs(h_avg) > 1e-10, directed=False)
+    u_imp = np.zeros((n, n), dtype=complex)
+    for comp in range(n_comp):
+        idx = np.where(labels == comp)[0]
+        _, sub_u = np.linalg.eigh(h_avg[np.ix_(idx, idx)])
+        u_imp[np.ix_(dn[idx], dn[idx])] = sub_u
+        u_imp[np.ix_(up[idx], up[idx])] = sub_u
+    return u_imp
+
+
+def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None, rot_to_spherical=None):
     r"""Full-space rotation that diagonalises the impurity one-body block (crystal field / SOC).
 
     Returns the unitary that takes the impurity single-particle Hamiltonian ``h[imp, imp]`` to
@@ -1044,6 +1075,15 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None
         Number of spin-orbitals (inferred if ``None``).
     h0_matrix : ndarray, optional
         Pre-extracted one-body matrix of ``op``; pass it to avoid re-walking the operator.
+    rot_to_spherical : ndarray, optional
+        The spherical -> input rotation of the (single, complete) impurity shell. When the
+        rotated ``S_+`` is a clean dn -> up permutation and ``h_imp`` does not mix the spins,
+        the two spin partners are rotated **jointly**: the spin-summed block
+        ``(h_dn + h_up) / 2`` is diagonalised per connected component and the same eigenvectors
+        are used for both spins. Diagonalising each spin on its own gives a spin-polarised
+        impurity (collinear antiferromagnet) different eigenvectors for dn and up, which
+        destroys the ``S_+`` permutation structure and with it the spin pairing. Without a
+        rotation, or when the pairing is not clean, each component is diagonalised on its own.
 
     Returns
     -------
@@ -1066,6 +1106,12 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None
 
     mask = np.abs(h_imp) > 1e-10
     n_components, labels = sp.csgraph.connected_components(mask, directed=False)
+
+    u_imp = _spin_consistent_rotation(h_imp, rot_to_spherical)
+    if u_imp is not None:
+        W = np.eye(n, dtype=complex)
+        W[np.ix_(imp, imp)] = u_imp
+        return W, u_imp
 
     u_imp = np.zeros_like(h_imp, dtype=complex)
     for comp in range(n_components):

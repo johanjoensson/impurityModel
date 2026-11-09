@@ -360,7 +360,13 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
 
         if l_valence in impurity_orbitals:
             d_indices = sorted(orb for block in impurity_orbitals[l_valence] for orb in block)
-            W, u_imp = impurity_symmetry_rotation(hOp, d_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix)
+            W, u_imp = impurity_symmetry_rotation(
+                hOp,
+                d_indices,
+                n_orb=n_spin_orbitals,
+                h0_matrix=h_matrix,
+                rot_to_spherical=rot_to_spherical.get(l_valence),
+            )
             h_rotated = rotate_hamiltonian(hOp, W, tol=spectra._ROTATION_TRIM_TOL)
             fill_ratio = len(h_rotated) / max(1, len(hOp))
             if fill_ratio <= spectra._MAX_ROTATION_FILL:
@@ -371,7 +377,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
                 correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
                 # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
                 # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
-                rot_to_spherical[l_valence] = u_imp.conj().T
+                rot_to_spherical[l_valence] = u_imp.conj().T @ np.asarray(rot_to_spherical[l_valence], dtype=complex)
                 n_classes = len(correlated_block_structure.inequivalent_blocks)
                 report(
                     f"Rotated the l={l_valence} shell into symmetry-adapted basis "

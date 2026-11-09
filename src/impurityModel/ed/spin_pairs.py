@@ -347,6 +347,12 @@ def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls=None
     if rotation is None:
         rotation = _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol, shell_ls)
     rejected, candidates = [], []
+    if rotation is None and rot_to_spherical is not None:
+        rejected.append(
+            "rotation: the spherical S_+ rotated to the solver basis is not a clean dn -> up permutation "
+            "(spin-orbit coupling, an impurity that is not one complete spin-doubled shell, or a spin-polarised "
+            "impurity whose spins were rotated differently)"
+        )
     index_bad = _invalid_pairs(index, imp_orbs, True)
     if rotation is not None:
         rotation = sorted((int(dn), int(up)) for dn, up in rotation)

@@ -370,7 +370,10 @@ def test_every_rank_solves_in_rank_zeros_rotation(monkeypatch):
         monkeypatch.setattr(
             solver_basis,
             "impurity_symmetry_rotation",
-            lambda op, imp, n_orb=None, h0_matrix=None: (np.eye(n_orb, dtype=complex), np.eye(len(imp), dtype=complex)),
+            lambda op, imp, n_orb=None, h0_matrix=None, rot_to_spherical=None: (
+                np.eye(n_orb, dtype=complex),
+                np.eye(len(imp), dtype=complex),
+            ),
         )
     sb = solver_basis.prepare_solver_basis(
         _rotating_d_model(), {}, {}, {0: list(range(10))}, 8, rot_to_spherical=np.eye(10), verbosity=0, comm=comm

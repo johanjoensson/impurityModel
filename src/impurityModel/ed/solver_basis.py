@@ -243,7 +243,7 @@ def prepare_solver_basis(
     # densifies the Coulomb tensor). Every output is rotated back to the input basis B before
     # returning; nothing here presumes a spherical-harmonic input.
     rotation_full, u_imp = impurity_symmetry_rotation(
-        h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix
+        h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix, rot_to_spherical=rot_to_spherical
     )
     if comm is not None:
         # The rotation comes from a rank-local eigh, and in a degenerate block its eigenvectors depend on the

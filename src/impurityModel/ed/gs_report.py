@@ -813,9 +813,8 @@ def _evaluate(
         if layout.labelled:
             spin_pairs = (list(layout.imp_pairs), list(layout.bath_pairs))
         if spin_pairs is None:
-            sisb_skip_reason = (
-                "no (dn, up) pairing of the impurity and bath makes H conserve S_z "
-                "(spin-orbit coupling, or a bath connectivity the pairing cannot follow); " + "; ".join(layout.rejected)
+            sisb_skip_reason = "no (dn, up) pairing of the impurity and bath makes H conserve S_z" + (
+                "; " + "; ".join(layout.rejected) if layout.rejected else ""
             )
         else:
             imp_pairs, bath_pairs = spin_pairs
