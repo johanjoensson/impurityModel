@@ -81,6 +81,21 @@ def print_block_structure(block_structure):
     print("\n".join(" ".join(f"{el:^3d}" if el != -1 else " + " for el in row) for row in mat))
 
 
+def block_structure_summary(block_structure):
+    """One line: block count, inequivalent classes and their multiplicities (the ``+`` matrix is not printed)."""
+    bs = block_structure
+    n_blocks = len(bs.blocks)
+    classes = []
+    for i in bs.inequivalent_blocks:
+        copies = (
+            1
+            + sum(len(rel[i]) for rel in (bs.identical_blocks, bs.transposed_blocks, bs.particle_hole_blocks))
+            + len(bs.particle_hole_transposed_blocks[i])
+        )
+        classes.append(f"{copies} x {len(bs.blocks[i])}-orbital")
+    return f"{n_blocks} block(s), {len(classes)} inequivalent: " + ", ".join(classes)
+
+
 def get_equivalent_orbs(block_structure):
     """Get lists of equivalent orbitals grouped by inequivalent blocks.
 

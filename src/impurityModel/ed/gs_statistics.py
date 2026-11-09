@@ -23,6 +23,7 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_comm import graph_alltoall
+from impurityModel.ed.utils import format_index_ranges
 
 
 def _boltzmann_weights(es, tau):
@@ -993,8 +994,12 @@ def print_gs_statistics(stats, file=None, verbose=1):
     vecs = np.asarray(stats["natural_orbital_vectors"])
     orbital_labels = stats["natural_orbital_basis"]
     print("  composition (top components, |orb> = computational spin-orbital):", file=file)
+    pure = {}
     for k, occ in enumerate(nat):
         weights = np.abs(vecs[:, k]) ** 2
+        if weights.max() > 1.0 - 1e-6 and (occ < 1e-4 or occ > 1.0 - 1e-4):  # a filled/empty orbital of the basis
+            pure.setdefault(round(float(occ), 4), []).append(int(orbital_labels[int(np.argmax(weights))]))
+            continue
         top = np.argsort(weights)[::-1]
         parts = []
         covered = 0.0
@@ -1006,6 +1011,8 @@ def print_gs_statistics(stats, file=None, verbose=1):
             if covered >= 0.95:
                 break
         print(f"    n={occ:6.4f}: " + " + ".join(parts), file=file)
+    for occ, orbs in sorted(pure.items(), reverse=True):
+        print(f"    {len(orbs)} x n={occ:6.4f}: pure orbitals {format_index_ranges(sorted(orbs))}", file=file)
 
     print("\nTop Slater determinants (thermal weight):", file=file)
     channels = stats.get("channel_indices")

@@ -1418,6 +1418,26 @@ def compute_screening_diagnostics(
     return {"z_only": bool(z_only), "channels": channels, "levels": levels, "with_correlation": with_correlation}
 
 
+def collapse_screening_levels(levels, tol=1e-6):
+    """Bath rows that agree in every number (to ``tol``) fold into one ``(first_row, count)``, energy order kept.
+
+    Symmetry-equivalent bath levels (the t2g triplet, the eg pair) carry identical numbers; a class whose
+    members disagree in any column stays expanded, which is how a broken symmetry shows.
+    """
+    out = {}
+    for row in levels:
+        key = tuple(
+            round(float(row[k]) / tol)
+            for k in ("eps_dn", "eps_up", "n_dn", "n_up", "v_dn", "v_up")
+            + (("sisb",) if row.get("sisb") is not None else ())
+        )
+        if key in out:
+            out[key][1] += 1
+        else:
+            out[key] = [row, 1]
+    return [(row, count) for row, count in out.values()]
+
+
 def print_screening_diagnostics(scr, file=None):
     """Pretty-print the dict from :func:`compute_screening_diagnostics`."""
     corr_label = "Sz_imp.Sz_b" if scr["z_only"] else "S_imp.S_b"
@@ -1434,7 +1454,9 @@ def print_screening_diagnostics(scr, file=None):
         header += f" {f'<{corr_label}>':>13s}"
     print("  Bath levels (sorted by energy):", file=file)
     print(header, file=file)
-    for row in scr["levels"]:
+    uncoupled = [row for row in scr["levels"] if max(row["v_dn"], row["v_up"]) < 1e-8]
+    classes = collapse_screening_levels([row for row in scr["levels"] if row not in uncoupled])
+    for row, count in classes:
         pair_label = "({},{})".format(*row["pair"])
         line = (
             f"  {pair_label:>14s} {row['eps_dn']:>9.4f} {row['eps_up']:>9.4f} "
@@ -1442,7 +1464,9 @@ def print_screening_diagnostics(scr, file=None):
         )
         if scr["with_correlation"]:
             line += f" {row['sisb']:>13.6f}"
-        print(line, file=file)
+        print(line + (f"   x{count}" if count > 1 else ""), file=file)
+    if uncoupled:
+        print(f"  {len(uncoupled)} bath level(s) with |V| = 0 (not coupled to the impurity) not listed", file=file)
 
 
 def compute_magnetic_summary(

@@ -19,7 +19,7 @@ from impurityModel.ed import config
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.basis_transcription import comm_support_filter
-from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_structure
+from impurityModel.ed.block_structure import block_structure_summary, get_equivalent_blocks
 from impurityModel.ed.cipsi_solver import _degeneracy_tol
 from impurityModel.ed.degeneracy import MANIFOLD_TOL, degenerate_groups
 from impurityModel.ed.density_matrices import build_density_matrices
@@ -1023,6 +1023,24 @@ def _assemble(R, src, magnetic, ensemble, gs_convergence_report):
         return None
 
 
+def _restriction_label(indices, naming):
+    """``indices`` named by the orbital group it equals ("group 0 valence bath (84): 82-84"), else as ranges."""
+    wanted = sorted(int(i) for i in indices)
+    ranges = format_index_ranges(wanted)
+    try:
+        named = [("impurity", naming.indices("impurity"), None)]
+        for key in sorted({o.group_key for o in naming.infos.values()}, key=str):
+            for role in ("impurity", "valence", "conduction"):
+                named.append((role, naming.indices(role, key), key))
+        for role, members, key in named:
+            if members and members == wanted:
+                what = "impurity" if key is None else f"group {key} {role}" + ("" if role == "impurity" else " bath")
+                return f"{what} ({len(wanted)}): {ranges}"
+    except Exception:  # a label is a courtesy: never lose the restriction itself
+        pass
+    return ranges
+
+
 def _present(
     R,
     src,
@@ -1190,7 +1208,7 @@ def _present(
             # index list is all one sees of a line whose point is the occupation window at its end.
             print("Effective GS restrictions (observed electron count per orbital set):")
             for indices, occupations in effective_restrictions.items():
-                print(f"  {format_index_ranges(indices)} : {occupations[0]}-{occupations[1]}")
+                print(f"  {_restriction_label(indices, R.naming)} : {occupations[0]}-{occupations[1]}")
             if excitation_bound_records:
                 print("Effective bath-excitation bounds (valence holes / conduction electrons / total):")
                 for rec in excitation_bound_records:
@@ -1201,8 +1219,7 @@ def _present(
                         f"total {rec['max_total']} -> {rec['max_total'] + 1}"
                         + ("  [cap-bound]" if rec["cap_bound"] else "")
                     )
-            print("Block structure:")
-            print_block_structure(block_structure)
+            print(f"Block structure: {block_structure_summary(block_structure)}")
             print_impurity_orbital_groups(
                 get_equivalent_blocks(block_structure), block_structure, ground_state_basis.impurity_orbitals
             )
@@ -1296,7 +1313,10 @@ def _present(
                     for block_i, (imp_orbs, val_orbs, con_orbs) in enumerate(
                         zip(impurity_orbital_blocks, valence_bath_orbital_blocks, conduction_bath_orbital_blocks)
                     ):
-                        print(f"Block {block_i}: impurity {imp_orbs}, valence {val_orbs}, conduction {con_orbs}")
+                        print(
+                            f"Block {block_i}: impurity {format_index_ranges(imp_orbs)}, "
+                            f"valence {format_index_ranges(val_orbs)}, conduction {format_index_ranges(con_orbs)}"
+                        )
                         impurity_ix = np.ix_(imp_orbs, imp_orbs)
                         bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
                         matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:", n_prec=5)

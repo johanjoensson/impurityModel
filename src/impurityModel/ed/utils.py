@@ -246,12 +246,20 @@ def print_density_matrix_summary(m: np.ndarray, label: Optional[str] = None, off
     big = np.abs(m[iu, ju]) > offdiag_tol
     n_big = int(np.count_nonzero(big))
     print(f"  off-diagonal entries with |value| > {offdiag_tol:g}: {n_big} of {iu.size}")
-    order = np.argsort(np.abs(m[iu[big], ju[big]]))[::-1]
+    order = np.argsort(np.abs(m[iu[big], ju[big]]), kind="stable")[::-1]
+    # Symmetry copies carry one value: list it once with its multiplicity.
+    seen = {}
     for k in order:
         i, j = int(iu[big][k]), int(ju[big][k])
         val = m[i, j]
+        key = (round(float(val.real), 5) + 0.0, round(float(val.imag), 5) + 0.0)
+        if key in seen:
+            seen[key][1] += 1
+            continue
+        seen[key] = [(i, j, val), 1]
+    for (i, j, val), count in seen.values():
         val_str = f"{val.real: .5f}" if abs(val.imag) < 1e-12 else f"{val.real: .5f}{val.imag:+.5f}j"
-        print(f"    ({i:>3d},{j:>3d}) = {val_str}")
+        print(f"    ({i:>3d},{j:>3d}) = {val_str}" + (f"   x{count}" if count > 1 else ""))
 
 
 def report_banner(title: str, file=None) -> None:
