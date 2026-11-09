@@ -665,9 +665,9 @@ def _calc_gs_kwargs(truncation_threshold):
     block_structure = BlockStructure(
         blocks=[[0, 1]],
         identical_blocks=[[0]],
-        transposed_blocks=[],
-        particle_hole_blocks=[],
-        particle_hole_transposed_blocks=[],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
         inequivalent_blocks=[0],
     )
     return Hop, basis_setup, block_structure

@@ -16,6 +16,40 @@ BlockStructure = namedtuple(
 )
 
 
+def blocks_as_positions(block_structure, impurity_indices):
+    """``block_structure`` with its blocks as positions into the sorted impurity list. Idempotent.
+
+    The canonical convention of a block structure is *positions*: ``blocks`` hold ``0..n_imp-1`` (the
+    row/column of the impurity matrix the blocks were found in), never spin-orbital indices. Producers
+    that have the global indices (the ``get_spectra`` fallback) are translated here, and anything that
+    is neither raises, so a mismatch is caught once instead of silently addressing the wrong rows.
+
+    Parameters
+    ----------
+    block_structure : BlockStructure
+    impurity_indices : iterable of int
+        The impurity spin-orbital indices (any order).
+
+    Raises
+    ------
+    ValueError
+        If the blocks are not a partition of either ``range(n_imp)`` or the impurity indices.
+    """
+    imp = sorted(int(i) for i in impurity_indices)
+    flat = [int(o) for b in block_structure.blocks for o in b]
+    if len(flat) != len(set(flat)):
+        raise ValueError("block structure: an orbital belongs to more than one block")
+    if set(flat) == set(range(len(imp))):
+        return block_structure
+    if set(flat) == set(imp):
+        pos = {g: k for k, g in enumerate(imp)}
+        return block_structure._replace(blocks=[[pos[int(o)] for o in b] for b in block_structure.blocks])
+    raise ValueError(
+        f"block structure covers orbitals {sorted(set(flat))}, which are neither the positions "
+        f"0..{len(imp) - 1} nor the impurity spin-orbital indices {imp}"
+    )
+
+
 def print_block_structure(block_structure):
     """Print a text representation of the block structure of the Hamiltonian.
 
@@ -24,7 +58,6 @@ def print_block_structure(block_structure):
     block_structure : BlockStructure
         The block structure representation to print.
     """
-    orb_offset = min(orb for block in block_structure.blocks for orb in block)
     n_orb = sum(len(block) for block in block_structure.blocks)
     mat = np.empty((n_orb, n_orb), dtype=int)
     mat[:, :] = -1
@@ -43,7 +76,7 @@ def print_block_structure(block_structure):
             parent_map[b] = inequiv
 
     for block_i, orbs in enumerate(block_structure.blocks):
-        idx = np.ix_([orb - orb_offset for orb in orbs], [orb - orb_offset for orb in orbs])
+        idx = np.ix_(orbs, orbs)
         mat[idx] = parent_map.get(block_i, block_i)
     print("\n".join(" ".join(f"{el:^3d}" if el != -1 else " + " for el in row) for row in mat))
 

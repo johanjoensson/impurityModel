@@ -33,6 +33,7 @@ from impurityModel.ed.gs_statistics import (
     save_gs_statistics,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.gs_report_model import OrbitalNaming
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -549,6 +550,16 @@ def _evaluate(
     ground_state_basis, psis_blk, es, tau = src.basis, src.psis, src.es, src.tau
     comm = ground_state_basis.comm
     rank = comm.rank if comm is not None else 0
+    # One validated map of what every spin-orbital index is (replicated inputs: a violation raises on every rank).
+    naming = OrbitalNaming.build(
+        ground_state_basis.impurity_orbitals,
+        ground_state_basis.bath_states,
+        block_structure,
+        layout=spin_layout,
+        # The rotation and shell checks are input validation (done where the model is read): a mismatch there
+        # makes the Casimir observables degrade below, it must not abort the report of a finished solve.
+    )
+    block_structure = naming.block_structure
     # The effective restrictions are printed in the ground-state-report overview below.
     effective_restrictions = src.once("restrictions", lambda: get_effective_restrictions(ground_state_basis))
     n_dets = len(ground_state_basis)
@@ -803,16 +814,14 @@ def _evaluate(
             # using the same orbital-group labels (e.g. "group 1") as the printed report, not
             # the raw block indices (which are positions in block_structure.blocks, not
             # orbital indices, and name nothing the rest of the run refers to).
-            # Block orbitals are positions into the sorted impurity list (offset like
-            # print_expectation_values); map them back to global spin-orbital indices.
-            orb_offset = min(orb for block in block_structure.blocks for orb in block)
+            # Block orbitals are positions into the sorted impurity list; map them back to global spin-orbital indices.
             equivalent_blocks = get_equivalent_blocks(block_structure)
             block_labels, _ = block_group_labels(
                 equivalent_blocks, block_structure, ground_state_basis.impurity_orbitals
             )
             imp_groups = {}
             for blocks, label in zip(equivalent_blocks, block_labels):
-                group_orbs = {impurity_indices[orb - orb_offset] for b in blocks for orb in block_structure.blocks[b]}
+                group_orbs = {impurity_indices[orb] for b in blocks for orb in block_structure.blocks[b]}
                 in_group = [p for p in imp_pairs if p[0] in group_orbs and p[1] in group_orbs]
                 if in_group:
                     imp_groups[label] = in_group
@@ -859,6 +868,7 @@ def _evaluate(
         if rank == 0 and not src.recording:
             print(f"per-state summary not reported: {exc}")
     return SimpleNamespace(
+        naming=naming,
         corr_diagnostics=corr_diagnostics,
         diagnostics_skip_reason=diagnostics_skip_reason,
         e_avg=e_avg,
@@ -916,6 +926,7 @@ def _present(
     ground_state_basis, es, tau = src.basis, src.es, src.tau
     comm = ground_state_basis.comm
     rank = comm.rank if comm is not None else 0
+    block_structure = R.naming.block_structure
     report = Reporter(verbose, rank)
     corr_diagnostics = R.corr_diagnostics
     diagnostics_skip_reason = R.diagnostics_skip_reason

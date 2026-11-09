@@ -73,7 +73,15 @@ def block_group_labels(equivalent_blocks, block_structure, impurity_orbitals=Non
         label with its sorted orbital indices, for a legend line.
     """
     orb_to_group = {orb: group for group, blocks in (impurity_orbitals or {}).items() for blk in blocks for orb in blk}
-    class_orbs = [sorted(orb for b in blocks for orb in block_structure.blocks[b]) for blocks in equivalent_blocks]
+    # The blocks hold positions into the sorted impurity list; the groups hold spin-orbital indices.
+    imp_sorted = sorted(orb_to_group)
+
+    def _global(pos):
+        return imp_sorted[pos] if 0 <= pos < len(imp_sorted) else pos
+
+    class_orbs = [
+        sorted(_global(orb) for b in blocks for orb in block_structure.blocks[b]) for blocks in equivalent_blocks
+    ]
     # Which groups each class draws on; None as soon as one of its orbitals belongs to no
     # group at all, which is the one case there is no group name to give.
     signatures = []
@@ -152,7 +160,6 @@ def print_expectation_values(
     concatenated block. ``None`` (the default) reproduces today's single-shell behaviour
     exactly.
     """
-    orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     print(f"E0 = {es[0]:9.6f}")
     block_labels, _ = block_group_labels(equivalent_blocks, block_structure, impurity_orbitals)
@@ -182,7 +189,7 @@ def print_expectation_values(
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
-            np.sum(np.diag(rho)[[orb - orb_offset for block in blocks for orb in block_structure.blocks[block]]])
+            np.sum(np.diag(rho)[[orb for block in blocks for orb in block_structure.blocks[block]]])
             for blocks in equivalent_blocks
         ]
         block_occ_string_formatted = ["" for _ in block_occs]
@@ -2047,7 +2054,6 @@ def print_thermal_expectation_values(
     suppressed (``mu_spin_only`` is unaffected). The default ``True`` reproduces today's
     (ungated) behaviour for callers that have not computed ``j_sharp``.
     """
-    orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     block_labels, _ = block_group_labels(equivalent_blocks, block_structure, impurity_orbitals)
     shell_observables = compute_shell_observables(rho_thermal, rot_to_spherical, impurity_orbitals, shell_ls=shell_ls)
@@ -2064,9 +2070,7 @@ def print_thermal_expectation_values(
         ("<N(Up)>", Nup, ""),
     ]
     for blocks, label in zip(equivalent_blocks, block_labels):
-        occ = np.sum(
-            np.diag(rho_thermal)[[orb - orb_offset for block in blocks for orb in block_structure.blocks[block]]]
-        ).real
+        occ = np.sum(np.diag(rho_thermal)[[orb for block in blocks for orb in block_structure.blocks[block]]]).real
         charge_rows.append((f"<N({label})>", occ, ""))
     magnetism_rows = [
         ("<Lz>", totals["lz"], ""),
