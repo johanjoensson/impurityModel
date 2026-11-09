@@ -1,30 +1,43 @@
 # Interpreting the ground-state report
 
 When `calc_gs` (`impurityModel.ed.groundstate`) finishes, rank 0 prints a terse run
-record (below); the full report described on this page -- expectation values,
-configuration weights, participation/entropy measures, natural-orbital occupations and
-density matrices -- only prints at `-v` and above (`verbose`/`verbosity >= V_SUMMARY`;
-see `impurityModel.ed.utils`). This page walks through that report in print order and
-explains, for each number, what it is, where it comes from in the code, and what it can
-be used for.
+record (below). What follows depends on the verbosity (`impurityModel.ed.utils`):
+
+| verbosity | stdout |
+|---|---|
+| default (`V_RESULT`) | the terse run record |
+| `-v` (`V_SUMMARY`) | the record plus a compact physics summary (about 20 lines: manifold table, occupations, moments, correlation, screening, entanglement, convergence) |
+| `-vv` (`V_DETAIL`) | the full report described on this page, with the full bath density matrix and the per-trial occupation-search energies |
+
+The full report is also written to a file at **every** verbosity when the caller passes
+`report_files` (`gs_report.ReportFiles`, e.g. `ReportFiles.for_label("Ni")`): the text
+to `ground_state-<label>.txt` and the machine-readable record to
+`ground_state-<label>.json`, beside the `.dat` files of the same label. The default
+(`report_files=None`) writes nothing; the old `stats_path=` argument is a deprecated
+alias for a JSON-only `ReportFiles`. The `[run] verbosity` key of the input file is
+honoured, with `-v` on the command line as an override. Convergence warnings print on
+stdout (so they reach the file a driver redirects) as well as on stderr.
+This page walks through the full report in print order and explains, for each number,
+what it is, where it comes from in the code, and what it can be used for.
 
 ```text
 E0 = -53.888031   retained states = 3   tau = 0.0025
 368 Slater determinants; ground-state impurity occupation: 8
-(full report: -v; statistics saved to ground_state_statistics.json)
+(full report: -vv or ground_state-<label>.txt)
 ```
 
-The terse record always prints; the pointer line is omitted once the full report below
-is also printing. `-vv` (`V_DETAIL`) additionally prints the full bath density matrix
-(see [below](#impurity--bath-density-matrices)) instead of its summary, and the
-per-trial occupation-search energies (next section) instead of just the final sector.
+The model behind both renderings is `gs_info["report"]` (`gs_report_model.GroundStateReport`,
+JSON schema version 4, `to_json()`): manifolds (one row per degenerate manifold, members
+tagged by $2S_z$), the thermal block, correlation, screening, the energy decomposition,
+the spin layout (grade and the reason a pairing was rejected, verbatim) and the
+convergence record, including `window = {width, n_states, next_level_above}`: how wide
+the thermal window was and how far above the lowest state the first level *outside* it
+lies. The report is assembled on rank 0 only; other ranks hold an empty model.
 
-The same information is saved machine-readable to `ground_state_statistics.json`
-(`gs_statistics.save_gs_statistics`; path set by the `stats_path` argument of
-`calc_gs`): the statistics dict plus a `truncation` record, the `entanglement` results,
-and an `observables` dict bundling the magnetic/multiplet summary, the per-state
-summary rows, the correlation and screening diagnostics and the energy decomposition
-(complex values are stored as `[re, im]` pairs).
+Degenerate states are reported per manifold and, when the spin layout verifies
+$[H,S_z]=0$, in a basis that diagonalises $S_z$ (and $S^2$, $L^2$) inside each manifold, so
+a member row is one state. These rotated states are what `calc_gs` returns to the drivers
+(`GS_SHARPEN_MANIFOLDS=0` restores the raw solver vectors).
 
 ## The thermal ground state
 
@@ -367,35 +380,20 @@ $\mathrm{Tr}(h_1\rho)$ over the one-body Hamiltonian blocks):
   (impurity–bath cross terms, the hybridization energy gained by covalent mixing);
 - `<H_Coulomb>` $= \langle E\rangle - \langle H_\mathrm{1body}\rangle$, the interaction
   energy. For a weakly double-occupied impurity it reduces to $\approx U\!\cdot\!D$
-  (with $D$ the total double occupancy below) — a quick consistency check between
+  (with $D$ the open-shell double occupancy below) — a quick consistency check between
   independently computed numbers.
 
-**Static susceptibilities (Curie)** (`observables.compute_static_susceptibilities`):
-
-```text
-Static susceptibilities (Curie):
-  chi_spin_zz  =   23.9411509  ((<Sz^2> - <Sz>^2)/tau)
-  chi_orb_zz   =    0.0000000  ((<Lz^2> - <Lz>^2)/tau)
-  chi_spin_orb =    0.0000000  ((<Sz.Lz> - <Sz><Lz>)/tau)
-  chi_charge   =    4.2219966  ((<N^2> - <N>^2)/tau)
-```
-
-Fluctuation-dissipation (isothermal) susceptibilities of the impurity,
-$\chi_O = \bigl(\langle O^2\rangle - \langle O\rangle^2\bigr)/\tau$, for the
-longitudinal spin ($O = S_z$), orbital ($O = L_z$), their cross correlation, and the
-impurity charge ($O = N$). These are the **Curie terms of the retained low-energy
-manifold only**: fluctuations among the states kept by the solver, which is why they
-scale as $1/\tau$ for a free moment ($\chi_{zz} = S_\mathrm{eff}(S_\mathrm{eff}+1)/3\tau$
-summed over a degenerate multiplet). Van Vleck contributions from excited states above
-the energy cut are *not* included — for the full frequency-resolved response (and the
-screened static limit) use the dynamical susceptibility CLI
-(`impurityModel susceptibility`). Reading them together is the static
-Hund's-metal fingerprint: a large `chi_spin_zz` next to a quenched `chi_orb_zz` and a
-small `chi_charge` signals a fluctuating Hund moment with frozen orbital and charge
-degrees of freedom; `chi_spin_orb` $\neq 0$ indicates spin-orbital locking. The
-spin row is computed from the many-body $S_z$ of the Casimir build and must agree with
-the pairs-based `chi_zz` in the correlation-diagnostics section below (two independent
-implementations of the same number).
+**Spin susceptibility (Curie)**: `chi_spin_zz` is printed once, only when $S_z$ is
+sharp (a verified spin layout). It is the Curie term of the retained manifolds,
+$\chi = \bigl[\sum_M w_M \lVert P_M S_z P_M\rVert_F^2/g_M - \langle S_z\rangle^2\bigr]/\tau$,
+built from the manifold matrices of $S_z$ so that transitions out of the manifold
+(Van Vleck terms) are excluded. The former orbital and charge "susceptibilities"
+(`chi_orb_zz`, `chi_spin_orb`, `chi_charge`) are gone: a pure-state variance divided by
+$\tau$ is a Curie term only when the operator commutes with $H$ inside the manifold,
+which holds for $S_z$ under an SU(2)/collinear layout but not for $L_z$ on a cubic
+orbital singlet; the charge variance stays available as the impurity-occupation variance
+in the marginals. For the full frequency-resolved response use
+`impurityModel susceptibility`.
 
 ```{note}
 The `<E>` row is the **absolute** thermal energy
@@ -459,10 +457,10 @@ a glance — which multiplet, how strongly entangled with the bath.
 
 ```text
 Impurity correlation diagnostics (thermal):
-    orbital(dn,up)     n_dn     n_up  <n_up*n_dn>   <m_z^2>
+    orbital(dn,up)     n_dn     n_up  <n_up*n_dn>   <m_z^2>   (open-shell orbitals)
              (0,1)  0.97219  0.01194     0.010997   0.24053
-  total double occupancy D = 0.010997
-  <Sz_imp^2> = 0.240533   chi_zz = (<Sz^2> - <Sz>^2)/tau = 1.0013  (tau = 0.01)
+  open-shell double occupancy D = 0.010997
+  <Sz_imp^2> = 0.240533
   Inter-orbital <S_i.S_j> (...):
 ```
 
@@ -472,14 +470,16 @@ pairing; skipped with a message otherwise). The Mott/Hund toolbox:
 - `<n_up*n_dn>` per impurity spatial orbital and the total $D$: **double occupancy**,
   the canonical correlation-strength measure — $D \to n_\uparrow n_\downarrow$
   (uncorrelated product) for weak interaction, $D \to 0$ deep in the Mott limit. The
-  interaction energy above is $\sim U D$.
+  interaction energy above is $\sim U D$. $D$ sums the **open-shell** orbitals only (both
+  occupations in $(10^{-3}, 1-10^{-3})$): filled and empty orbitals are folded into one
+  line each, since a filled orbital contributes $D=1$ regardless of correlation. Under a
+  `sz_only` layout the rows depend on an unverified dn/up pairing and are flagged.
 - `<m_z^2>` per orbital $= (\langle n_\uparrow\rangle + \langle n_\downarrow\rangle -
   2d_a)/4$: the **local moment**; $1/4$ = a fully formed spin-1/2, $0$ = empty/double
   occupied. Its size vs. the $T$-dependence of $\chi$ distinguishes local-moment from
   itinerant screening physics.
-- `<Sz_imp^2>` and `chi_zz` $= (\langle S_z^2\rangle - \langle S_z\rangle^2)/\tau$: the
-  static longitudinal spin susceptibility of the impurity at this $\tau$; for a free
-  moment it follows the Curie law $\chi \propto 1/\tau$, saturation signals screening.
+- `<Sz_imp^2>`: the thermal mean square of the impurity $S_z$ (the Curie susceptibility
+  is the thermal block's `chi_spin_zz`, above).
 - the `<S_i.S_j>` matrix: inter-orbital spin correlations — positive off-diagonals =
   **Hund's-rule alignment** between open orbitals, negative = inter-orbital singlets.
   Diagonal entries are $\langle S_a^2\rangle = 3\langle m_z^2\rangle_a$.

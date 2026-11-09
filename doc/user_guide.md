@@ -68,9 +68,11 @@ is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ..
 `impurityModel <subcommand> --help` for the full option set.
 
 By default every sub-command prints a terse run record: the ground-state summary, per-stage
-one-liners and timings, and any warnings -- not the full observable report. Pass `-v` for the
-full ground-state report and per-block Green's-function diagnostics, `-vv` for per-restart/
-per-round solver detail, or `-vvv` for per-iteration Lanczos diagnostics. (`-v` used to jump
+one-liners and timings, and any warnings -- not the full observable report. Pass `-v` for a compact
+ground-state summary (about 20 lines) and per-block Green's-function diagnostics, `-vv` for the
+full ground-state report and per-restart/per-round solver detail, or `-vvv` for per-iteration
+Lanczos diagnostics. The full report is also written to `ground_state-<label>.txt` / `.json`
+beside the `.dat` outputs at every verbosity. (`-v` used to jump
 straight to today's `-vv`; if a script parses stdout, re-check it against the new default.)
 
 ## Inputs
