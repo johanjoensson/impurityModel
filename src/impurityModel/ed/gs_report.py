@@ -44,7 +44,6 @@ from impurityModel.ed.observables import (
     compute_magnetic_summary,
     compute_screening_diagnostics,
     compute_state_summary,
-    compute_static_susceptibilities,
     get_Sz_from_rho_pairs,
     is_j_sharp,
     make_impurity_casimir_operators,
@@ -58,7 +57,8 @@ from impurityModel.ed.observables import (
     print_state_summary,
     print_thermal_expectation_values,
     spin_correlation_operator,
-    static_susceptibility_rows,
+    manifold_square_weights,
+    spin_curie_susceptibility,
     thermal_observable_value,
 )
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
@@ -376,6 +376,19 @@ class _LiveSource:
         diag = manifold_values_from_matrices(self.psis.width, groups, blocks)
         return {"diag": diag, "blocks": (groups, blocks)}
 
+    def curie(self, group):
+        """A ``curie(op)`` hook: ``(<n|O|n>, sum_m |<m|O|n>|^2 over n's manifold)`` per state."""
+        calls = [0]
+
+        def curie(op):
+            key = (group, calls[0])
+            calls[0] += 1
+            rec = self.part(key, lambda: self._measure(op))[0]
+            groups, blocks = rec["blocks"]
+            return rec["diag"], manifold_square_weights(groups, blocks, len(rec["diag"]))
+
+        return curie
+
     def values(self, group):
         """A ``values(op)`` hook for the ``compute_*`` observables: per-state ``<O>`` of ``op`` on the members."""
         calls = [0]
@@ -469,6 +482,18 @@ class _ReplaySource:
             return self.stack([p["diag"] for p in self.part(key)])
 
         return values
+
+    def curie(self, group):
+        calls = [0]
+
+        def curie(op):
+            key = (group, calls[0])
+            calls[0] += 1
+            parts = self.part(key)
+            col2 = [manifold_square_weights(*p["blocks"], len(p["diag"])) for p in parts]
+            return self.stack([p["diag"] for p in parts]), self.stack(col2)
+
+        return curie
 
 
 @dataclass
@@ -622,7 +647,10 @@ def _evaluate(
     try:
         # Per member the dense blocks are reduced to small partials at once, so none is kept while drivers run.
         partials = src.part(
-            "rdm", lambda: entanglement_partials(compute_impurity_rdm(ground_state_basis, psis_blk), src.es, tau)
+            "rdm",
+            lambda: entanglement_partials(
+                compute_impurity_rdm(ground_state_basis, psis_blk), src.es, tau, degeneracy_tol=src.degeneracy_tol
+            ),
         )
         entanglement = assemble_entanglement(partials, src.scales, src.order, es, tau)
     except Exception:
@@ -790,23 +818,17 @@ def _evaluate(
         spin_pairs = None
         sisb_skip_reason = f"spin-correlation evaluation failed: {exc}"
 
-    # Static (Curie) susceptibilities of the retained thermal manifold. Charge always
-    # works; spin/orbital need the many-body Sz/Lz from the Casimir build. Collective and
-    # deterministic — separate degrade guard so it survives a spin-pairing failure.
-    static_susceptibilities = None
-    try:
-        static_susceptibilities = compute_static_susceptibilities(
-            psis_blk,
-            es,
-            tau,
-            impurity_indices,
-            s_z_op=s_ops[2] if l_ops is not None else None,
-            l_z_op=l_ops[2] if l_ops is not None else None,
-            keep=support_keep,
-            values=src.values("static"),
-        )
-    except Exception:
-        static_susceptibilities = None
+    # Longitudinal spin susceptibility (Curie term of the retained manifolds): only where S_z commutes with H,
+    # i.e. a verified spin layout. Built on the manifold matrices of S_z, so it is the Curie law and not a
+    # pure-state variance. Collective and deterministic; its own degrade guard.
+    chi_spin_zz = None
+    if spin_pairs is not None:
+        try:
+            sz_op = make_spin_operators(spin_pairs[0])[2]
+            sz_diag, sz_col2 = src.curie("sz-imp")(lambda blk: sz_op.apply_block(blk, 0, support_keep))
+            chi_spin_zz = spin_curie_susceptibility(es, tau, sz_diag, sz_col2)
+        except Exception:
+            chi_spin_zz = None
 
     # Correlation-strength, screening and energy-decomposition diagnostics. Collective
     # (manifold_observable_values Allreduces inside) and deterministic on identical inputs,
@@ -920,7 +942,7 @@ def _evaluate(
         sisb_z_thermal=sisb_z_thermal,
         sisb_z_values=sisb_z_values,
         state_summary=state_summary,
-        static_susceptibilities=static_susceptibilities,
+        chi_spin_zz=chi_spin_zz,
         thermal_rho=thermal_rho,
     )
 
@@ -947,6 +969,7 @@ def _assemble(R, src, magnetic, ensemble, gs_convergence_report):
             j_values=R.j_values,
             sisb_values=R.sisb_values,
             sisb_z_values=R.sisb_z_values,
+            manifold_entropy=None if R.entanglement is None else R.entanglement.get("manifold_entropy"),
             thermal={
                 "e_avg": R.e_avg,
                 "s2": R.s2_thermal,
@@ -954,6 +977,7 @@ def _assemble(R, src, magnetic, ensemble, gs_convergence_report):
                 "j2": R.j2_thermal,
                 "sisb": None if R.sisb_thermal is None else float(np.real(R.sisb_thermal)),
                 "sisb_z": R.sisb_z_thermal,
+                "chi_spin_zz": None if R.chi_spin_zz is None else R.chi_spin_zz["chi_spin_zz"],
             },
             magnetic=magnetic,
             correlation=R.corr_diagnostics,
@@ -1021,7 +1045,7 @@ def _present(
     sisb_z_thermal = R.sisb_z_thermal
     sisb_z_values = R.sisb_z_values
     state_summary = R.state_summary
-    static_susceptibilities = R.static_susceptibilities
+    chi_spin_zz = R.chi_spin_zz
     thermal_rho = R.thermal_rho
     if partial and rank == 0:
         print(partial, flush=True)
@@ -1055,7 +1079,7 @@ def _present(
             "correlation": corr_diagnostics,
             "screening": screening_diagnostics,
             "energy_decomposition": energy_decomposition,
-            "static_susceptibilities": static_susceptibilities,
+            "chi_spin_zz": chi_spin_zz,
         }
     R.report = _assemble(R, src, magnetic_summary if gs_stats is not None else None, ensemble, gs_convergence_report)
     if gs_stats is not None and R.report is not None:
@@ -1143,9 +1167,19 @@ def _present(
                         ],
                     )
                 )
-            if static_susceptibilities is not None:
+            if chi_spin_zz is not None:
                 extra_groups.append(
-                    ("Static susceptibilities (Curie)", static_susceptibility_rows(static_susceptibilities))
+                    (
+                        "Spin susceptibility",
+                        [
+                            ("chi_spin_zz", chi_spin_zz["chi_spin_zz"], "((<Sz^2> - <Sz>^2)/tau)"),
+                            (
+                                "note",
+                                None,
+                                f"Curie term of the retained manifolds only (no Van Vleck part); tau = {chi_spin_zz['tau']:.4g}",
+                            ),
+                        ],
+                    )
                 )
             print_thermal_expectation_values(
                 thermal_rho[impurity_ix],
@@ -1232,7 +1266,7 @@ def _info(R, gs_truncation_report, gs_convergence_report):
         "correlation_diagnostics": R.corr_diagnostics,
         "screening_diagnostics": R.screening_diagnostics,
         "energy_decomposition": R.energy_decomposition,
-        "static_susceptibilities": R.static_susceptibilities,
+        "chi_spin_zz": R.chi_spin_zz,
         "report": getattr(R, "report", None),
     }
 

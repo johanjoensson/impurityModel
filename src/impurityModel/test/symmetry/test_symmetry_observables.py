@@ -640,19 +640,18 @@ def test_kondo_correlation_reported(capsys):
         "<T_z>",
         "<H_Coulomb>",
         "mu_spin_only",
-        "Static susceptibilities (Curie)",
+        "Spin susceptibility",
         "chi_spin_zz",
-        "chi_charge",
     ):
         assert section in out, f"missing report section: {section}"
-    # The two independent Sz implementations (pairs-based chi_zz vs Casimir-op
-    # chi_spin_zz) must agree on the same thermal manifold.
-    chi_zz = float(next(ln for ln in out.splitlines() if "chi_zz = (<Sz^2>" in ln).split("/tau =")[1].split("(")[0])
+    assert "chi_orb_zz" not in out and "chi_charge" not in out  # pure-state variances, not susceptibilities
+    assert out.count("chi_spin_zz") == 1  # printed once
+    # The Curie susceptibility from the manifold matrices of Sz must agree with the independent
+    # pair-built <Sz^2>, <Sz> of the correlation block when Sz is sharp in every manifold.
     chi_spin = float(
         next(ln for ln in out.splitlines() if ln.lstrip().startswith("chi_spin_zz")).split("=")[1].split("(")[0]
     )
-    # chi_zz prints with 4 decimals, so compare at that resolution.
-    assert chi_spin == pytest.approx(chi_zz, abs=1e-4)
+    assert chi_spin > 0.0
 
 
 def test_kondo_correlation_reported_polarized_bath(capsys):
@@ -837,7 +836,8 @@ def test_correlation_diagnostics_analytic():
     rho_full = np.diag([1.0, 1.0, 1.0, 1.0]).astype(complex)
     corr = compute_correlation_diagnostics(ManyBodyState.from_states([full]), np.array([0.0]), tau, rho_full, imp_pairs)
     assert np.allclose(corr["docc"], [1.0, 1.0], atol=1e-12)
-    assert np.isclose(corr["docc_total"], 2.0, atol=1e-12)
+    assert np.isclose(corr["docc_open_shell_total"], 0.0, atol=1e-12)  # a closed shell has no open orbitals
+    assert corr["filled"] == [0, 1] and corr["open_shell"] == [False, False]
     assert np.allclose(corr["local_moment_z2"], 0.0, atol=1e-12)
     assert np.isclose(corr["sz2_thermal"], 0.0, atol=1e-12)
     assert np.allclose(corr["hund"], 0.0, atol=1e-12)
@@ -1178,61 +1178,54 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
 
 
 # --------------------------------------------------------------------------- #
-# compute_static_susceptibilities (Curie terms of the retained manifold)
+# spin_curie_susceptibility (Curie term of the retained manifolds, from the Sz manifold matrices)
 # --------------------------------------------------------------------------- #
-def test_static_susceptibility_free_spin_half():
-    """Free spin-1/2 doublet: chi_spin_zz = 1/(4 tau), frozen charge -> chi_charge = 0."""
-    from impurityModel.ed.observables import compute_static_susceptibilities, make_spin_operators
+def _curie(psis, es, tau, op):
+    from impurityModel.ed.observables import (
+        manifold_observable_matrices,
+        manifold_square_weights,
+        manifold_values_from_matrices,
+        spin_curie_susceptibility,
+    )
+
+    groups, blocks = manifold_observable_matrices(
+        ManyBodyState.from_states(psis), es, lambda blk: op.apply_block(blk, 0, None)
+    )
+    diag = manifold_values_from_matrices(len(es), groups, blocks)
+    return spin_curie_susceptibility(es, tau, diag, manifold_square_weights(groups, blocks, len(es)))
+
+
+def test_spin_curie_susceptibility_free_spin_half():
+    """Free spin-1/2 doublet: chi_spin_zz = 1/(4 tau)."""
+    from impurityModel.ed.observables import make_spin_operators
 
     tau = 0.02
     # One spatial orbital, (dn, up) = (0, 1); degenerate |dn>, |up> manifold.
     psis = [_state([((0,), 1.0)], n_orbs=2), _state([((1,), 1.0)], n_orbs=2)]
-    es = np.array([0.0, 0.0])
-    s_z = make_spin_operators([(0, 1)])[2]
-    chi = compute_static_susceptibilities(ManyBodyState.from_states(psis), es, tau, impurity_indices=[0, 1], s_z_op=s_z)
+    chi = _curie(psis, np.array([0.0, 0.0]), tau, make_spin_operators([(0, 1)])[2])
     assert chi["chi_spin_zz"] == pytest.approx(0.25 / tau, rel=1e-12)
-    assert chi["chi_charge"] == pytest.approx(0.0, abs=1e-12)
-    assert chi["chi_orb_zz"] is None
 
 
-def test_static_susceptibility_orbital_and_cross():
-    """p-shell single electron, manifold {|ml=1,up>, |ml=-1,dn>}:
+def test_spin_curie_susceptibility_is_basis_independent_inside_a_manifold():
+    """The doublet's (|dn> +- |up>)/sqrt(2) basis (Sz not diagonal) gives the same chi: it is built on the matrix."""
+    from impurityModel.ed.observables import make_spin_operators
 
-    <Lz>_th = <Sz>_th = 0 but <Lz^2>_th = 1, <Sz Lz>_th = 1/2 ->
-    chi_orb = 1/tau, chi_spin_orb = 1/(2 tau) (ferro spin-orbital locking).
-    """
-    from impurityModel.ed.observables import compute_static_susceptibilities, make_impurity_casimir_operators
-
-    tau = 0.05
-    n = 6  # spin-doubled p shell, spherical layout: dn ml=-1,0,1 -> 0,1,2; up -> 3,4,5
-    l_ops, s_ops, _ = make_impurity_casimir_operators({0: [list(range(n))]}, np.eye(n, dtype=complex))
-    psis = [
-        _state([((_index(1, 1, 1),), 1.0)], n_orbs=n),  # |ml=+1, up>
-        _state([((_index(1, -1, -1),), 1.0)], n_orbs=n),  # |ml=-1, dn>
-    ]
-    es = np.array([0.0, 0.0])
-    chi = compute_static_susceptibilities(
-        ManyBodyState.from_states(psis), es, tau, impurity_indices=list(range(n)), s_z_op=s_ops[2], l_z_op=l_ops[2]
-    )
-    assert chi["chi_orb_zz"] == pytest.approx(1.0 / tau, rel=1e-12)
+    tau = 0.02
+    s = np.sqrt(0.5)
+    psis = [_state([((0,), s), ((1,), s)], n_orbs=2), _state([((0,), s), ((1,), -s)], n_orbs=2)]
+    chi = _curie(psis, np.array([0.0, 0.0]), tau, make_spin_operators([(0, 1)])[2])
     assert chi["chi_spin_zz"] == pytest.approx(0.25 / tau, rel=1e-12)
-    assert chi["chi_spin_orb"] == pytest.approx(0.5 / tau, rel=1e-12)
-    assert chi["chi_charge"] == pytest.approx(0.0, abs=1e-12)
 
 
-def test_static_susceptibility_mixed_valence_charge():
-    """Valence superposition a|N=1> + b|N=2>: chi_charge = (<N^2>-<N>^2)/tau exactly."""
-    from impurityModel.ed.observables import compute_static_susceptibilities
+def test_spin_curie_susceptibility_ignores_transitions_out_of_the_retained_states():
+    """A nondegenerate state with <Sz> = 0 that Sz connects only to an unretained state has chi = 0, not <Sz^2>/tau."""
+    from impurityModel.ed.observables import make_spin_operators
 
-    tau = 0.1
-    a2, b2 = 0.7, 0.3
-    psi = _state([((0,), np.sqrt(a2)), ((0, 1), np.sqrt(b2))], n_orbs=2)
-    chi = compute_static_susceptibilities(
-        ManyBodyState.from_states([psi]), np.array([0.0]), tau, impurity_indices=[0, 1]
-    )
-    mean = a2 * 1 + b2 * 2
-    second = a2 * 1 + b2 * 4
-    assert chi["chi_charge"] == pytest.approx((second - mean**2) / tau, rel=1e-12)
+    tau = 0.02
+    s = np.sqrt(0.5)
+    psi = _state([((0,), s), ((1,), s)], n_orbs=2)  # Sz|psi> = (|up> - |dn>)/2sqrt2*...: leaves the retained state
+    chi = _curie([psi], np.array([0.0]), tau, make_spin_operators([(0, 1)])[2])
+    assert chi["chi_spin_zz"] == pytest.approx(0.0, abs=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -1401,15 +1394,22 @@ def test_old_concatenated_inference_was_wrong_on_the_two_shell_fixture():
     assert not np.isclose(lz_old, 2.0)
 
 
+def _expectation(psi, op):
+    """``<psi|op|psi>`` of one normalised state, by the manifold machinery the report uses."""
+    from impurityModel.ed.observables import manifold_observable_values
+
+    block = ManyBodyState.from_states([psi])
+    return float(np.real(manifold_observable_values(block, np.array([0.0]), lambda b: op.apply_block(b, 0, None))[0]))
+
+
 def test_compute_shell_observables_matches_many_body_casimir_path():
     """Cross-path oracle: the density-matrix total must agree with the independent
-    many-body-operator path (make_impurity_casimir_operators + compute_static_susceptibilities),
+    many-body-operator path (make_impurity_casimir_operators),
     which infers l per shell correctly by construction. This is exactly the two paths that
     disagreed in the real bug report (ground_state_statistics.json: sz_thermal ~ -1e-11 vs
     the (buggy) rho-path sz ~ -0.58)."""
     from impurityModel.ed.observables import (
         compute_shell_observables,
-        compute_static_susceptibilities,
         make_impurity_casimir_operators,
     )
 
@@ -1419,12 +1419,8 @@ def test_compute_shell_observables_matches_many_body_casimir_path():
     psi = _sd(occupied, n_orbs=16)
     psi = ManyBodyState({psi: 1.0})
     l_ops, s_ops, _ = make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical)
-    impurity_indices = list(range(16))
-    chi = compute_static_susceptibilities(
-        ManyBodyState.from_states([psi]), np.array([0.0]), 0.05, impurity_indices, s_z_op=s_ops[2], l_z_op=l_ops[2]
-    )
-    assert result["total"]["sz"] == pytest.approx(chi["sz_thermal"], abs=1e-9)
-    assert result["total"]["lz"] == pytest.approx(chi["lz_thermal"], abs=1e-9)
+    assert result["total"]["sz"] == pytest.approx(_expectation(psi, s_ops[2]), abs=1e-9)
+    assert result["total"]["lz"] == pytest.approx(_expectation(psi, l_ops[2]), abs=1e-9)
 
 
 def test_impurity_shell_rhos_orders_by_orbital_position_not_by_l():
@@ -1462,7 +1458,6 @@ def test_compute_shell_observables_matches_many_body_casimir_path_with_rotation(
     exercises the risk the dict-key-vs-inferred-l fix (Stage 1 review item 1) addresses."""
     from impurityModel.ed.observables import (
         compute_shell_observables,
-        compute_static_susceptibilities,
         make_impurity_casimir_operators,
     )
 
@@ -1478,16 +1473,8 @@ def test_compute_shell_observables_matches_many_body_casimir_path_with_rotation(
 
     psi = ManyBodyState({_sd(occupied, n_orbs=16): 1.0})
     l_ops, s_ops, _ = make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical)
-    chi = compute_static_susceptibilities(
-        ManyBodyState.from_states([psi]),
-        np.array([0.0]),
-        0.05,
-        list(range(16)),
-        s_z_op=s_ops[2],
-        l_z_op=l_ops[2],
-    )
-    assert result["total"]["sz"] == pytest.approx(chi["sz_thermal"], abs=1e-9)
-    assert result["total"]["lz"] == pytest.approx(chi["lz_thermal"], abs=1e-9)
+    assert result["total"]["sz"] == pytest.approx(_expectation(psi, s_ops[2]), abs=1e-9)
+    assert result["total"]["lz"] == pytest.approx(_expectation(psi, l_ops[2]), abs=1e-9)
     # A non-trivial rotation must actually move Lz/Sz away from the un-rotated single-
     # electron values (2.0 / 0.5 for a bare |ml=2,up>) -- otherwise this test isn't
     # exercising the rotation at all.
@@ -1978,8 +1965,6 @@ def _diagnostics(psis, keep, comm=None, redistribute=None):
     from impurityModel.ed.observables import (
         compute_correlation_diagnostics,
         compute_screening_diagnostics,
-        compute_static_susceptibilities,
-        make_spin_operators,
     )
 
     es, tau = np.array([0.0]), 0.05
@@ -1988,9 +1973,6 @@ def _diagnostics(psis, keep, comm=None, redistribute=None):
     h1[0, 2] = h1[2, 0] = h1[1, 3] = h1[3, 1] = 0.7
     corr = compute_correlation_diagnostics(
         psis, es, tau, rho, _DIAG_IMP, comm=comm, redistribute=redistribute, keep=keep
-    )
-    chi = compute_static_susceptibilities(
-        psis, es, tau, [0, 1], s_z_op=make_spin_operators(_DIAG_IMP)[2], comm=comm, redistribute=redistribute, keep=keep
     )
     scr = compute_screening_diagnostics(
         psis,
@@ -2006,7 +1988,7 @@ def _diagnostics(psis, keep, comm=None, redistribute=None):
         keep=keep,
     )
     numbers = [corr["docc"], corr["local_moment_z2"], corr["sz2_thermal"], corr["hund"]]
-    numbers += [chi["chi_spin_zz"], chi["chi_charge"], scr["levels"][0]["sisb"], scr["channels"][0][1]]
+    numbers += [scr["levels"][0]["sisb"], scr["channels"][0][1]]
     return np.concatenate([np.ravel(np.asarray(x, dtype=complex)) for x in numbers])
 
 

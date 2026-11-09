@@ -33,3 +33,11 @@ def test_a_manifold_mixing_labels_is_not_sharp_and_the_report_serialises():
     assert m.s_sharp is False and m.l_sharp is True and m.two_sz is None
     data = json.loads(json.dumps(rep.to_json(), cls=_NumpyEncoder))
     assert data["schema_version"] == 4 and data["manifolds"][0]["g"] == 2 and data["naming"] is None
+
+
+def test_manifold_entropy_is_attached_to_the_manifold_it_belongs_to():
+    es = np.array([1.0, 0.0, 0.0])  # the degenerate pair is at positions 1, 2 of ``es``
+    rep = assemble_report(
+        es, 0.5, 5, manifold_entropy=[{"states": [1, 2], "entropy": 0.69}, {"states": [0], "entropy": 0.1}]
+    )
+    assert [m.entropy for m in rep.manifolds] == [0.69, 0.1]

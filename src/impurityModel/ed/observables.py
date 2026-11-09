@@ -1235,6 +1235,10 @@ def expect_casimir(psi, j_plus, j_minus, j_z, comm=None):
     return np.real(val)
 
 
+#: An orbital pair whose both occupations are within this of 0 (empty) or 1 (filled) carries no correlation.
+OPEN_SHELL_TOL = 1e-3
+
+
 def compute_correlation_diagnostics(
     psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None, keep=None, values=None
 ):
@@ -1297,7 +1301,9 @@ def compute_correlation_diagnostics(
     sz2_values = values(lambda blk: sz2_op.apply_block(blk, 0, keep))
     sz2_thermal = float(np.real(thermal_observable_value(sz2_values, es, tau)))
     sz_thermal = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
-    chi_zz = (sz2_thermal - sz_thermal**2) / tau
+    filled = (n_dn > 1.0 - OPEN_SHELL_TOL) & (n_up > 1.0 - OPEN_SHELL_TOL)
+    empty = (n_dn < OPEN_SHELL_TOL) & (n_up < OPEN_SHELL_TOL)
+    open_shell = ~(filled | empty)
 
     hund = np.diag(3.0 * mz2)
     orbital_ops = [make_spin_operators([pair]) for pair in imp_pairs]
@@ -1313,153 +1319,73 @@ def compute_correlation_diagnostics(
         "n_up": n_up,
         "docc": docc_thermal,
         "docc_values": np.real(docc_values),
-        "docc_total": float(np.sum(docc_thermal)),
+        "open_shell": [bool(x) for x in open_shell],
+        "filled": [int(a) for a in np.flatnonzero(filled)],
+        "empty": [int(a) for a in np.flatnonzero(empty)],
+        "docc_open_shell_total": float(np.sum(docc_thermal[open_shell])),
         "local_moment_z2": mz2,
         "sz2_values": np.real(sz2_values),
         "sz2_thermal": sz2_thermal,
         "sz_thermal": sz_thermal,
-        "chi_zz": float(chi_zz),
         "tau": float(tau),
         "hund": hund,
     }
 
 
-def compute_static_susceptibilities(
-    psis, es, tau, impurity_indices, s_z_op=None, l_z_op=None, comm=None, redistribute=None, keep=None, values=None
-):
-    r"""Static (Curie) susceptibilities of the impurity from the retained thermal manifold.
+def manifold_square_weights(groups, blocks, n):
+    """``col2[n] = sum_m |<m|O|n>|^2`` over the members ``m`` of ``n``'s manifold, from :func:`manifold_observable_matrices`.
 
-    Fluctuation-dissipation form :math:`\chi_O = (\langle O^2\rangle_\mathrm{th} -
-    \langle O\rangle_\mathrm{th}^2)/\tau` for the impurity charge :math:`O = N`, and —
-    when the many-body operators are available — the longitudinal spin
-    :math:`O = S_z`, orbital :math:`O = L_z` and the spin-orbital cross term
-    :math:`\chi_{SL} = (\langle S_z L_z\rangle - \langle S_z\rangle\langle
-    L_z\rangle)/\tau`. Comparing them is the static Hund's-metal fingerprint: a large,
-    slowly screened :math:`\chi_\mathrm{spin}` next to quenched
-    :math:`\chi_\mathrm{orb}` and suppressed :math:`\chi_\mathrm{charge}`.
-
-    These are *Curie* terms only — fluctuations within the retained low-energy states;
-    Van Vleck contributions from states above the energy cut are not included (see the
-    dynamical susceptibility CLI for the full response).
-
-    All expectation values are evaluated per state with
-    :func:`manifold_observable_values` (manifold-safe) and thermally averaged.
-    Collective when ``comm`` is given.
-
-    Parameters
-    ----------
-    psis : ManyBodyState
-        Eigenstates as one shared-support block (rank-local when distributed), one
-        column per state.
-    es, tau
-        Energies, thermal energy scale.
-    impurity_indices : sequence of int
-        Flat impurity spin-orbital indices (for the charge operator).
-    s_z_op, l_z_op : ManyBodyOperator, optional
-        Many-body impurity :math:`S_z` / :math:`L_z` (e.g. from
-        :func:`make_impurity_casimir_operators`); ``None`` skips the respective rows.
-    comm, redistribute
-        As in :func:`manifold_observable_values`.
-    keep : KeyFilter, optional
-        Support filter of ``psis`` (:func:`~impurityModel.ed.basis_transcription.comm_support_filter`):
-        each ``O|n>`` is generated only on the eigenstates' support, which is all that is read.
-
-    values : callable, optional
-        A stand-in for :func:`manifold_observable_values` (same call signature): a replay of values measured
-        while the states were alive, so this function can run without them. ``None`` evaluates them here.
-
-    Returns
-    -------
-    dict
+    This is the in-manifold part of ``<n|O^2|n>``: transitions out of the retained manifolds are not in it, which is
+    what makes a Curie susceptibility built on it a statement about the retained states alone.
     """
-    if values is None:
-
-        def values(op):
-            return manifold_observable_values(psis, es, op, comm=comm, redistribute=redistribute)
-
-    n_op = ManyBodyOperator({((int(i), "c"), (int(i), "a")): 1.0 for i in impurity_indices})
-
-    def thermal_pair(op_a, op_b):
-        """Thermal <A B> (A, B commuting) and, for A == B, the pieces for the variance."""
-        product = op_a * op_b
-        vals = values(lambda blk: product.apply_block(blk, 0, keep))
-        return float(np.real(thermal_observable_value(vals, es, tau)))
-
-    def thermal_single(op):
-        vals = values(lambda blk: op.apply_block(blk, 0, keep))
-        return float(np.real(thermal_observable_value(vals, es, tau)))
-
-    n_th = thermal_single(n_op)
-    n2_th = thermal_pair(n_op, n_op)
-    result = {
-        "tau": float(tau),
-        "n_thermal": n_th,
-        "n2_thermal": n2_th,
-        "chi_charge": (n2_th - n_th**2) / tau,
-        "chi_spin_zz": None,
-        "chi_orb_zz": None,
-        "chi_spin_orb": None,
-    }
-    if s_z_op is not None:
-        sz_th = thermal_single(s_z_op)
-        sz2_th = thermal_pair(s_z_op, s_z_op)
-        result["sz_thermal"] = sz_th
-        result["sz2_thermal"] = sz2_th
-        result["chi_spin_zz"] = (sz2_th - sz_th**2) / tau
-    if l_z_op is not None:
-        lz_th = thermal_single(l_z_op)
-        lz2_th = thermal_pair(l_z_op, l_z_op)
-        result["lz_thermal"] = lz_th
-        result["lz2_thermal"] = lz2_th
-        result["chi_orb_zz"] = (lz2_th - lz_th**2) / tau
-    if s_z_op is not None and l_z_op is not None:
-        szlz_th = thermal_pair(s_z_op, l_z_op)
-        result["szlz_thermal"] = szlz_th
-        result["chi_spin_orb"] = (szlz_th - result["sz_thermal"] * result["lz_thermal"]) / tau
-    return result
+    col2 = np.zeros(n)
+    for idx, sub in zip(groups, blocks):
+        col2[list(idx)] = np.sum(np.abs(sub) ** 2, axis=0)
+    return col2
 
 
-def static_susceptibility_rows(chi):
-    """``(label, value, suffix)`` rows for the *Static susceptibilities* report group."""
-    rows = []
-    if chi.get("chi_spin_zz") is not None:
-        rows.append(("chi_spin_zz", chi["chi_spin_zz"], "((<Sz^2> - <Sz>^2)/tau)"))
-    if chi.get("chi_orb_zz") is not None:
-        rows.append(("chi_orb_zz", chi["chi_orb_zz"], "((<Lz^2> - <Lz>^2)/tau)"))
-    if chi.get("chi_spin_orb") is not None:
-        rows.append(("chi_spin_orb", chi["chi_spin_orb"], "((<Sz.Lz> - <Sz><Lz>)/tau)"))
-    rows.append(("chi_charge", chi["chi_charge"], "((<N^2> - <N>^2)/tau)"))
-    rows.append(
-        (
-            "note",
-            None,
-            "Curie terms of the retained manifold only (no Van Vleck part); tau = " f"{chi['tau']:.4g}",
-        )
-    )
-    return rows
+def spin_curie_susceptibility(es, tau, sz_diag, sz_col2):
+    r"""Curie term of the longitudinal impurity spin susceptibility from the retained manifolds.
+
+    .. math:: \chi_{S_z} = \frac{1}{\tau}\Big[\sum_n w_n \sum_{m\in M(n)} |\langle m|S_z|n\rangle|^2
+        - \Big(\sum_n w_n \langle n|S_z|n\rangle\Big)^2\Big]
+
+    ``sz_diag`` and ``sz_col2`` are the per-state ``<n|S_z|n>`` and :func:`manifold_square_weights` of ``S_z``.
+    Only meaningful where ``[S_z, H] = 0`` (a verified spin layout): then ``S_z`` does not leave a manifold and this
+    is the Curie law. The orbital ``L_z`` and charge analogues are not this: ``L_z`` connects a manifold to states
+    outside the retained window (Van Vleck), and the charge variance is already the ``<N^2> - <N>^2`` of the
+    marginals.
+    """
+    sz = float(np.real(thermal_observable_value(np.asarray(sz_diag, dtype=float), es, tau)))
+    sz2 = float(np.real(thermal_observable_value(np.asarray(sz_col2, dtype=float), es, tau)))
+    return {"tau": float(tau), "sz_thermal": sz, "sz2_curie": sz2, "chi_spin_zz": (sz2 - sz**2) / tau}
 
 
 def print_correlation_diagnostics(corr, file=None):
-    """Pretty-print the dict from :func:`compute_correlation_diagnostics`."""
+    """Pretty-print the dict from :func:`compute_correlation_diagnostics`: open-shell orbitals in full, the rest folded."""
     print("Impurity correlation diagnostics (thermal):", file=file)
     print(f"  {'orbital(dn,up)':>16s} {'n_dn':>8s} {'n_up':>8s} {'<n_up*n_dn>':>12s} {'<m_z^2>':>9s}", file=file)
+    open_shell = corr["open_shell"]
     for a, (dn, up) in enumerate(corr["pairs"]):
+        if not open_shell[a]:
+            continue
         pair_label = f"({dn},{up})"
         print(
             f"  {pair_label:>16s} {corr['n_dn'][a]:>8.5f} {corr['n_up'][a]:>8.5f} "
             f"{corr['docc'][a]:>12.6f} {corr['local_moment_z2'][a]:>9.5f}",
             file=file,
         )
-    print(f"  total double occupancy D = {corr['docc_total']:.6f}", file=file)
-    print(
-        f"  <Sz_imp^2> = {corr['sz2_thermal']:.6f}   "
-        f"chi_zz = (<Sz^2> - <Sz>^2)/tau = {corr['chi_zz']:.4f}  (tau = {corr['tau']:.4g})",
-        file=file,
-    )
-    print("  Inter-orbital <S_i.S_j> (i,j = impurity spatial orbitals, labelled by their (dn,up) pairs):", file=file)
-    for i, row in enumerate(corr["hund"]):
+    for name in ("filled", "empty"):
+        if corr[name]:
+            labels = ", ".join(f"({corr['pairs'][a][0]},{corr['pairs'][a][1]})" for a in corr[name])
+            print(f"  {len(corr[name])} {name} orbitals (no correlation): {labels}", file=file)
+    print(f"  open-shell double occupancy D = {corr['docc_open_shell_total']:.6f}", file=file)
+    print(f"  <Sz_imp^2> = {corr['sz2_thermal']:.6f}   (tau = {corr['tau']:.4g})", file=file)
+    keep = [a for a, o in enumerate(open_shell) if o]
+    print("  Inter-orbital <S_i.S_j> (open-shell impurity orbitals, labelled by their (dn,up) pairs):", file=file)
+    for i in keep:
         label = f"({corr['pairs'][i][0]},{corr['pairs'][i][1]})"
-        print(f"  {label:>10s} " + " ".join(f"{x: 9.5f}" for x in np.real(row)), file=file)
+        print(f"  {label:>10s} " + " ".join(f"{np.real(corr['hund'][i][j]): 9.5f}" for j in keep), file=file)
 
 
 def compute_screening_diagnostics(
@@ -1501,7 +1427,7 @@ def compute_screening_diagnostics(
     imp_groups : dict or None
         ``{label: [pair, ...]}``; ``None`` skips the channel resolution.
     keep : KeyFilter, optional
-        Support filter of ``psis``, as in :func:`compute_static_susceptibilities`.
+        Support filter of ``psis``, as in :func:`compute_correlation_diagnostics`.
 
     values : callable, optional
         A stand-in for :func:`manifold_observable_values` (same call signature): a replay of values measured

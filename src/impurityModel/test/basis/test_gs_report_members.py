@@ -107,7 +107,7 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
     assert none is None
     assert _numerically_equal(es_new, es_ref, tol) and _numerically_equal(rho_new, rho_ref, tol)
     assert _numerically_equal(info_new["rhos"], info_ref["rhos"], tol)
-    for key in ("correlation_diagnostics", "screening_diagnostics", "energy_decomposition", "static_susceptibilities"):
+    for key in ("correlation_diagnostics", "screening_diagnostics", "energy_decomposition", "chi_spin_zz"):
         assert _numerically_equal(info_new[key], info_ref[key], tol), key
     a, b = info_new["statistics"], info_ref["statistics"]
     assert (a is None) == (b is None)
@@ -145,6 +145,11 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
         if n_members > 1:
             assert {m["n_imp_sector"] for m in rep_a["members"]} == {int(t) for t, _, _, _ in captured}
         assert sum(m["g"] for m in rep_a["manifolds"]) == len(es_new)
+        if n_members > 1:
+            # members live in different variational bases, so a manifold is never merged across them: the replay's
+            # per-member manifold entropies are not the one-shot union's
+            for stats in (a, b):
+                (stats.get("entanglement") or {}).pop("manifold_entropy", None)
         assert _numerically_equal(_without_zero_rows(a), _without_zero_rows(b), tol)
 
 

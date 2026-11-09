@@ -20,6 +20,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
+from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_comm import graph_alltoall
 
@@ -794,12 +795,16 @@ def compute_entanglement_entropy(basis, psis, es, tau, max_bytes=256 * 1024**2, 
     return entanglement_from_blocks(state_blocks, es, tau, top_k=top_k)
 
 
-def entanglement_partials(state_blocks, es, tau):
+def entanglement_partials(state_blocks, es, tau, degeneracy_tol=None):
     """One member's entanglement data from its per-state RDM blocks: small, with no dense per-state block kept.
 
     ``es`` are the member's energies; the thermal block uses the member-normalised Boltzmann weights, so the
     union's thermal block is :math:`\\sum_k c_k\\,\\rho_k` with the members' shares ``c_k`` (the RDM is linear in
     the weights). ``None`` (the memory guard tripped) in, ``None`` out.
+
+    With ``degeneracy_tol`` the member's degenerate manifolds (:func:`~impurityModel.ed.degeneracy.degenerate_groups`)
+    also get the spectrum of their *mean* RDM, ``manifold_eigvals``: a state inside a manifold has no entropy of its
+    own (it depends on the basis the solver happened to return), the manifold's mixture has.
     """
     if state_blocks is None:
         return None
@@ -811,8 +816,16 @@ def entanglement_partials(state_blocks, es, tau):
         eigvals.append(np.clip(np.real(ev), 0.0, None))
         sector_weights.append({int(n_e): float(np.real(np.trace(blocks[n_e]))) for n_e in sectors})
     thermal = {n_e: sum(w * blocks[n_e] for w, blocks in zip(weights, state_blocks)) for n_e in sectors}
+    manifolds = []
+    if degeneracy_tol is not None and state_blocks:
+        for idx in degenerate_groups(np.asarray(es, dtype=float), degeneracy_tol, anchor="first"):
+            idx = [int(i) for i in idx]
+            mean = [sum(state_blocks[i][n_e] for i in idx) / len(idx) for n_e in sectors]
+            ev = np.concatenate([np.linalg.eigvalsh(m) for m in mean])
+            manifolds.append({"states": idx, "eigvals": np.clip(np.real(ev), 0.0, None)})
     return {
         "dims": {int(n_e): int(thermal[n_e].shape[0]) for n_e in sectors},
+        "manifolds": manifolds,
         "eigvals": eigvals,
         "sector_weights": sector_weights,
         "thermal": thermal,
@@ -849,8 +862,17 @@ def assemble_entanglement(partials, scales, order, es, tau, top_k=8):
             norm.append(float(np.sum(full)))
             top.append([float(x) for x in np.sort(full)[::-1][:top_k]])
             sector_weights.append({n_e: sw.get(n_e, 0.0) for n_e in sectors})
+    manifold_entropy, offset = [], 0
+    for p in partials:
+        for m in p.get("manifolds", []):
+            manifold_entropy.append({"states": [offset + i for i in m["states"]], "entropy": _entropy(m["eigvals"])})
+        offset += len(p["eigvals"])
     if order is not None:
         entropy, norm, top, sector_weights = ([lst[k] for k in order] for lst in (entropy, norm, top, sector_weights))
+        position = np.empty(len(order), dtype=int)  # concatenated index -> place in the union's order
+        position[np.asarray(order)] = np.arange(len(order))
+        for m in manifold_entropy:
+            m["states"] = sorted(int(position[i]) for i in m["states"])
     if len(partials) == 1:
         thermal = partials[0]["thermal"]
     else:
@@ -863,6 +885,7 @@ def assemble_entanglement(partials, scales, order, es, tau, top_k=8):
     w_pos = weights[weights > 1e-14]
     return {
         "per_state_entropy": entropy,
+        "manifold_entropy": manifold_entropy,
         "per_state_norm": norm,
         "spectrum_top": top,
         "sector_weights": sector_weights,
@@ -942,10 +965,20 @@ def print_gs_statistics(stats, file=None, verbose=1):
         )
         print(
             f"  thermal impurity entropy = {ent['thermal_entropy']:.4f}  "
-            f"(mixture entropy = {ent['mixture_entropy']:.4f}; the thermal value includes "
-            "classical mixing, only the per-state values are pure entanglement)",
+            f"(mixture entropy = {ent['mixture_entropy']:.4f}; the thermal value includes classical mixing; "
+            "a per-state value is pure entanglement only for a nondegenerate state, inside a degenerate "
+            "manifold it depends on the basis, so the manifold values below are the reproducible ones)",
             file=file,
         )
+        if ent.get("manifold_entropy"):
+            print(
+                "  manifold S_ent (mean RDM) = "
+                + "  ".join(
+                    f"{m['entropy']:.4f}" + (f" (g={len(m['states'])})" if len(m["states"]) > 1 else "")
+                    for m in ent["manifold_entropy"]
+                ),
+                file=file,
+            )
         print(
             "  impurity RDM spectrum (state 0, largest): " + "  ".join(f"{x:.4f}" for x in ent["spectrum_top"][0]),
             file=file,

@@ -217,6 +217,7 @@ class ManifoldRow:
     l_sharp: object = None
     j_sharp: object = None
     sectors: object = None
+    entropy: object = None
 
 
 @dataclass
@@ -266,9 +267,7 @@ class GroundStateReport:
         """JSON-ready dict (numpy values left to the encoder of :func:`gs_statistics.save_gs_statistics`)."""
         out = asdict(self)
         out["naming"] = (
-            None
-            if self.naming is None
-            else {str(i): asdict(info) for i, info in sorted(self.naming.infos.items())}
+            None if self.naming is None else {str(i): asdict(info) for i, info in sorted(self.naming.infos.items())}
         )
         return out
 
@@ -292,6 +291,7 @@ def assemble_report(
     sisb_values=None,
     sisb_z_values=None,
     thermal=None,
+    manifold_entropy=None,
     magnetic=None,
     correlation=None,
     screening=None,
@@ -326,6 +326,10 @@ def assemble_report(
     def sharp(col, idx):
         return None if col is None else bool(np.ptp(np.asarray(col)[idx]) < LABEL_SPREAD_TOL)
 
+    # The entropies name states by their place in ``es``; the report orders by energy, so map them.
+    place = np.empty(len(es), dtype=int)
+    place[order] = np.arange(len(es))
+    by_states = {tuple(sorted(int(place[i]) for i in m["states"])): m["entropy"] for m in (manifold_entropy or [])}
     manifolds, members = [], []
     for m, blk in enumerate(blocks):
         idx = np.asarray(blk, dtype=int)
@@ -345,6 +349,7 @@ def assemble_report(
                 l_sharp=sharp(cols["l"], idx),
                 j_sharp=sharp(cols["j"], idx),
                 sectors=None if sec is None else sorted({int(x) for x in sec[idx] if x is not None}),
+                entropy=by_states.get(tuple(int(i) for i in blk)),
             )
         )
         sisb = _column(sisb_values, order)
