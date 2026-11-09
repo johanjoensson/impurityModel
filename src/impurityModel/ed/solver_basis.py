@@ -188,6 +188,7 @@ def prepare_solver_basis(
     rank=0,
     comm=None,
     shell_ls=None,
+    interaction_merges_blocks=True,
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
@@ -209,6 +210,9 @@ def prepare_solver_basis(
     The symmetry-adapted rotation is then kept only if it maps every orbital into a single shell (otherwise
     the input basis is solved in), every orbital group must lie in one shell, and ``nominal_occ`` may be keyed
     by shell. ``None`` (or one shell) is the single-shell path, unchanged.
+
+    ``interaction_merges_blocks=False`` takes the one-body Green's-function blocks as authoritative: an
+    interaction coupling two of them is neglected (and reported on rank 0) instead of merging them.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
@@ -290,7 +294,13 @@ def prepare_solver_basis(
     # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
     # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
     # Derived from h *after* any rotation, so the blocks label the sectors of the solver basis.
-    block_structure = impurity_block_structure(h, impurity_indices, h0_matrix=h_matrix)
+    block_structure = impurity_block_structure(
+        h,
+        impurity_indices,
+        h0_matrix=h_matrix,
+        interaction_merges_blocks=interaction_merges_blocks,
+        report=(lambda msg: print(msg, flush=True)) if rank == 0 and verbosity > 0 else None,
+    )
 
     # Group the flat orbital lists into orbital-symmetry manifolds (the inequivalent blocks and
     # their spin-degenerate partners, e.g. eg / t2g) **in the solver basis** h. Grouping by the

@@ -650,6 +650,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         rank=rank,
         comm=comm,
         shell_ls=model.shell_ls,
+        interaction_merges_blocks=basis.interaction_merges_blocks,
     )
     h = sb.h
     h0_solve = sb.h0_solve

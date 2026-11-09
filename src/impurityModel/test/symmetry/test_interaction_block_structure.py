@@ -174,3 +174,32 @@ def test_orbital_dependent_density_interaction_splits_degenerate_orbitals():
     g = _atomic_greens_function(m, u4, 0.7j, mu=1.0)
     assert abs(g[0, 0] - g[1, 1]) > 1e-3
     _assert_structure_is_exact(after, g)
+
+
+def test_merge_off_takes_the_one_body_blocks_as_authoritative_and_reports_the_coupling():
+    """With ``merge=False`` the density-assisted hopping term is neglected, not merged, and named."""
+    u4 = terms_u4(2, spatial=[[0, 0, 0, 0, 3.0], [1, 1, 1, 1, 3.0], [0, 1, 1, 1, 0.5]])
+    m, u4 = _two_orbital(u4)
+    op = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(u4))
+    two_body = impurity_two_body_tensor(op, list(range(u4.shape[0])))
+    before = build_block_structure(None, mat=m)
+    messages = []
+    after, _changed = reconcile_block_structure_with_interaction(
+        before, two_body, m, merge=False, report=messages.append
+    )
+    assert sorted(map(sorted, after.blocks)) == sorted(map(sorted, before.blocks))
+    assert len(after.blocks) == 4
+    assert len(messages) == 1 and "neglected" in messages[0]
+    # the default still merges
+    merged, changed = reconcile_block_structure_with_interaction(before, two_body, m)
+    assert changed and len(merged.blocks) == 2
+
+
+def test_get_blocks_forwards_mat_and_tol():
+    from impurityModel.ed.block_structure import get_blocks
+
+    mat = np.array([[1.0, 1e-3], [1e-3, 2.0]])
+    g = np.diag([1.0, 2.0]).astype(complex)
+    assert get_blocks(g, mat, tol=1e-6) == [[0, 1]]
+    assert get_blocks(g, mat, tol=1e-2) == [[0], [1]]
+    assert get_blocks(None, mat, tol=1e-2) == [[0], [1]]

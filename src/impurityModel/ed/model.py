@@ -1288,6 +1288,8 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "cost_budget": _optional_float(_archive_attr(attrs, "cost_budget")),
         # Absent from archives written before it was recorded: those runs used the default.
         "e_pt2_tol": _optional_float(_archive_attr(attrs, "e_pt2_tol")),
+        # Absent from archives written before it existed: those runs let the interaction merge blocks.
+        "interaction_merges_blocks": _archive_attr(attrs, "interaction_merges_blocks", True),
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
         "gf_method": _replayable_gf_method(str(_archive_attr(attrs, "gf_method", "lanczos"))),
         # Absent from archives written before the policy was an option: those runs did not set it.
@@ -1359,6 +1361,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         tau=raw["tau"],
         cost_budget=raw["cost_budget"],
         e_pt2_tol=raw["e_pt2_tol"],
+        interaction_merges_blocks=_optional_bool(raw["interaction_merges_blocks"]) is not False,
     )
     solver = SolverOptions(
         dense_cutoff=raw["dense_cutoff"],
@@ -1456,6 +1459,12 @@ class BasisOptions:
         short of ``e_pt2_tol`` warns with the residual it left. ``None`` uses
         :data:`groundstate.GS_DE2_MIN` (0, no floor). Inherited by the double-counting search
         like ``e_pt2_tol``.
+    interaction_merges_blocks : bool
+        ``True`` (default): an interaction that couples one-body blocks merges them into one
+        Green's-function block. ``False``: the one-body blocks are authoritative and such
+        couplings are neglected (reported). Set it when the one-body part was deliberately
+        truncated to block-diagonal form. Only the RSPt interface sets it; the standalone scripts
+        (spectra, selfenergy, susceptibility) and input files keep the default.
     """
 
     nominal_occ: Any
@@ -1469,6 +1478,7 @@ class BasisOptions:
     cost_budget: Optional[float] = None
     e_pt2_tol: Optional[float] = None
     de2_min: Optional[float] = None
+    interaction_merges_blocks: bool = True
 
     def __post_init__(self):
         if self.e_pt2_tol is not None and not self.e_pt2_tol > 0:

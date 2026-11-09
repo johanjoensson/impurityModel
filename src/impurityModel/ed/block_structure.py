@@ -282,9 +282,9 @@ def get_blocks(G: np.ndarray | None = None, mat=None, tol=1e-6):
     if G is not None:
         if len(G.shape) == 2:
             G = G.reshape((1, G.shape[0], G.shape[1]))
-        n_blocks, block_idxs = get_n_blocks_block_indices_mask(G)
+        n_blocks, block_idxs = get_n_blocks_block_indices_mask(G, mat, tol=tol)
     else:
-        n_blocks, block_idxs = get_n_blocks_block_indices_mask_matrix(mat)
+        n_blocks, block_idxs = get_n_blocks_block_indices_mask_matrix(mat, tol=tol)
 
     blocks: list[list[int]] = [[] for _ in range(n_blocks)]
     for orb_i, block_i in enumerate(block_idxs):

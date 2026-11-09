@@ -69,6 +69,7 @@ _CONSUMED_ATTRS = frozenset(
         "cost_budget",
         "e_pt2_tol",
         "de2_min",
+        "interaction_merges_blocks",
     }
 )
 #: Attributes that describe the bath fit that produced ``H solver`` (or the run's provenance), not the solver
@@ -197,6 +198,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "cost_budget": _optional(attrs, "cost_budget", float),
         "e_pt2_tol": _optional(attrs, "e_pt2_tol", float),
         "de2_min": _optional(attrs, "de2_min", float),
+        "interaction_merges_blocks": _optional_bool(_attr(attrs, "interaction_merges_blocks")),
         "gf_admission": _optional(attrs, "gf_admission", str),
         "gf_admit_tol": _optional(attrs, "gf_admit_tol", float),
         "gf_settle": _optional_bool(_attr(attrs, "gf_settle")),
@@ -302,7 +304,7 @@ def build_options(
     )
     # Only what the archive recorded: BasisOptions' own defaults (residual-PT2 tolerance) apply to a field it does
     # not carry, exactly as for a run that never set it.
-    for key in ("e_pt2_tol", "de2_min"):
+    for key in ("e_pt2_tol", "de2_min", "interaction_merges_blocks"):
         if workload.get(key) is not None:
             basis_kwargs[key] = workload[key]
     if cost_budget is None:

@@ -335,7 +335,7 @@ def _interaction_probes(two_body, m):
     return probes
 
 
-def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol=1e-8):
+def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol=1e-8, merge=True, report=None):
     r"""Make a one-body-derived GF block structure correct for a two-body interaction too.
 
     :func:`impurity_block_structure` reads the blocks and their equivalences off the dressed
@@ -370,6 +370,14 @@ def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol
         The dressed one-body matrix the block structure was derived from.
     tol : float, optional
         Relative tolerance on the probe elements.
+    merge : bool, optional
+        ``False`` takes the one-body blocks as authoritative: no merging happens, so a probe
+        element between two blocks is *neglected* instead of joining them (the approximation a
+        caller asks for when it deliberately truncated weak one-body couplings). The
+        equivalence checks still run.
+    report : callable, optional
+        Called with a one-line message when ``merge=False`` neglects a coupling, naming the
+        largest one relative to the probe maximum.
 
     Returns
     -------
@@ -395,11 +403,24 @@ def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol
             x = parent[x]
         return x
 
+    neglected = (0.0, None)
     for probe, cutoff in zip(probes, cutoffs):
+        pmax = max(float(np.max(np.abs(probe))), 1e-300)
         for i, j in zip(*np.nonzero(np.abs(probe) > cutoff)):
             bi, bj = find(orb_block[int(i)]), find(orb_block[int(j)])
-            if bi != bj:
+            if bi == bj:
+                continue
+            if merge:
                 parent[bj] = bi
+            else:
+                rel = float(np.abs(probe[i, j])) / pmax
+                if rel > neglected[0]:
+                    neglected = (rel, (int(i), int(j)))
+    if neglected[1] is not None and report is not None:
+        report(
+            f"Interaction couples impurity orbitals {neglected[1][0]} and {neglected[1][1]} in different blocks "
+            f"(probe element {neglected[0]:.2e} of the probe maximum); neglected, the blocks are kept apart."
+        )
     groups = {}
     for bi in range(len(blocks)):
         groups.setdefault(find(bi), []).append(bi)
@@ -845,7 +866,9 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     return build_block_structure(None, mat=h)
 
 
-def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
+def impurity_block_structure(
+    op, impurity_orbitals, n_orb=None, h0_matrix=None, interaction_merges_blocks=True, report=None
+):
     r"""Impurity ``BlockStructure`` consistent with the interacting Green's function.
 
     The GF / self-energy paths partition the impurity orbitals into blocks and compute one
@@ -898,6 +921,13 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
         Number of spin-orbitals (inferred if ``None``).
     h0_matrix : ndarray, optional
         Pre-extracted one-body matrix of ``op``; pass it to avoid re-walking the operator.
+    interaction_merges_blocks : bool, optional
+        ``True`` (default) lets an interaction that couples one-body blocks merge them
+        (:func:`reconcile_block_structure_with_interaction`). ``False`` keeps the one-body blocks
+        and neglects such couplings; use it when the one-body part was deliberately truncated to
+        block-diagonal form.
+    report : callable, optional
+        Receives the message about a neglected coupling.
 
     Returns
     -------
@@ -911,7 +941,7 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
 
     m = h[np.ix_(imp, imp)]
     if not bath:
-        return _reconciled(build_block_structure(None, mat=m), op, imp, m)
+        return _reconciled(build_block_structure(None, mat=m), op, imp, m, interaction_merges_blocks, report)
     v = h[np.ix_(bath, imp)]  # (n_bath, n_imp) impurity-bath hopping
     m = m + v.conj().T @ v  # add the bath-mediated (first-moment) coupling
     # M alone cannot tell two orbitals apart whose levels and total hybridization agree but whose
@@ -925,10 +955,10 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     for _k in (1, 2):
         w = h_bath @ w
         probes.append(v.conj().T @ w)
-    return _reconciled(build_block_structure(np.stack(probes), mat=m), op, imp, m)
+    return _reconciled(build_block_structure(np.stack(probes), mat=m), op, imp, m, interaction_merges_blocks, report)
 
 
-def _reconciled(block_structure, op, imp, m):
+def _reconciled(block_structure, op, imp, m, merge=True, report=None):
     """Correct a one-body-derived block structure for ``op``'s two-body interaction.
 
     The blocks above are read off one-body quantities, on the premise that the interaction has at
@@ -948,7 +978,9 @@ def _reconciled(block_structure, op, imp, m):
     from impurityModel.ed.block_structure import BlockStructure, get_inequivalent_blocks
 
     two_body = impurity_two_body_tensor(op, imp)
-    block_structure, _changed = reconcile_block_structure_with_interaction(block_structure, two_body, m)
+    block_structure, _changed = reconcile_block_structure_with_interaction(
+        block_structure, two_body, m, merge=merge, report=report
+    )
     if any(block_structure.particle_hole_blocks) or any(block_structure.particle_hole_transposed_blocks):
         none = [[] for _ in block_structure.blocks]
         identical = [list(members) for members in block_structure.identical_blocks]

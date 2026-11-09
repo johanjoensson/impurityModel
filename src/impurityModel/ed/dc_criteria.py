@@ -927,6 +927,7 @@ def _prepare_sector_context(
         rank=rank,
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
+        interaction_merges_blocks=basis.interaction_merges_blocks,
     )
     _check_active_shells(sb, rank, verbosity, comm if comm is not None else MPI.COMM_WORLD)
     impurity_orbitals = sb.impurity_orbitals
@@ -2157,6 +2158,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         rank=comm.rank if comm is not None else 0,
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
+        interaction_merges_blocks=basis.interaction_merges_blocks,
     )
     _check_active_shells(
         sb,
