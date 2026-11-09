@@ -367,6 +367,10 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
                 h0_matrix=h_matrix,
                 rot_to_spherical=rot_to_spherical.get(l_valence),
             )
+            if comm is not None:
+                # A rank-local eigh: in a degenerate block the eigenvectors depend on the BLAS build, so every rank
+                # takes rank 0's (as solver_basis does).
+                W, u_imp = comm.bcast((W, u_imp), root=0)
             h_rotated = rotate_hamiltonian(hOp, W, tol=spectra._ROTATION_TRIM_TOL)
             fill_ratio = len(h_rotated) / max(1, len(hOp))
             if fill_ratio <= spectra._MAX_ROTATION_FILL:

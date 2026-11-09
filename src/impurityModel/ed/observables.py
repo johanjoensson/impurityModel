@@ -1286,7 +1286,9 @@ def spin_curie_susceptibility(es, tau, sz_diag, sz_col2):
     .. math:: \chi_{S_z} = \frac{1}{\tau}\Big[\sum_n w_n \sum_{m\in M(n)} |\langle m|S_z|n\rangle|^2
         - \Big(\sum_n w_n \langle n|S_z|n\rangle\Big)^2\Big]
 
-    ``sz_diag`` and ``sz_col2`` are the per-state ``<n|S_z|n>`` and :func:`manifold_square_weights` of ``S_z``.
+    ``S_z`` is the *impurity* spin. ``sz_diag`` and ``sz_col2`` are the per-state ``<n|S_z|n>`` and
+    :func:`manifold_square_weights` of ``S_z``: the second sums ``|<m|S_z|n>|^2`` over the manifold partners
+    ``m`` only, so the in-manifold projected term is what enters (transitions out of the manifold are excluded).
     Only meaningful where ``[S_z, H] = 0`` (a verified spin layout): then ``S_z`` does not leave a manifold and this
     is the Curie law. The orbital ``L_z`` and charge analogues are not this: ``L_z`` connects a manifold to states
     outside the retained window (Van Vleck), and the charge variance is already the ``<N^2> - <N>^2`` of the

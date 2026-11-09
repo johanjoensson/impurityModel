@@ -300,6 +300,7 @@ def sharpen_manifolds(blk, es, layout, casimirs, tol, comm=None, redistribute=No
         for k in keys:
             values[k][idx] = np.real(np.diag(ug.conj().T @ mats[k][gi] @ ug))
     info = ManifoldBasis(groups=groups, keys=keys, values=values, rotated=multi, tol=tol)
+    # width and n are replicated (every rank holds all columns of the block), so this gate is rank-uniform.
     if multi and blk.width == n:
         blk = blk.combine_columns(u_full)
     return blk, info
@@ -860,7 +861,8 @@ def _evaluate(
             sz_op = make_spin_operators(spin_pairs[0])[2]
             sz_diag, sz_col2 = src.curie("sz-imp")(lambda blk: sz_op.apply_block(blk, 0, support_keep))
             chi_spin_zz = spin_curie_susceptibility(es, tau, sz_diag, sz_col2)
-        except Exception:
+        except Exception as exc:
+            print(f"WARNING: chi_spin_zz not evaluated ({type(exc).__name__}: {exc})", file=sys.stderr)
             chi_spin_zz = None
 
     # Correlation-strength, screening and energy-decomposition diagnostics. Collective
@@ -1022,7 +1024,9 @@ def _assemble(R, src, magnetic, ensemble, gs_convergence_report):
             ensemble=ensemble,
             warnings=degraded_warnings(gs_convergence_report),
         )
-    except Exception:
+    except Exception as exc:
+        # Not silent: the report model is the record, so say that it is missing (and why).
+        print(f"WARNING: ground-state report model not assembled ({type(exc).__name__}: {exc})", file=sys.stderr)
         return None
 
 
@@ -1475,7 +1479,9 @@ def measure_member(
     replay, which reports it.
     """
     tape = {}
-    tol = manifold_tol(np.asarray(es, dtype=float), slater_weight_min)
+    tol = manifold_tol(
+        np.asarray(es, dtype=float), slater_weight_min
+    )  # es is rank-uniform here (broadcast by the solver)
     src = _LiveSource(ground_state_basis, es, psis_blk, tau, tape=tape, degeneracy_tol=tol)
     _evaluate(
         src,

@@ -109,7 +109,7 @@ def test_report_is_invariant_under_relabelling_of_the_spin_orbitals(name):
     comm = MPI.COMM_WORLD
     reference = _report(PERMUTATIONS["identity"], comm)
     relabelled = _report(PERMUTATIONS[name], comm)
-    if comm.rank != 0:  # the report model is assembled on the root rank only
+    if comm.rank != 0:  # off the root the report model is assembled incompletely (gs_stats exists on rank 0 only)
         return
     _assert_close(_physical(reference), _physical(relabelled))
     perm = PERMUTATIONS[name]
