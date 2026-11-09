@@ -34,6 +34,7 @@ from impurityModel.ed.gs_statistics import (
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.gs_report_model import OrbitalNaming, assemble_report
+from impurityModel.ed.gs_report_render import render_summary
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -1093,8 +1094,29 @@ def _present(
             lambda: rank == 0 and gs_stats is not None and save_gs_statistics(gs_stats, stats_path),
         )
 
-    if rank == 0:
-        # Terse run record: always shown (V_RESULT), independent of the full report below.
+    summary_only = verbose == V_SUMMARY
+    if rank == 0 and summary_only and R.report is not None:
+        # -v: the compact summary stands in for the terse record and the full report (which -vv prints).
+        diag = np.real(np.diag(thermal_rho)) if thermal_rho is not None else None
+        stats_ = gs_stats or {}
+        configs = [
+            (tuple(r["config"]), r["fraction"]) for r in stats_.get("thermal_config_weights", {}).get("rows", [])
+        ]
+        try:
+            for line in render_summary(
+                R.report,
+                diag=diag,
+                configurations=configs,
+                one_body_entropy=stats_.get("one_body_entropy"),
+                files=None,
+            ):
+                print(line)
+        except Exception as exc:
+            print(f"[warning] ground-state summary incomplete (GS still returned): {exc}")
+        for reason in degraded_warnings(gs_convergence_report):
+            print(f"WARNING: {reason}", file=sys.stderr, flush=True)
+    elif rank == 0:
+        # Terse run record: shown at V_RESULT and V_DETAIL+, independent of the full report below.
         gs_occ = getattr(ground_state_basis, "ground_state_occupation", None)
         occ_str = f"; ground-state impurity occupation: {sum(gs_occ.values())}" if gs_occ else ""
         print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
@@ -1120,10 +1142,10 @@ def _present(
             )
         for reason in degraded_warnings(gs_convergence_report):
             print(f"WARNING: {reason}", file=sys.stderr, flush=True)
-        if not report.enabled(V_SUMMARY):
+        if not report.enabled(V_DETAIL):
             note = f"; statistics saved to {stats_path}" if (gs_stats is not None and stats_path is not None) else ""
-            print(f"(full report: -v{note})")
-    if report.enabled(V_SUMMARY):
+            print(f"(full report: -vv{note})")
+    if report.enabled(V_DETAIL):
         # The ground state is fully computed by here; formatting/printing the observable report
         # must never crash the solve. Any failure degrades to a warning and still returns the GS.
         # Rank-0-only (report.enabled already checks rank == 0; no collectives inside), so the

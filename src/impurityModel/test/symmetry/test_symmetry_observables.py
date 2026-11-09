@@ -610,7 +610,7 @@ def test_kondo_correlation_reported(capsys):
         comm=None,
         truncation_threshold=100000,
     )
-    calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
+    calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=2, slaterWeightMin=1e-12)
     out = capsys.readouterr().out
 
     # Thermal line and per-eigenstate column both present.
@@ -694,7 +694,7 @@ def test_kondo_correlation_reported_polarized_bath(capsys):
         comm=None,
         truncation_threshold=100000,
     )
-    calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
+    calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=2, slaterWeightMin=1e-12)
     out = capsys.readouterr().out
 
     # Full value present and flagged as pairing-dependent.
@@ -1128,7 +1128,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         comm=None,
         truncation_threshold=200000,
     )
-    calc_gs(Hop, setup, bs, Rot.conj().T, verbose=True, slaterWeightMin=1e-12)  # must not raise
+    calc_gs(Hop, setup, bs, Rot.conj().T, verbose=2, slaterWeightMin=1e-12)  # must not raise
     out = capsys.readouterr().out
     assert "<S^2>" in out and "<L^2>" in out and "<J^2>" in out  # reported, not skipped
     s2 = float(next(ln for ln in out.splitlines() if ln.lstrip().startswith("<S^2>")).split("=")[1].split("(")[0])
@@ -1169,7 +1169,7 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
             comm=None,
             truncation_threshold=100000,
         )
-        calc_gs(Hop, setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
+        calc_gs(Hop, setup, bs, np.eye(2, dtype=complex), verbose=2, slaterWeightMin=1e-12)
         return _thermal_sisb(capsys.readouterr().out)
 
     fast = run([2, 3], [4, 5])  # down-then-up within each block -> fast path
