@@ -1742,6 +1742,41 @@ def compute_energy_decomposition(thermal_rho, h1, impurity_indices, e_thermal):
     }
 
 
+def manifold_observable_matrices(
+    eigenstates, energies, apply_op, degeneracy_tol=DEGENERACY_TOL, comm=None, redistribute=None
+):
+    r"""The Hermitised matrix :math:`O_{mn}=\langle m|\hat O|n\rangle` of an observable inside each degenerate manifold.
+
+    One block apply for all states, one ``Allreduce`` when distributed (see :func:`manifold_observable_values` for
+    the distribution contract and the parameters). Returns ``(groups, blocks)``: ``groups`` is the manifolds in
+    ascending energy as arrays of indices into ``eigenstates`` (the ``anchor="first"`` grouping at
+    ``degeneracy_tol``), ``blocks[k]`` the ``len(groups[k])`` square matrix of manifold ``k`` in the order of
+    ``groups[k]``. The matrices are identical on every rank.
+    """
+    energies = np.asarray(energies, dtype=float)
+    op_states = apply_op(eigenstates)
+    if redistribute is not None:
+        op_states = redistribute(op_states)
+    o_matrix = block_inner_cy(eigenstates, op_states)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, o_matrix, op=MPI.SUM)
+    # Hermitise to kill rounding asymmetry before diagonalising.
+    o_matrix = 0.5 * (o_matrix + o_matrix.conj().T)
+    order = np.argsort(energies, kind="stable")
+    groups = [order[block] for block in degenerate_groups(energies[order], degeneracy_tol, anchor="first")]
+    return groups, [o_matrix[np.ix_(idx, idx)] for idx in groups]
+
+
+def manifold_values_from_matrices(n, groups, blocks):
+    """Per-state values from :func:`manifold_observable_matrices`: the k-th sorted eigenvalue of each block to slot k."""
+    values = np.empty(n)
+    for idx, sub in zip(groups, blocks):
+        evals = np.linalg.eigvalsh(sub)
+        for k, state_index in enumerate(idx):
+            values[state_index] = evals[k]
+    return values
+
+
 def manifold_observable_values(
     eigenstates, energies, apply_op, degeneracy_tol=DEGENERACY_TOL, comm=None, redistribute=None
 ):
@@ -1791,26 +1826,10 @@ def manifold_observable_values(
         degenerate subspace receive that subspace's eigenvalues (their assignment
         within the subspace is arbitrary, the values being physically interchangeable).
     """
-    n = eigenstates.width
-    energies = np.asarray(energies, dtype=float)
-    op_states = apply_op(eigenstates)
-    if redistribute is not None:
-        op_states = redistribute(op_states)
-    o_matrix = block_inner_cy(eigenstates, op_states)
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, o_matrix, op=MPI.SUM)
-    # Hermitise to kill rounding asymmetry before diagonalising.
-    o_matrix = 0.5 * (o_matrix + o_matrix.conj().T)
-
-    order = np.argsort(energies, kind="stable")
-    values = np.empty(n)
-    for block in degenerate_groups(energies[order], degeneracy_tol, anchor="first"):
-        idx = order[block]
-        sub = o_matrix[np.ix_(idx, idx)]
-        evals = np.linalg.eigvalsh(sub)
-        for k, state_index in enumerate(idx):
-            values[state_index] = evals[k]
-    return values
+    groups, blocks = manifold_observable_matrices(
+        eigenstates, energies, apply_op, degeneracy_tol, comm=comm, redistribute=redistribute
+    )
+    return manifold_values_from_matrices(eigenstates.width, groups, blocks)
 
 
 def thermal_observable_value(values, energies, tau):

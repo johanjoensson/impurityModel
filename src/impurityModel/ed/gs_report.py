@@ -47,7 +47,8 @@ from impurityModel.ed.observables import (
     is_j_sharp,
     make_impurity_casimir_operators,
     make_spin_operators,
-    manifold_observable_values,
+    manifold_observable_matrices,
+    manifold_values_from_matrices,
     print_correlation_diagnostics,
     print_expectation_values,
     print_impurity_orbital_groups,
@@ -196,6 +197,19 @@ class _LiveSource:
     def stack(self, parts):
         return parts[0]
 
+    def _measure(self, op):
+        """``{"diag", "blocks"}`` of ``op``: the per-state values and the manifold matrices they come from."""
+        groups, blocks = manifold_observable_matrices(
+            self.psis,
+            self.es,
+            op,
+            degeneracy_tol=self.degeneracy_tol,
+            comm=self.mov_comm,
+            redistribute=self.mov_redistribute,
+        )
+        diag = manifold_values_from_matrices(self.psis.width, groups, blocks)
+        return {"diag": diag, "blocks": (groups, blocks)}
+
     def values(self, group):
         """A ``values(op)`` hook for the ``compute_*`` observables: per-state ``<O>`` of ``op`` on the members."""
         calls = [0]
@@ -203,17 +217,7 @@ class _LiveSource:
         def values(op):
             key = (group, calls[0])
             calls[0] += 1
-            return self.part(
-                key,
-                lambda: manifold_observable_values(
-                    self.psis,
-                    self.es,
-                    op,
-                    degeneracy_tol=self.degeneracy_tol,
-                    comm=self.mov_comm,
-                    redistribute=self.mov_redistribute,
-                ),
-            )[0]
+            return self.part(key, lambda: self._measure(op))[0]["diag"]
 
         return values
 
@@ -282,7 +286,7 @@ class _ReplaySource:
         def values(op):
             key = (group, calls[0])
             calls[0] += 1
-            return self.stack(self.part(key))
+            return self.stack([p["diag"] for p in self.part(key)])
 
         return values
 

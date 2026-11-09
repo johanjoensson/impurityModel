@@ -140,3 +140,37 @@ def test_multiplet_labeling():
     assert s_labels == [0.0, 1.0, 1.0, 1.0]  # one singlet, one triplet (2S+1=3 states)
     assert sum(np.isclose(casimir_to_quantum_number(v), 1.0) for v in s2_vals) == 3
     assert sum(np.isclose(casimir_to_quantum_number(v), 0.0) for v in s2_vals) == 1
+
+
+def test_manifold_matrices_reproduce_the_values_and_expose_the_blocks():
+    """The k-th sorted eigenvalue of each block is the value written to slot k; the block is the Hermitian <m|S^2|n>."""
+    from impurityModel.ed.lie_algebra import reconstructed_casimir_operator
+    from impurityModel.ed.observables import manifold_observable_matrices, manifold_observable_values
+
+    manifold = ManyBodyState.from_states(
+        [
+            _state([([0, 1], 1.0)]),
+            _state([([2, 3], 1.0)]),
+            _state([([0, 3], 1.0)]),
+            _state([([2, 1], 1.0)]),
+        ]
+    )
+    energies = np.zeros(4)
+    casimir_op = reconstructed_casimir_operator([_SX, _SY, _SZ])
+
+    def apply_op(blk):
+        return casimir_op.apply_block(blk, 0)
+
+    groups, blocks = manifold_observable_matrices(manifold, energies, apply_op)
+    assert len(groups) == 1 and len(blocks) == 1
+    np.testing.assert_array_equal(np.sort(groups[0]), np.arange(4))
+    np.testing.assert_allclose(blocks[0], blocks[0].conj().T, atol=1e-14)
+    np.testing.assert_allclose(np.sort(np.linalg.eigvalsh(blocks[0])), [0.0, 2.0, 2.0, 2.0], atol=1e-12)
+    values = manifold_observable_values(manifold, energies, apply_op)
+    np.testing.assert_allclose(np.sort(values), [0.0, 2.0, 2.0, 2.0], atol=1e-12)
+
+    # Split energies: two manifolds, groups in ascending energy.
+    split = np.array([0.0, 0.0, 1.0, 1.0])
+    groups, blocks = manifold_observable_matrices(manifold, split, apply_op)
+    assert [sorted(g.tolist()) for g in groups] == [[0, 1], [2, 3]]
+    assert [b.shape for b in blocks] == [(2, 2), (2, 2)]
