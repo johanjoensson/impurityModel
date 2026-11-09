@@ -1217,6 +1217,9 @@ def test_a_cubic_d6_level_split_across_labels_stays_whole_under_a_cap_below_the_
     assert np.ptp(es[:15]) < 1e-9 * max(1.0, abs(es[0])), np.ptp(es[:15])
     assert result.solver.truncation_report["union_cut"]["per_label"] >= 2
     assert result.solver.convergence_report["converged"] is True
+    window = result.solver.convergence_report["window"]
+    assert window["width"] == 1e-6 and window["n_states"] == len(result.es) >= 15, window
+    assert window["next_level_above"] is None or window["next_level_above"] > window["width"], window
 
 
 @pytest.mark.mpi

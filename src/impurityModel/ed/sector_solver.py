@@ -1749,6 +1749,15 @@ def _solve_window_per_label(
         "converged": all(converged),
         "residual_pt2": max([float((r or {}).get("residual_pt2", 0.0)) for r in reports] + [0.0]),
     }
+    # The window the states were cut from: its width and the lowest level *outside* it (None when every solved
+    # level was kept), so a reader can tell "nothing else within the window" from "the window was full".
+    kept = set(keep)
+    above = [float(es_all[j]) for j in range(len(es_all)) if j not in kept]
+    solver.convergence_report["window"] = {
+        "width": float(window),
+        "n_states": int(len(keep)),
+        "next_level_above": (min(above) - float(es_all[keep[0]])) if above and keep else None,
+    }
     if not all(converged):
         solver.convergence_report["limited_by"] = "cap" if any(is_cap_bound(r) for r in hit) else "de2_min"
     info = {"labels": len(groups), "certified": all(certified), "sizes": sizes}
