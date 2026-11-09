@@ -10,7 +10,6 @@ import copy
 import io
 import os
 import sys
-import warnings
 from dataclasses import asdict, dataclass, field
 from types import SimpleNamespace
 
@@ -24,6 +23,8 @@ from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_
 from impurityModel.ed.cipsi_solver import _degeneracy_tol
 from impurityModel.ed.degeneracy import MANIFOLD_TOL, degenerate_groups
 from impurityModel.ed.density_matrices import build_density_matrices
+from impurityModel.ed.gs_report_model import OrbitalNaming, assemble_report
+from impurityModel.ed.gs_report_render import render_summary
 from impurityModel.ed.gs_statistics import (
     _boltzmann_weights,
     assemble_entanglement,
@@ -36,8 +37,6 @@ from impurityModel.ed.gs_statistics import (
     save_gs_statistics,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.gs_report_model import OrbitalNaming, assemble_report
-from impurityModel.ed.gs_report_render import render_summary
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -53,6 +52,7 @@ from impurityModel.ed.observables import (
     make_impurity_casimir_operators,
     make_spin_operators,
     manifold_observable_matrices,
+    manifold_square_weights,
     manifold_values_from_matrices,
     print_correlation_diagnostics,
     print_expectation_values,
@@ -61,7 +61,6 @@ from impurityModel.ed.observables import (
     print_state_summary,
     print_thermal_expectation_values,
     spin_correlation_operator,
-    manifold_square_weights,
     spin_curie_susceptibility,
     thermal_observable_value,
 )
@@ -278,7 +277,7 @@ def sharpen_manifolds(blk, es, layout, casimirs, tol, comm=None, redistribute=No
     keep = comm_support_filter([blk], comm)
     mats = {}
     for key, op, _ in ops:
-        grp, blocks = manifold_observable_matrices(
+        _grp, blocks = manifold_observable_matrices(
             blk,
             es_ref,
             lambda b, _op=op: _op.apply_block(b, 0, keep),
@@ -1232,7 +1231,7 @@ def _present(
                             (
                                 "note",
                                 None,
-                                f"Curie term of the retained manifolds only (no Van Vleck part); tau = {chi_spin_zz['tau']:.4g}",
+                                f"Curie term of the retained manifolds only (no Van Vleck part); tau = {chi_spin_zz['tau']:.4g}",  # noqa: E501
                             ),
                         ],
                     )

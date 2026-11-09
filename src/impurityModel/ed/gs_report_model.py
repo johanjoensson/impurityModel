@@ -105,7 +105,7 @@ class OrbitalNaming:
         impurity = sorted(o for blocks in imp_by_group.values() for b in blocks for o in b)
         if len(impurity) != len(set(impurity)):
             raise ValueError("orbital naming: an impurity spin-orbital appears in more than one group")
-        role_of = {o: "impurity" for o in impurity}
+        role_of = dict.fromkeys(impurity, "impurity")
         group_of = {o: k for k, blocks in imp_by_group.items() for b in blocks for o in b}
         valence, conduction = bath_states
         for role, states in (("valence", valence), ("conduction", conduction)):

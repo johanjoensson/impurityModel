@@ -1755,7 +1755,7 @@ def _solve_window_per_label(
     above = [float(es_all[j]) for j in range(len(es_all)) if j not in kept]
     solver.convergence_report["window"] = {
         "width": float(window),
-        "n_states": int(len(keep)),
+        "n_states": len(keep),
         "next_level_above": (min(above) - float(es_all[keep[0]])) if above and keep else None,
     }
     if not all(converged):

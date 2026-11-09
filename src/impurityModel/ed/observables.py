@@ -1269,7 +1269,7 @@ def compute_correlation_diagnostics(
 
 
 def manifold_square_weights(groups, blocks, n):
-    """``col2[n] = sum_m |<m|O|n>|^2`` over the members ``m`` of ``n``'s manifold, from :func:`manifold_observable_matrices`.
+    """``col2[n] = sum_m |<m|O|n>|^2`` over the members ``m`` of ``n``'s manifold.
 
     This is the in-manifold part of ``<n|O^2|n>``: transitions out of the retained manifolds are not in it, which is
     what makes a Curie susceptibility built on it a statement about the retained states alone.
@@ -1298,7 +1298,7 @@ def spin_curie_susceptibility(es, tau, sz_diag, sz_col2):
 
 
 def print_correlation_diagnostics(corr, file=None):
-    """Pretty-print the dict from :func:`compute_correlation_diagnostics`: open-shell orbitals in full, the rest folded."""
+    """Pretty-print :func:`compute_correlation_diagnostics`: open-shell orbitals in full, the rest folded."""
     print("Impurity correlation diagnostics (thermal):", file=file)
     if not corr.get("pairing_verified", True):
         print("  (dn,up) pairing NOT verified by H (grade S_z only): the values below assume it.", file=file)
@@ -1639,7 +1639,7 @@ def manifold_observable_matrices(
 
 
 def manifold_values_from_matrices(n, groups, blocks):
-    """Per-state values from :func:`manifold_observable_matrices`: the k-th sorted eigenvalue of each block to slot k."""
+    """Per-state values from :func:`manifold_observable_matrices`: k-th sorted eigenvalue of each block to slot k."""
     values = np.empty(n)
     for idx, sub in zip(groups, blocks):
         evals = np.linalg.eigvalsh(sub)

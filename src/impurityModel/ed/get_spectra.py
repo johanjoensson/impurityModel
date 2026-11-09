@@ -5,9 +5,9 @@ non-interacting ``h0`` file; ``run_spectra`` solves the ground state and writes 
 The command-line interface lives in :mod:`impurityModel.scripts.spectra`.
 """
 
+import os
 from collections import OrderedDict
 
-import os
 import h5py
 import numpy as np
 

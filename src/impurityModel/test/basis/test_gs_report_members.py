@@ -9,9 +9,9 @@ import json
 import numpy as np
 import pytest
 
-from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.gs_report import (
+    ReportFiles,
     finalize_members,
     measure_member,
     report_ground_state,

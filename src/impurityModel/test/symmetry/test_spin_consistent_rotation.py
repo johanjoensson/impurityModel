@@ -314,8 +314,8 @@ def test_without_a_clean_pairing_the_old_rotation_is_used():
     bad = np.eye(N, dtype=complex)  # a spin-mixing rotation: S_+ is no permutation
     bad[0, 0] = bad[5, 5] = bad[0, 5] = 2**-0.5
     bad[5, 0] = -(2**-0.5)
-    w0, u0 = impurity_symmetry_rotation({}, list(range(N)), n_orb=N, h0_matrix=H_IMP)
-    w1, u1 = impurity_symmetry_rotation({}, list(range(N)), n_orb=N, h0_matrix=H_IMP, rot_to_spherical=bad)
+    _w0, u0 = impurity_symmetry_rotation({}, list(range(N)), n_orb=N, h0_matrix=H_IMP)
+    _w1, u1 = impurity_symmetry_rotation({}, list(range(N)), n_orb=N, h0_matrix=H_IMP, rot_to_spherical=bad)
     np.testing.assert_allclose(u0, u1)
 
 
@@ -331,7 +331,7 @@ def test_the_layout_is_collinear_after_the_joint_rotation():
 
 def test_the_layout_names_the_rotation_when_it_is_not_clean():
     _, _, _ = _rotated(None)
-    w, u = impurity_symmetry_rotation({}, list(range(N)), n_orb=N, h0_matrix=H_IMP)
+    _w, u = impurity_symmetry_rotation({}, list(range(N)), n_orb=N, h0_matrix=H_IMP)
     rot = u.conj().T @ ROT
     layout = spin_layout(tensors_to_operator(u.conj().T @ H_IMP @ u), {0: [list(range(N))]}, ({}, {}), rot, N)
     assert any(r.startswith("rotation:") for r in layout.rejected)

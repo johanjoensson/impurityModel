@@ -2,8 +2,8 @@
 
 import pytest
 
-from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.basis_generation import DEEP_SEED_WIDTH, SeedWindow, generate_initial_basis
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.test.basis.test_sector_key import N_ORB, _model
 
 NOMINAL = {0: 2, 1: 2}

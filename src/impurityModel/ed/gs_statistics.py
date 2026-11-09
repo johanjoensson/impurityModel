@@ -818,8 +818,8 @@ def entanglement_partials(state_blocks, es, tau, degeneracy_tol=None):
     thermal = {n_e: sum(w * blocks[n_e] for w, blocks in zip(weights, state_blocks)) for n_e in sectors}
     manifolds = []
     if degeneracy_tol is not None and state_blocks:
-        for idx in degenerate_groups(np.asarray(es, dtype=float), degeneracy_tol, anchor="first"):
-            idx = [int(i) for i in idx]
+        for group in degenerate_groups(np.asarray(es, dtype=float), degeneracy_tol, anchor="first"):
+            idx = [int(i) for i in group]
             mean = [sum(state_blocks[i][n_e] for i in idx) / len(idx) for n_e in sectors]
             ev = np.concatenate([np.linalg.eigvalsh(m) for m in mean])
             manifolds.append({"states": idx, "eigvals": np.clip(np.real(ev), 0.0, None)})

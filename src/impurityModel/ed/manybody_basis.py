@@ -1148,7 +1148,7 @@ class Basis:
 
     @property
     def impurity_spin_orbital_indices(self):
-        """Flat list of all impurity spin-orbital indices in *group order* (not globally sorted; sort it where an order matters)."""
+        """Flat list of all impurity spin-orbital indices in *group order* (not globally sorted)."""
         return [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
 
     @property

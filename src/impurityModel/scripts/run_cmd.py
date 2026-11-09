@@ -15,9 +15,9 @@ import json
 import os
 from pathlib import Path
 
+from impurityModel.ed.utils import V_DEBUG
 from impurityModel.inputformat import schema
 from impurityModel.inputformat.reader import apply_environment, load_input
-from impurityModel.ed.utils import V_DEBUG
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
 

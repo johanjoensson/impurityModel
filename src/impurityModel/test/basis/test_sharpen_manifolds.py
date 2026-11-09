@@ -53,7 +53,7 @@ def test_rotated_spin_manifold_gets_sharp_sz_and_s2():
 
 def test_singlet_and_triplet_in_one_manifold_are_not_one_s():
     blk = _random_rotated_manifold(5)
-    rot, info = sharpen_manifolds(blk, np.zeros(6), LAYOUT, _casimirs(), 1e-6)
+    _rot, info = sharpen_manifolds(blk, np.zeros(6), LAYOUT, _casimirs(), 1e-6)
     assert set(np.round(info.values["S2"], 6)) == {0.0, 2.0}
 
 

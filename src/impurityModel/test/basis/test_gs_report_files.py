@@ -65,5 +65,5 @@ def test_the_legacy_stats_path_warns_and_writes_only_the_json(comm, tmp_path):
 def test_a_write_failure_raises_on_every_rank(comm, tmp_path):
     h_op, setup, bs, rot, _, _ = _setup(20, comm, "on")
     files = ReportFiles.for_label("T", tmp_path / "no" / "such" / "directory")
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 -- which exception type the OS/MPI layer raises is not the contract
         calc_gs(h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, report_files=files)

@@ -46,6 +46,7 @@ The results are written to a ``chi.h5`` file (one group per operator with ``real
 """
 
 import os
+
 import numpy as np
 
 from impurityModel.ed import config, spectra
@@ -513,9 +514,9 @@ def calc_susceptibility_workflow(
     mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
-    from impurityModel.ed.gs_report import ReportFiles
     from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
     from impurityModel.ed.gs_connectivity import solver_basis_connectivity
+    from impurityModel.ed.gs_report import ReportFiles
     from impurityModel.ed.memory_estimate import resolve_cap_policy
     from impurityModel.ed.solver_basis import prepare_solver_basis
 

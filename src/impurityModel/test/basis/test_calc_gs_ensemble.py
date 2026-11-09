@@ -5,8 +5,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.support.gs_oracle import exact_spectra, pinned_model
 
