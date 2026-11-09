@@ -692,6 +692,20 @@ GS_SECTOR_CERTIFY = Knob(
     level, up to 0.17 high. ``0`` restores the single expansion.""",
 )
 
+GS_SHARPEN_MANIFOLDS = Knob(
+    name="GS_SHARPEN_MANIFOLDS",
+    kind="bool",
+    default=True,
+    group="groundstate",
+    doc="""Rotate the degenerate ground manifold to the basis that diagonalises the conserved and the
+    impurity symmetry labels inside it (``2 S_z``, then ``S^2``, ``L^2`` -- or ``J^2`` when ``2 S_z``
+    is not conserved), so every reported state is one vector with sharp quantum numbers and the
+    states ``calc_gs`` returns are those same vectors. The solver returns an arbitrary orthonormal
+    basis of a degenerate manifold, which the report would otherwise have to describe state by
+    state. Energies are untouched and any observable summed over the whole manifold is unchanged.
+    ``0`` returns the solver's own vectors.""",
+)
+
 GS_LOWEST_SOLVER = Knob(
     name="GS_LOWEST_SOLVER",
     kind="str",
@@ -1120,6 +1134,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GS_MAX_BLOCK_WIDTH,
     GS_SECTOR_CERTIFY,
+    GS_SHARPEN_MANIFOLDS,
     GS_LOWEST_SOLVER,
     GS_CERTIFY_MAX_SEED,
     GS_RANKING_CAP,

@@ -23,6 +23,7 @@ from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.gs_report import (
     finalize_members,
     measure_member,
+    sharpen_for_report,
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.lie_algebra import tensors_to_operator
@@ -2186,6 +2187,16 @@ class _MeasureVisitor:
         blk = basis.redistribute_block(raw if isinstance(raw, ManyBodyState) else ManyBodyState.from_states(list(raw)))
         del raw
         blk.prune_rows(0.0)
+        blk, manifold_basis = sharpen_for_report(
+            self.report_args["Hop"],
+            basis,
+            np.array(state.es),
+            blk,
+            self.report_args["rot_to_spherical"],
+            self.report_args["spin_layout"],
+            self.report_args["shell_ls"],
+            self.report_args.get("slater_weight_min"),
+        )
         measurement = measure_member(
             self.report_args["Hop"],
             basis,
@@ -2199,6 +2210,7 @@ class _MeasureVisitor:
             total=member.total,
             keep_basis=self.count == 0,
             slater_weight_min=self.report_args.get("slater_weight_min"),
+            manifold_basis=manifold_basis,
         )
         self.count += 1
         self.measured.append(measurement)

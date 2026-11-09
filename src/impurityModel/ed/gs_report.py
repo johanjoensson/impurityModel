@@ -13,12 +13,13 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from impurityModel.ed import config
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_structure
 from impurityModel.ed.cipsi_solver import _degeneracy_tol
-from impurityModel.ed.degeneracy import MANIFOLD_TOL
+from impurityModel.ed.degeneracy import MANIFOLD_TOL, degenerate_groups
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.gs_statistics import (
     _boltzmann_weights,
@@ -152,6 +153,165 @@ def manifold_tol(es, slater_weight_min=None):
     if slater_weight_min is None:
         return MANIFOLD_TOL
     return max(MANIFOLD_TOL, _degeneracy_tol(es, slater_weight_min))
+
+
+#: Operator eigenvalues closer than this are one quantum number when the sharpening diagonalises the next label inside
+#: a cluster (Sz is a half-integer, S^2 and L^2 differ by whole units: this is far below either and far above rounding).
+LABEL_TOL = 1e-3
+
+
+@dataclass
+class ManifoldBasis:
+    """How the states of one member were arranged by :func:`sharpen_manifolds`.
+
+    ``groups`` are the degenerate manifolds (ascending energy, index arrays into the state order); ``keys`` the
+    labels that were diagonalised inside them, in order (``"Sz"``, ``"S2"``, ``"L2"`` or ``"J2"``); ``values[key]``
+    the label's value per state in the arranged basis (``Sz`` itself, the others as Casimir eigenvalues).
+    ``rotated`` is whether any manifold was rotated.
+    """
+
+    groups: list
+    keys: tuple = ()
+    values: dict = field(default_factory=dict)
+    rotated: bool = False
+    tol: float = MANIFOLD_TOL
+
+    @property
+    def two_sz(self):
+        """``2 S_z`` per state as integers, or ``None`` when ``S_z`` was not measured."""
+        sz = self.values.get("Sz")
+        return None if sz is None else np.rint(2.0 * np.asarray(sz)).astype(int)
+
+
+def _joint_diagonalise(mats):
+    """Unitary ``U`` that diagonalises the Hermitian ``mats`` in turn: the first fully, each next one inside the
+    clusters (eigenvalues within :data:`LABEL_TOL`) the previous ones left degenerate."""
+    g = mats[0].shape[0]
+    u = np.eye(g, dtype=complex)
+    clusters = [list(range(g))]
+    for b in mats:
+        m = u.conj().T @ b @ u
+        m = 0.5 * (m + m.conj().T)
+        nxt = []
+        for c in clusters:
+            if len(c) == 1:
+                nxt.append(c)
+                continue
+            w, v = np.linalg.eigh(m[np.ix_(c, c)])
+            u[:, c] = u[:, c] @ v
+            start = 0
+            for i in range(1, len(c) + 1):
+                if i == len(c) or w[i] - w[i - 1] > LABEL_TOL:
+                    nxt.append(c[start:i])
+                    start = i
+        clusters = nxt
+    return u
+
+
+def sharpen_manifolds(blk, es, layout, casimirs, tol, comm=None, redistribute=None, enabled=True):
+    """Rotate each degenerate manifold of ``blk`` to the basis that diagonalises its symmetry labels. Collective.
+
+    The solver returns an arbitrary orthonormal basis of a degenerate manifold, so a single returned vector has no
+    sharp ``S_z``, ``S^2``, ``L^2``. The labels are diagonalised inside each manifold in turn: ``2 S_z`` (when the
+    spin layout conserves it), then ``S^2`` and ``L^2``; when ``2 S_z`` is not conserved (spin-orbit coupling), ``J^2``.
+    ``casimirs`` is ``(l_ops, s_ops, j_ops, ...)`` from :func:`impurity_casimirs`. Energies are not touched and a
+    sum over a whole manifold is unchanged. Returns ``(blk_rot, ManifoldBasis)``; ``blk_rot`` is ``blk`` itself when
+    nothing needed rotating.
+
+    Every input but ``blk`` is replicated, the key matrices are ``Allreduce``-d, and the rotation is broadcast from
+    rank 0, so every rank applies the same unitary to its rows. Nothing here depends on rank-local state, and an
+    empty rank takes the same collective calls with an empty block.
+    """
+    es = np.asarray(es, dtype=float)
+    n = len(es)
+    es_ref = comm.bcast(es, root=0) if comm is not None else es
+    order = np.argsort(es_ref, kind="stable")
+    groups = [order[b] for b in degenerate_groups(es_ref[order], tol, anchor="first")]
+    info = ManifoldBasis(groups=groups, tol=tol)
+    if not enabled or n == 0:
+        return blk, info
+    ops = []
+    if layout is not None and layout.labelled and layout.pairs:
+        ops.append(("Sz", make_spin_operators(layout.pairs)[2], True))
+    l_ops, s_ops, j_ops = casimirs[:3] if casimirs is not None else (None, None, None)
+    if l_ops is not None:
+        if layout is None or layout.labelled:
+            ops.append(("S2", casimir_operator(*s_ops), False))
+            ops.append(("L2", casimir_operator(*l_ops), False))
+        else:
+            ops.append(("J2", casimir_operator(*j_ops), False))
+    multi = any(len(grp) > 1 for grp in groups)
+    ops = [(k, op, cheap) for k, op, cheap in ops if multi or cheap]
+    if not ops:
+        return blk, info
+    keep = comm_support_filter([blk], comm)
+    mats = {}
+    for key, op, _ in ops:
+        grp, blocks = manifold_observable_matrices(
+            blk,
+            es_ref,
+            lambda b, _op=op: _op.apply_block(b, 0, keep),
+            degeneracy_tol=tol,
+            comm=comm,
+            redistribute=redistribute,
+        )
+        mats[key] = blocks
+    keys = tuple(k for k, _, _ in ops)
+    u_full = np.eye(n, dtype=complex)
+    if multi:
+        for gi, idx in enumerate(groups):
+            if len(idx) > 1:
+                u_full[np.ix_(idx, idx)] = _joint_diagonalise([mats[k][gi] for k in keys])
+        if comm is not None:
+            u_full = comm.bcast(u_full, root=0)
+    values = {k: np.zeros(n) for k in keys}
+    for gi, idx in enumerate(groups):
+        ug = u_full[np.ix_(idx, idx)]
+        for k in keys:
+            values[k][idx] = np.real(np.diag(ug.conj().T @ mats[k][gi] @ ug))
+    info = ManifoldBasis(groups=groups, keys=keys, values=values, rotated=multi, tol=tol)
+    if multi and blk.width == n:
+        blk = blk.combine_columns(u_full)
+    return blk, info
+
+
+def sharpen_for_report(
+    Hop, ground_state_basis, es, blk, rot_to_spherical, spin_layout=None, shell_ls=None, slater_weight_min=None
+):
+    """:func:`sharpen_manifolds` for one member, with the layout and Casimirs resolved as the report does. Collective.
+
+    Returns ``(blk, ManifoldBasis)``. Honours the ``GS_SHARPEN_MANIFOLDS`` knob; a failure while building the
+    operators (replicated inputs, so it raises on every rank alike) leaves the block as the solver returned it.
+    """
+    comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
+    es = np.asarray(es, dtype=float)
+    tol = manifold_tol(es, slater_weight_min)
+    enabled = config.GS_SHARPEN_MANIFOLDS.get()
+    try:
+        layout = spin_layout
+        if layout is None and enabled:
+            layout = resolve_spin_layout(
+                Hop,
+                ground_state_basis.impurity_orbitals,
+                ground_state_basis.bath_states,
+                rot_to_spherical,
+                ground_state_basis.num_spin_orbitals,
+                comm=ground_state_basis.comm,
+                shell_ls=shell_ls,
+            )
+        casimirs = impurity_casimirs(ground_state_basis, rot_to_spherical, shell_ls) if enabled else None
+        return sharpen_manifolds(
+            blk,
+            es,
+            layout,
+            casimirs,
+            tol,
+            comm=comm,
+            redistribute=ground_state_basis.redistribute_block,
+            enabled=enabled,
+        )
+    except Exception:
+        return blk, ManifoldBasis(groups=[], tol=tol)
 
 
 class _LiveSource:
@@ -306,6 +466,7 @@ class MemberMeasurement:
     tape: dict = field(repr=False)
     basis: object = None
     degeneracy_tol: float = MANIFOLD_TOL
+    manifold_basis: object = None
 
 
 def _bounds_records(src, bounds):
@@ -331,6 +492,42 @@ def _bounds_records(src, bounds):
         for total, b in zip(totals, bounds)
         if b is not None
     ]
+
+
+def impurity_casimirs(ground_state_basis, rot_to_spherical, shell_ls=None):
+    """``(l_ops, s_ops, j_ops, per_shell_ops)`` of the impurity, or four ``None`` when it has no Casimirs.
+
+    The operators are built in the spherical basis and rotated to the computational one via ``rot_to_spherical``. An
+    impurity grouped into orbital-symmetry manifolds (eg / t2g) is aggregated into the whole shell; one that is
+    genuinely not a spin-doubled l-shell has none. Replicated inputs, so the answer is the same on every rank.
+    """
+    impurity_indices = sorted(
+        orb
+        for impurity_orbital_blocks in ground_state_basis.impurity_orbitals.values()
+        for block in impurity_orbital_blocks
+        for orb in block
+    )
+    try:
+        return make_impurity_casimir_operators(
+            ground_state_basis.impurity_orbitals, rot_to_spherical, per_shell=True, shell_ls=shell_ls
+        )
+    except ValueError:
+        # The impurity is grouped into orbital-symmetry manifolds (e.g. eg / t2g), none of
+        # which is individually a full spin-doubled l-shell, so the per-partition build raised.
+        # L/S/J are shell-*total* operators, so aggregate the manifolds into the whole shell
+        # (the sorted impurity_indices, which match the single rot_to_spherical matrix) and
+        # retry. Only meaningful for a single shared rotation; a dict rotation is per-shell
+        # (get_spectra's multi-l case) and is already correct per partition.
+        if not isinstance(rot_to_spherical, dict):
+            try:
+                return make_impurity_casimir_operators(
+                    {0: [impurity_indices]}, rot_to_spherical, per_shell=True, shell_ls=shell_ls
+                )
+            except ValueError:
+                # Genuinely not a spin-doubled l-shell: skip the Casimirs
+                # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
+                pass
+    return None, None, None, None
 
 
 def _evaluate(
@@ -440,29 +637,7 @@ def _evaluate(
     # there is more than one shell to distinguish -- a single shell's per-shell values
     # would just duplicate the totals computed below.
     shell_casimir = {}
-    try:
-        l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
-            ground_state_basis.impurity_orbitals, rot_to_spherical, per_shell=True, shell_ls=shell_ls
-        )
-    except ValueError:
-        # The impurity is grouped into orbital-symmetry manifolds (e.g. eg / t2g), none of
-        # which is individually a full spin-doubled l-shell, so the per-partition build raised.
-        # L/S/J are shell-*total* operators, so aggregate the manifolds into the whole shell
-        # (the sorted impurity_indices, which match the single rot_to_spherical matrix) and
-        # retry. Only meaningful for a single shared rotation; a dict rotation is per-shell
-        # (get_spectra's multi-l case) and is already correct per partition.
-        l_ops = None
-        per_shell_ops = None
-        if not isinstance(rot_to_spherical, dict):
-            try:
-                l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
-                    {0: [impurity_indices]}, rot_to_spherical, per_shell=True, shell_ls=shell_ls
-                )
-            except ValueError:
-                # Genuinely not a spin-doubled l-shell: skip the Casimirs
-                # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
-                l_ops = None
-                per_shell_ops = None
+    l_ops, s_ops, j_ops, per_shell_ops = impurity_casimirs(ground_state_basis, rot_to_spherical, shell_ls)
     if l_ops is not None:
         # Evaluation is deterministic and identical on every rank (manifold_observable_values
         # Allreduces), so a failure raises on all ranks together -> the try/except stays
@@ -1028,6 +1203,9 @@ def report_ground_state(
         psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
     )
     psis_blk.prune_rows(0.0)
+    psis_blk, _ = sharpen_for_report(
+        Hop, ground_state_basis, es, psis_blk, rot_to_spherical, spin_layout, shell_ls, slater_weight_min
+    )
     # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
     # seed paths consume it as one), so the list is materialized here from the block.
     psis = psis_blk.to_states()
@@ -1072,6 +1250,7 @@ def measure_member(
     total=None,
     keep_basis=True,
     slater_weight_min=None,
+    manifold_basis=None,
 ):
     """One charge-sector member's per-state report data, taken while its states are alive. Collective.
 
@@ -1098,7 +1277,7 @@ def measure_member(
     # Rank 0's copy of the energies fixes the union's order the same way on every rank (the eigensolver's
     # energies are rank-local, a degenerate multiplet differs in its last bits). One unconditional broadcast.
     es_ref = ground_state_basis.comm.bcast(es, root=0) if ground_state_basis.is_distributed else es
-    return MemberMeasurement(es, es_ref, total, tape, ground_state_basis if keep_basis else None, tol)
+    return MemberMeasurement(es, es_ref, total, tape, ground_state_basis if keep_basis else None, tol, manifold_basis)
 
 
 def finalize_members(
