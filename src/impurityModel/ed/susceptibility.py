@@ -49,6 +49,7 @@ import numpy as np
 
 from impurityModel.ed import config, spectra
 from impurityModel.ed.average import ThermalEnsemble
+from impurityModel.ed.degeneracy import MANIFOLD_TOL
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.mpi_root import on_every_rank
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
@@ -56,7 +57,7 @@ from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.spin_pairs import spin_layout as resolve_spin_layout
 from impurityModel.ed.utils import report_banner
 
-DEGENERACY_TOL = 1e-6
+DEGENERACY_TOL = MANIFOLD_TOL
 
 
 def bosonic_matsubara_mesh(tau, n_points):

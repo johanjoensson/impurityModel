@@ -17,6 +17,8 @@ from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_structure
+from impurityModel.ed.cipsi_solver import _degeneracy_tol
+from impurityModel.ed.degeneracy import MANIFOLD_TOL
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.gs_statistics import (
     _boltzmann_weights,
@@ -139,6 +141,18 @@ def _detached(exc):
     return out
 
 
+def manifold_tol(es, slater_weight_min=None):
+    """The energy tolerance at which the report groups ``es`` into degenerate manifolds.
+
+    ``max(MANIFOLD_TOL, solver tolerance)``: the report never groups tighter than the solve did, so a manifold the
+    solver could not split is never split into separate "states" here. ``slater_weight_min=None`` (the caller does
+    not know the solver's cutoff) leaves just the report floor. Pure in the replicated ``es``.
+    """
+    if slater_weight_min is None:
+        return MANIFOLD_TOL
+    return max(MANIFOLD_TOL, _degeneracy_tol(es, slater_weight_min))
+
+
 class _LiveSource:
     """Where :func:`_evaluate` gets its per-state results when the states are in hand.
 
@@ -149,8 +163,9 @@ class _LiveSource:
     positions, so a member whose evaluation degraded part-way cannot shift the others' results.
     """
 
-    def __init__(self, basis, es, psis, tau, tape=None):
+    def __init__(self, basis, es, psis, tau, tape=None, degeneracy_tol=MANIFOLD_TOL):
         self.basis, self.es, self.psis, self.tau = basis, es, psis, tau
+        self.degeneracy_tol = degeneracy_tol
         self.tape = tape
         self.recording = tape is not None
         self.mov_comm = basis.comm if basis.is_distributed else None
@@ -191,7 +206,12 @@ class _LiveSource:
             return self.part(
                 key,
                 lambda: manifold_observable_values(
-                    self.psis, self.es, op, comm=self.mov_comm, redistribute=self.mov_redistribute
+                    self.psis,
+                    self.es,
+                    op,
+                    degeneracy_tol=self.degeneracy_tol,
+                    comm=self.mov_comm,
+                    redistribute=self.mov_redistribute,
                 ),
             )[0]
 
@@ -218,6 +238,7 @@ class _ReplaySource:
         # The member that kept its basis (the first visited; after the sort by energy it need not be first).
         self.lead = next(m for m in self.members if m.basis is not None)
         self.basis, self.tau = self.lead.basis, tau
+        self.degeneracy_tol = max(m.degeneracy_tol for m in self.members)
         self.mov_comm = self.basis.comm if self.basis.is_distributed else None
         if len(self.members) == 1:
             self.es, self.order, self.scales = first.es, None, [1.0]
@@ -280,6 +301,7 @@ class MemberMeasurement:
     total: object
     tape: dict = field(repr=False)
     basis: object = None
+    degeneracy_tol: float = MANIFOLD_TOL
 
 
 def _bounds_records(src, bounds):
@@ -457,7 +479,7 @@ def _evaluate(
             # manifold can be energy-degenerate while its members' J differ (see
             # is_j_sharp's docstring). Gate the printed/persisted term/g_J/mu_eff on
             # this rather than reporting a single J that isn't actually well-defined.
-            j_sharp = is_j_sharp(j_values, es)
+            j_sharp = is_j_sharp(j_values, es, degeneracy_tol=src.degeneracy_tol)
         except Exception as exc:
             if rank == 0 and not src.recording:
                 print(f"S^2/L^2/J^2 not reported: {exc}")
@@ -974,6 +996,7 @@ def report_ground_state(
     spin_layout=None,
     shell_ls=None,
     ensemble=None,
+    slater_weight_min=None,
 ):
     """Observables of the thermal ground manifold ``(es, psis)``, and the report that prints them.
 
@@ -1004,7 +1027,9 @@ def report_ground_state(
     # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
     # seed paths consume it as one), so the list is materialized here from the block.
     psis = psis_blk.to_states()
-    src = _LiveSource(ground_state_basis, es, psis_blk, tau)
+    src = _LiveSource(
+        ground_state_basis, es, psis_blk, tau, degeneracy_tol=manifold_tol(np.asarray(es), slater_weight_min)
+    )
     R = _evaluate(
         src,
         Hop,
@@ -1042,6 +1067,7 @@ def measure_member(
     shell_ls=None,
     total=None,
     keep_basis=True,
+    slater_weight_min=None,
 ):
     """One charge-sector member's per-state report data, taken while its states are alive. Collective.
 
@@ -1052,7 +1078,8 @@ def measure_member(
     replay, which reports it.
     """
     tape = {}
-    src = _LiveSource(ground_state_basis, es, psis_blk, tau, tape=tape)
+    tol = manifold_tol(np.asarray(es, dtype=float), slater_weight_min)
+    src = _LiveSource(ground_state_basis, es, psis_blk, tau, tape=tape, degeneracy_tol=tol)
     _evaluate(
         src,
         Hop,
@@ -1067,7 +1094,7 @@ def measure_member(
     # Rank 0's copy of the energies fixes the union's order the same way on every rank (the eigensolver's
     # energies are rank-local, a degenerate multiplet differs in its last bits). One unconditional broadcast.
     es_ref = ground_state_basis.comm.bcast(es, root=0) if ground_state_basis.is_distributed else es
-    return MemberMeasurement(es, es_ref, total, tape, ground_state_basis if keep_basis else None)
+    return MemberMeasurement(es, es_ref, total, tape, ground_state_basis if keep_basis else None, tol)
 
 
 def finalize_members(

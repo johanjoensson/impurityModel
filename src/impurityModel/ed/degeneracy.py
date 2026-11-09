@@ -20,6 +20,11 @@ keeps it too, since it shares `is_j_sharp`'s tolerance.)
 
 import numpy as np
 
+#: Energy tolerance (absolute) below which the *report* treats eigenstates as one degenerate manifold: the single
+#: literal behind ``observables.DEGENERACY_TOL`` and ``gs_report.manifold_tol``. The report never groups tighter
+#: than the solve did (``gs_report.manifold_tol`` raises this to the solver's own tolerance when that is looser).
+MANIFOLD_TOL = 1e-6
+
 
 def degenerate_groups(e, tol, *, anchor="chain"):
     """Partition ascending energies ``e`` into manifolds: a list of index lists (empty for no energies).

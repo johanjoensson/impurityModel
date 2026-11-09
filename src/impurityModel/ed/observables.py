@@ -15,7 +15,7 @@ from mpi4py import MPI
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
-from impurityModel.ed.degeneracy import degenerate_groups
+from impurityModel.ed.degeneracy import MANIFOLD_TOL, degenerate_groups
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, block_inner_cy, inner
 from impurityModel.ed.utils import rotate_matrix
 
@@ -775,7 +775,7 @@ TERM_SYMBOL_TOL = 5e-2
 #: `manifold_observable_values` uses internally (`degenerate_groups`) to decide which
 #: states share a physical eigenspace of a Casimir operator. `is_j_sharp` reuses this
 #: exact scale to identify the ground-state manifold, rather than a fresh literal.
-DEGENERACY_TOL = 1e-6
+DEGENERACY_TOL = MANIFOLD_TOL
 
 
 def term_symbol(s, l, j=None, tol=TERM_SYMBOL_TOL):

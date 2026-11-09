@@ -2198,6 +2198,7 @@ class _MeasureVisitor:
             shell_ls=self.report_args["shell_ls"],
             total=member.total,
             keep_basis=self.count == 0,
+            slater_weight_min=self.report_args.get("slater_weight_min"),
         )
         self.count += 1
         self.measured.append(measurement)
@@ -2406,6 +2407,7 @@ def calc_gs(
             "rot_to_spherical": rot_to_spherical,
             "spin_layout": layout,
             "shell_ls": shell_ls,
+            "slater_weight_min": slaterWeightMin,
         },
         visitor,
     )
