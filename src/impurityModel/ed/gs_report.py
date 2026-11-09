@@ -33,7 +33,7 @@ from impurityModel.ed.gs_statistics import (
     save_gs_statistics,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.gs_report_model import OrbitalNaming
+from impurityModel.ed.gs_report_model import OrbitalNaming, assemble_report
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -325,8 +325,9 @@ class _LiveSource:
     positions, so a member whose evaluation degraded part-way cannot shift the others' results.
     """
 
-    def __init__(self, basis, es, psis, tau, tape=None, degeneracy_tol=MANIFOLD_TOL):
+    def __init__(self, basis, es, psis, tau, tape=None, degeneracy_tol=MANIFOLD_TOL, manifold_basis=None):
         self.basis, self.es, self.psis, self.tau = basis, es, psis, tau
+        self.manifold_basis = manifold_basis
         self.degeneracy_tol = degeneracy_tol
         self.tape = tape
         self.recording = tape is not None
@@ -337,6 +338,10 @@ class _LiveSource:
         self.support_keep = comm_support_filter([psis], self.mov_comm)
         self.scales = [1.0]
         self.order = None
+
+    def state_labels(self):
+        """``(two_sz, sectors)`` per state, ``None`` where unknown."""
+        return (None if self.manifold_basis is None else self.manifold_basis.two_sz), None
 
     def part(self, key, compute):
         """``[compute()]``: the one member's result, taped under ``key`` when recording."""
@@ -415,6 +420,20 @@ class _ReplaySource:
             w = _boltzmann_weights(es_cat, tau)
             bounds = np.cumsum([0] + [len(m.es) for m in self.members])
             self.scales = [float(w[bounds[k] : bounds[k + 1]].sum()) for k in range(len(self.members))]
+
+    def state_labels(self):
+        """``(two_sz, sectors)`` per state in the union's order, ``None`` where a member did not record them."""
+        mbs = [m.manifold_basis for m in self.members]
+        two = None
+        if all(mb is not None and mb.two_sz is not None for mb in mbs):
+            two = np.concatenate([mb.two_sz for mb in mbs])
+        sectors = None
+        if len(self.members) > 1:
+            sectors = np.concatenate([np.full(len(m.es), -1 if m.total is None else m.total) for m in self.members])
+        if self.order is not None:
+            two = None if two is None else two[self.order]
+            sectors = None if sectors is None else sectors[self.order]
+        return two, sectors
 
     def part(self, key, compute=None):
         out = []
@@ -906,6 +925,49 @@ def _evaluate(
     )
 
 
+def _assemble(R, src, magnetic, ensemble, gs_convergence_report):
+    """The :class:`~impurityModel.ed.gs_report_model.GroundStateReport` of ``R``; ``None`` if it cannot be built.
+
+    Pure and replicated (no collective): a failure is a defect of the model, never of the solve, so it
+    degrades to ``None`` and the old report still prints.
+    """
+    try:
+        two_sz, sectors = src.state_labels()
+        return assemble_report(
+            src.es,
+            src.tau,
+            R.n_dets,
+            degeneracy_tol=src.degeneracy_tol,
+            naming=R.naming,
+            layout=R.layout,
+            two_sz=two_sz,
+            sectors=sectors,
+            s_values=R.s_values,
+            l_values=R.l_values,
+            j_values=R.j_values,
+            sisb_values=R.sisb_values,
+            sisb_z_values=R.sisb_z_values,
+            thermal={
+                "e_avg": R.e_avg,
+                "s2": R.s2_thermal,
+                "l2": R.l2_thermal,
+                "j2": R.j2_thermal,
+                "sisb": None if R.sisb_thermal is None else float(np.real(R.sisb_thermal)),
+                "sisb_z": R.sisb_z_thermal,
+            },
+            magnetic=magnetic,
+            correlation=R.corr_diagnostics,
+            screening=R.screening_diagnostics,
+            energy_decomposition=R.energy_decomposition,
+            excitation_bounds=R.excitation_bound_records,
+            convergence=gs_convergence_report,
+            ensemble=ensemble,
+            warnings=degraded_warnings(gs_convergence_report),
+        )
+    except Exception:
+        return None
+
+
 def _present(
     R,
     src,
@@ -995,6 +1057,9 @@ def _present(
             "energy_decomposition": energy_decomposition,
             "static_susceptibilities": static_susceptibilities,
         }
+    R.report = _assemble(R, src, magnetic_summary if gs_stats is not None else None, ensemble, gs_convergence_report)
+    if gs_stats is not None and R.report is not None:
+        gs_stats["report"] = R.report.to_json()
     if stats_path is not None and not partial:
         # Collective, so gated on the replicated path only (gs_stats is None off rank 0): a failed write on
         # rank 0 (an unserialisable value, a full disk) is raised on every rank; a rank-0-only raise left the
@@ -1168,6 +1233,7 @@ def _info(R, gs_truncation_report, gs_convergence_report):
         "screening_diagnostics": R.screening_diagnostics,
         "energy_decomposition": R.energy_decomposition,
         "static_susceptibilities": R.static_susceptibilities,
+        "report": getattr(R, "report", None),
     }
 
 
@@ -1214,14 +1280,19 @@ def report_ground_state(
         psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
     )
     psis_blk.prune_rows(0.0)
-    psis_blk, _ = sharpen_for_report(
+    psis_blk, manifold_basis = sharpen_for_report(
         Hop, ground_state_basis, es, psis_blk, rot_to_spherical, spin_layout, shell_ls, slater_weight_min
     )
     # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
     # seed paths consume it as one), so the list is materialized here from the block.
     psis = psis_blk.to_states()
     src = _LiveSource(
-        ground_state_basis, es, psis_blk, tau, degeneracy_tol=manifold_tol(np.asarray(es), slater_weight_min)
+        ground_state_basis,
+        es,
+        psis_blk,
+        tau,
+        degeneracy_tol=manifold_tol(np.asarray(es), slater_weight_min),
+        manifold_basis=manifold_basis,
     )
     R = _evaluate(
         src,

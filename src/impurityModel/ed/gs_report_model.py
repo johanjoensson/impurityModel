@@ -5,11 +5,13 @@ spin, block, equivalence class). :class:`OrbitalNaming` builds it once from the 
 the block structure, validates it, and is the single place a renderer reads a label from.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 
 import numpy as np
 
 from impurityModel.ed.block_structure import blocks_as_positions, get_equivalent_blocks
+from impurityModel.ed.degeneracy import MANIFOLD_TOL, degenerate_groups
+from impurityModel.ed.gs_statistics import _boltzmann_weights
 from impurityModel.ed.observables import block_group_labels
 
 #: Hopping amplitudes below this do not count as a coupling between an impurity orbital and a bath orbital.
@@ -182,3 +184,206 @@ class OrbitalNaming:
                 coupled_to=coupled or (),
             )
         return cls(infos, impurity, bs, class_labels)
+
+
+#: Version of the ``report`` block of the JSON (the statistics keep their own ``schema_version``).
+REPORT_SCHEMA_VERSION = 4
+
+#: Per-manifold spread of a label below this makes it sharp (it is a Casimir quantum number, rounded already).
+LABEL_SPREAD_TOL = 1e-6
+
+
+@dataclass
+class ManifoldRow:
+    """One degenerate manifold: a unit of the spectrum.
+
+    ``energy`` is the manifold mean and ``spread`` its width. ``weight`` is the Boltzmann weight of the whole
+    manifold, ``states`` the indices of its members in the report's ascending-energy state order. ``two_sz``,
+    ``s``, ``l``, ``j`` are per member (``None`` where not measured); ``*_sharp`` says the label is the same for
+    every member, which a rotated manifold has for the labels that were diagonalised.
+    """
+
+    index: int
+    energy: float
+    spread: float
+    g: int
+    weight: float
+    states: list
+    two_sz: object = None
+    s: object = None
+    l: object = None
+    j: object = None
+    s_sharp: object = None
+    l_sharp: object = None
+    j_sharp: object = None
+    sectors: object = None
+
+
+@dataclass
+class MemberRow:
+    """One state, in the (possibly rotated) basis the report measured it in."""
+
+    state: int
+    manifold: int
+    e_minus_e0: float
+    weight: float
+    two_sz: object = None
+    n_imp_sector: object = None
+    s: object = None
+    l: object = None
+    j: object = None
+    sisb: object = None
+    sisb_z: object = None
+
+
+@dataclass
+class GroundStateReport:
+    """Everything the ground-state report says, as data. Renderers and the JSON read this and nothing else."""
+
+    label: object
+    e0: float
+    tau: float
+    n_states: int
+    n_determinants: int
+    degeneracy_tol: float
+    spin_layout: object
+    naming: object
+    manifolds: list
+    members: list
+    thermal: dict
+    magnetic: object = None
+    correlation: object = None
+    screening: object = None
+    energy_decomposition: object = None
+    excitation_bounds: list = field(default_factory=list)
+    convergence: object = None
+    ensemble: object = None
+    warnings: list = field(default_factory=list)
+    skips: list = field(default_factory=list)
+    schema_version: int = REPORT_SCHEMA_VERSION
+
+    def to_json(self):
+        """JSON-ready dict (numpy values left to the encoder of :func:`gs_statistics.save_gs_statistics`)."""
+        out = asdict(self)
+        out["naming"] = (
+            None
+            if self.naming is None
+            else {str(i): asdict(info) for i, info in sorted(self.naming.infos.items())}
+        )
+        return out
+
+
+def _column(values, order):
+    return None if values is None else [float(x) for x in np.asarray(values, dtype=float)[order]]
+
+
+def assemble_report(
+    es,
+    tau,
+    n_determinants,
+    degeneracy_tol=MANIFOLD_TOL,
+    naming=None,
+    layout=None,
+    two_sz=None,
+    sectors=None,
+    s_values=None,
+    l_values=None,
+    j_values=None,
+    sisb_values=None,
+    sisb_z_values=None,
+    thermal=None,
+    magnetic=None,
+    correlation=None,
+    screening=None,
+    energy_decomposition=None,
+    excitation_bounds=None,
+    convergence=None,
+    ensemble=None,
+    warnings=None,
+    skips=None,
+    label=None,
+):
+    """Pure assembly of a :class:`GroundStateReport` from replicated per-state arrays. No collectives.
+
+    ``es`` are the states' energies in the order every per-state array uses. States are re-ordered by
+    ascending energy (stable), and manifolds are :func:`~impurityModel.ed.degeneracy.degenerate_groups` of
+    that order at ``degeneracy_tol``.
+    """
+    es = np.asarray(es, dtype=float)
+    order = np.argsort(es, kind="stable")
+    e_sorted = es[order]
+    w = _boltzmann_weights(es, tau)[order]
+    e0 = float(e_sorted[0]) if len(es) else 0.0
+    blocks = degenerate_groups(e_sorted, degeneracy_tol, anchor="first") if len(es) else []
+    two = None if two_sz is None else np.asarray(two_sz)[order]
+    sec = None if sectors is None else np.asarray(sectors, dtype=object)[order]
+    cols = {
+        "s": _column(s_values, order),
+        "l": _column(l_values, order),
+        "j": _column(j_values, order),
+    }
+
+    def sharp(col, idx):
+        return None if col is None else bool(np.ptp(np.asarray(col)[idx]) < LABEL_SPREAD_TOL)
+
+    manifolds, members = [], []
+    for m, blk in enumerate(blocks):
+        idx = np.asarray(blk, dtype=int)
+        manifolds.append(
+            ManifoldRow(
+                index=m,
+                energy=float(np.mean(e_sorted[idx])),
+                spread=float(np.ptp(e_sorted[idx])),
+                g=len(idx),
+                weight=float(np.sum(w[idx])),
+                states=[int(i) for i in idx],
+                two_sz=None if two is None else [int(x) for x in two[idx]],
+                s=None if cols["s"] is None else [cols["s"][i] for i in idx],
+                l=None if cols["l"] is None else [cols["l"][i] for i in idx],
+                j=None if cols["j"] is None else [cols["j"][i] for i in idx],
+                s_sharp=sharp(cols["s"], idx),
+                l_sharp=sharp(cols["l"], idx),
+                j_sharp=sharp(cols["j"], idx),
+                sectors=None if sec is None else sorted({int(x) for x in sec[idx] if x is not None}),
+            )
+        )
+        sisb = _column(sisb_values, order)
+        sisb_z = _column(sisb_z_values, order)
+        for i in idx:
+            members.append(
+                MemberRow(
+                    state=int(i),
+                    manifold=m,
+                    e_minus_e0=float(e_sorted[i] - e0),
+                    weight=float(w[i]),
+                    two_sz=None if two is None else int(two[i]),
+                    n_imp_sector=None if sec is None or sec[i] is None else int(sec[i]),
+                    s=None if cols["s"] is None else cols["s"][i],
+                    l=None if cols["l"] is None else cols["l"][i],
+                    j=None if cols["j"] is None else cols["j"][i],
+                    sisb=None if sisb is None else sisb[i],
+                    sisb_z=None if sisb_z is None else sisb_z[i],
+                )
+            )
+    return GroundStateReport(
+        label=label,
+        e0=e0,
+        tau=float(tau),
+        n_states=len(es),
+        n_determinants=int(n_determinants),
+        degeneracy_tol=float(degeneracy_tol),
+        spin_layout=None if layout is None else asdict(layout) if is_dataclass(layout) else dict(layout),
+        naming=naming,
+        manifolds=manifolds,
+        members=members,
+        thermal=dict(thermal or {}),
+        magnetic=magnetic,
+        correlation=correlation,
+        screening=screening,
+        energy_decomposition=energy_decomposition,
+        excitation_bounds=list(excitation_bounds or []),
+        convergence=convergence,
+        ensemble=ensemble,
+        warnings=list(warnings or []),
+        skips=list(skips or []),
+    )

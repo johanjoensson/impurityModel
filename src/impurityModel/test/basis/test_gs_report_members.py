@@ -4,6 +4,8 @@ One member must reproduce the one-shot report bit for bit; several must agree to
 are rebuilt from the members', and the per-state tables follow the union's energy order).
 """
 
+import json
+
 import numpy as np
 import pytest
 
@@ -12,7 +14,9 @@ from impurityModel.ed.gs_report import (
     finalize_members,
     measure_member,
     report_ground_state,
+    sharpen_for_report,
 )
+from impurityModel.ed.gs_statistics import _NumpyEncoder
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.basis.test_calc_gs_ensemble import _hook, _setup
 from impurityModel.test.support.comms import COMMS
@@ -92,7 +96,10 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
     members = []
     for k, (total, basis, es, psis) in enumerate(captured):
         blk = _redistributed(basis, psis)
-        members.append(measure_member(h_op, basis, es, blk, tau, bs, rot, total=total, keep_basis=k == 0))
+        blk, mb = sharpen_for_report(h_op, basis, es, blk, rot)  # as the visitor does, before measuring
+        members.append(
+            measure_member(h_op, basis, es, blk, tau, bs, rot, total=total, keep_basis=k == 0, manifold_basis=mb)
+        )
     for m in members:  # a measurement is small replicated per-state data: no state, no block, anywhere in it
         assert not _holds_states(m.tape)
     none, es_new, _b, rho_new, info_new = finalize_members(h_op, members, tau, bs, rot, **common)
@@ -123,6 +130,21 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
             b.pop("excitation_bounds", None)
         else:
             assert b.pop("excitation_bounds", None) == expected
+        rep_a, rep_b = a.pop("report"), b.pop("report")
+        assert rep_a["schema_version"] == 4 and rep_b["schema_version"] == 4
+        json.dumps(rep_a, cls=_NumpyEncoder)  # the model is JSON-serialisable
+        # manifolds and per-state rows are the same data, replayed or one-shot (the one-shot oracle has no
+        # per-member sector, so ``sectors``/``n_imp_sector`` are compared only for the replay)
+        for key in ("e0", "tau", "n_states", "degeneracy_tol", "thermal"):
+            assert _numerically_equal(rep_a[key], rep_b[key], max(tol, 1e-12)), (key, rep_a[key], rep_b[key])
+        drop = ("sectors", "n_imp_sector")
+        for key in ("manifolds", "members"):
+            strip = [{k: v for k, v in row.items() if k not in drop} for row in rep_a[key]]
+            ref = [{k: v for k, v in row.items() if k not in drop} for row in rep_b[key]]
+            assert _numerically_equal(strip, ref, max(tol, 1e-12)), key
+        if n_members > 1:
+            assert {m["n_imp_sector"] for m in rep_a["members"]} == {int(t) for t, _, _, _ in captured}
+        assert sum(m["g"] for m in rep_a["manifolds"]) == len(es_new)
         assert _numerically_equal(_without_zero_rows(a), _without_zero_rows(b), tol)
 
 

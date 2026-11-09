@@ -1031,7 +1031,7 @@ class _NumpyEncoder(json.JSONEncoder):
 #: an ensemble. A file without the key is version 1. 3: ``truncation`` carries ``cap_bound`` (the final basis is
 #: still missing candidates), and is non-null whenever a cap cycle ran, including a transient one with
 #: ``cap_bound`` false.
-GS_STATISTICS_SCHEMA_VERSION = 3
+GS_STATISTICS_SCHEMA_VERSION = 4
 
 
 def save_gs_statistics(stats, path):
