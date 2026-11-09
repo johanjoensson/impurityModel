@@ -1,6 +1,7 @@
 """The full report folds symmetry copies: bath levels, density-matrix entries, pure natural orbitals."""
 
 from typing import ClassVar
+
 import numpy as np
 
 from impurityModel.ed.block_structure import BlockStructure, block_structure_summary
