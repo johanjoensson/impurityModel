@@ -69,3 +69,14 @@ def test_disabled_returns_the_block_untouched():
     blk = _random_rotated_manifold(9)
     rot, info = sharpen_manifolds(blk, np.zeros(6), LAYOUT, _casimirs(), 1e-6, enabled=False)
     assert rot is blk and not info.rotated and info.keys == ()
+
+
+def test_values_of_a_sharpened_manifold_follow_the_states_not_the_sorted_spectrum():
+    """After rotation <m|S2|n> is diagonal: row k is state k, so the sorted eigenvalue must not be written to slot k."""
+    from impurityModel.ed.observables import manifold_values_from_matrices
+
+    block = np.diag([2.0, 0.0, 2.0, 0.0])
+    np.testing.assert_allclose(manifold_values_from_matrices(4, [[0, 1, 2, 3]], [block]), [2.0, 0.0, 2.0, 0.0])
+    # An unrotated manifold (full block) still gets its eigenvalues.
+    full = np.array([[1.0, 1.0], [1.0, 1.0]])
+    np.testing.assert_allclose(manifold_values_from_matrices(2, [[0, 1]], [full]), [0.0, 2.0], atol=1e-12)

@@ -1666,7 +1666,15 @@ def manifold_values_from_matrices(n, groups, blocks):
     """Per-state values from :func:`manifold_observable_matrices`: k-th sorted eigenvalue of each block to slot k."""
     values = np.empty(n)
     for idx, sub in zip(groups, blocks):
-        evals = np.linalg.eigvalsh(sub)
+        sub = np.asarray(sub)
+        diag = np.real(np.diag(sub))
+        off = np.linalg.norm(sub - np.diag(np.diag(sub)))
+        if off <= 1e-8 * (1.0 + np.abs(diag).max(initial=0.0)):
+            # The manifold states are already eigenvectors of the operator (a sharpened basis): row k *is* state k.
+            # Sorted eigenvalues would pair a value with some other state of the manifold.
+            evals = diag
+        else:
+            evals = np.linalg.eigvalsh(sub)
         for k, state_index in enumerate(idx):
             values[state_index] = evals[k]
     return values

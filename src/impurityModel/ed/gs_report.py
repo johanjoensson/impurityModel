@@ -315,7 +315,8 @@ def sharpen_for_report(
     """
     comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
     es = np.asarray(es, dtype=float)
-    tol = manifold_tol(es, slater_weight_min)
+    # The tolerance decides whether the rotation broadcast below happens: take it from rank 0's energies.
+    tol = manifold_tol(comm.bcast(es, root=0) if comm is not None else es, slater_weight_min)
     enabled = config.GS_SHARPEN_MANIFOLDS.get()
     try:
         layout = spin_layout
@@ -330,18 +331,20 @@ def sharpen_for_report(
                 shell_ls=shell_ls,
             )
         casimirs = impurity_casimirs(ground_state_basis, rot_to_spherical, shell_ls) if enabled else None
-        return sharpen_manifolds(
-            blk,
-            es,
-            layout,
-            casimirs,
-            tol,
-            comm=comm,
-            redistribute=ground_state_basis.redistribute_block,
-            enabled=enabled,
-        )
     except Exception:
+        # Building the operators uses replicated inputs only, so this raises on every rank alike.
         return blk, ManifoldBasis(groups=[], tol=tol)
+    # Outside the guard: a failure inside the collectives must not be swallowed on one rank while the others wait.
+    return sharpen_manifolds(
+        blk,
+        es,
+        layout,
+        casimirs,
+        tol,
+        comm=comm,
+        redistribute=ground_state_basis.redistribute_block,
+        enabled=enabled,
+    )
 
 
 class _LiveSource:
