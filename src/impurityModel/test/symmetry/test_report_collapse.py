@@ -1,5 +1,6 @@
 """The full report folds symmetry copies: bath levels, density-matrix entries, pure natural orbitals."""
 
+from typing import ClassVar
 import numpy as np
 
 from impurityModel.ed.block_structure import BlockStructure, block_structure_summary
@@ -53,7 +54,12 @@ def test_restrictions_are_named_by_the_group_they_equal():
             self.role, self.group_key = role, key
 
     class _Naming:
-        infos = {0: _Info("impurity", 0), 1: _Info("impurity", 0), 2: _Info("valence", 0), 3: _Info("conduction", 0)}
+        infos: ClassVar[dict] = {
+            0: _Info("impurity", 0),
+            1: _Info("impurity", 0),
+            2: _Info("valence", 0),
+            3: _Info("conduction", 0),
+        }
 
         def indices(self, role=None, group_key=None):
             return sorted(i for i, o in self.infos.items() if (role is None or o.role == role))
