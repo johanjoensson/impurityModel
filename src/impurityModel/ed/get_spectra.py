@@ -7,12 +7,14 @@ The command-line interface lives in :mod:`impurityModel.scripts.spectra`.
 
 from collections import OrderedDict
 
+import os
 import h5py
 import numpy as np
 
 from impurityModel.ed import config, spectra
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
 
@@ -470,6 +472,9 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         verbosity,
         spec=gs_spec,
         visitor=_SpectraVisitor(),
+        report_files=ReportFiles.for_label(
+            os.path.splitext(os.path.basename(output_filename))[0], os.path.dirname(output_filename) or None
+        ),
     )
     ensemble = gs_info["ensemble"]
 

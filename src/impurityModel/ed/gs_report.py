@@ -7,7 +7,10 @@ screening diagnostics, static susceptibilities, and the report that prints them.
 """
 
 import copy
+import io
+import os
 import sys
+import warnings
 from dataclasses import asdict, dataclass, field
 from types import SimpleNamespace
 
@@ -74,6 +77,32 @@ from impurityModel.ed.utils import (
     report_banner,
     report_rule,
 )
+
+
+@dataclass(frozen=True)
+class ReportFiles:
+    """Where the ground-state report is persisted: a full text report and the JSON data.
+
+    ``None`` for a path means that file is not written. :meth:`for_label` follows the ``save_Greens_function``
+    convention (``<prefix>-<label>.<ext>`` in a directory, the working directory by default).
+    """
+
+    text: object = None
+    json: object = None
+    unit: object = None
+
+    @classmethod
+    def for_label(cls, label, directory=None):
+        """``ground_state-<label>.txt`` and ``.json`` in ``directory`` (default: the working directory)."""
+        base = os.path.join(os.fspath(directory) if directory is not None else "", f"ground_state-{label}")
+        return cls(text=base + ".txt", json=base + ".json", unit=str(label))
+
+    @classmethod
+    def coerce(cls, files):
+        """``files`` as a :class:`ReportFiles`: ``None`` -> nothing written, ``str`` -> a JSON path (legacy)."""
+        if isinstance(files, cls):
+            return files
+        return cls(json=None if files is None else os.fspath(files))
 
 
 def convergence_summary(convergence):
@@ -1011,6 +1040,7 @@ def _present(
     printed first and the statistics JSON is not written, so a partial file is never mistaken for a result.
     """
     ground_state_basis, es, tau = src.basis, src.es, src.tau
+    files = ReportFiles.coerce(stats_path)
     comm = ground_state_basis.comm
     rank = comm.rank if comm is not None else 0
     block_structure = R.naming.block_structure
@@ -1085,34 +1115,30 @@ def _present(
     R.report = _assemble(R, src, magnetic_summary if gs_stats is not None else None, ensemble, gs_convergence_report)
     if gs_stats is not None and R.report is not None:
         gs_stats["report"] = R.report.to_json()
-    if stats_path is not None and not partial:
-        # Collective, so gated on the replicated path only (gs_stats is None off rank 0): a failed write on
-        # rank 0 (an unserialisable value, a full disk) is raised on every rank; a rank-0-only raise left the
-        # others in the next collective (the GS8 numpy-bool hang).
-        on_root(
-            comm if ground_state_basis.is_distributed else None,
-            lambda: rank == 0 and gs_stats is not None and save_gs_statistics(gs_stats, stats_path),
-        )
-
     summary_only = verbose == V_SUMMARY
-    if rank == 0 and summary_only and R.report is not None:
-        # -v: the compact summary stands in for the terse record and the full report (which -vv prints).
+    want_text = files.text is not None and not partial
+    summary_lines = []
+    if rank == 0 and (summary_only or want_text) and R.report is not None:
         diag = np.real(np.diag(thermal_rho)) if thermal_rho is not None else None
         stats_ = gs_stats or {}
         configs = [
             (tuple(r["config"]), r["fraction"]) for r in stats_.get("thermal_config_weights", {}).get("rows", [])
         ]
         try:
-            for line in render_summary(
+            summary_lines = render_summary(
                 R.report,
                 diag=diag,
                 configurations=configs,
                 one_body_entropy=stats_.get("one_body_entropy"),
-                files=None,
-            ):
-                print(line)
+                unit=files.unit,
+                files=(files.text, files.json) if (files.text or files.json) else None,
+            )
         except Exception as exc:
-            print(f"[warning] ground-state summary incomplete (GS still returned): {exc}")
+            summary_lines = [f"[warning] ground-state summary incomplete (GS still returned): {exc}"]
+    if rank == 0 and summary_only and R.report is not None:
+        # -v: the compact summary stands in for the terse record and the full report (which -vv prints).
+        for line in summary_lines:
+            print(line)
         for reason in degraded_warnings(gs_convergence_report):
             print(f"WARNING: {reason}", file=sys.stderr, flush=True)
     elif rank == 0:
@@ -1141,11 +1167,17 @@ def _present(
                 )
             )
         for reason in degraded_warnings(gs_convergence_report):
+            # stdout too: RSPt redirects only stdout to the file the user reads.
+            print(f"WARNING: {reason}", flush=True)
             print(f"WARNING: {reason}", file=sys.stderr, flush=True)
         if not report.enabled(V_DETAIL):
-            note = f"; statistics saved to {stats_path}" if (gs_stats is not None and stats_path is not None) else ""
+            note = f"; saved to {files.text or files.json}" if (files.text or files.json) else ""
             print(f"(full report: -vv{note})")
-    if report.enabled(V_DETAIL):
+    echo_full = report.enabled(V_DETAIL)
+    full_buffer = io.StringIO()
+    if echo_full or (rank == 0 and want_text):
+        _stdout = sys.stdout
+        sys.stdout = full_buffer
         # The ground state is fully computed by here; formatting/printing the observable report
         # must never crash the solve. Any failure degrades to a warning and still returns the GS.
         # Rank-0-only (report.enabled already checks rank == 0; no collectives inside), so the
@@ -1275,6 +1307,26 @@ def _present(
                 print()
         except Exception as exc:
             print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")
+        finally:
+            sys.stdout = _stdout
+        if echo_full:
+            sys.stdout.write(full_buffer.getvalue())
+            sys.stdout.flush()
+    if (files.text is not None or files.json is not None) and not partial:
+        # Collective, so gated on replicated state only (the file names): a failed write on rank 0 (an
+        # unserialisable value, a full disk, a missing directory) is raised on every rank; a rank-0-only raise
+        # left the others in the next collective (the GS8 numpy-bool hang).
+        def _write():
+            if rank != 0:
+                return False
+            if files.text is not None:
+                with open(files.text, "w") as fh:
+                    fh.write("\n".join(summary_lines) + "\n\n" + full_buffer.getvalue())
+            if files.json is not None and gs_stats is not None:
+                save_gs_statistics(gs_stats, files.json)
+            return True
+
+        on_root(comm if ground_state_basis.is_distributed else None, _write)
     return R
 
 

@@ -31,6 +31,7 @@ from impurityModel.ed.greens_function import (
     get_greens_function_moments,
     save_Greens_function,
 )
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.groundstate import (
     GS_DE2_MIN,
     GS_E_PT2_TOL,
@@ -553,7 +554,9 @@ def _inherit_gf_caps(basis, shared):
     basis._auto_gf_caps = {key: pin for key, pin in shared.items() if pin[0] >= int(basis.size)}
 
 
-def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster", cap_ledger=None):
+def calc_selfenergy(
+    model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster", cap_ledger=None, report_dir=None
+):
     """Calculate the self energy of the impurity.
 
     Parameters
@@ -935,6 +938,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         shell_ls=sb.shell_ls,
         spec=gs_spec,
         visitor=_GreensFunctionVisitor(),
+        report_files=ReportFiles.for_label(cluster_label, report_dir),
     )
     _report_phase_time(report, "ground state", t_phase)
     ensemble = gs_info["ensemble"]

@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.observables import (
     resolve_shell_ls,
     shell_column_slices,
@@ -299,7 +300,7 @@ def _solve_p_plus_d(tmp_path, shell_ls):
         sb.block_structure,
         sb.rot_to_spherical,
         2,
-        stats_path=str(tmp_path / "gs.json"),
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
         shell_ls=sb.shell_ls,
     )
 

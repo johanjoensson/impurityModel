@@ -9,6 +9,7 @@ import json
 import numpy as np
 import pytest
 
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.gs_report import (
     finalize_members,
@@ -82,7 +83,16 @@ def test_members_replayed_equal_the_one_shot_report(comm, index, n_members, tol,
         captured.append((member.total, basis, np.array(es), _redistributed(basis, psis).to_states()))
         return len(es)
 
-    calc_gs(h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook))
+    calc_gs(
+        h_op,
+        setup,
+        bs,
+        rot,
+        0,
+        slaterWeightMin=1e-12,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+        visitor=_hook(hook),
+    )
     assert len(captured) == n_members
     if n_members > 1:  # the union order must really permute the concatenated members
         union = np.concatenate([e for _, _, e, _ in captured])

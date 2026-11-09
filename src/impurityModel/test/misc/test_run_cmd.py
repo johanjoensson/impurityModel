@@ -391,3 +391,17 @@ def test_a_retired_flag_warns_before_the_run_starts(module_name, flag):
     # A bare namespace: run() fails on the first real attribute it needs, after the warning it is testing.
     with pytest.warns(UserWarning, match="retired and ignored"), pytest.raises(AttributeError):
         module.run(argparse.Namespace(**{flag: "6"}))
+
+
+# ------------------------------------------------------------------- verbosity
+
+
+def test_the_run_table_verbosity_is_honoured_and_the_command_line_overrides_it():
+    from types import SimpleNamespace
+
+    resolved = SimpleNamespace(tables={"run": {"verbosity": 2}})
+    assert run_cmd.effective_verbosity(_args(verbose=0), resolved) == 2
+    assert run_cmd.effective_verbosity(_args(verbose=1), resolved) == 1
+    assert run_cmd.effective_verbosity(_args(verbose=7), resolved) == 3
+    resolved = SimpleNamespace(tables={"run": {"verbosity": 9}})
+    assert run_cmd.effective_verbosity(_args(verbose=0), resolved) == 3

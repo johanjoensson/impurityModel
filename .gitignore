@@ -37,3 +37,5 @@ ground_state_statistics.json
 src/cython/.build-mode
 
 chi.h5
+ground_state-*.txt
+ground_state-*.json

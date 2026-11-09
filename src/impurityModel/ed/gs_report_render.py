@@ -125,5 +125,7 @@ def render_summary(report, diag=None, configurations=None, one_body_entropy=None
     for skip in report.skips:
         lines.append(f"not reported: {skip}")
     if files:
-        lines.append(f"full report: {files[0]}   data: {files[1]}")
+        parts = [f"{name}: {path}" for name, path in zip(("full report", "data"), files) if path]
+        if parts:
+            lines.append("   ".join(parts))
     return lines

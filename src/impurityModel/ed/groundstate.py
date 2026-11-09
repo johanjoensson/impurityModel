@@ -2,6 +2,7 @@ import contextlib
 import dataclasses
 import io
 import sys
+import warnings
 from dataclasses import dataclass
 from itertools import product
 from typing import NamedTuple, Optional
@@ -21,6 +22,7 @@ from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.gs_report import (
+    ReportFiles,
     finalize_members,
     measure_member,
     sharpen_for_report,
@@ -2292,6 +2294,9 @@ def _report_what_exists(
         print(f"(partial report not printed: {type(printing).__name__}: {printing})", file=sys.stderr, flush=True)
 
 
+_UNSET = object()
+
+
 def calc_gs(
     Hop: ManyBodyOperator,
     basis_setup: dict,
@@ -2299,10 +2304,11 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose,
     slaterWeightMin=0,
-    stats_path: str = "ground_state_statistics.json",
+    stats_path=_UNSET,
     shell_ls=None,
     spec: Optional[GroundStateSpec] = None,
     visitor=None,
+    report_files: Optional[ReportFiles] = None,
     **kwargs,
 ):
     """
@@ -2334,6 +2340,11 @@ def calc_gs(
     shell_ls : tuple of int, optional
         ``l`` of each column block of an ndarray ``rot_to_spherical`` for a multi-shell impurity (reporting
         only); ``None`` is a single shell.
+    report_files : ReportFiles, optional
+        Where to write the full text report and the JSON data (:meth:`ReportFiles.for_label`). The default
+        writes nothing.
+    stats_path : str, optional
+        Deprecated alias for ``ReportFiles(json=stats_path)``.
     spec : GroundStateSpec, optional
         What decides which state is found (see :class:`GroundStateSpec`). Its fields are merged into
         ``basis_setup``; a key set by both raises ``ValueError``.
@@ -2361,6 +2372,14 @@ def calc_gs(
         A dictionary containing additional ground-state info (e.g. 'rhos' list).
     """
 
+    if stats_path is not _UNSET:
+        warnings.warn(
+            "calc_gs(stats_path=...) is deprecated; pass report_files=ReportFiles(json=...)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if report_files is None:
+            report_files = ReportFiles.coerce(stats_path)
     basis_setup = dict(basis_setup)
     if "impurity_orbital" in basis_setup:
         basis_setup["impurity_orbitals"] = basis_setup.pop("impurity_orbital")
@@ -2489,7 +2508,7 @@ def calc_gs(
             block_structure,
             rot_to_spherical,
             verbose,
-            stats_path,
+            report_files,
             result.truncation,
             result.convergence,
             spin_layout=layout,

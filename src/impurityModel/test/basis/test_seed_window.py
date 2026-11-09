@@ -2,6 +2,7 @@
 
 import pytest
 
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.basis_generation import DEEP_SEED_WIDTH, SeedWindow, generate_initial_basis
 from impurityModel.test.basis.test_sector_key import N_ORB, _model
 
@@ -150,7 +151,7 @@ def test_calc_gs_accepts_the_seed_window_and_returns_the_full_deep_shell(tmp_pat
         sb.block_structure,
         sb.rot_to_spherical,
         0,
-        stats_path=str(tmp_path / "gs.json"),
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
         shell_ls=sb.shell_ls,
     )
     assert np.isfinite(es[0])
@@ -180,7 +181,7 @@ def test_hf_that_refills_the_deep_shell_is_reported(tmp_path, capsys):
     }
     calc_gs(
         sb.h, basis_information, sb.block_structure, sb.rot_to_spherical, 0,
-        stats_path=str(tmp_path / "gs.json"), shell_ls=sb.shell_ls,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")), shell_ls=sb.shell_ls,
     )  # fmt: skip
     assert "Hartree-Fock fills the bath-less shell(s)" in capsys.readouterr().out
 
@@ -224,6 +225,6 @@ def test_hartree_fock_is_pinned_by_a_plain_freeze_and_not_by_a_window(tmp_path, 
     }
     groundstate.calc_gs(
         sb.h, basis_information, sb.block_structure, sb.rot_to_spherical, 0,
-        stats_path=str(tmp_path / "gs.json"), shell_ls=sb.shell_ls,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")), shell_ls=sb.shell_ls,
     )  # fmt: skip
     assert seen and all(s == (set() if as_window else groups) for s in seen), seen

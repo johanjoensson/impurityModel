@@ -5,6 +5,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
+from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.support.gs_oracle import exact_spectra, pinned_model
@@ -39,7 +40,9 @@ def _setup(index, comm, mixed_valence):
 
 def _run(index, comm, mixed_valence, tmp_path):
     h_op, setup, bs, rot, n_orb, n_val = _setup(index, comm, mixed_valence)
-    out = calc_gs(h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"))
+    out = calc_gs(
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, report_files=ReportFiles(json=str(tmp_path / "gs.json"))
+    )
     return out, n_orb, n_val
 
 
@@ -104,7 +107,14 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
 
     h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
     out = calc_gs(
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook)
+        h_op,
+        setup,
+        bs,
+        rot,
+        0,
+        slaterWeightMin=1e-12,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+        visitor=_hook(hook),
     )
     assert len(calls) == n_members and out[4]["member_results"] == widths
     assert not any(alive_at_hook)
@@ -163,7 +173,14 @@ def test_a_member_whose_thermal_solve_is_held_by_the_memory_guard_is_not_merged(
         hooks.append(member.total)
 
     run = lambda: calc_gs(  # noqa: E731
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook)
+        h_op,
+        setup,
+        bs,
+        rot,
+        0,
+        slaterWeightMin=1e-12,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+        visitor=_hook(hook),
     )
     *_, info = run()
     ens = info["ensemble"]
@@ -273,7 +290,7 @@ def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(com
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     hooks = []
     _, es, _, _, info = calc_gs(
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs2.json"),
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, report_files=ReportFiles(json=str(tmp_path / "gs2.json")),
         visitor=_hook(lambda member, *_: hooks.append(member.total) or member.total),
     )  # fmt: skip
     ens = info["ensemble"]
@@ -314,7 +331,14 @@ def test_a_failing_later_member_cuts_the_ensemble_there_keeping_the_members_befo
         return member.total
 
     *_, info = calc_gs(
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=_hook(hook)
+        h_op,
+        setup,
+        bs,
+        rot,
+        0,
+        slaterWeightMin=1e-12,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+        visitor=_hook(hook),
     )
     ens = info["ensemble"]
     assert "injected" in ens["refused_reason"]
@@ -336,7 +360,9 @@ def test_an_ensemble_cut_to_its_winner_still_warns_about_a_near_neighbour(comm, 
     h_op, setup, bs, rot, _, _ = _setup(33, comm, "auto")
     setup["tau"] = 0.3
     _failing_member(monkeypatch, 1)
-    *_, info = calc_gs(h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"))
+    *_, info = calc_gs(
+        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, report_files=ReportFiles(json=str(tmp_path / "gs.json"))
+    )
     assert [m["total"] for m in info["ensemble"]["members"]] == [0]
     if comm is None or comm.rank == 0:
         out = capsys.readouterr().out
@@ -370,7 +396,14 @@ def test_the_driver_gets_the_only_copy_of_the_thermal_states(comm, index, n_memb
 
     h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
     psis, _es, _, _, info = calc_gs(
-        h_op, setup, bs, rot, 0, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver()
+        h_op,
+        setup,
+        bs,
+        rot,
+        0,
+        slaterWeightMin=1e-12,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+        visitor=Driver(),
     )
     assert len(taken) == len(driven) == n_members
     assert all(m.psis is None for m in members)  # the member holds no reference to its raw block afterwards
@@ -394,7 +427,16 @@ def test_driver_output_follows_the_ground_state_report(comm, index, n_members, t
             return 0
 
     h_op, setup, bs, rot, _, _ = _setup(index, comm, "on")
-    calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver())
+    calc_gs(
+        h_op,
+        setup,
+        bs,
+        rot,
+        1,
+        slaterWeightMin=1e-12,
+        report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+        visitor=Driver(),
+    )
     out = capfd.readouterr().out
     if (comm.rank if comm is not None else 0) != 0:
         assert "DRIVER-TEXT" in out and "E0 = " not in out
@@ -432,7 +474,9 @@ def test_a_failing_member_prints_the_reports_gathered_so_far(comm, tmp_path, cap
     stats = tmp_path / "gs.json"
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     with pytest.raises(_Boom):
-        calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(stats), visitor=Driver())
+        calc_gs(
+            h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, report_files=ReportFiles(json=str(stats)), visitor=Driver()
+        )
     out = capfd.readouterr().out
     assert not stats.exists()
     if (comm.rank if comm is not None else 0) == 0:
@@ -465,7 +509,16 @@ def test_a_failing_second_solve_prints_the_first_members_reports(comm, tmp_path,
     monkeypatch.setattr(groundstate._MeasureVisitor, "visit", visit)
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     with pytest.raises(_Boom):
-        calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver())
+        calc_gs(
+            h_op,
+            setup,
+            bs,
+            rot,
+            1,
+            slaterWeightMin=1e-12,
+            report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+            visitor=Driver(),
+        )
     out = capfd.readouterr().out
     if (comm.rank if comm is not None else 0) == 0:
         assert "PARTIAL GROUND-STATE REPORT" in out and "E0 = " in out and "DRIVER-TEXT" in out
@@ -488,7 +541,16 @@ def test_driver_text_survives_a_failing_report(comm, tmp_path, capfd, monkeypatc
     monkeypatch.setattr(groundstate, "finalize_members", broken)
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     with pytest.raises(_Boom):
-        calc_gs(h_op, setup, bs, rot, 1, slaterWeightMin=1e-12, stats_path=str(tmp_path / "gs.json"), visitor=Driver())
+        calc_gs(
+            h_op,
+            setup,
+            bs,
+            rot,
+            1,
+            slaterWeightMin=1e-12,
+            report_files=ReportFiles(json=str(tmp_path / "gs.json")),
+            visitor=Driver(),
+        )
     out = capfd.readouterr().out
     assert out.count("DRIVER-TEXT") == 2
     if (comm.rank if comm is not None else 0) == 0:

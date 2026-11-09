@@ -681,7 +681,7 @@ def test_calc_gs_reports_truncation_in_gs_info():
         block_structure,
         rot_to_spherical=np.eye(6),
         verbose=False,
-        stats_path=None,
+        report_files=None,
     )
     report = gs_info["truncation"]
     assert report is not None and report["cap_hit"]
@@ -697,7 +697,7 @@ def test_calc_gs_no_truncation_report_when_uncapped():
         block_structure,
         rot_to_spherical=np.eye(6),
         verbose=False,
-        stats_path=None,
+        report_files=None,
     )
     assert gs_info["truncation"] is None
     assert gs_info["statistics"]["truncation"] is None

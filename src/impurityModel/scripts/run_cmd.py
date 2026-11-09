@@ -17,6 +17,7 @@ from pathlib import Path
 
 from impurityModel.inputformat import schema
 from impurityModel.inputformat.reader import apply_environment, load_input
+from impurityModel.ed.utils import V_DEBUG
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
 
@@ -177,7 +178,14 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
         from impurityModel.scripts.selfenergy import _save_results
 
         result = calc_selfenergy(
-            built.model, built.meshes, built.basis, built.solver, comm=comm, verbosity=verbosity, cluster_label=cluster
+            built.model,
+            built.meshes,
+            built.basis,
+            built.solver,
+            comm=comm,
+            verbosity=verbosity,
+            cluster_label=cluster,
+            report_dir=outdir,
         )
         target = str(Path(outdir, output or f"selfenergy-{cluster}.h5"))
         if (comm is None or comm.rank == 0) and result is not None:
@@ -201,6 +209,16 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
     return target
 
 
+def effective_verbosity(args, resolved):
+    """The run's verbosity: the file's ``[run] verbosity`` unless ``-v`` is given on the command line.
+
+    Both sources are rank-uniform (argparse and the input file are read identically on every rank).
+    """
+    if args.verbose:
+        return resolve_verbosity(args)
+    return min(int(resolved.tables["run"]["verbosity"]), V_DEBUG)
+
+
 def run(args):
     """Load ``args.input``, then validate, explain or execute it."""
     from mpi4py import MPI
@@ -208,8 +226,8 @@ def run(args):
     from impurityModel.inputformat.build import build
 
     comm = MPI.COMM_WORLD
-    verbosity = resolve_verbosity(args)
     resolved = load_input(args.input, comm=comm)
+    verbosity = effective_verbosity(args, resolved)
 
     if comm.rank == 0:
         for warning in resolved.warnings:
