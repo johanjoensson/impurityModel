@@ -406,3 +406,11 @@ def test_the_shell_refusal_names_the_coupling_that_joined_the_shells():
         )
     if "spans shells" in str(bath.value):
         assert "bath orbital 16 hops to both shells" in str(bath.value)
+
+
+def test_impurity_shell_rhos_refuses_a_sub_shell_block():
+    """An eg-only impurity (4 spin-orbitals) is not a spin-doubled l-shell; l must not be inferred from its size."""
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    with pytest.raises(ValueError, match="not a spin-doubled l-shell"):
+        list(impurity_shell_rhos(np.eye(4, dtype=complex), np.eye(4, dtype=complex)))

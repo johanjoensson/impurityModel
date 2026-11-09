@@ -269,43 +269,6 @@ def get_Lplus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
     )
 
 
-def get_Sminus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> complex:
-    """Calculate the expectation value of ``S_-`` from the density matrix in spherical basis.
-
-    Parameters
-    ----------
-    rho : np.ndarray
-        The density matrix.
-    l : int
-        The orbital angular momentum quantum number.
-    s : float, default 0.5
-        The spin quantum number.
-
-    Returns
-    -------
-    complex
-        The expectation value ``<S_->``.
-    """
-    # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
-    ssp1 = s * (s + 1)
-    ms = +1 / 2
-    #   S-      |1/2,-1/2>,  |1/2, 1/2>
-    # <1/2,-1/2|    0            1
-    # <1/2, 1/2|    0            0
-    # S- = [[0   S-],
-    #        0   0 ]]
-    Sminus = np.diag(np.repeat(np.sqrt(ssp1 - ms * (ms - 1)), 2 * l), k=1)
-    return np.trace(
-        rho
-        @ np.block(
-            [
-                [np.zeros((2 * l + 1, 2 * l + 1)), Sminus],
-                [np.zeros((2 * l + 1, 2 * l + 1)), np.zeros((2 * l + 1, 2 * l + 1))],
-            ]
-        )
-    )
-
-
 def get_Lminus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
     """Calculate the expectation value of ``L_-`` from the density matrix in spherical basis.
 
@@ -332,43 +295,6 @@ def get_Lminus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
     Lminus = np.diag([np.sqrt(llp1 - ml * (ml - 1)) for ml in range(-l + 1, l + 1)], k=1)
     return np.trace(
         rho @ np.block([[Lminus, np.zeros((2 * l + 1, 2 * l + 1))], [np.zeros((2 * l + 1, 2 * l + 1)), Lminus]])
-    )
-
-
-def get_Splus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> complex:
-    """Calculate the expectation value of S_+ from the density matrix in spherical basis.
-
-    Parameters
-    ----------
-    rho : np.ndarray
-        The density matrix.
-    l : int
-        The orbital angular momentum quantum number.
-    s : float, default 0.5
-        The spin quantum number.
-
-    Returns
-    -------
-    complex
-        The expectation value <S_+>.
-    """
-    # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
-    ssp1 = s * (s + 1)
-    ms = -1 / 2
-    #   S+      |1/2,-1/2>,  |1/2, 1/2>
-    # <1/2,-1/2|    0            0
-    # <1/2, 1/2|    1            0
-    # S+ = [[0   0],
-    #        S+  0]]
-    Splus = np.diag(np.repeat(np.sqrt(ssp1 - ms * (ms + 1)), 2 * l), k=-1)
-    return np.trace(
-        rho
-        @ np.block(
-            [
-                [np.zeros((2 * l + 1, 2 * l + 1)), np.zeros((2 * l + 1, 2 * l + 1))],
-                [Splus, np.zeros((2 * l + 1, 2 * l + 1))],
-            ]
-        )
     )
 
 
@@ -667,6 +593,10 @@ def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None, shell
             yield l, a, rotate_matrix(rho_imp, R[:, cols])
         return
     if not isinstance(rot_to_spherical, dict) or impurity_orbitals is None:
+        if not isinstance(rot_to_spherical, dict):
+            # The aggregate shell must be one complete spin-doubled l-shell (or described by shell_ls): the
+            # get_*_from_rho_spherical helpers infer l from the size and would read a sub-shell wrongly.
+            resolve_shell_ls(rot_to_spherical, shell_ls)
         yield None, None, rotate_matrix(rho_imp, rot_to_spherical)
         return
 
@@ -1240,7 +1170,7 @@ OPEN_SHELL_TOL = 1e-3
 
 
 def compute_correlation_diagnostics(
-    psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None, keep=None, values=None
+    psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None, keep=None, values=None, pairing_verified=True
 ):
     r"""Correlation-strength diagnostics of the impurity (Mott/Hund physics).
 
@@ -1276,6 +1206,11 @@ def compute_correlation_diagnostics(
     values : callable, optional
         A stand-in for :func:`manifold_observable_values` (same call signature): a replay of values measured
         while the states were alive, so this function can run without them. ``None`` evaluates them here.
+    pairing_verified : bool, optional
+        Whether the spin layout grade (``su2`` / ``collinear``) establishes that ``imp_pairs`` is the physical dn/up
+        pairing. Under ``sz_only`` it is only known that ``H`` conserves ``S_z`` with this pairing; the
+        double occupancies, ``<m_z^2>`` and the Hund matrix then depend on an unverified assumption. Stored in the
+        result as ``pairing_verified`` and flagged by :func:`print_correlation_diagnostics`.
 
     Returns
     -------
@@ -1329,6 +1264,7 @@ def compute_correlation_diagnostics(
         "sz_thermal": sz_thermal,
         "tau": float(tau),
         "hund": hund,
+        "pairing_verified": bool(pairing_verified),
     }
 
 
@@ -1364,6 +1300,8 @@ def spin_curie_susceptibility(es, tau, sz_diag, sz_col2):
 def print_correlation_diagnostics(corr, file=None):
     """Pretty-print the dict from :func:`compute_correlation_diagnostics`: open-shell orbitals in full, the rest folded."""
     print("Impurity correlation diagnostics (thermal):", file=file)
+    if not corr.get("pairing_verified", True):
+        print("  (dn,up) pairing NOT verified by H (grade S_z only): the values below assume it.", file=file)
     print(f"  {'orbital(dn,up)':>16s} {'n_dn':>8s} {'n_up':>8s} {'<n_up*n_dn>':>12s} {'<m_z^2>':>9s}", file=file)
     open_shell = corr["open_shell"]
     for a, (dn, up) in enumerate(corr["pairs"]):

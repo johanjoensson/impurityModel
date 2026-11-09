@@ -788,6 +788,7 @@ def _evaluate(
     sisb_z_thermal = None
     sisb_z_connected = None
     sisb_pairing_approx = False
+    pairing_verified = True
     sisb_pairing_note = None
     layout = spin_layout
     sisb_skip_reason = None
@@ -809,6 +810,7 @@ def _evaluate(
                 ),
             )
         sisb_pairing_approx = not layout.su2
+        pairing_verified = layout.grade in ("su2", "collinear")
         sisb_pairing_note = layout.sisb_note()
         if layout.labelled:
             spin_pairs = (list(layout.imp_pairs), list(layout.bath_pairs))
@@ -879,6 +881,7 @@ def _evaluate(
                 imp_pairs,
                 keep=support_keep,
                 values=src.values("correlation"),
+                pairing_verified=pairing_verified,
             )
             # Impurity channels grouped like the N(...) columns (equivalent-block groups),
             # using the same orbital-group labels (e.g. "group 1") as the printed report, not

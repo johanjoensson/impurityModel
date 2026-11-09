@@ -220,3 +220,11 @@ def test_header_impurity_group_key_survives_json(tmp_path):
     path, _ = _d_shell_file(tmp_path)
     assert json.loads(path.read_text().splitlines()[1])["impurity_orbitals"] == {"2": list(range(10))}
     assert h0_format.read_h0_file(path).impurity_orbitals == {2: tuple(range(10))}
+
+
+@pytest.mark.parametrize("header", [{"basis": "cubic"}, {"spin_ordering": "up_first"}])
+def test_from_h0_text_refuses_a_non_default_basis_without_a_rotation(tmp_path, header):
+    """A header declaring a cubic basis / non-default spin order but no rotation would be read as spherical."""
+    path, _ = _d_shell_file(tmp_path, **header)
+    with pytest.raises(h0_format.H0FormatError, match="rot_to_spherical"):
+        ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER)

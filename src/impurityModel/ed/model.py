@@ -144,8 +144,9 @@ class ImpurityModel:
         orbitals (everything else in ``h0``) and their valence/conduction split are derived
         from the Hamiltonian inside the solver.
     rot_to_spherical : numpy.ndarray or dict
-        Rotation from the impurity input basis to spherical harmonics, used only for the
-        L/S/J observable reporting. An identity when the input basis already is spherical.
+        Rotation ``R`` between spherical harmonics and the impurity input basis, used only for the
+        L/S/J observable reporting: ``O_input = R O_spherical R^dagger`` (columns are the spherical
+        orbitals expressed in the input basis). An identity when the input basis already is spherical.
     bath_states : tuple or None
         Explicit ``(valence_baths, conduction_baths)`` layout (each a
         ``dict[group, list[list[int]]]``), used by the spectra driver where the multi-shell
@@ -482,6 +483,17 @@ class ImpurityModel:
 
         rot = parsed.rot_to_spherical
         if rot is None:
+            if parsed.basis not in ("spherical", "unknown"):
+                raise h0_format.H0FormatError(
+                    f"{path}: the header's basis is {parsed.basis!r} but it carries no rot_to_spherical block; "
+                    "every orbital observable (Lz, L^2, J^2, term symbol) would silently be evaluated as if the "
+                    "basis were spherical. Add the rotation to the file (build_h0 writes it)."
+                )
+            if parsed.spin_ordering not in (None, "down_first"):
+                raise h0_format.H0FormatError(
+                    f"{path}: the header's spin_ordering is {parsed.spin_ordering!r} but it carries no "
+                    "rot_to_spherical block; the spin pairing would be read as down-first."
+                )
             rot = np.eye(n_imp, dtype=complex)
 
         h = parsed.to_matrix()
@@ -785,7 +797,7 @@ class ImpurityModel:
         u4 : numpy.ndarray, optional
             Impurity Coulomb tensor (``n_imp`` per axis), in the same basis as ``H``.
         rot_to_spherical : numpy.ndarray or dict
-            Rotation from the impurity input basis to spherical harmonics (observable reporting).
+            Rotation ``R`` with ``O_input = R O_spherical R^dagger`` (observable reporting).
         bath_valence_conduction : tuple of sequence, optional
             ``(valence_indices, conduction_indices)`` classifying the bath spin-orbitals; when
             given it populates :attr:`bath_states`. The self-energy path re-derives its own split
