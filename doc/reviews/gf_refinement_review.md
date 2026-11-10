@@ -275,7 +275,8 @@ residual is the residual of the recurrence as it ran, not of `P_final H P_final`
     - with `support.prunes`, every capped unit runs a second full recurrence from the seeds (`_needs_restart`,
       `gf_recurrence.py:966-969`, `:1161-1183`);
     - `n_blocks` reports only the last recurrence, so "identical block counts" hides the doubled run;
-    - the `csr=` time is the whole recurrence wall.
+    - the `csr=` time is the whole recurrence wall (the unit line now prints `growth=`/`restart=` blocks and seconds
+      instead).
   - Rough split of a heavy unit: 206 s ≈ 76 s growth + 76 s restart + ~55 s accumulator/scoring. Light units go from
     15 s to 40 s while settling at round 0.
   - The arm that would separate the two (`--prune-tol 0 --refine-rounds 3` on CrI3) was not run.
