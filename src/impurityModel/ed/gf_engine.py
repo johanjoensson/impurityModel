@@ -161,6 +161,8 @@ def _block_green_group(
             "leak_end": cap_info.get("leak_end", float("nan")),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
+            # Blocks and seconds of the first run and of the restart on the final P (gf_recurrence).
+            "passes": cap_info.get("passes"),
         }
         if cap_info.get("refine") is not None:
             cap_stats["refine"] = cap_info["refine"]
@@ -205,13 +207,21 @@ def _block_green_group(
         peak_rss_bytes=int(peak),
         peak_is_unit_transient=bool(peak_is_own),
         wall_seconds=float(seconds),
+        **{key: value for key, value in (cap_stats.get("passes") or {}).items()},
     )
     if verbose and (comm is None or comm.rank == 0):
         label = f"unit {unit_label}" if unit_label is not None else "unit"
         retained_display = f"{retained_size:,}" if retained_size is not None else "n/a"
-        # n_blocks counts every block of the unit, and csr= the wall time of a unit whose frozen phase ran on a
-        # stored matrix (the recurrence's whole wall, growth included).
-        csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
+        # n_blocks counts the blocks of the recurrence the Green's function is read from. growth= is the first run
+        # (the operator applied every block until the support froze, then its frozen continuation) and restart=
+        # the rerun from the seeds on the final support, each with its own blocks and wall.
+        passes = cap_stats.get("passes")
+        csr = (
+            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s"
+            f", restart={passes['restart_blocks']} blk/{passes['restart_seconds']:.1f} s"
+            if passes
+            else ""
+        )
         verdict = cap_stats.get("settle_verdict")
         # The literal ``support_frozen=True`` token is read by the cluster kits' log parsers; the words after it
         # say what it is (a settle, not a cap) and where it happened.

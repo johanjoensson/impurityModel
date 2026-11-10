@@ -1035,6 +1035,7 @@ def block_Green_discovered(
         cap_info["engine"] = "none"
         cap_info["csr_fallback"] = False
         cap_info["csr_seconds"] = 0.0
+        cap_info["passes"] = None
         cap_info["matrix"] = None
         cap_info["support_frozen"] = False
         cap_info["settle_verdict"] = None
@@ -1156,6 +1157,10 @@ def block_Green_discovered(
         shifted_rtol=None if plan is None else plan.stop_rtol,
         score_gate=None if plan is None else _swappable_gate,
     )
+    # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap or the settle
+    # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
+    passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
+    passes.update(restart_blocks=0, restart_seconds=0.0)
     if acc is not None and getattr(acc, "skipped", False):
         plan, acc = None, None
         _decline_nothing_swappable()
@@ -1207,6 +1212,7 @@ def block_Green_discovered(
         # restarts too: the scoring solutions are accumulated on that run, which is on the final P.
         q0 = _seed_block_on_final_slots(matrix, *(seeds_initial if seeds_initial else (seed_keys, q0)))
         support.decisions.frozen = True
+        t_restart = time.perf_counter()
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
         )
@@ -1222,6 +1228,7 @@ def block_Green_discovered(
             shifted=acc,
             shifted_rtol=None if plan is None else plan.stop_rtol,
         )
+        passes.update(restart_blocks=len(widths), restart_seconds=time.perf_counter() - t_restart)
     if acc is not None:
         from impurityModel.ed.gf_refinement import refine_frozen_unit
 
@@ -1314,6 +1321,7 @@ def block_Green_discovered(
         # Whether the frozen recurrence ran on a stored matrix (``csr_seconds`` is then the unit's recurrence wall).
         cap_info["csr_fallback"] = bool(support.decisions.frozen and cap_info["engine"] != "none")
         cap_info["csr_seconds"] = seconds
+        cap_info["passes"] = passes
         cap_info["support_frozen"] = support.support_frozen
         cap_info["settle_verdict"] = support.settle_verdict()
         cap_info["support_trace"] = list(support.support_trace)
