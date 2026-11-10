@@ -132,6 +132,48 @@ seeds plus part of the first shell fill it), the cap's own top-K selection is al
 selects the same set. The synthetic metal of `doc/plans/gf_relevant_support.md` section 10 shows this at every cap
 where breadth-first fails there.
 
+**The growth pass and its tolerance (`gf_growth_tol`, default off).** Under pruning the settle is off, so nothing
+freezes the support: the growth pass runs the operator matrix-free until the Green's-function monitor converges at the
+full tolerance, and that `G` is then discarded by the restart (which runs on the stored `P H P`). On a unit where the
+support is found in the first few blocks this is most of the unit's wall (Mn8, bulk LMO: 2380 growth blocks against
+2181 restart blocks, the growth admitting 2.4 % of the final support after block 1). `gf_growth_tol` gives the growth
+pass its own, looser relative-change tolerance (never tighter than the run's own, per axis); a pass that stopped on it
+always restarts, so the returned `G` is still the exact block Lanczos of `P H P` on the final support, to the full
+tolerance. What the looser tolerance can change is the support: a determinant first reached after the early stop is
+not admitted. The unit line prints `growth=<blocks> blk/<s> s, restart=<blocks> blk/<s> s` so a run shows the split.
+
+Local sweeps (`freeze_replay run --prune-tol 1e-3 --growth-tol X`, synthetic metals from `write_metal`, U = 0.5,
+uncapped, one rank). Blocks and seconds are summed over the units and split by pass; dSigma is the largest absolute
+difference to the run with the option off, on the Matsubara / real axis. No row has an acausal point.
+
+1 orbital, 6 bath orbitals (8 units):
+
+| `gf_growth_tol` | growth blocks / s | restart blocks / s | wall | dSigma |
+|---|---|---|---|---|
+| off | 1666 / 1.2 | 1536 / 0.4 | 3.3 s | 0 / 0 |
+| 1e-3 | 320 / 0.0 | 1536 / 0.4 | 2.0 s | 0 / 0 |
+| 1e-4 | 436 / 0.0 | 1536 / 0.4 | 2.1 s | 0 / 0 |
+| 1e-5 | 750 / 0.6 | 1536 / 0.4 | 2.4 s | 0 / 0 |
+| 1e-6 | 947 / 0.6 | 1536 / 0.4 | 2.5 s | 0 / 0 |
+| 1e-7 | 1237 / 0.8 | 1536 / 0.4 | 2.7 s | 0 / 0 |
+
+2 orbitals, 4 bath orbitals each (32 units):
+
+| `gf_growth_tol` | growth blocks / s | restart blocks / s | wall | dSigma |
+|---|---|---|---|---|
+| off | 4954 / 100.2 | 4613 / 19.6 | 229 s | 0 / 0 |
+| 1e-3 | 1122 / 23.0 | 4807 / 18.0 | 151 s | 3.8e-9 / 3.5e-7 |
+| 1e-4 | 1646 / 31.8 | 4593 / 18.3 | 162 s | 3.5e-9 / 1.2e-7 |
+| 1e-5 | 2113 / 43.1 | 4521 / 18.3 | 171 s | 1.2e-11 / 1.7e-7 |
+| 1e-6 | 2977 / 60.7 | 4634 / 19.6 | 191 s | 8.6e-12 / 4.1e-8 |
+| 1e-7 | 3467 / 70.4 | 4569 / 19.4 | 201 s | 1.6e-13 / 4.4e-8 |
+
+A growth block costs about 20 ms against about 4 ms for a restart block here, so the saving follows the growth block
+count. The 1-orbital support is the same at every tolerance (Sigma bit-identical); in the 2-orbital model a looser
+tolerance moves the support slightly (restart blocks change, dSigma up to 3.5e-7). Wall includes the ground state and
+the other phases (about 110 s of the 2-orbital runs). These are not measurements of the LMO production workload,
+which is cap-bound locally.
+
 ### Swap refinement (`gf_refine_rounds`, default 3)
 
 For a unit the cap froze, up to `gf_refine_rounds` rounds of scoring the retained determinants (what their removal
