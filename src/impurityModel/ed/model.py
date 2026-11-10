@@ -1320,6 +1320,8 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # absence is an explicit off (0), not the new default.
         "gf_prune_tol": _optional_float(_archive_attr(attrs, "gf_prune_tol", 0.0)),
         "gf_first_shell_tol": _optional_float(_archive_attr(attrs, "gf_first_shell_tol")),
+        # Absent from archives written before the growth tolerance existed: those runs grew to the full tolerance.
+        "gf_growth_tol": _optional_float(_archive_attr(attrs, "gf_growth_tol")),
         "gf_refine_rounds": _optional_int(_archive_attr(attrs, "gf_refine_rounds", 0)),
         "gf_refine_tol": _optional_float(_archive_attr(attrs, "gf_refine_tol")),
         "gf_refine_swap": _optional_float(_archive_attr(attrs, "gf_refine_swap")),
@@ -1389,6 +1391,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_settle_retry=raw["gf_settle_retry"],
         gf_prune_tol=raw["gf_prune_tol"],
         gf_first_shell_tol=raw["gf_first_shell_tol"],
+        gf_growth_tol=raw["gf_growth_tol"],
         gf_refine_rounds=raw["gf_refine_rounds"],
         gf_refine_tol=raw["gf_refine_tol"],
         gf_refine_swap=raw["gf_refine_swap"],
@@ -1584,6 +1587,11 @@ class SolverOptions:
         With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
         moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``: the
         ``GF_ADMIT_FIRST_SHELL_TOL`` knob. Needs ``gf_prune_tol``.
+    gf_growth_tol : float or None
+        With pruned growth: the relative-change tolerance the growth pass converges to (looser than the full
+        ``gf_tol``). The restart from the seeds on the final support, which pruning always needs, then converges
+        ``G`` to the full tolerance, so a larger value ends the matrix-free growth earlier and the support it
+        finds is the one that earlier tolerance saw. ``None`` (default): the growth converges fully. In ``(0, 1)``.
     gf_refine_rounds : int or None
         Swap refinement of a unit the determinant cap froze: up to this many rounds of scoring the retained and the
         discovered determinants on the discovered matrix and swapping the least important retained for the most
@@ -1618,6 +1626,7 @@ class SolverOptions:
     gf_settle_retry: Optional[bool] = None
     gf_prune_tol: Optional[float] = None
     gf_first_shell_tol: Optional[float] = None
+    gf_growth_tol: Optional[float] = None
     gf_refine_rounds: Optional[int] = None
     gf_refine_tol: Optional[float] = None
     gf_refine_swap: Optional[float] = None
@@ -1674,7 +1683,7 @@ class SolverOptions:
                 f"gf_settle_ratio must be >= 0 (got {self.gf_settle_ratio!r}); 0 is closure only, "
                 "omit it for the default"
             )
-        for name in ("gf_prune_tol", "gf_first_shell_tol"):
+        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol"):
             value = getattr(self, name)
             if value is None or (value == 0.0 and name == "gf_prune_tol"):
                 continue  # 0 is the explicit off: it is also what an archive without the option reads as
@@ -1699,6 +1708,10 @@ class SolverOptions:
             raise ValueError(f"gf_refine_tol must be in (0, 1) (got {self.gf_refine_tol!r})")
         if self.gf_refine_swap is not None and not (0.0 < self.gf_refine_swap <= 0.5):
             raise ValueError(f"gf_refine_swap must be in (0, 0.5] (got {self.gf_refine_swap!r})")
+        if self.gf_growth_tol is not None and not 0.0 < self.gf_growth_tol < 1.0:
+            raise ValueError(f"gf_growth_tol must lie in (0, 1) (got {self.gf_growth_tol!r}); omit it for off")
+        if self.gf_growth_tol is not None and self.gf_prune_tol == 0.0:
+            raise ValueError("gf_growth_tol shortens the growth of pruned growth; pruning is switched off")
         if self.gf_first_shell_tol is not None and self.gf_prune_tol == 0.0:
             raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; pruning is switched off")
         if self.gf_prune_tol and (self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry):

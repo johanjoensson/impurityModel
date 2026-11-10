@@ -638,3 +638,35 @@ def test_an_unset_pruning_is_the_default_unless_a_settle_option_asks_for_the_set
     assert SolverOptions(gf_method="bicgstab", gf_prune_tol=0.0).resolved_gf_prune_tol == 0.0
     assert SolverOptions(gf_refine_rounds=0).resolved_gf_refine_rounds == 0
     assert SolverOptions(gf_refine_rounds=5).resolved_gf_refine_rounds == 5
+
+
+def test_the_growth_tolerance_is_recorded_replayed_and_absent_means_off(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_growth_tol=1e-5)
+    assert load_selfenergy_archive(str(archive))[3].gf_growth_tol == pytest.approx(1e-5)
+    archive = tmp_path / "old.h5"
+    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    assert load_selfenergy_archive(str(archive))[3].gf_growth_tol is None
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (dict(gf_prune_tol=1e-3, gf_growth_tol=0.0), "must lie in"),
+        (dict(gf_prune_tol=1e-3, gf_growth_tol=1.5), "must lie in"),
+        (dict(gf_prune_tol=0.0, gf_growth_tol=1e-5), "pruning is switched off"),
+        (dict(gf_method="bicgstab", gf_growth_tol=1e-5), "applies only to gf_method='lanczos'"),
+    ],
+)
+def test_the_growth_tolerance_refuses_what_would_be_silently_ignored(kwargs, match):
+    from impurityModel.ed.model import SolverOptions
+
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_growth_tolerance_defaults_to_off():
+    from impurityModel.ed.model import SolverOptions
+
+    assert SolverOptions().gf_growth_tol is None
+    assert SolverOptions(gf_growth_tol=1e-5).gf_growth_tol == 1e-5

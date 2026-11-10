@@ -403,3 +403,16 @@ def test_legacy_scripts_take_the_charge_sector_mode_and_default_to_on(mod):
         assert _parse(mod.add_arguments, ["h0.pickle", "--mixed_valence", mode]).mixed_valence == mode
     with pytest.raises(SystemExit):
         _parse(mod.add_arguments, ["h0.pickle", "--mixed_valence", "maybe"])
+
+
+def test_the_growth_tolerance_flag_overrides_the_record_and_leaving_lanczos_clears_it():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-growth-tol", "1e-5"])
+    assert args.gf_growth_tol == 1e-5 and _parse(selfenergy.add_arguments, ["h0.pickle"]).gf_growth_tol is None
+    out = selfenergy.apply_solver_overrides(SolverOptions(gf_prune_tol=1e-3), args)
+    assert out.gf_growth_tol == 1e-5
+    bicg = selfenergy.apply_solver_overrides(
+        out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
+    )
+    assert bicg.gf_growth_tol is None

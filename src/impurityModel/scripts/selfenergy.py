@@ -219,6 +219,15 @@ def add_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--gf-growth-tol",
+        type=float,
+        default=None,
+        help=(
+            "With pruning on: stop the matrix-free growth pass at this looser relative-change tolerance in (0, 1); "
+            "the restart on the final support converges G fully (default: the growth converges fully)."
+        ),
+    )
+    parser.add_argument(
         "--gf-settle-retry",
         choices=("on", "off"),
         default=None,
@@ -346,6 +355,7 @@ def apply_solver_overrides(solver, args):
             ("gf_settle_retry", None if args.gf_settle_retry is None else args.gf_settle_retry == "on"),
             ("gf_prune_tol", args.gf_prune_tol),
             ("gf_first_shell_tol", args.gf_first_shell_tol),
+            ("gf_growth_tol", args.gf_growth_tol),
             ("gf_refine_rounds", args.gf_refine_rounds),
             ("gf_refine_tol", args.gf_refine_tol),
             ("gf_refine_swap", args.gf_refine_swap),
@@ -373,11 +383,18 @@ def apply_solver_overrides(solver, args):
         or overrides.get("gf_settle_ratio") is not None
         or overrides.get("gf_settle_retry") is True
     ):
-        for name in ("gf_prune_tol", "gf_first_shell_tol"):
+        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol"):
             overrides.setdefault(name, None)
     # ...and so does leaving the block-Lanczos kernel for the pruning and refinement fields.
     if leaves_lanczos:
-        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_refine_rounds", "gf_refine_tol", "gf_refine_swap"):
+        for name in (
+            "gf_prune_tol",
+            "gf_first_shell_tol",
+            "gf_growth_tol",
+            "gf_refine_rounds",
+            "gf_refine_tol",
+            "gf_refine_swap",
+        ):
             overrides.setdefault(name, None)
     return replace(solver, **overrides) if overrides else solver
 
@@ -466,6 +483,7 @@ def run(args):
             gf_settle_retry=None if args.gf_settle_retry is None else args.gf_settle_retry == "on",
             gf_prune_tol=args.gf_prune_tol,
             gf_first_shell_tol=args.gf_first_shell_tol,
+            gf_growth_tol=args.gf_growth_tol,
             gf_refine_rounds=args.gf_refine_rounds,
             gf_refine_tol=args.gf_refine_tol,
             gf_refine_swap=args.gf_refine_swap,

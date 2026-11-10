@@ -44,6 +44,7 @@ def _block_green_group(
     settle_ratio=None,
     prune_tol=None,
     first_shell_tol=None,
+    growth_tol=None,
     refine=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
@@ -140,6 +141,7 @@ def _block_green_group(
             settle_ratio=settle_ratio,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            growth_tol=growth_tol,
             refine=refine,
         )
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
@@ -207,7 +209,7 @@ def _block_green_group(
         peak_rss_bytes=int(peak),
         peak_is_unit_transient=bool(peak_is_own),
         wall_seconds=float(seconds),
-        **{key: value for key, value in (cap_stats.get("passes") or {}).items()},
+        **(cap_stats.get("passes") or {}),
     )
     if verbose and (comm is None or comm.rank == 0):
         label = f"unit {unit_label}" if unit_label is not None else "unit"
@@ -301,6 +303,7 @@ def lanczos_unit_kernel(
     unit_ids=None,
     prune_tol=None,
     first_shell_tol=None,
+    growth_tol=None,
     refine=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
@@ -342,6 +345,9 @@ def lanczos_unit_kernel(
         trace note; ``None``: the position.
     prune_tol, first_shell_tol : float, optional
         Importance-pruned growth (:func:`gf_solvers.block_Green_sparse`); ``None``: the knobs.
+    growth_tol : float, optional
+        The pruned growth pass's own looser convergence tolerance (the restart on the final P converges fully);
+        ``None``: off.
     """
 
     def kernel(split_basis, u, seeds):
@@ -368,6 +374,7 @@ def lanczos_unit_kernel(
             settle_ratio=settle_ratio,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            growth_tol=growth_tol,
             refine=refine_for(unit) if refine_for is not None else refine,
         )
         if print_size and unit_rank0:

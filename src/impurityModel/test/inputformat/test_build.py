@@ -674,3 +674,11 @@ def test_the_refine_keys_reach_the_solver_options(written):
     assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, 1e-4, 0.2)
     with pytest.raises(InputError, match="need gf_refine_rounds"):
         build(load_input(written(SELFENERGY + "\n[solver]\ngf_refine_rounds = 0\ngf_refine_swap = 0.2\n")))
+
+
+def test_the_growth_tolerance_key_reaches_the_solver_options(written):
+    assert build(load_input(written(SELFENERGY))).solver.gf_growth_tol is None
+    text = SELFENERGY + "\n[solver]\ngf_prune_tol = 1e-4\ngf_growth_tol = 1e-5\n"
+    assert build(load_input(written(text))).solver.gf_growth_tol == 1e-5
+    with pytest.raises(InputError, match="pruning is switched off"):
+        build(load_input(written(SELFENERGY + "\n[solver]\ngf_prune_tol = 0\ngf_growth_tol = 1e-5\n")))
