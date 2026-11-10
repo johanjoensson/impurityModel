@@ -1109,6 +1109,15 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_growth_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "With gf_prune_tol: stop the matrix-free growth pass at this looser relative-change tolerance of G "
+                "(the restart from the seeds on the final support, which pruning always runs, converges G fully). "
+                "Absent: the growth converges fully. Not with gf_prune_tol = 0.",
+                minimum=0.0,
+            ),
+            Key(
                 "gf_refine_rounds",
                 Kind.COUNT,
                 None,

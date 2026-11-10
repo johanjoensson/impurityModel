@@ -44,6 +44,7 @@ def _block_green_group(
     settle_ratio=None,
     prune_tol=None,
     first_shell_tol=None,
+    growth_tol=None,
     refine=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
@@ -140,6 +141,7 @@ def _block_green_group(
             settle_ratio=settle_ratio,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            growth_tol=growth_tol,
             refine=refine,
         )
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
@@ -161,6 +163,8 @@ def _block_green_group(
             "leak_end": cap_info.get("leak_end", float("nan")),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
+            # Blocks and seconds of the first run and of the restart on the final P (gf_recurrence).
+            "passes": cap_info.get("passes"),
         }
         if cap_info.get("refine") is not None:
             cap_stats["refine"] = cap_info["refine"]
@@ -205,13 +209,21 @@ def _block_green_group(
         peak_rss_bytes=int(peak),
         peak_is_unit_transient=bool(peak_is_own),
         wall_seconds=float(seconds),
+        **(cap_stats.get("passes") or {}),
     )
     if verbose and (comm is None or comm.rank == 0):
         label = f"unit {unit_label}" if unit_label is not None else "unit"
         retained_display = f"{retained_size:,}" if retained_size is not None else "n/a"
-        # n_blocks counts every block of the unit, and csr= the wall time of a unit whose frozen phase ran on a
-        # stored matrix (the recurrence's whole wall, growth included).
-        csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
+        # n_blocks counts the blocks of the recurrence the Green's function is read from. growth= is the first run
+        # (the operator applied every block until the support froze, then its frozen continuation) and restart=
+        # the rerun from the seeds on the final support, each with its own blocks and wall.
+        passes = cap_stats.get("passes")
+        csr = (
+            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s"
+            f", restart={passes['restart_blocks']} blk/{passes['restart_seconds']:.1f} s"
+            if passes
+            else ""
+        )
         verdict = cap_stats.get("settle_verdict")
         # The literal ``support_frozen=True`` token is read by the cluster kits' log parsers; the words after it
         # say what it is (a settle, not a cap) and where it happened.
@@ -291,6 +303,7 @@ def lanczos_unit_kernel(
     unit_ids=None,
     prune_tol=None,
     first_shell_tol=None,
+    growth_tol=None,
     refine=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
@@ -332,6 +345,9 @@ def lanczos_unit_kernel(
         trace note; ``None``: the position.
     prune_tol, first_shell_tol : float, optional
         Importance-pruned growth (:func:`gf_solvers.block_Green_sparse`); ``None``: the knobs.
+    growth_tol : float, optional
+        The pruned growth pass's own looser convergence tolerance (the restart on the final P converges fully);
+        ``None``: off.
     """
 
     def kernel(split_basis, u, seeds):
@@ -358,6 +374,7 @@ def lanczos_unit_kernel(
             settle_ratio=settle_ratio,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            growth_tol=growth_tol,
             refine=refine_for(unit) if refine_for is not None else refine,
         )
         if print_size and unit_rank0:

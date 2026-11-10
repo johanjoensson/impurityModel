@@ -142,3 +142,12 @@ def test_the_archived_dc_cap_reaches_the_cap_ledger(tmp_path, monkeypatch):
     assert seen["cap_ledger"].ceiling == 4321
     real_workload.run_selfenergy(load_workload(_archive(tmp_path / "b.h5")), comm=None)
     assert seen["cap_ledger"].ceiling is None
+
+
+def test_the_archived_growth_tolerance_reaches_the_solver_and_an_explicit_argument_beats_it(tmp_path):
+    archive = _archive(tmp_path / "g.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_growth_tol=1e-5)
+    workload = load_workload(archive)
+    assert workload["ignored_attrs"] == []
+    assert build_options(workload)[3].gf_growth_tol == 1e-5
+    assert build_options(workload, gf_growth_tol=1e-6)[3].gf_growth_tol == 1e-6
+    assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_growth_tol is None

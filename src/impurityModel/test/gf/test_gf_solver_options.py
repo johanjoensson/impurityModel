@@ -253,3 +253,20 @@ def test_the_refine_spec_reaches_the_kernel_and_bicgstab_refuses_it(monkeypatch)
     assert set(seen) == {spec}
     with pytest.raises(ValueError, match=r"apply only to gf_method='lanczos'|only to gf_method='lanczos'"):
         _run_driver("bicgstab", None, extra={"gf_refine": spec})
+
+
+def test_the_growth_tolerance_reaches_every_unit_kernel_call(monkeypatch):
+    from impurityModel.ed import gf_engine
+
+    seen = []
+    real = gf_engine.block_Green_sparse
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("growth_tol"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
+    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_growth_tol": 1e-5})
+    assert seen and set(seen) == {1e-5}
+    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
+        _run_driver("bicgstab", None, extra={"gf_growth_tol": 1e-5})

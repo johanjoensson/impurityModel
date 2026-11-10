@@ -739,6 +739,7 @@ def _solver_options_from(SolverOptions, table):
         gf_settle_retry={"auto": None, "on": True, "off": False}[table["gf_settle_retry"]],
         gf_prune_tol=table["gf_prune_tol"],
         gf_first_shell_tol=table["gf_first_shell_tol"],
+        gf_growth_tol=table["gf_growth_tol"],
         gf_refine_rounds=table["gf_refine_rounds"],
         gf_refine_tol=table["gf_refine_tol"],
         gf_refine_swap=table["gf_refine_swap"],

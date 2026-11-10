@@ -186,7 +186,7 @@ Round 12 was killed ~100 s after this point with the every-colour copies; here 3
 ground state reproduced round 12 (E_GS -12.9166, 3,314,415 determinants after the cap work since 75a45d46, 3,737 s).
 
 **What went wrong instead: the frozen P H P was declined on later units.** GF cap 6,964,810 per unit (auto). The
-capped units are the heavy ones; a frozen one takes ~830 blocks at 0.74 s a block on the matrix (`csr=611 s`,
+capped units are the heavy ones; a frozen one takes ~830 blocks at 0.74 s a block on the matrix (`csr=611 s`, the field the unit line printed then; it is now split into `growth=`/`restart=`;
 unit wall ~744 s, VmHWM 4.8 GiB). The decision line (`need N on top of RSS R; budget B`) was printed for every
 freeze, so the mechanism is read off the logs, not inferred:
 
