@@ -34,7 +34,7 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, divergence_guard
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix, stage
-from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
+from impurityModel.ed.gf_convergence import EvalMeshes, _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     SETTLE_WINDOW,
     SupportDecisions,
@@ -984,6 +984,22 @@ def _needs_restart(support, n_seed):
     return support.prunes and support.retained_size > n_seed
 
 
+def _restart_after_early_stop(stopped_early):
+    """Whether a growth pass that stopped on the looser ``gf_growth_tol`` restarts on the final P. It must: the
+    coefficients it stopped at are not converged to the full tolerance, whether or not it admitted anything more.
+    A test seam, like :func:`_needs_restart`."""
+    return stopped_early
+
+
+def _growth_eval_meshes(eval_meshes, growth_tol):
+    """``eval_meshes`` with every axis tolerance relaxed to ``growth_tol`` (never tightened below its own), or
+    ``None`` when there are no meshes to carry tolerances (the monitor then keeps its full tolerance)."""
+    if not eval_meshes:
+        return None
+    own = getattr(eval_meshes, "tols", None) or [_gf_monitor_tol(0.0, eval_meshes)] * len(eval_meshes)
+    return EvalMeshes(list(eval_meshes), [max(float(growth_tol), t) for t in own])
+
+
 def block_Green_discovered(
     hOp,
     psi_arr,
@@ -1003,6 +1019,7 @@ def block_Green_discovered(
     prune_tol=None,
     first_shell_tol=None,
     refine=None,
+    growth_tol=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
@@ -1018,7 +1035,10 @@ def block_Green_discovered(
     cut and its first-shell cut. ``refine`` (a :class:`~impurityModel.ed.gf_refinement.RefineSpec` with ``rounds > 0``)
     swaps the least important retained determinants of a unit the cap froze for the most important discovered ones
     (``"discovered"`` mode only; the record lands in ``cap_info["refine"]``). The determinant cap is
-    ``basis.truncation_threshold``; ``GF_LANCZOS_ADMIT_TOL > 0`` turns on importance pruning.
+    ``basis.truncation_threshold``; ``GF_LANCZOS_ADMIT_TOL > 0`` turns on importance pruning. ``growth_tol``
+    (pruned growth only; ``None``: off) is the relative-change tolerance of the growth pass's own convergence
+    monitor: the pass stops once G has moved less than that on the evaluation meshes, and the restart on the
+    final P (always run after such a stop) converges G to the full tolerance.
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
@@ -1144,6 +1164,10 @@ def block_Green_discovered(
         plan, _why = scoring_plan(refine, q0, matrix, operator_real)
         if plan is not None:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
+    growth_meshes = _growth_eval_meshes(eval_meshes, growth_tol) if growth_tol and support.prunes else None
+    growth_flag = None
+    if growth_meshes is not None:
+        converged, growth_flag, _dm, _ldg = _make_gf_convergence_monitor(delta, slaterWeightMin, growth_meshes)
     alphas, betas, widths, status, _q_last = block_lanczos_discovered(
         matrix,
         support,
@@ -1157,6 +1181,9 @@ def block_Green_discovered(
         shifted_rtol=None if plan is None else plan.stop_rtol,
         score_gate=None if plan is None else _swappable_gate,
     )
+    stopped_early = growth_flag is not None and bool(growth_flag[0])
+    if growth_flag is not None:
+        converged_flag = growth_flag
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap or the settle
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
     passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
@@ -1204,7 +1231,7 @@ def block_Green_discovered(
             _decline_nothing_swappable()
         else:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-    if _needs_restart(support, n_seed) or (acc is not None and not carried):
+    if _needs_restart(support, n_seed) or _restart_after_early_stop(stopped_early) or (acc is not None and not carried):
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
         # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P

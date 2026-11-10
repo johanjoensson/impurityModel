@@ -215,3 +215,74 @@ def test_the_pruned_retained_set_does_not_depend_on_the_rank_count(monkeypatch, 
     _G, serial, _z = _run(monkeypatch, 0.1, slater=swm)
     _G, info, _z = _run(monkeypatch, 0.1, slater=swm, comm=comm)
     assert _retained(info, comm) == _retained(serial)
+
+
+def _run_growth(monkeypatch, eta, growth_tol, reort=None, comm=None):
+    """Like :func:`_run`, with the monitor on explicit meshes sampled every block (the default samples every
+    ``_GF_CHECK_EVERY`` blocks, more than this 18-determinant model has) and ``growth_tol`` for the growth pass."""
+    from impurityModel.ed import gf_convergence
+    from impurityModel.ed.gf_convergence import EvalMeshes
+
+    monkeypatch.setattr(gf_convergence, "_GF_CHECK_EVERY", 1)
+    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", repr(eta))
+    basis = _seed_basis(comm=comm)
+    full = _seeds()
+    seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
+    z = OMEGA + 1j * DELTA
+    info = {}
+    alphas, betas, r = block_Green_sparse(
+        _siam_6(),
+        seeds,
+        basis,
+        DELTA,
+        reort=reort,
+        verbose=False,
+        cap_info=info,
+        eval_meshes=EvalMeshes([z], [1e-9]),
+        growth_tol=growth_tol,
+    )
+    return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info, z
+
+
+@pytest.mark.parametrize("reort", [None, True])
+@pytest.mark.parametrize("growth_tol", [0.5, 0.1])
+def test_a_looser_growth_tolerance_ends_the_growth_sooner_and_G_is_still_the_exact_PHP_resolvent(
+    monkeypatch, growth_tol, reort
+):
+    _G, full, _z = _run_growth(monkeypatch, 0.05, None, reort=reort)
+    G, info, z = _run_growth(monkeypatch, 0.05, growth_tol, reort=reort)
+    assert info["passes"]["growth_blocks"] < full["passes"]["growth_blocks"]
+    assert info["passes"]["restart_blocks"] > 0
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+
+
+def test_the_growth_tolerance_is_off_by_default_and_for_an_unpruned_support(monkeypatch):
+    _G, off, _z = _run_growth(monkeypatch, 0.05, None)
+    _G, unpruned, _z = _run_growth(monkeypatch, 0.0, 0.5)
+    assert off["passes"]["growth_blocks"] == 10
+    assert unpruned["passes"]["restart_blocks"] == 0, "no pruning: the first pass is on the final P already"
+
+
+@pytest.mark.parametrize("reort", [None, True])
+def test_an_early_stop_that_admitted_nothing_still_restarts(monkeypatch, reort):
+    """At growth_tol 0.1 the growth stops after 6 blocks. Whatever it kept, its coefficients are not converged:
+    without the restart G is off, with it G is the resolvent of P H P (the first-pass retained set is the same)."""
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "_needs_restart", lambda support, n_seed: False)
+    G, info, z = _run_growth(monkeypatch, 0.05, 0.1, reort=reort)
+    assert info["passes"]["restart_blocks"] > 0
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+    monkeypatch.setattr(gf_recurrence, "_restart_after_early_stop", lambda stopped_early: False)
+    G, info, z = _run_growth(monkeypatch, 0.05, 0.1, reort=reort)
+    assert info["passes"]["restart_blocks"] == 0
+    assert np.max(np.abs(G - _dense_G_on(_retained(info), z))) > 1e-6, "premise: the early stop alone is inexact"
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("growth_tol", [0.5, 0.1])
+def test_distributed_early_growth_stop_is_the_exact_PHP_resolvent(monkeypatch, growth_tol):
+    comm = MPI.COMM_WORLD
+    G, info, z = _run_growth(monkeypatch, 0.05, growth_tol, reort=True, comm=comm)
+    assert comm.allgather(info["passes"]["growth_blocks"]) == [info["passes"]["growth_blocks"]] * comm.size
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)
