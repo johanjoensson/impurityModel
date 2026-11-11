@@ -184,7 +184,8 @@ def test_a_queue_of_the_bounded_colour_count_beats_the_participation_count(monke
 
     w = _lmo_weights()
     # Cost in rank-seconds is the weight (scaled); linear rank scaling: a colour of r ranks takes cost / r.
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1e-9")  # margin off: the old, participation-only count
+    # Margin 1 is the loosest the knob allows (it clamps there): sum/max colours, no allowance for weight error.
+    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
     old_groups, old_procs = _pack_units(w, 240, 1.0, equal_widths=True)
     monkeypatch.delenv("GF_QUEUE_COLOR_MARGIN")
     new_groups, new_procs = _pack_units(w, 240, 1.0, equal_widths=True)

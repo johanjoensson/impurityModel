@@ -190,8 +190,11 @@ def _block_green_group(
     comm = split_basis.comm
     peak = peak_rss_bytes()
     seconds = time.perf_counter() - t_start
-    # The unit basis's per-rank spread (routing_hash skew shows up here; max/mean is the step's efficiency loss).
-    # Unconditional collectives on the colour comm, never gated on `verbose`.
+    # The per-rank spread of what `excited_basis` holds (routing_hash skew shows up here; max/mean is the
+    # step's efficiency loss). On the sparse path that is the SEED support (see `retained_size` above: the
+    # matvec never adds to it), so the field is labelled `seed-local`, not `local`; on the dense path it is the
+    # whole unit basis. Unconditional collectives on the colour comm, never gated on `verbose`.
+    local_label = "seed-local" if sparse else "local"
     local_count = len(excited_basis.local_basis)
     local_min = local_max = local_count
     if comm is not None:
@@ -242,7 +245,7 @@ def _block_green_group(
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "
-            f"local[min,max]=[{local_min:,},{local_max:,}] "
+            f"{local_label}[min,max]=[{local_min:,},{local_max:,}] "
             f"color MAX VmHWM={format_bytes(peak)} ({peak_kind}) wall={seconds:.1f} s",
             flush=True,
         )

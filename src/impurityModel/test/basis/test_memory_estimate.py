@@ -429,8 +429,9 @@ def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
 # ---------------------------------------------------------------------------------------
 
 
-def test_routing_skew_factor_matches_measured_anchors():
+def test_routing_skew_factor_matches_measured_anchors(monkeypatch):
     """The measured points themselves must come back exactly, not just interpolate near them."""
+    monkeypatch.delenv("IMPURITYMODEL_ROUTING_HASH", raising=False)
     for ranks, skew in me._ROUTING_SKEW_ANCHORS:
         assert me._routing_skew_factor(ranks) == pytest.approx(skew)
 

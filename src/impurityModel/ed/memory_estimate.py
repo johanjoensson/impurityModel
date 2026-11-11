@@ -835,7 +835,9 @@ def estimate_gs_peak_bytes(
     # buffers each hold one row block per neighbour -- degree x local x w complex, both alive at
     # once -- chunked over columns so neither exceeds GS_MATVEC_EXCHANGE_BYTES
     # (mpi_comm.MatvecExchangePlan).
-    degree = min(max(ranks - 1, 0), _MATVEC_EXCHANGE_DEGREE_DEFAULT)
+    # The orbital hash reaches every peer (240 of 240 measured); only the nibble hash's graph is sparse.
+    degree_cap = ranks - 1 if config.ROUTING_HASH.get() == "orbital" else _MATVEC_EXCHANGE_DEGREE_DEFAULT
+    degree = min(max(ranks - 1, 0), degree_cap)
     per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * block_width * _COMPLEX_BYTES)
     exchange_bytes = 2 * per_buffer
     replicated_bytes = local * block_width * _COMPLEX_BYTES + exchange_bytes

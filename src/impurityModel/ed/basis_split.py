@@ -90,7 +90,10 @@ def _pack_units(
     if equal_widths:
         # A queue colour runs whole units: more colours than sum/max (with a margin for the error of the
         # weights) leaves the heaviest unit on a colour narrower than its fair share, and it sets the makespan.
-        n_colors = min(n_colors, max(1, int(np.floor(1.0 / (config.GF_QUEUE_COLOR_MARGIN.get() * normalized.max())))))
+        # max(1.0, .) also turns a NaN margin into 1; the epsilon keeps an exact integer sum/max (93 equal units)
+        # from flooring to one colour fewer.
+        margin = max(1.0, float(config.GF_QUEUE_COLOR_MARGIN.get()))
+        n_colors = min(n_colors, max(1, int(np.floor(1.0 / (margin * normalized.max()) + 1e-9))))
     if n_colors <= 1:
         return None, None
 

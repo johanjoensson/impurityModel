@@ -677,7 +677,13 @@ def run_units_distributed(
     # SrMnO3 GF phase down before its first unit. Past a share of the headroom the seeds go static.
     # Every input is replicated (Allreduced sums and maxima, the replicated packing); rank 0's
     # verdict is broadcast all the same, as the collectives below depend on it.
-    seed_rows = basis.comm.allreduce(sum(len(s) for seeds in unit_seeds for s in seeds), op=MPI.SUM)
+    # Per-psi global row counts (one fixed-length int64 Allreduce, unconditional): the total prices the held
+    # seeds, the largest psi prices a batch -- a psi over the batch budget ships as a batch of its own.
+    local_psi_rows = np.array([len(s) for seeds in unit_seeds for s in seeds], dtype=np.int64)
+    psi_rows = np.zeros_like(local_psi_rows)
+    basis.comm.Allreduce(local_psi_rows, psi_rows, op=MPI.SUM)
+    seed_rows = int(psi_rows.sum())
+    max_psi_rows = int(psi_rows.max()) if psi_rows.size else 0
     entry_rss = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
     headroom = _resident_adjusted_budget(_gf_sizing_safety(), available_bytes_per_rank(basis.comm), entry_rss)
     _subgroups, procs = _pack_units(
@@ -692,7 +698,10 @@ def run_units_distributed(
         # priced here (220 B/row of ALL of them), which declined the queue on LMO at 360 MiB against a 275 MiB
         # limit when the held cost was 41 MiB.
         seed_held_queue = _SEED_HELD_BYTES_PER_ROW * seed_rows / narrowest
-        seed_batch_queue = min(_SEED_BATCH_BYTES, _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / narrowest)
+        seed_batch_queue = min(
+            max(_SEED_BATCH_BYTES, _SEED_TRANSIT_BYTES_PER_ROW * max_psi_rows / narrowest),
+            _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / narrowest,
+        )
         seed_cost_queue = seed_held_queue + seed_batch_queue
         equal_widths = bool(basis.comm.bcast(seed_cost_queue <= _QUEUE_SEED_HEADROOM_SHARE * headroom, root=0))
         if equal_widths:
