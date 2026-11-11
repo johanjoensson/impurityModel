@@ -8,4 +8,14 @@ one keyword -- is one test parametrized over :data:`COMMS`. The ``COMM_WORLD`` c
 import pytest
 from mpi4py import MPI
 
-COMMS = [pytest.param(None, id="serial"), pytest.param(MPI.COMM_WORLD, id="mpi", marks=pytest.mark.mpi)]
+#: ``comm=None`` is a purely local computation, so at ``-n 2``/``-n 3`` every rank would run the identical case
+#: (all ranks at once, sharing the cores) -- it is covered at one rank, where it is skipped nowhere. The mpi case
+#: runs at every rank count.
+COMMS = [
+    pytest.param(
+        None,
+        id="serial",
+        marks=pytest.mark.skipif(MPI.COMM_WORLD.size > 1, reason="comm=None: serial, covered at one rank"),
+    ),
+    pytest.param(MPI.COMM_WORLD, id="mpi", marks=pytest.mark.mpi),
+]
