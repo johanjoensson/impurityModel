@@ -153,9 +153,9 @@ def _seed_batches(total_rows, comm_size: int, budget_bytes: float) -> list[tuple
     """Consecutive ``(lo, hi)`` ranges of psis whose rows fit ``budget_bytes`` of transit per rank each.
 
     ``total_rows`` is the replicated global row count of each psi. A batch takes psis until adding the next
-    would pass the budget (``rows * _SEED_TRANSIT_BYTES_PER_ROW / comm_size``, where the caller passes the width of its narrowest
-    receiving color: every rank of that color receives its share of the rows); a single psi over the budget
-    is a batch of its own. Pure and replicated: every rank derives the same ranges. No psis, no batches.
+    would pass the budget (``rows * _SEED_TRANSIT_BYTES_PER_ROW / comm_size``, where the caller passes the width of
+    its narrowest receiving color: every rank of that color receives its share of the rows); a single psi over
+    the budget is a batch of its own. Pure and replicated: every rank derives the same ranges. No psis, no batches.
     """
     batches: list[tuple[int, int]] = []
     lo, rows = 0, 0
@@ -411,9 +411,7 @@ def split_basis_and_redistribute_psi(
             assert at == n_rows, f"psi table filled {at} of {n_rows} rows"
 
             psi_send: list = [None] * comm.size
-            for g, rows in _group_by_destination(
-                seed_hashes, None if psi_colors is None else psi_colors[seed_index]
-            ):
+            for g, rows in _group_by_destination(seed_hashes, None if psi_colors is None else psi_colors[seed_index]):
                 psi_send[g] = {"i": seed_index[rows], "keys": seed_keys[rows], "amp": seed_amps[rows]}
             del seed_index, seed_keys, seed_amps, seed_hashes
 

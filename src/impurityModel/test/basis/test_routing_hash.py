@@ -95,7 +95,9 @@ def _hash_in_subprocess(mode_env):
         "d = S.from_bytes(b'\\xa5\\x0f\\x33\\x01')\n"
         "print(d.routing_hash() == d.routing_hash_nibble(), d.routing_hash() == d.routing_hash_orbital())\n"
     )
-    return subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+    return subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120, check=False
+    )
 
 
 @pytest.mark.parametrize("mode, expected", [(None, "True False"), ("nibble", "True False"), ("orbital", "False True")])

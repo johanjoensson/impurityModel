@@ -798,7 +798,8 @@ def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(
 
 
 def test_seed_batches_are_whole_psis_within_the_budget():
-    from impurityModel.ed.basis_split import _SEED_TRANSIT_BYTES_PER_ROW as per_row, _seed_batches
+    from impurityModel.ed.basis_split import _SEED_TRANSIT_BYTES_PER_ROW as per_row
+    from impurityModel.ed.basis_split import _seed_batches
 
     # 4 ranks; a batch may hold 1000 rows' transit per rank = 4000 rows
     budget = 1000 * per_row

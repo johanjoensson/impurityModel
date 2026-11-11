@@ -542,8 +542,8 @@ def enumerate_gf_units(
 #: transit figure :data:`~impurityModel.ed.basis_split._SEED_TRANSIT_BYTES_PER_ROW`, 220 B, which the batched
 #: split pays only for one batch at a time).
 _SEED_HELD_BYTES_PER_ROW = 25
-#: The share of the per-rank GF headroom the queue's replicated seeds may take (held, plus one batch in transit) before the
-#: split falls back to the static assignment, whose colors each receive only their own units' seeds.
+#: The share of the per-rank GF headroom the queue's replicated seeds may take (held, plus one batch in
+#: transit) before the split falls back to the static assignment, whose colors each receive only their own units' seeds.
 _QUEUE_SEED_HEADROOM_SHARE = 0.25
 
 
