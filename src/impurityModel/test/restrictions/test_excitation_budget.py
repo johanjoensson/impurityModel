@@ -11,6 +11,7 @@ from itertools import pairwise
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions, excitation_budget_restriction
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -244,6 +245,9 @@ def _nio_selfenergy(monkeypatch, derived_bounds):
     return calc_selfenergy(**as_calc_selfenergy_args(inputs), comm=None)
 
 
+# Serial by construction (comm=None): every rank would compute the identical ~130 s, and the 2- and 3-rank
+# steps run it on all their ranks at once -- measured the single most expensive test in the suite.
+@pytest.mark.skipif(MPI.COMM_WORLD.size > 1, reason="comm=None: a serial computation, covered at one rank")
 def test_calc_selfenergy_derived_bounds_are_lossless_without_conduction_baths(monkeypatch):
     """Valence-only NiO: the derived bounds leave the self-energy unchanged.
 
