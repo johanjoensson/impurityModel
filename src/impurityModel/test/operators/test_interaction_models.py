@@ -10,6 +10,7 @@ import itertools
 
 import numpy as np
 import pytest
+from scipy import sparse
 
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix, uj_from_u4
@@ -29,28 +30,27 @@ from impurityModel.ed.model import atomic_u4
 
 
 def _annihilators(n):
-    """Jordan-Wigner c_i on 2**n states; bit i of the state index is orbital i's occupation."""
+    """Jordan-Wigner c_i on 2**n states (sparse); bit i of the state index is orbital i's occupation."""
     dim = 2**n
+    states = np.arange(dim)
     ops = []
     for i in range(n):
-        c = np.zeros((dim, dim))
-        for state in range(dim):
-            if state >> i & 1:
-                sign = (-1) ** bin(state & ((1 << i) - 1)).count("1")
-                c[state ^ (1 << i), state] = sign
-        ops.append(c)
+        src = states[(states >> i) & 1 == 1]
+        below = src & ((1 << i) - 1)
+        sign = np.array([(-1) ** bin(b).count("1") for b in below], dtype=float)
+        ops.append(sparse.csr_matrix((sign, (src ^ (1 << i), src)), shape=(dim, dim)))
     return ops
 
 
 def fock_matrix(u4):
-    """Dense ``1/2 sum u4[i,j,k,l] c+_i c+_j c_l c_k`` on the full Fock space."""
+    """Dense ``1/2 sum u4[i,j,k,l] c+_i c+_j c_l c_k`` on the full Fock space (accumulated sparse)."""
     n = u4.shape[0]
     c = _annihilators(n)
-    cd = [x.T for x in c]
-    h = np.zeros((2**n, 2**n), dtype=complex)
+    cd = [x.T.tocsr() for x in c]
+    h = sparse.csr_matrix((2**n, 2**n), dtype=complex)
     for i, j, k, l in zip(*np.nonzero(u4)):
-        h += 0.5 * u4[i, j, k, l] * cd[i] @ cd[j] @ c[l] @ c[k]
-    return h
+        h = h + 0.5 * u4[i, j, k, l] * (cd[i] @ cd[j] @ c[l] @ c[k])
+    return h.toarray()
 
 
 def assert_same_operator(u4_a, u4_b):
