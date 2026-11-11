@@ -784,6 +784,66 @@ def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(monkeypatc
         assert ("static instead of queue" in out) == (scheduler == "static")
 
 
+def test_seed_batches_are_whole_psis_within_the_budget():
+    from impurityModel.ed.basis_split import _SEED_TRANSIT_BYTES_PER_ROW as per_row, _seed_batches
+
+    # 4 ranks; a batch may hold 1000 rows' transit per rank = 4000 rows
+    budget = 1000 * per_row
+    assert _seed_batches([], 4, budget) == []
+    assert _seed_batches([10, 10, 10], 4, budget) == [(0, 3)]
+    assert _seed_batches([3000, 1000, 1000, 2000], 4, budget) == [(0, 2), (2, 4)]
+    # a psi over the budget is a batch of its own (anything added to it would pass the budget too)
+    assert _seed_batches([0, 9000, 0, 5], 4, budget) == [(0, 1), (1, 2), (2, 4)]
+    assert _seed_batches([5000, 5000], 4, 1) == [(0, 1), (1, 2)]
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="one rank never splits into colors")
+def test_batched_seed_shipping_is_bitwise_the_one_shot_exchange_mpi():
+    """Every psi in a batch of its own (and every rank still running every batch) gives the same split seeds
+    as one exchange for all of them -- amplitudes bitwise, since a psi's rows are accumulated in one batch."""
+    from itertools import combinations
+
+    comm = MPI.COMM_WORLD
+    n_orb, n_el = 10, 5
+    det_bytes = []
+    for occ in combinations(range(n_orb), n_el):
+        b = bytearray((n_orb + 7) // 8)
+        for o in occ:
+            b[o // 8] |= 1 << (7 - o % 8)
+        det_bytes.append(bytes(b))
+    all_sd = sorted(SlaterDeterminant.from_bytes(d) for d in det_bytes)
+    n_units, per_unit = 4, 2
+    weights = [1.0] * n_units
+    rng = np.random.default_rng(11)
+    seeds = []
+    for k in range(n_units * per_unit):
+        # one seed has no rows at all: a psi empty on every rank must not break the batch walk
+        sub = [] if k == 3 else all_sd
+        amps = rng.standard_normal(len(sub)) + 1j * rng.standard_normal(len(sub))
+        seeds.append(ManyBodyState(dict(zip(sub, amps)) if comm.rank == 0 else {}, width=1))
+
+    results = []
+    for batch_bytes in (None, 1.0):
+        basis = Basis(
+            impurity_orbitals={0: [list(range(n_orb))]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=det_bytes,
+            comm=comm,
+            split_threshold=1.0,
+        )
+        local = _redistribute_as_width1(basis, seeds)
+        _i, _r, color, _ipc, split_basis, psis_out = split_basis_and_redistribute_psi(
+            basis, weights, local, seed_batch_bytes=batch_bytes
+        )
+        assert split_basis.comm is not comm, "the fixture must split into more than one color"
+        results.append((color, _seed_rows(psis_out)))
+        split_basis.free_comm()
+    (color, one_shot), (color_b, batched) = results
+    assert color == color_b and batched == one_shot
+    assert any(rows for rows in one_shot), "premise: this rank holds some seed rows"
+
+
 @pytest.mark.mpi
 def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
     """If `_pack_units` returns a rank-dependent packing (its inputs were not

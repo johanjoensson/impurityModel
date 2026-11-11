@@ -137,6 +137,33 @@ def _pack_units(
     return subgroups, procs_per_color
 
 
+#: Transit bytes per seed row while the receiving side builds its dict (measured: tracemalloc over the
+#: exchange, the same method as the 25 B/row held figure of ``gf_units._SEED_HELD_BYTES_PER_ROW``).
+_SEED_TRANSIT_BYTES_PER_ROW = 220
+
+#: Per-rank transit budget of one batch of seeds in :func:`split_basis_and_redistribute_psi`.
+_SEED_BATCH_BYTES = 64 * 2**20
+
+
+def _seed_batches(total_rows, comm_size: int, budget_bytes: float) -> list[tuple[int, int]]:
+    """Consecutive ``(lo, hi)`` ranges of psis whose rows fit ``budget_bytes`` of transit per rank each.
+
+    ``total_rows`` is the replicated global row count of each psi. A batch takes psis until adding the next
+    would pass the budget (``rows * _SEED_TRANSIT_BYTES_PER_ROW / comm_size``); a single psi over the budget
+    is a batch of its own. Pure and replicated: every rank derives the same ranges. No psis, no batches.
+    """
+    batches: list[tuple[int, int]] = []
+    lo, rows = 0, 0
+    for i, n in enumerate(int(r) for r in total_rows):
+        if i > lo and (rows + n) * _SEED_TRANSIT_BYTES_PER_ROW / comm_size > budget_bytes:
+            batches.append((lo, i))
+            lo, rows = i, 0
+        rows += n
+    if len(total_rows) > lo:
+        batches.append((lo, len(total_rows)))
+    return batches
+
+
 def split_basis_and_redistribute_psi(
     basis,
     priorities: list[float] | np.ndarray,
@@ -144,6 +171,7 @@ def split_basis_and_redistribute_psi(
     max_colors: Optional[int] = None,
     equal_widths: bool = False,
     psi_items: Optional[np.ndarray] = None,
+    seed_batch_bytes: Optional[float] = None,
 ) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]]]:
     """Split the basis and redistribute wavefunctions over a split communicator.
 
@@ -163,6 +191,9 @@ def split_basis_and_redistribute_psi(
         Each psi then goes only to the color its item is packed into, and comes back empty
         (width 1) on every other color. ``None``: every color receives every psi, which a
         scheduler that lets any color run any item needs, at ``n_colors`` times the memory.
+    seed_batch_bytes : float, optional
+        Transit budget per rank for one batch of seed psis (:data:`_SEED_BATCH_BYTES` when ``None``);
+        identical on every rank. The psis are shipped in batches of whole psis within it.
 
     Returns
     -------
@@ -337,50 +368,68 @@ def split_basis_and_redistribute_psi(
         # Same routing as the determinants: each (seed, determinant, amplitude) entry to
         # its owner-to-be in every other color; redistribute_psis then finalises placement
         # on the split communicator (and sums any duplicate rows).
-        # One flat table over all seeds, sliced per destination -- the same packing as the
+        # One flat table per batch of whole psis, sliced per destination -- the same packing as the
         # determinants above, and the bigger half of it: a `(int, bytes, complex)` tuple per
         # entry measured 158.3 B against 16.1 packed, 9.8x, at 800k entries.
-        n_rows = sum(len(p) for p in psis)
-        seed_index = np.empty(n_rows, dtype=np.int32)
-        seed_keys = np.empty((n_rows, basis.n_bytes), dtype=np.uint8)
-        seed_amps = np.empty(n_rows, dtype=complex)
-        seed_hashes = np.empty(n_rows, dtype=np.uint64)
-        at = 0
-        for i, p in enumerate(psis):
-            for k, v in p.items():
-                seed_index[at] = i
-                seed_keys[at] = np.frombuffer(bytes(k.to_bytearray()[: basis.n_bytes]), dtype=np.uint8)
-                seed_amps[at] = v[0]
-                seed_hashes[at] = k.routing_hash()
-                at += 1
-        assert at == n_rows, f"psi table filled {at} of {n_rows} rows"
-
-        psi_send: list = [None] * comm.size
-        for g, rows in _group_by_destination(seed_hashes, None if psi_colors is None else psi_colors[seed_index]):
-            psi_send[g] = {"i": seed_index[rows], "keys": seed_keys[rows], "amp": seed_amps[rows]}
-        del seed_index, seed_keys, seed_amps, seed_hashes
-
-        received_rows: list[dict] = [dict() for _ in psis]
-        for chunk in graph_alltoall(psi_send, comm):
-            if not chunk:
-                continue
-            chunk_i, chunk_keys, chunk_amp = chunk["i"], chunk["keys"], chunk["amp"]
-            for j in range(chunk_i.shape[0]):
-                d = received_rows[int(chunk_i[j])]
-                sd = basis.type.from_bytes(chunk_keys[j].tobytes())
-                # `complex(...)`, not the numpy scalar: the accumulated values go into a
-                # `ManyBodyState`, and the rows are summed in the same order as before, so
-                # keeping the Python type keeps the arithmetic identical too.
-                d[sd] = d.get(sd, 0) + complex(chunk_amp[j])
-        del psi_send
-        # A psi of another color keeps none of its rows here: they were sent to that color.
+        #
+        # Batched: the receive side turns every row into a dict entry (~220 B/row in transit, ~25 B/row once
+        # held as a ManyBodyState), so shipping every seed in one exchange peaks at the transit price of ALL of
+        # them -- 360 MiB/rank for LMO's 22.3M rows, which is what made the queue look unaffordable. A batch is
+        # whole psis (their rows are accumulated in one place, in the same order as the one-shot exchange, so
+        # the sums are bitwise the same) holding at most ``seed_batch_bytes`` of transit per rank; each batch's
+        # dicts become a ManyBodyState and are dropped before the next. The batch boundaries come from the
+        # Allreduced per-psi row counts, so every rank runs every batch (an empty one included) in the same
+        # order: each batch is one unconditional collective.
+        local_rows = np.array([len(p) for p in psis], dtype=np.int64)
+        total_rows = np.empty_like(local_rows)
+        comm.Allreduce(local_rows, total_rows, op=MPI.SUM)
+        budget = _SEED_BATCH_BYTES if seed_batch_bytes is None else seed_batch_bytes
         new_psis = [
             p.copy() if psi_colors is None or psi_colors[i] == color else ManyBodyState(width=1)
             for i, p in enumerate(psis)
         ]
-        for i, rows in enumerate(received_rows):
-            if rows:
-                new_psis[i] += ManyBodyState(rows)
+        for lo, hi in _seed_batches(total_rows, comm.size, budget):
+            batch = psis[lo:hi]
+            n_rows = int(local_rows[lo:hi].sum())
+            seed_index = np.empty(n_rows, dtype=np.int32)
+            seed_keys = np.empty((n_rows, basis.n_bytes), dtype=np.uint8)
+            seed_amps = np.empty(n_rows, dtype=complex)
+            seed_hashes = np.empty(n_rows, dtype=np.uint64)
+            at = 0
+            for i, p in enumerate(batch, start=lo):
+                for k, v in p.items():
+                    seed_index[at] = i
+                    seed_keys[at] = np.frombuffer(bytes(k.to_bytearray()[: basis.n_bytes]), dtype=np.uint8)
+                    seed_amps[at] = v[0]
+                    seed_hashes[at] = k.routing_hash()
+                    at += 1
+            assert at == n_rows, f"psi table filled {at} of {n_rows} rows"
+
+            psi_send: list = [None] * comm.size
+            for g, rows in _group_by_destination(
+                seed_hashes, None if psi_colors is None else psi_colors[seed_index]
+            ):
+                psi_send[g] = {"i": seed_index[rows], "keys": seed_keys[rows], "amp": seed_amps[rows]}
+            del seed_index, seed_keys, seed_amps, seed_hashes
+
+            received_rows: dict[int, dict] = {}
+            for chunk in graph_alltoall(psi_send, comm):
+                if not chunk:
+                    continue
+                chunk_i, chunk_keys, chunk_amp = chunk["i"], chunk["keys"], chunk["amp"]
+                for j in range(chunk_i.shape[0]):
+                    d = received_rows.setdefault(int(chunk_i[j]), {})
+                    sd = basis.type.from_bytes(chunk_keys[j].tobytes())
+                    # `complex(...)`, not the numpy scalar: the accumulated values go into a
+                    # `ManyBodyState`, and the rows are summed in the same order as before, so
+                    # keeping the Python type keeps the arithmetic identical too.
+                    d[sd] = d.get(sd, 0) + complex(chunk_amp[j])
+            del psi_send
+            # A psi of another color keeps none of its rows here: they were sent to that color.
+            for i, rows in received_rows.items():
+                if rows:
+                    new_psis[i] += ManyBodyState(rows)
+            del received_rows
         psis = split_basis.redistribute_psis(*new_psis)
 
     return indices, split_roots, color, items_per_color, split_basis, psis
