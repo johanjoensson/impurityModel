@@ -254,3 +254,42 @@ reaching new rows has died away.
 - **Heavy units on wider colours by design.** The cost weights now give the dominant units more ranks under
   `static`; the queue still uses equal widths.
 - **Sparse-kernel scaling beyond 4 ranks** is unmeasured (one data point).
+
+## LMO / superlattice run (job 5090340, 240 ranks): the default queue would have lost, and was declined
+
+Source: `impurityModel-Mn{5,6,7}.out` of the bulk LMO run. Each atom's GF phase took ~2,340 s on the **static**
+split: 18 colours of 8-19 ranks, 4 removal colours 90-100 % busy, 8 addition colours 15-41 %, **64 % rank
+utilisation** (353,801 rank-s of work, ideal makespan 1,474 s, measured 2,305 s). Three causes:
+
+1. **The weights misrank the units.** Seed mass x width over-weights the addition units ~2.5x and under-weights
+   the removal units 25-35 % (excited bases 1.4-2.2M against 0.47-0.58M determinants).
+2. **The queue was declined** (`static instead of queue -- 359.7 MiB/rank in transit`): that is the 220 B/row
+   transit peak of shipping all 22.3M seed rows in one exchange. Held, they cost ~25 B/row, 41 MiB/rank.
+3. **The queue would have been worse anyway.** Its colour count came from the participation ratio of the
+   (wrong) weights, 18, so 18 equal colours of 13 ranks: the heaviest unit (43.8k rank-s) alone on 13 ranks.
+
+Replaying the logged per-unit costs through `_pack_units` and `work_queue.queue_makespan` (linear rank scaling):
+
+| policy | makespan |
+|---|---|
+| measured: static, 18 colours | 2,305 s |
+| queue, 18 x 13 ranks (the old default) | 3,128 s |
+| queue, 12 x 20 | 2,190 s |
+| queue, 8 x 30, true order / removal-first order with no cost knowledge | 1,488 / 1,520 s |
+| queue, 6 x 40 | 1,497 s |
+| static with exact weights / weights off by +-20 % (median) | 1,504 / 1,779 s |
+
+Fewer, wider queue colours reach the ideal without accurate weights. What changed:
+
+- `_pack_units(equal_widths=True)` bounds the colour count by `floor(sum(w) / (GF_QUEUE_COLOR_MARGIN * max(w)))`
+  (default margin 2; LMO: 12.6 -> 6 colours of 40 ranks). Static packing is untouched. Consequence: few units
+  (two equal ones, say) stay on one colour under the queue; the margin knob is the way back (`1`).
+- `split_basis_and_redistribute_psi` ships the seeds in batches of whole psis (<= 64 MiB of transit per rank each,
+  `basis_split._SEED_BATCH_BYTES`), bitwise the one-shot result.
+- The queue-vs-static decision is priced on what the queue now costs: held seeds (25 B/row over the narrowest
+  colour) plus one batch in transit (LMO: ~41 + 64 MiB against 0.25 x the headroom). The `GF split:` line prints
+  the held figure next to the transit one.
+- New log fields to confirm the gain on the next production run: `local[min,max]` on every `unit N:` line, and
+  `<n> rank-s of work, <u>% utilisation` on the `GF unit timing:` line.
+
+Not verifiable locally (8 cores): the wall-time gain. It is argued from the logged costs above.
