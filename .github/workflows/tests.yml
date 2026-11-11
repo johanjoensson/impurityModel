@@ -17,10 +17,13 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    # No cap here meant a hang burned the GitHub default of 6 hours, on every one of the
-    # nine legs at once. The longest green leg on record is 30m28s, so this is generous
-    # while still failing an MPI deadlock in minutes instead of hours.
-    timeout-minutes: 60
+    # The steps carry their own caps (a bit over their measured time), so a deadlock dies in its
+    # own step and is named in the UI; this is the whole-job backstop and sits above the expected
+    # total (setup ~5 + three rank runs + guards, ~60-90 min). It was 60 and the suite outgrew it:
+    # setup 5 + 1 rank 16-25 + 2 ranks 29 left ~5 minutes for the 3-rank step, which was then
+    # cancelled on every leg that got that far. Without any cap a hang burns GitHub's 6 hours on
+    # every leg at once.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -255,13 +258,15 @@ jobs:
       # here ran every unmarked test a fourth time per leg for nothing. A bare `pytest` with no
       # launcher still runs in test-asan below, which is where its exit path is worth covering.
       - name: Run MPI tests (1 rank)
+        timeout-minutes: 40
         run: |
           ulimit -c unlimited
           # test_rank_independence.py is deselected here and run in its own steps at the
           # end of this job -- see "Run rank-invariance guards" below.
-          mpiexec -n 1 python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py $PYTEST_COV_ARGS
+          mpiexec -n 1 python -m pytest --cache-clear --with-mpi --durations=25 --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py $PYTEST_COV_ARGS
 
       - name: Run MPI tests (2 ranks)
+        timeout-minutes: 50
         run: |
           # Give each rank its own coverage data file so the two processes don't race
           # to combine into a shared .coverage (which crashes rank>0 with exit 3). The
@@ -274,7 +279,7 @@ jobs:
           # its reason and then kills the process before pytest writes the report that
           # would have carried it) -- turn it on for that, not as standing policy.
           set +e
-          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --durations=25 --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
           rc=$?
           set -e
           # 1 = a normal nonzero exit (pytest failure, or MPI_Abort); 139 = signal; 137 = killed
@@ -283,13 +288,14 @@ jobs:
           exit $rc
 
       - name: Run MPI tests (3 ranks)
+        timeout-minutes: 60
         run: |
           # A rank can own zero local determinants only once ranks > basis-hash-buckets
           # in play for small fixtures -- i.e. only visible at 3+ ranks, never at 2. This
           # leg is what caught the locked-reort deadlock in _lanczos_step.pxi (empty-rank
           # collectives silently skipped on some ranks but not others).
           ulimit -c unlimited
-          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
+          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --durations=25 --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Combine coverage and write XML
         if: matrix.coverage == true
@@ -340,16 +346,19 @@ jobs:
       # here would be too late to count; leaving coverage off also removes any chance of the
       # ranks racing a data file and exiting 3, which would read like the crash returning.
       - name: Run rank-invariance guards (1 rank)
+        timeout-minutes: 15
         run: |
           ulimit -c unlimited
           mpiexec -n 1 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
       - name: Run rank-invariance guards (2 ranks)
+        timeout-minutes: 15
         run: |
           ulimit -c unlimited
           mpiexec -n 2 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
       - name: Run rank-invariance guards (3 ranks)
+        timeout-minutes: 15
         run: |
           ulimit -c unlimited
           mpiexec -n 3 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
