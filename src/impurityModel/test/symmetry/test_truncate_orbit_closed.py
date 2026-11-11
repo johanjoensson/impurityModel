@@ -1,12 +1,17 @@
 """Every cut of a Within expansion leaves a basis made of whole orbits, at the default slaterWeightMin."""
 
 import numpy as np
+import pytest
+from mpi4py import MPI
 
 from impurityModel.ed import cipsi_solver
 from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import _orbits_for, build_basis_and_solver
 from impurityModel.ed.orbits import _bits, _keys_of
 from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+# Every test here builds with comm=None: a serial computation that each rank of a -n 2/-n 3 run would repeat.
+pytestmark = pytest.mark.skipif(MPI.COMM_WORLD.size > 1, reason="comm=None: serial, covered at one rank")
 
 SWMIN_DEFAULT = float(np.sqrt(np.finfo(float).eps))
 
