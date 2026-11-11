@@ -80,13 +80,18 @@ def test_gf_ranks_reduce_per_rank_cost():
     assert four >= one // 4
 
 
-def test_gs_array_kernel_replication_shrinks_with_ranks():
+def test_gs_array_kernel_replication_shrinks_with_ranks(monkeypatch):
     """Post-Phase-1 (row-chunked reduce-scatter, doc/plans/dc_smo_performance.md), the array
     kernel's matvec transient is bounded by ``max(counts) ~ local``, not ``global_N`` -- the
     inverse of this test's pre-fix name and assertion, which locked in the very replication bug
     the fix removes. A few ranks should already beat the un-chunked whole-basis bound; many
     ranks should shrink further still, not merely fail to grow.
+
+    Pinned to the nibble hash: its graph degree saturates at 37, which is what lets the exchange term shrink.
+    The orbital hash reaches every peer (degree ranks - 1), so there the exchange buffers are the whole
+    basis x block width up to ``GS_MATVEC_EXCHANGE_BYTES`` and the estimate is rightly not below that bound.
     """
+    monkeypatch.delenv("IMPURITYMODEL_ROUTING_HASH", raising=False)
     few_ranks = me.estimate_gs_peak_bytes(100_000, 100, block_width=4, ranks=4)
     more_ranks = me.estimate_gs_peak_bytes(100_000, 100, block_width=4, ranks=64)
     many_ranks = me.estimate_gs_peak_bytes(100_000, 100, block_width=4, ranks=1024)

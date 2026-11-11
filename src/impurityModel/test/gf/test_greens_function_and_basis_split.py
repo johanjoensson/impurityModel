@@ -747,7 +747,7 @@ def test_split_sends_each_seed_only_to_the_color_of_its_unit_mpi():
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="one rank never splits into colors")
 @pytest.mark.parametrize(
     "share, scheduler, one_shot_price",
-    [(1e30, "queue", 0), (0.0, "static", 0), (1e-6, "queue", 10**12)],
+    [(1e30, "queue", 0), (0.0, "static", 0), (1e-6, "static", 10**12)],
 )
 def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(
     monkeypatch, capsys, share, scheduler, one_shot_price
@@ -763,9 +763,9 @@ def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # room for one color per unit
     monkeypatch.setattr(gf_units, "_QUEUE_SEED_HEADROOM_SHARE", share)
     if one_shot_price:
-        # The queue is priced on the seeds it HOLDS plus one batch in transit, not on all of them in transit:
-        # an absurd per-row transit price with a one-batch cap of 100 B is still affordable (the old rule,
-        # transit * all rows, would decline it at this share).
+        # The queue is priced on the seeds it HOLDS plus one batch in transit. A psi is never split across
+        # batches, so a batch costs at least the LARGEST psi at the full transit price whatever the 100 B cap
+        # says: with an absurd per-row price the queue is declined (priced as max(cap, largest psi)).
         monkeypatch.setattr(gf_units, "_SEED_TRANSIT_BYTES_PER_ROW", one_shot_price)
         monkeypatch.setattr(gf_units, "_SEED_BATCH_BYTES", 100)
         monkeypatch.setattr(gf_units, "_SEED_HELD_BYTES_PER_ROW", 1)
