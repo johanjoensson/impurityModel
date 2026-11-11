@@ -939,7 +939,10 @@ def run_units_distributed(
             basis.comm, sub_rank, unit_roots, units_per_color, unit_times, is_array=False
         )
         if basis.comm.rank == 0:
-            for line in format_unit_timing(list(timing), units_per_color, verbose=bool(verbose)):
+            colour_ranks = [int(w) for w in np.diff(list(unit_roots) + [basis.comm.size])]
+            for line in format_unit_timing(
+                list(timing), units_per_color, verbose=bool(verbose), colour_ranks=colour_ranks
+            ):
                 print(line, flush=True)
 
         results = None
@@ -986,12 +989,14 @@ def run_units_distributed(
     return results
 
 
-def format_unit_timing(records, units_per_color, verbose=False):
+def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=None):
     """Lines describing where a unit loop's wall time went, from ``(unit, start, end)`` records in colour order.
 
     ``start``/``end`` are seconds from a common origin. The summary names the makespan, each colour's busy share
     of it and the longest unit (its share of the makespan): a tail dominated by one unit is visible at once, and
-    the per-unit lines (``verbose``) say which unit and on which colour. Pure.
+    the per-unit lines (``verbose``) say which unit and on which colour. ``colour_ranks`` (ranks per colour)
+    adds the total rank-seconds of work and the rank-weighted utilisation, ``rank_seconds / (makespan * ranks)``
+    -- the number the busy shares hide when colours differ in width. Pure.
     """
     if not records:
         return []
@@ -1003,11 +1008,18 @@ def format_unit_timing(records, units_per_color, verbose=False):
     busy = [0.0] * len(units_per_color)
     for (_u, start, end), colour in zip(records, colour_of):
         busy[colour] += end - start
+    # Rank-weighted: a colour of w ranks busy for t seconds is w*t rank-seconds of work; the colour widths are not
+    # in the records, so `colour_ranks` (when given) weights them, else every colour counts once.
+    weights = list(colour_ranks) if colour_ranks is not None else [1] * len(units_per_color)
+    rank_seconds = sum(w * b for w, b in zip(weights, busy))
+    total_ranks = sum(weights)
+    utilisation = 100.0 * rank_seconds / (makespan * total_ranks) if makespan > 0 and total_ranks > 0 else 0.0
     share = [100.0 * b / makespan if makespan > 0 else 0.0 for b in busy]
     u_long, s_long, e_long = max(records, key=lambda r: r[2] - r[1])
     longest = e_long - s_long
     lines = [
-        f"GF unit timing: makespan {makespan:.1f} s; busy per colour {[f'{x:.0f}%' for x in share]}; longest unit "
+        f"GF unit timing: makespan {makespan:.1f} s; busy per colour {[f'{x:.0f}%' for x in share]}; "
+        f"{rank_seconds:,.0f} rank-s of work, {utilisation:.0f}% utilisation; longest unit "
         f"#{u_long} {longest:.1f} s ({100.0 * longest / makespan if makespan > 0 else 0.0:.0f}% of the makespan) "
         f"on colour {colour_of[records.index((u_long, s_long, e_long))]}"
     ]

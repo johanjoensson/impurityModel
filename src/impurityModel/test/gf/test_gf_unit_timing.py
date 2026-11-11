@@ -20,3 +20,13 @@ def test_verbose_adds_one_line_per_unit_with_its_colour():
 
 def test_no_units_no_lines():
     assert format_unit_timing([], [0, 0]) == []
+
+
+def test_rank_seconds_and_utilisation_weight_each_colour_by_its_width():
+    # colour 0: 3 ranks busy 10 s of a 10 s makespan; colour 1: 1 rank busy 2 s -> 32 of 40 rank-s
+    records = [(0, 0.0, 10.0), (1, 0.0, 2.0)]
+    (line,) = format_unit_timing(records, [1, 1], colour_ranks=[3, 1])
+    assert "32 rank-s of work, 80% utilisation" in line
+    # unweighted fallback: every colour counts once
+    (line,) = format_unit_timing(records, [1, 1])
+    assert "12 rank-s of work, 60% utilisation" in line

@@ -190,9 +190,15 @@ def _block_green_group(
     comm = split_basis.comm
     peak = peak_rss_bytes()
     seconds = time.perf_counter() - t_start
+    # The unit basis's per-rank spread (routing_hash skew shows up here; max/mean is the step's efficiency loss).
+    # Unconditional collectives on the colour comm, never gated on `verbose`.
+    local_count = len(excited_basis.local_basis)
+    local_min = local_max = local_count
     if comm is not None:
         peak = comm.allreduce(peak, op=MPI.MAX)
         seconds = comm.allreduce(seconds, op=MPI.MAX)
+        local_max = comm.allreduce(local_count, op=MPI.MAX)
+        local_min = comm.allreduce(local_count, op=MPI.MIN)
     # A cumulative mark is not this unit's peak; say so rather than quietly overstating it.
     peak_kind = "unit" if peak_is_own else "cumulative"
     retained_size = cap_stats["retained_size"]
@@ -236,6 +242,7 @@ def _block_green_group(
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "
+            f"local[min,max]=[{local_min:,},{local_max:,}] "
             f"color MAX VmHWM={format_bytes(peak)} ({peak_kind}) wall={seconds:.1f} s",
             flush=True,
         )
