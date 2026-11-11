@@ -103,7 +103,7 @@ import Python modules at runtime.
 
 - Never gate an MPI collective on rank-local state (e.g. a `verbose` flag that is 0 on
   non-master ranks). If needed, broadcast the decision first.
-- No full state-vector gathers. Determinants are hash-distributed (`hash(sd) % size`,
+- No full state-vector gathers. Determinants are hash-distributed (`routing_hash() % size`; `IMPURITYMODEL_ROUTING_HASH=nibble|orbital`, process-wide and uniform across ranks — `nibble` is skewed 2.6x at 240 ranks on LMO-shaped bases, `orbital` is balanced),
   one owner per determinant); observables go apply-local → `redistribute_psis` →
   local inner product → `Allreduce`.
 - `MPI_Comm_free` is collective: free communicators at synchronized points, never from

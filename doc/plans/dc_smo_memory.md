@@ -357,6 +357,14 @@ is essentially production's mean of 3,710, and it costs **924.5 MiB/rank** again
 
 ### `routing_hash` is deliberately non-uniform, and the cap is sized off the mean
 
+> **Update 2026-11-11 (bulk LMO, 240 ranks, logged `local[min,max]=[1,156, 12,224]`, max/mean 2.57).** The
+> skew is not a "restricted popcount lattice" effect: the nibble-popcount hash takes only ~1,500 distinct values
+> on an LMO-shaped basis (10 impurity + 22 bath orbitals, <= 4 valence holes), so whole classes (up to 1.6x the
+> per-rank mean at 240) land on one rank. `IMPURITYMODEL_ROUTING_HASH=orbital` gives every orbital its own weight
+> (still additive, so `MatvecExchangePlan` is unaffected) and measures 1.0-1.044 at 2-256 ranks;
+> `memory_estimate._ROUTING_SKEW_ANCHORS_ORBITAL` carries those numbers. Default stays `nibble` until a
+> production log confirms.
+
 `SlaterDeterminant::routing_hash` (`src/cython/SlaterDeterminant.h:31-64`) is **by design** a
 locality-preserving linear hash over GF(2^64), not a dispersing one — its own comment says why:
 hopping terms change only a few bytes, so each rank talks to a bounded number of peers and the
