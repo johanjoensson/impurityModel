@@ -16,6 +16,7 @@ from typing import Optional
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import config
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_comm import graph_alltoall
@@ -60,7 +61,9 @@ def _pack_units(
         colors one more) instead of apportioning by bin mass. For a pull queue
         (:mod:`~impurityModel.ed.work_queue`), where any color may run any unit and a
         mass-proportional width would bake the predicted costs back in. The color count and
-        the LPT subgroups are the same either way.
+        the LPT subgroups are the same either way. The color count is also bounded by
+        ``floor(sum(w) / (GF_QUEUE_COLOR_MARGIN * max(w)))``: a queue color narrower than the heaviest
+        unit's fair share makes that unit the makespan.
 
     Returns
     -------
@@ -84,6 +87,10 @@ def _pack_units(
     n_colors = min(n_colors, max(1, int(np.ceil(participation * split_threshold))))
     if max_colors is not None:
         n_colors = min(n_colors, max(1, max_colors))
+    if equal_widths:
+        # A queue colour runs whole units: more colours than sum/max (with a margin for the error of the
+        # weights) leaves the heaviest unit on a colour narrower than its fair share, and it sets the makespan.
+        n_colors = min(n_colors, max(1, int(np.floor(1.0 / (config.GF_QUEUE_COLOR_MARGIN.get() * normalized.max())))))
     if n_colors <= 1:
         return None, None
 

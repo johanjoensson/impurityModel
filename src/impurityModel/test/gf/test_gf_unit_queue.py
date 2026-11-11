@@ -130,6 +130,7 @@ def test_queued_units_get_one_cap_whatever_color_ran_them(monkeypatch, scheduler
     from impurityModel.ed import gf_units
 
     monkeypatch.setenv("GF_SCHEDULER", scheduler)
+    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")  # two equal units: the default margin keeps one colour
 
     def budget(n_orb, width, reort, ranks, comm, safety=None, **kwargs):
         return 10**9 if safety is not None else 500 * int(ranks)  # color count unbounded; unit cap per width
@@ -209,10 +210,11 @@ def test_a_failing_host_color_stops_every_other_color():
     assert not work_queue._hosted
 
 
-def test_the_first_round_gives_color_c_the_cth_unit_of_the_order():
+def test_the_first_round_gives_color_c_the_cth_unit_of_the_order(monkeypatch):
     """The head of the queue (the heaviest units) lands on the same colors in every run, and no
     color waits for rank 0's first poke to start: color c runs position c of the dispatch order,
     at once, while rank 0 computes its own first unit without poking."""
+    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")  # the default margin would keep these few units on one colour
     comm = MPI.COMM_WORLD
     basis, psi = _basis_and_seed()
     n_units = 3 * comm.size

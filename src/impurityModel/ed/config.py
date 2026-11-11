@@ -514,6 +514,21 @@ GF_SCHEDULER = Knob(
     (doc/plans/gf_load_balancing.md). Read on rank 0 and broadcast.""",
 )
 
+GF_QUEUE_COLOR_MARGIN = Knob(
+    name="GF_QUEUE_COLOR_MARGIN",
+    kind="float",
+    default=2.0,
+    minimum=1.0,
+    group="units",
+    doc="""Queue colour-count bound: with ``GF_SCHEDULER=queue`` no colour may be narrower than
+    ``margin`` heaviest units' worth of ranks, i.e. the colour count is at most
+    ``floor(sum(w) / (margin * max(w)))`` over the unit cost weights (on top of the participation-ratio
+    bound). A queue colour runs whole units, so more colours than ``sum/max`` leaves the heaviest unit on a
+    colour narrower than its fair share and it alone sets the makespan -- measured on the LMO logs: 18 colours
+    of 13 ranks 3,128 s against 6-8 colours of 30-40 ranks 1,490 s (doc/plans/gf_load_balancing.md). The
+    margin absorbs the error of the predicted weights. Static packing ignores it.""",
+)
+
 GF_CSR_MEMORY_SAFETY = Knob(
     name="GF_CSR_MEMORY_SAFETY",
     kind="float",
@@ -1122,6 +1137,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,
     GF_SCHEDULER,
+    GF_QUEUE_COLOR_MARGIN,
     GF_CSR_MEMORY_SAFETY,
     GF_PER_STATE_RESTRICT,
     GF_TOL,

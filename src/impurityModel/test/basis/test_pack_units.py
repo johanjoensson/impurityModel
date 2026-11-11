@@ -138,20 +138,62 @@ def test_lpt_no_worse_than_round_robin():
 
 
 @pytest.mark.parametrize("comm_size", [7, 10, 16])
-def test_equal_widths_ignore_bin_mass(comm_size):
+def test_equal_widths_ignore_bin_mass(comm_size, monkeypatch):
     # A dominant unit would take most ranks under mass apportionment; a pull queue's colors
     # must not carry the predicted cost, so every color gets the same width (+1 for the first
-    # comm_size % n_colors).
-    weights = [1000.0, 1.0, 1.0, 1.0, 1.0]
-    mass_groups, mass_procs = _pack_units(weights, comm_size, 5.0)
+    # comm_size % n_colors).  Margin 1 and a 4-colour cap on the mass call make the colour-count bound the
+    # same on both sides: sum/max = 28/10 -> 2.
+    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
+    weights = [10.0, 9.0, 8.0, 1.0]
+    mass_groups, mass_procs = _pack_units(weights, comm_size, 5.0, 2)
     groups, procs = _pack_units(weights, comm_size, 5.0, equal_widths=True)
     _check_valid_packing(groups, procs, len(weights), comm_size)
     assert groups == mass_groups, "the color count and LPT subgroups must not depend on the width rule"
     n_colors = len(groups)
+    assert n_colors == 2
     expected = [comm_size // n_colors + (1 if c < comm_size % n_colors else 0) for c in range(n_colors)]
     assert procs.tolist() == expected
-    heavy = next(c for c, g in enumerate(groups) if 0 in g)
-    assert mass_procs[heavy] > procs[heavy], "premise: mass apportionment favours the dominant unit's color"
+    assert mass_procs.tolist() != procs.tolist(), "premise: mass apportionment differs from equal widths"
+
+
+# Shaped like the LMO Mn5 GF split (job 5090340): 24 units, sum/max ~ 12.6 on the predicted weights, a few
+# heavy removal units and many light addition units.  The queue colour count used to be the participation ratio
+# (18); at 240 ranks that is 18 colours of 13 ranks and the heaviest unit sets the makespan.
+
+
+def _lmo_weights():
+    heavy = [1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65]
+    return np.array(heavy + [(12.6 - sum(heavy)) / 16] * 16)
+
+
+def test_the_queue_colour_count_is_bounded_by_sum_over_max_with_margin(monkeypatch):
+    w = _lmo_weights()
+    assert 12.5 < w.sum() / w.max() < 12.7
+    monkeypatch.delenv("GF_QUEUE_COLOR_MARGIN", raising=False)
+    groups, procs = _pack_units(w, 240, 1.0, equal_widths=True)
+    assert len(groups) == 6 and procs.tolist() == [40] * 6  # floor(12.6 / (2 * 1))
+    # Static packing is untouched by the queue's margin.
+    static_groups, _ = _pack_units(w, 240, 1.0)
+    assert len(static_groups) > 6
+    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
+    assert len(_pack_units(w, 240, 1.0, equal_widths=True)[0]) == 12
+
+
+def test_a_queue_of_the_bounded_colour_count_beats_the_participation_count(monkeypatch):
+    from impurityModel.ed.work_queue import queue_makespan, queue_order
+
+    w = _lmo_weights()
+    # Cost in rank-seconds is the weight (scaled); linear rank scaling: a colour of r ranks takes cost / r.
+    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1e-9")  # margin off: the old, participation-only count
+    old_groups, old_procs = _pack_units(w, 240, 1.0, equal_widths=True)
+    monkeypatch.delenv("GF_QUEUE_COLOR_MARGIN")
+    new_groups, new_procs = _pack_units(w, 240, 1.0, equal_widths=True)
+    order = queue_order(w)
+    old = queue_makespan(w / old_procs[0], order, len(old_groups))
+    new = queue_makespan(w / new_procs[0], order, len(new_groups))
+    assert len(old_groups) >= 2 * len(new_groups)
+    ideal = w.sum() / 240
+    assert new < old and new <= 1.1 * ideal
 
 
 def test_equal_widths_keep_the_unified_collapse():
