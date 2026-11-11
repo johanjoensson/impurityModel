@@ -426,9 +426,26 @@ _ROUTING_SKEW_ANCHORS = (
     (256, 2.790),
 )
 
+# The same measurement for ``IMPURITYMODEL_ROUTING_HASH=orbital`` (one weight per orbital), made on a
+# synthetic LMO-shaped basis (10 impurity + 22 bath orbitals, <= 4 valence holes, 439,275 determinants;
+# `test_routing_hash.py`): measured 1.0 / 1.002 / 1.003 / 1.003 / 1.006 / 1.031 / 1.044. The upper ranks
+# carry margin for the Poisson noise of a smaller per-rank count, so they are rounded up, not copied.
+_ROUTING_SKEW_ANCHORS_ORBITAL = (
+    (2, 1.005),
+    (4, 1.01),
+    (8, 1.01),
+    (16, 1.02),
+    (64, 1.03),
+    (128, 1.05),
+    (256, 1.08),
+)
+
 
 def _routing_skew_factor(ranks):
     """Measured max/mean local-determinant-count ratio at ``ranks`` (:data:`_ROUTING_SKEW_ANCHORS`).
+
+    Mode-aware: under ``IMPURITYMODEL_ROUTING_HASH=orbital`` the anchors are
+    :data:`_ROUTING_SKEW_ANCHORS_ORBITAL` (balanced hash, <= 1.08), so the automatic caps rise accordingly.
 
     Log-log interpolated between the measured anchors (the skew is a measurement at each
     rank count, not a fitted curve -- ``doc/plans/dc_smo_memory.md`` explicitly found no
@@ -440,14 +457,15 @@ def _routing_skew_factor(ranks):
     ranks = int(ranks)
     if ranks <= 1:
         return 1.0
-    lo_r, lo_s = _ROUTING_SKEW_ANCHORS[0]
-    hi_r, hi_s = _ROUTING_SKEW_ANCHORS[-1]
+    anchors = _ROUTING_SKEW_ANCHORS_ORBITAL if config.ROUTING_HASH.get() == "orbital" else _ROUTING_SKEW_ANCHORS
+    lo_r, lo_s = anchors[0]
+    hi_r, hi_s = anchors[-1]
     if ranks <= lo_r:
         return lo_s
     if ranks >= hi_r:
         return hi_s
     x = log2(ranks)
-    for (r0, s0), (r1, s1) in pairwise(_ROUTING_SKEW_ANCHORS):
+    for (r0, s0), (r1, s1) in pairwise(anchors):
         x0, x1 = log2(r0), log2(r1)
         if x0 <= x <= x1:
             t = (x - x0) / (x1 - x0)

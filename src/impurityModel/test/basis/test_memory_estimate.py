@@ -435,6 +435,16 @@ def test_routing_skew_factor_matches_measured_anchors():
         assert me._routing_skew_factor(ranks) == pytest.approx(skew)
 
 
+def test_routing_skew_factor_follows_the_routing_hash_mode(monkeypatch):
+    """Under the balanced hash the factor is the orbital anchors', not the nibble ones'."""
+    monkeypatch.setenv("IMPURITYMODEL_ROUTING_HASH", "orbital")
+    for ranks, skew in me._ROUTING_SKEW_ANCHORS_ORBITAL:
+        assert me._routing_skew_factor(ranks) == pytest.approx(skew)
+    assert me._routing_skew_factor(256) < 1.1 < me._ROUTING_SKEW_ANCHORS[-1][1]
+    monkeypatch.setenv("IMPURITYMODEL_ROUTING_HASH", "nibble")
+    assert me._routing_skew_factor(256) == pytest.approx(me._ROUTING_SKEW_ANCHORS[-1][1])
+
+
 def test_routing_skew_factor_is_one_for_a_single_rank():
     """ranks<=1 is not a partition at all; the ratio is exactly 1 by definition."""
     assert me._routing_skew_factor(1) == 1.0
