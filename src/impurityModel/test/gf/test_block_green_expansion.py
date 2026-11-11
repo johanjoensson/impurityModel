@@ -30,7 +30,14 @@ ORBITALS = (2, 3, 4)
 @pytest.mark.parametrize("reort", [None, True])
 def test_a_column_that_deflates_early_still_has_its_basis_grown(reort):
     oracle, (hOp, imp, baths, _n, _n0, _blocks) = cached_oracle(1)
-    psi = oracle.psis([STATE])[0]
+    # Cut the eigenvector at 1e-10, not at the oracle's default 1e-14. `eigh` returns the symmetry-forbidden
+    # components as noise (measured up to 5.8e-15, so within a factor of 2 of 1e-14): which side of the default
+    # cut they land on depends on the CPU's LAPACK, and a kept one seeds a foreign (N_A, N_B) sector that
+    # block_Green rightly grows too (basis.size 52 instead of 48 on some CI runners). The real amplitudes
+    # are >= 2.5e-5, so 1e-10 sits in a gap of more than five decades.
+    amps = np.abs(oracle.gs.v[:, STATE])
+    assert not np.any((amps > 1e-12) & (amps < 1e-8)), "the seed cut no longer sits in a gap of the eigenvector"
+    psi = oracle.gs.state(STATE, prune=1e-10)
     ops = [ManyBodyOperator({((o, "c"),): 1}) for o in ORBITALS]
     seeds = [op(psi, 0) for op in ops]
     support = sorted({d for s in seeds for d in s.to_dict()})
