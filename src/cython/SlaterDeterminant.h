@@ -2,6 +2,8 @@
 #define SLATER_DETERMINANT_H
 #include <bitset>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <iterator>
 #include <random>
 #include <string>
@@ -29,16 +31,22 @@ struct SlaterDeterminant : public std::vector<CHUNK> {
   }
 
   /**
-   * @brief Computes a locality-preserving linear hash for MPI routing.
+   * @brief The nibble-popcount routing hash (the default mode).
    *
-   * Unlike the standard cryptographic-style hash() which disperses states
-   * uniformly (leading to a dense all-to-all communication graph),
-   * routing_hash() is a linear function over GF(2^64). Hopping terms only
-   * change a few bytes, so the number of target MPI ranks any single rank
-   * communicates with is strictly bounded, yielding an extremely sparse
-   * communication graph that scales to 100,000+ ranks.
+   * A sum over every 4-orbital nibble of popcount(nibble) * W, one weight per
+   * nibble position. Hopping terms change a few bytes, so the number of target
+   * MPI ranks any single rank communicates with is strictly bounded, yielding a
+   * sparse communication graph at the thousands-of-ranks scale.
+   *
+   * Because the weight does not depend on WHICH orbital of a nibble is
+   * occupied, every determinant with the same per-nibble occupation counts
+   * hashes alike. On an LMO-shaped basis (10 impurity + 22 bath orbitals, up to
+   * 4 valence holes, 1.26M determinants) that is only ~1,500 distinct hash
+   * values, the largest class 1.6x the per-rank mean at 240 ranks, and the
+   * busiest rank holds 2.6x the mean (logged: local[min,max] = [1,156, 12,224]
+   * of mean 4,752). `routing_hash_orbital` removes that coarseness.
    */
-  uint64_t routing_hash() const {
+  uint64_t routing_hash_nibble() const {
     static const std::vector<uint64_t> byte_hash_table = []() {
       std::vector<uint64_t> t(1024 * 256); // Supports up to 8192 orbitals
       std::mt19937_64 rng(
@@ -62,6 +70,75 @@ struct SlaterDeterminant : public std::vector<CHUNK> {
       h += byte_hash_table[i * 256 + ptr[i]];
     }
     return h;
+  }
+
+  /**
+   * @brief The per-orbital routing hash: sum over occupied orbitals of an
+   * independent 64-bit weight.
+   *
+   * Same cost as the nibble hash (one table lookup per byte) and the same
+   * additive structure, so a hop c^dag_i c_j shifts the hash by the
+   * determinant-independent constant W_i - W_j and the peer set of a rank stays
+   * bounded exactly as before (MatvecExchangePlan relies on that). Every
+   * occupation pattern gets its own weight, so the partition is balanced to
+   * within sampling noise (max/mean 1.03 at 240 ranks on the basis above,
+   * against 2.58). The price is a denser communication graph at the ground-state
+   * rank counts (240 peers of 240, against 57-80), where a complete graph costs
+   * ~7.6 MiB/rank; at GF colour widths (<= 40) the nibble graph is already complete.
+   */
+  uint64_t routing_hash_orbital() const {
+    static const std::vector<uint64_t> byte_hash_table = []() {
+      std::vector<uint64_t> t(1024 * 256);
+      std::mt19937_64 rng(0x0B17A1ED); // fixed: identical on every MPI rank
+      for (size_t i = 0; i < 1024; ++i) {
+        uint64_t W[8];
+        for (int b = 0; b < 8; ++b)
+          W[b] = rng();
+        for (int v = 0; v < 256; ++v) {
+          uint64_t sum = 0;
+          for (int b = 0; b < 8; ++b)
+            if (v & (1 << b))
+              sum += W[b];
+          t[i * 256 + v] = sum;
+        }
+      }
+      return t;
+    }();
+
+    uint64_t h = 0;
+    const uint8_t *ptr = reinterpret_cast<const uint8_t *>(this->data());
+    size_t num_bytes = this->size() * sizeof(CHUNK);
+    for (size_t i = 0; i < num_bytes; ++i) {
+      h += byte_hash_table[i * 256 + ptr[i]];
+    }
+    return h;
+  }
+
+  /**
+   * @brief The hash that decides which MPI rank owns this determinant
+   * (``routing_hash() % comm_size``).
+   *
+   * Dispatches on IMPURITYMODEL_ROUTING_HASH = ``nibble`` (default) or
+   * ``orbital``, read ONCE per process on first use. Every rank of a run must
+   * read the same value (ownership is a pure function of the determinant and the
+   * rank count); ``config.assert_uniform`` checks that on the Python side.
+   * An unrecognised value aborts rather than silently falling back: a rank
+   * that fell back would disagree with the others about who owns what.
+   */
+  uint64_t routing_hash() const {
+    static const bool orbital = []() {
+      const char *mode = std::getenv("IMPURITYMODEL_ROUTING_HASH");
+      if (mode == nullptr || *mode == '\0' || std::string(mode) == "nibble")
+        return false;
+      if (std::string(mode) == "orbital")
+        return true;
+      std::fprintf(stderr,
+                   "IMPURITYMODEL_ROUTING_HASH=%s: expected 'nibble' or "
+                   "'orbital'\n",
+                   mode);
+      std::abort();
+    }();
+    return orbital ? routing_hash_orbital() : routing_hash_nibble();
   }
 
   /**

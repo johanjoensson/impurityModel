@@ -107,7 +107,16 @@ cdef class SlaterDeterminant:
         return self.s.hash()
 
     def routing_hash(self):
+        """The ownership hash (``% comm_size`` picks the rank): the mode of ``IMPURITYMODEL_ROUTING_HASH``."""
         return self.s.routing_hash()
+
+    def routing_hash_nibble(self):
+        """The nibble-popcount hash, whatever ``IMPURITYMODEL_ROUTING_HASH`` says (the default mode)."""
+        return self.s.routing_hash_nibble()
+
+    def routing_hash_orbital(self):
+        """The per-orbital-weight hash, whatever ``IMPURITYMODEL_ROUTING_HASH`` says (the balanced mode)."""
+        return self.s.routing_hash_orbital()
 
     def copy(self, deep: bool = False):
         """

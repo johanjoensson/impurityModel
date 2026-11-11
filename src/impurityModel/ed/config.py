@@ -500,6 +500,23 @@ APPLY_ROW_CHUNKS = Knob(
 )
 
 
+ROUTING_HASH = Knob(
+    name="IMPURITYMODEL_ROUTING_HASH",
+    kind="str",
+    default="nibble",
+    group="groundstate",
+    doc="""Which hash decides determinant ownership (``routing_hash() % comm.size``): ``nibble`` (default) or
+    ``orbital``. ``nibble`` weights each 4-orbital nibble by its popcount, so on an LMO-shaped basis it takes only
+    ~1,500 distinct values and the busiest rank holds 2.6x the mean at 240 ranks (logged ``local[min,max]``);
+    its communication graph is sparse at ground-state rank counts (57-80 peers of 240). ``orbital`` gives every
+    orbital its own 64-bit weight: balanced to within 1.05x at every rank count tried (8-240), same cost per
+    determinant, still an additive hash (a hop shifts it by a determinant-independent constant, which is what
+    ``MatvecExchangePlan`` relies on), but a denser graph (every peer at 240 ranks, ~7.6 MiB/rank of MPI
+    state on arrhenius). At GF colour widths (<= 40 ranks) the nibble graph is already complete.
+    Read once per process by ``SlaterDeterminant::routing_hash`` (C++), so set it before Python starts;
+    every rank must agree (:func:`assert_uniform`). Any other value aborts the process.""",
+)
+
 GF_SCHEDULER = Knob(
     name="GF_SCHEDULER",
     kind="str",
@@ -1136,6 +1153,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,
+    ROUTING_HASH,
     GF_SCHEDULER,
     GF_QUEUE_COLOR_MARGIN,
     GF_CSR_MEMORY_SAFETY,
