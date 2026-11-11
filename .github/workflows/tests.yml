@@ -115,6 +115,9 @@ jobs:
           sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
                /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          # Bound a flaky mirror: without these a stalled download is retried at apt's 120 s
+          # default timeout and one outage held every job in this step for 15 min before failing.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev gdb
           COMPILER="${{ matrix.compiler }}"
@@ -143,6 +146,9 @@ jobs:
           sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
                /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          # Bound a flaky mirror: without these a stalled download is retried at apt's 120 s
+          # default timeout and one outage held every job in this step for 15 min before failing.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
           sudo apt-get update
           sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
 
@@ -557,6 +563,9 @@ jobs:
           sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
                /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          # Bound a flaky mirror: without these a stalled download is retried at apt's 120 s
+          # default timeout and one outage held every job in this step for 15 min before failing.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
@@ -1080,6 +1089,9 @@ jobs:
           sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
                /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          # Bound a flaky mirror: without these a stalled download is retried at apt's 120 s
+          # default timeout and one outage held every job in this step for 15 min before failing.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
@@ -1242,6 +1254,9 @@ jobs:
           sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
                /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          # Bound a flaky mirror: without these a stalled download is retried at apt's 120 s
+          # default timeout and one outage held every job in this step for 15 min before failing.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev
 
