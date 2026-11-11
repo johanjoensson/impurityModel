@@ -18,7 +18,12 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import union_windows, window_dimension
-from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
+from impurityModel.ed.basis_split import (
+    _SEED_BATCH_BYTES,
+    _SEED_TRANSIT_BYTES_PER_ROW,
+    _pack_units,
+    split_basis_and_redistribute_psi,
+)
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, matvec_cut_after_sum
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -533,11 +538,11 @@ def enumerate_gf_units(
     return units, unit_seeds, unit_restrictions
 
 
-#: Peak bytes per seed row the split's receiving rank holds: the Python dict it accumulates into
-#: (~155 B) and the ManyBodyState built from it (~64 B), measured on 2M rows of 8-byte keys. A held
-#: seed costs ~25 B a row; the transit is what the split's peak pays.
-_SEED_TRANSIT_BYTES_PER_ROW = 220
-#: The share of the per-rank GF headroom the queue's replicated seeds may take in transit before the
+#: Bytes per seed row once the split is done and the seed is a ManyBodyState on its rank (measured with the
+#: transit figure :data:`~impurityModel.ed.basis_split._SEED_TRANSIT_BYTES_PER_ROW`, 220 B, which the batched
+#: split pays only for one batch at a time).
+_SEED_HELD_BYTES_PER_ROW = 25
+#: The share of the per-rank GF headroom the queue's replicated seeds may take (held, plus one batch in transit) before the
 #: split falls back to the static assignment, whose colors each receive only their own units' seeds.
 _QUEUE_SEED_HEADROOM_SHARE = 0.25
 
@@ -682,17 +687,26 @@ def run_units_distributed(
     copies = 1 if procs is None or not equal_widths else len(procs)
     seed_transit = _SEED_TRANSIT_BYTES_PER_ROW * seed_rows * copies / basis.comm.size
     if equal_widths and copies > 1:
-        seed_transit_queue = _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / narrowest
-        equal_widths = bool(basis.comm.bcast(seed_transit_queue <= _QUEUE_SEED_HEADROOM_SHARE * headroom, root=0))
-        if not equal_widths:
+        # What the queue costs: every colour holds every seed (seed_rows / narrowest rows a rank, ~25 B each once
+        # built) and the batched split adds one batch in transit on top. The one-shot exchange used to be
+        # priced here (220 B/row of ALL of them), which declined the queue on LMO at 360 MiB against a 275 MiB
+        # limit when the held cost was 41 MiB.
+        seed_held_queue = _SEED_HELD_BYTES_PER_ROW * seed_rows / narrowest
+        seed_batch_queue = min(_SEED_BATCH_BYTES, _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / narrowest)
+        seed_cost_queue = seed_held_queue + seed_batch_queue
+        equal_widths = bool(basis.comm.bcast(seed_cost_queue <= _QUEUE_SEED_HEADROOM_SHARE * headroom, root=0))
+        if equal_widths:
+            seed_transit = seed_batch_queue
+        else:
             max_colors = colors_affording(False)
             _subgroups, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, max_colors)
             seed_transit = _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / basis.comm.size
             if basis.comm.rank == 0:
                 print(
                     f"GF scheduler: static instead of queue -- the queue sends every color all "
-                    f"{seed_rows:,} seed rows, {format_bytes(seed_transit_queue)}/rank in transit on its "
-                    f"narrowest color of {narrowest} rank(s), more than "
+                    f"{seed_rows:,} seed rows: {format_bytes(seed_held_queue)}/rank held plus "
+                    f"{format_bytes(seed_batch_queue)} in transit per batch on its narrowest color of "
+                    f"{narrowest} rank(s), {format_bytes(seed_cost_queue)} in all, more than "
                     f"{_QUEUE_SEED_HEADROOM_SHARE:g} x the {format_bytes(headroom)} headroom.",
                     flush=True,
                 )
@@ -702,7 +716,9 @@ def run_units_distributed(
         print(
             f"GF split: {n_units} units, {seed_rows:,} seed rows, "
             f"{1 if procs is None else len(procs)} color(s), {'queue' if equal_widths else 'static'}; "
-            f"seeds ~{format_bytes(seed_transit)}/rank in transit; resident {format_bytes(entry_rss)}, "
+            f"seeds ~{format_bytes(seed_transit)}/rank in transit"
+            + (f", ~{format_bytes(seed_held_queue)}/rank held" if equal_widths and copies > 1 else "")
+            + f"; resident {format_bytes(entry_rss)}, "
             f"headroom {format_bytes(headroom)}/rank.",
             flush=True,
         )

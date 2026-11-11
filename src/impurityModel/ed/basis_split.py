@@ -137,8 +137,9 @@ def _pack_units(
     return subgroups, procs_per_color
 
 
-#: Transit bytes per seed row while the receiving side builds its dict (measured: tracemalloc over the
-#: exchange, the same method as the 25 B/row held figure of ``gf_units._SEED_HELD_BYTES_PER_ROW``).
+#: Peak bytes per seed row the split's receiving rank holds in transit: the Python dict it accumulates into
+#: (~155 B) and the ManyBodyState built from it (~64 B), measured on 2M rows of 8-byte keys (tracemalloc over
+#: the exchange; the same method as the held figure ``gf_units._SEED_HELD_BYTES_PER_ROW``).
 _SEED_TRANSIT_BYTES_PER_ROW = 220
 
 #: Per-rank transit budget of one batch of seeds in :func:`split_basis_and_redistribute_psi`.
@@ -149,7 +150,8 @@ def _seed_batches(total_rows, comm_size: int, budget_bytes: float) -> list[tuple
     """Consecutive ``(lo, hi)`` ranges of psis whose rows fit ``budget_bytes`` of transit per rank each.
 
     ``total_rows`` is the replicated global row count of each psi. A batch takes psis until adding the next
-    would pass the budget (``rows * _SEED_TRANSIT_BYTES_PER_ROW / comm_size``); a single psi over the budget
+    would pass the budget (``rows * _SEED_TRANSIT_BYTES_PER_ROW / comm_size``, where the caller passes the width of its narrowest
+    receiving color: every rank of that color receives its share of the rows); a single psi over the budget
     is a batch of its own. Pure and replicated: every rank derives the same ranges. No psis, no batches.
     """
     batches: list[tuple[int, int]] = []
@@ -388,7 +390,7 @@ def split_basis_and_redistribute_psi(
             p.copy() if psi_colors is None or psi_colors[i] == color else ManyBodyState(width=1)
             for i, p in enumerate(psis)
         ]
-        for lo, hi in _seed_batches(total_rows, comm.size, budget):
+        for lo, hi in _seed_batches(total_rows, int(min(procs_per_color)), budget):
             batch = psis[lo:hi]
             n_rows = int(local_rows[lo:hi].sum())
             seed_index = np.empty(n_rows, dtype=np.int32)

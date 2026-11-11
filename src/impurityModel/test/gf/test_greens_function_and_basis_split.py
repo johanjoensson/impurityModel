@@ -745,8 +745,13 @@ def test_split_sends_each_seed_only_to_the_color_of_its_unit_mpi():
 
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="one rank never splits into colors")
-@pytest.mark.parametrize("share, scheduler", [(1e30, "queue"), (0.0, "static")])
-def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(monkeypatch, capsys, share, scheduler):
+@pytest.mark.parametrize(
+    "share, scheduler, one_shot_price",
+    [(1e30, "queue", 0), (0.0, "static", 0), (1e-6, "queue", 10**12)],
+)
+def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(
+    monkeypatch, capsys, share, scheduler, one_shot_price
+):
     """The queue sends every color every seed; past ``_QUEUE_SEED_HEADROOM_SHARE`` of the headroom
     the run takes the static assignment, says so, and every unit still gets its own whole seeds."""
     from impurityModel.ed import gf_units
@@ -757,6 +762,13 @@ def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(monkeypatc
     monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")  # two equal units: the default margin keeps one colour
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # room for one color per unit
     monkeypatch.setattr(gf_units, "_QUEUE_SEED_HEADROOM_SHARE", share)
+    if one_shot_price:
+        # The queue is priced on the seeds it HOLDS plus one batch in transit, not on all of them in transit:
+        # an absurd per-row transit price with a one-batch cap of 100 B is still affordable (the old rule,
+        # transit * all rows, would decline it at this share).
+        monkeypatch.setattr(gf_units, "_SEED_TRANSIT_BYTES_PER_ROW", one_shot_price)
+        monkeypatch.setattr(gf_units, "_SEED_BATCH_BYTES", 100)
+        monkeypatch.setattr(gf_units, "_SEED_HELD_BYTES_PER_ROW", 1)
     states = [b"\x80", b"\x40", b"\x20", b"\x10"]
     basis = Basis(
         impurity_orbitals={0: [[0, 1, 2, 3]]},
@@ -782,6 +794,7 @@ def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(monkeypatc
         assert results == pytest.approx([1.0 + 0.25, 4.0 + 0.25])
         assert f"color(s), {scheduler};" in out
         assert ("static instead of queue" in out) == (scheduler == "static")
+        assert ("/rank held; resident" in out) == (scheduler == "queue")
 
 
 def test_seed_batches_are_whole_psis_within_the_budget():
