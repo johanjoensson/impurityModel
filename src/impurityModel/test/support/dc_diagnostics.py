@@ -28,7 +28,7 @@ reimplementation of it. The workloads are the real archived RSPt runs shared wit
 
 Run as an opt-in pytest module (one workload per process for honest timings)::
 
-    RUN_DC_DIAG=1 DC_DIAG_WORKLOAD=nio_15 DC_DIAG_CAPS=2000,8000,32000 \\
+    DC_DIAG_WORKLOAD=nio_15 DC_DIAG_CAPS=2000,8000,32000 \\
         pytest -s -m benchmark src/impurityModel/test/support/dc_diagnostics.py
 
 or directly::
@@ -41,7 +41,7 @@ whether the search's answer is stable across caps. It needs no search (`mu` is g
 for), so it is affordable across a full (cap, chain_restrict) grid where the
 search-based ladder above is not::
 
-    RUN_DC_DIAG=1 DC_DIAG_MODE=occupation_convergence DC_DIAG_WORKLOAD=nio_15 DC_DIAG_MU=0.41 \\
+    DC_DIAG_MODE=occupation_convergence DC_DIAG_WORKLOAD=nio_15 DC_DIAG_MU=0.41 \\
         DC_DIAG_CAPS=2000,4000,8000,16000 pytest -s -m benchmark src/impurityModel/test/support/dc_diagnostics.py
 
 or directly::
@@ -66,6 +66,7 @@ from impurityModel.ed.selfenergy import (
     fixed_peak_dc,
     occupation_and_energy_at_mu,
 )
+from impurityModel.test.support.bench_opts import bench_opt
 from impurityModel.test.support.restriction_diagnostics import DEFAULT_ITERATION, WORKLOADS
 
 DEFAULT_CAPS = (2000, 4000, 8000)
@@ -809,25 +810,20 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
 
 # ---- opt-in pytest entry -------------------------------------------------------------
 
-RUN = os.environ.get("RUN_DC_DIAG") == "1"
-
-
 @pytest.mark.benchmark
 def test_dc_baseline():
-    if not RUN:
-        pytest.skip("Set RUN_DC_DIAG=1 to run the double-counting baseline.")
     from mpi4py import MPI
 
-    key = os.environ.get("DC_DIAG_WORKLOAD", "nio_20")
-    mode = os.environ.get("DC_DIAG_MODE", "cap_ladder")
-    verbosity = int(os.environ.get("DC_DIAG_VERBOSITY", "0"))
-    iteration = int(os.environ.get("DC_DIAG_ITERATION", DEFAULT_ITERATION))
+    key = bench_opt("DC_DIAG_WORKLOAD", "nio_20")
+    mode = bench_opt("DC_DIAG_MODE", "cap_ladder")
+    verbosity = int(bench_opt("DC_DIAG_VERBOSITY", "0"))
+    iteration = int(bench_opt("DC_DIAG_ITERATION", DEFAULT_ITERATION))
 
     if mode == "occupation_convergence":
-        mu_env = os.environ.get("DC_DIAG_MU")
+        mu_env = bench_opt("DC_DIAG_MU")
         if mu_env is None:
             raise RuntimeError("DC_DIAG_MODE=occupation_convergence needs DC_DIAG_MU set.")
-        caps = [int(c) for c in os.environ.get("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(
+        caps = [int(c) for c in bench_opt("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(
             DEFAULT_CONVERGENCE_CAPS
         )
         occupation_convergence_sweep(
@@ -840,11 +836,11 @@ def test_dc_baseline():
         )
         return
 
-    caps = [int(c) for c in os.environ.get("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(DEFAULT_CAPS)
+    caps = [int(c) for c in bench_opt("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(DEFAULT_CAPS)
     cap_ladder(
         key,
         caps,
-        criterion=os.environ.get("DC_DIAG_CRITERION", "occupation"),
+        criterion=bench_opt("DC_DIAG_CRITERION", "occupation"),
         comm=MPI.COMM_WORLD,
         verbosity=verbosity,
         iteration=iteration,

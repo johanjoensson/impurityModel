@@ -1,7 +1,7 @@
 """The freeze-replay rig (``test/support/freeze_replay.py``): its grading functions always, the replay opt-in.
 
 The smoke tests pin the metric definitions on synthetic self-energies, so the table functions the write-up
-quotes cannot rot unnoticed. The replay itself needs an archive: ``RUN_FREEZE_REPLAY_BENCH=1 WORKLOAD_H5=...``.
+quotes cannot rot unnoticed. The replay itself needs an archive: ``WORKLOAD_H5=...``.
 """
 
 import os
@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from impurityModel.test.support import freeze_replay as fr
+from impurityModel.test.support.bench_opts import bench_opt
 
 
 def _sigma(n_w=40, n=2, scale=1.0):
@@ -57,19 +58,17 @@ def test_a_reference_point_already_acausal_is_counted_not_gated_to_nan():
     assert np.isfinite(out["real_abs"]) and out["artefact_points"] >= 1
 
 
-RUN = os.environ.get("RUN_FREEZE_REPLAY_BENCH", "0") not in ("0", "", "false", "False")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skipif(not RUN, reason="Set RUN_FREEZE_REPLAY_BENCH=1 and WORKLOAD_H5 to run the replay.")
 def test_replay_runs_and_writes_arrays(tmp_path):
     from mpi4py import MPI
 
-    h5 = os.environ.get("WORKLOAD_H5")
+    h5 = bench_opt("WORKLOAD_H5")
     assert h5, "WORKLOAD_H5 must point to an impurityModel_data.h5 archive"
     out = str(tmp_path / "replay")
     res = fr.run(
-        h5, out, iteration=int(os.environ.get("ITERATION", "1")), freeze="on", comm=MPI.COMM_WORLD, verbosity=0
+        h5, out, iteration=int(bench_opt("ITERATION", "1")), freeze="on", comm=MPI.COMM_WORLD, verbosity=0
     )
     if MPI.COMM_WORLD.rank == 0:
         assert "sigma_real" in res and os.path.exists(out + ".npz")

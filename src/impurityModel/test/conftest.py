@@ -22,6 +22,18 @@ _MARKERS = (
 )
 
 
+def pytest_addoption(parser):
+    group = parser.getgroup("impurityModel benchmarks")
+    group.addoption(
+        "--bench-opt",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="parameter of an opt-in benchmark (repeatable); the keys are listed in each benchmark's docstring",
+    )
+    group.addoption("--regen-golden", action="store_true", help="rewrite the stored golden baselines")
+
+
 def _apply_ini_defaults_without_an_ini(config):
     """Give a run of the *installed* tests the marker defaults that ``pytest.ini`` gives a checkout.
 
@@ -39,6 +51,9 @@ def _apply_ini_defaults_without_an_ini(config):
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
+    from impurityModel.test.support import bench_opts
+
+    bench_opts.configure(config.getoption("--bench-opt"), config.getoption("--regen-golden"))
     _apply_ini_defaults_without_an_ini(config)
     # Under ``mpiexec -n N`` every rank runs the full pytest session and writes its
     # own progress dots, ``MPI Information`` header and summary line to the shared

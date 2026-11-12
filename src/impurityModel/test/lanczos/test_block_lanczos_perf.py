@@ -62,14 +62,15 @@ from impurityModel.ed.symmetries import (
     impurity_block_structure,
 )
 from impurityModel.ed.trlm import thick_restart_block_lanczos
+from impurityModel.test.support.bench_opts import bench_opt
 
 pytestmark = pytest.mark.benchmark
 
-NBATHS = int(os.environ.get("BLBENCH_NBATHS", "10"))
-TRUNC = int(os.environ.get("BLBENCH_TRUNC", "30000"))
-MAXITER = int(os.environ.get("BLBENCH_MAXITER", "40"))
-BLOCK = int(os.environ.get("BLBENCH_BLOCK", "2"))
-REPS = int(os.environ.get("BLBENCH_REPS", "3"))
+NBATHS = int(bench_opt("BLBENCH_NBATHS", "10"))
+TRUNC = int(bench_opt("BLBENCH_TRUNC", "30000"))
+MAXITER = int(bench_opt("BLBENCH_MAXITER", "40"))
+BLOCK = int(bench_opt("BLBENCH_BLOCK", "2"))
+REPS = int(bench_opt("BLBENCH_REPS", "3"))
 # Force the restarted-Lanczos path in the CIPSI expansion regardless of basis size
 # (production hits it once the basis outgrows dense_cutoff; the bench always should).
 DENSE_CUTOFF = 50
@@ -401,7 +402,7 @@ def test_apply_block_width_scaling(nio_workload):
     )
 
 
-SWEEP_N = int(os.environ.get("BLBENCH_SWEEP_N", "20000"))
+SWEEP_N = int(bench_opt("BLBENCH_SWEEP_N", "20000"))
 SWEEP_P = 4
 SWEEP_RESTARTS = 2
 

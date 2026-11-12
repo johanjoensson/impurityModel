@@ -8,13 +8,12 @@ What these tests do and do not claim (``doc/plans/gf_basis_size_comparison.md``)
 * the F-pos test is the **positive control**: a model built so that most of the closure is
   determinants G does not need. If importance-ranked admission cannot shrink the basis *there* the
   harness, not the physics, is at fault;
-* the benchmark (``RUN_BASIS_SIZE_BENCH=1``) prints the tables and does not assert what they say.
+* the benchmark (``-m benchmark``) prints the tables and does not assert what they say.
   Whether per-frequency solves need fewer determinants than Lanczos is the question it exists to
   answer, and a test that pinned the answer would only pin the first guess.
 """
 
 import json
-import os
 
 import numpy as np
 import pytest
@@ -29,6 +28,7 @@ from impurityModel.test.support.basis_size_harness import (
     run_grid,
     smallest_size_below,
 )
+from impurityModel.test.support.bench_opts import bench_opt
 
 DELTA = 0.3
 OMEGA = np.linspace(-30.0, 10.0, 161)
@@ -224,19 +224,17 @@ def test_a_compact_ground_state_means_a_small_seed_support(geometries):
 
 # --- the benchmark -------------------------------------------------------------------------------
 
-RUN = os.environ.get("RUN_BASIS_SIZE_BENCH", "0") not in ("0", "", "false", "False")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skipif(not RUN, reason="Set RUN_BASIS_SIZE_BENCH=1 to run the full-size comparison.")
 @pytest.mark.parametrize("fixture", ["F-NiO", "F-pos"])
 def test_full_size_comparison(fixture):
     """Env: ``BENCH_N_B`` (bath levels per spin-orbital, default 9), ``BENCH_WEIGHTS`` (d9L targets,
     default ``0.05,0.15,0.27``), ``BENCH_DELTAS`` (broadenings, default ``0.06,0.4``: the NiO and
     FCC Ni production ratios delta/W = 0.02 and 0.13 of the W = 3 bath), ``BENCH_OUT`` (JSON path)."""
-    n_b = int(os.environ.get("BENCH_N_B", "9"))
-    weights = [float(w) for w in os.environ.get("BENCH_WEIGHTS", "0.05,0.15,0.27").split(",")]
-    deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.06,0.4").split(",")]
+    n_b = int(bench_opt("BENCH_N_B", "9"))
+    weights = [float(w) for w in bench_opt("BENCH_WEIGHTS", "0.05,0.15,0.27").split(",")]
+    deltas = [float(d) for d in bench_opt("BENCH_DELTAS", "0.06,0.4").split(",")]
     dump = {}
     for weight in weights if fixture == "F-NiO" else [0.05]:
         aim = build_nio_like(n_b, target_d9L=weight, n_spectator=2 if fixture == "F-pos" else 0)
@@ -254,13 +252,12 @@ def test_full_size_comparison(fixture):
             )
             print("\n" + format_report(title, result), flush=True)
             dump[title] = result
-    if os.environ.get("BENCH_OUT"):
-        with open(os.environ["BENCH_OUT"], "w") as f:
+    if bench_opt("BENCH_OUT"):
+        with open(bench_opt("BENCH_OUT"), "w") as f:
             json.dump(dump, f, indent=1, default=lambda o: o.tolist() if hasattr(o, "tolist") else float(o))
 
 
 @pytest.mark.benchmark
-@pytest.mark.skipif(not RUN, reason="Set RUN_BASIS_SIZE_BENCH=1 to run the full-size comparison.")
 def test_full_size_metal():
     """The scaled-down ``examples/semicircular_siam`` (V = 2 D there; D = U = 0.5 Ry).
 
@@ -269,12 +266,12 @@ def test_full_size_metal():
     default ``0.5,1.0,0.25``), ``BENCH_DELTAS`` (default ``0.02,0.13``: delta/W of 0.02 and 0.13 for the
     bandwidth W = 2 D = 1 Ry), ``BENCH_OUT``. The Matsubara axis does not depend on delta, so it is run
     once per V and the real axis once per delta; the JSON is rewritten after each configuration."""
-    n_b = int(os.environ.get("BENCH_METAL_N_B", "7"))
-    keep = int(os.environ.get("BENCH_METAL_K", "150"))
-    couplings = [float(v) for v in os.environ.get("BENCH_METAL_V", "0.5,1.0,0.25").split(",")]
-    deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.02,0.13").split(",")]
+    n_b = int(bench_opt("BENCH_METAL_N_B", "7"))
+    keep = int(bench_opt("BENCH_METAL_K", "150"))
+    couplings = [float(v) for v in bench_opt("BENCH_METAL_V", "0.5,1.0,0.25").split(",")]
+    deltas = [float(d) for d in bench_opt("BENCH_DELTAS", "0.02,0.13").split(",")]
     matsubara = 1j * np.pi * 0.005 * (2 * np.arange(12) + 1)
-    out, dump = os.environ.get("BENCH_OUT"), {}
+    out, dump = bench_opt("BENCH_OUT"), {}
 
     def progress(c):
         fmt = lambda x: "-" if x is None else f"{x:.1e}"  # noqa: E731
@@ -302,7 +299,6 @@ def test_full_size_metal():
 
 
 @pytest.mark.benchmark
-@pytest.mark.skipif(not RUN, reason="Set RUN_BASIS_SIZE_BENCH=1 to run the full-size comparison.")
 @pytest.mark.parametrize("fixture", ["F-NiO", "F-metal"])
 def test_full_size_geometry(fixture):
     """The same model in four bath bases (star, chain, natural orbitals, natural orbitals re-chained).
@@ -314,20 +310,20 @@ def test_full_size_geometry(fixture):
     ``BENCH_GEOM_N_B`` (default 9 for F-NiO, 7 for F-metal), ``BENCH_METAL_V`` (default 0.5),
     ``BENCH_DELTAS`` (F-NiO ``0.06,0.4``, F-metal ``0.02,0.13``), ``BENCH_BASES`` (default
     ``star,chain,natural,natural-chains``; add ``linked-chain``, which needs ``rspt2spectra``), ``BENCH_OUT``."""
-    lost = float(os.environ.get("BENCH_LOST", "1e-6"))
-    wanted = os.environ.get("BENCH_BASES", "star,chain,natural,natural-chains").split(",")
+    lost = float(bench_opt("BENCH_LOST", "1e-6"))
+    wanted = bench_opt("BENCH_BASES", "star,chain,natural,natural-chains").split(",")
     if fixture == "F-NiO":
-        n_b = int(os.environ.get("BENCH_GEOM_N_B", "9"))
+        n_b = int(bench_opt("BENCH_GEOM_N_B", "9"))
         exact = build_nio_like(n_b, target_d9L=0.15)
-        deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.06,0.4").split(",")]
+        deltas = [float(d) for d in bench_opt("BENCH_DELTAS", "0.06,0.4").split(",")]
         matsubara, lo, hi, label = MATSUBARA, -40.0, 10.0, f"F-NiO n_b={n_b} d9L=0.15"
     else:
-        n_b = int(os.environ.get("BENCH_GEOM_N_B", "7"))
-        v = float(os.environ.get("BENCH_METAL_V", "0.5"))
+        n_b = int(bench_opt("BENCH_GEOM_N_B", "7"))
+        v = float(bench_opt("BENCH_METAL_V", "0.5"))
         exact = build_semicircle_siam(n_b, v=v)
-        deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.02,0.13").split(",")]
+        deltas = [float(d) for d in bench_opt("BENCH_DELTAS", "0.02,0.13").split(",")]
         matsubara, lo, hi, label = 1j * np.pi * 0.005 * (2 * np.arange(12) + 1), -1.5, 1.5, f"F-metal n_b={n_b} V={v}"
-    out, dump = os.environ.get("BENCH_OUT"), {}
+    out, dump = bench_opt("BENCH_OUT"), {}
 
     def progress(c):
         fmt = lambda x: "-" if x is None else f"{x:.1e}"  # noqa: E731

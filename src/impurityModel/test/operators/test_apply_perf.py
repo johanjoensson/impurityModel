@@ -9,7 +9,7 @@ Provides:
 * **Golden-output oracle** (0.2) — the regression gate every later phase must keep
   green. The reference is the sorted ``(key_chunks, re, im)`` list of
   ``op.apply_multi([psi], 0.0)``; it is regenerated when missing or when
-  ``REGEN_APPLY_GOLDEN=1`` is set, and committed alongside this file.
+  ``--regen-golden`` is given, and committed alongside this file.
 * **Timing harness** (0.3) — median wall-time per ``apply_multi`` printed under
   ``pytest -s``; no assertion on absolute time (machine-dependent), only that repeats
   agree.
@@ -20,7 +20,6 @@ tolerance compare).
 """
 
 import json
-import os
 import random
 import time
 from pathlib import Path
@@ -29,6 +28,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.test.support.bench_opts import regen_golden
 
 from .apply_reference import (
     assert_matches,
@@ -218,7 +218,7 @@ def timing_fixtures():
 
 @pytest.fixture(scope="module")
 def golden():
-    if os.environ.get("REGEN_APPLY_GOLDEN") == "1" or not GOLDEN_PATH.exists():
+    if regen_golden() or not GOLDEN_PATH.exists():
         return _regen_golden()
     return _load_golden()
 

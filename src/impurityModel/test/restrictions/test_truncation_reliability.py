@@ -13,7 +13,7 @@ its saved ``.npz``. Typical ladder::
     OUT=truncation-bench
     for T in inf 4000 2000 1000 500 250; do
       for R in none partial full; do
-        RUN_TRUNCATION_BENCH=1 TRUNCATION_BENCH_TRUNC=$T TRUNCATION_BENCH_REORT=$R \\
+        TRUNCATION_BENCH_TRUNC=$T TRUNCATION_BENCH_REORT=$R \\
         TRUNCATION_BENCH_OUTDIR=$OUT pytest -s -m benchmark \\
             src/impurityModel/test/test_truncation_reliability.py
       done
@@ -39,16 +39,15 @@ import time
 import numpy as np
 import pytest
 
-RUN = os.environ.get("RUN_TRUNCATION_BENCH") == "1"
+from impurityModel.test.support.bench_opts import bench_opt
 
 pytestmark = [
     pytest.mark.benchmark,
-    pytest.mark.skipif(not RUN, reason="Set RUN_TRUNCATION_BENCH=1 to run the truncation reliability sweep."),
 ]
 
 
 def _env(name, default):
-    return os.environ.get(name, default)
+    return bench_opt(name, default)
 
 
 def _peak_rss_bytes():

@@ -7,11 +7,11 @@ over the K*K seed block per (wIn, eigenstate) -- cost independent of the number 
 polarizations -- then contracts. The per-polarization path solves an N-in block and N
 block-Greens of size N, so it grows with N.
 
-Marked ``benchmark`` (skipped by default; run with ``pytest -m benchmark``) with a second
-``RUN_RIXS_BENCH=1`` env-var gate, mirroring ``test_selfenergy_perf.py``. Use ``-s`` to see the
+Marked ``benchmark`` (skipped by default; run with ``pytest -m benchmark``),
+mirroring ``test_selfenergy_perf.py``. Use ``-s`` to see the
 printed tables::
 
-    RUN_RIXS_BENCH=1 pytest -s -m benchmark src/impurityModel/test/test_rixs_tensor_perf.py
+    pytest -s -m benchmark src/impurityModel/test/test_rixs_tensor_perf.py
 
 Findings this harness pins (vs a dense Kramers-Heisenberg ground truth):
 
@@ -26,7 +26,6 @@ Findings this harness pins (vs a dense Kramers-Heisenberg ground truth):
   deflating block is always taken.)
 """
 
-import os
 import time
 from itertools import combinations
 
@@ -38,12 +37,9 @@ from impurityModel.ed import polarization, spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 
-RUN = os.environ.get("RUN_RIXS_BENCH") == "1"
-# The RUN_RIXS_BENCH gate is a second guard so even `pytest -m benchmark` skips this unless
-# explicitly opted in (it prints timing tables and is not a correctness gate for CI).
+# Opt-in: `pytest -m benchmark` (it prints timing tables and is not a correctness gate for CI).
 pytestmark = [
     pytest.mark.benchmark,
-    pytest.mark.skipif(not RUN, reason="Set RUN_RIXS_BENCH=1 to run the RIXS tensor benchmark."),
 ]
 
 # --- model geometry (block key 2 = valence/impurity, block key 1 = core, as in the RIXS tests) ---

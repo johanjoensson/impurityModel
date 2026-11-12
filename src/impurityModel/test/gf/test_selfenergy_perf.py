@@ -2,7 +2,7 @@
 ``calc_selfenergy`` profiling plan).
 
 Mirrors the oracle-first Phase-0 convention of ``test_apply_perf.py``: the heavy body
-only runs when opted in (``RUN_SELFENERGY_BENCH=1``), so default CI skips it. When
+only runs when opted in (``-m benchmark``), so default CI skips it. When
 enabled it
 
 * builds the anchor workload (NiO d-shell, ``ls=2``, ``nBaths=100`` from
@@ -18,11 +18,11 @@ enabled it
 
 Run serially::
 
-    RUN_SELFENERGY_BENCH=1 pytest -s src/impurityModel/test/test_selfenergy_perf.py
+    pytest -s src/impurityModel/test/test_selfenergy_perf.py
 
 Strong-scaling sweep (fixed problem, more ranks)::
 
-    RUN_SELFENERGY_BENCH=1 mpirun -n 2 pytest -s \
+    mpirun -n 2 pytest -s \
         src/impurityModel/test/test_selfenergy_perf.py
 
 .. note::
@@ -37,7 +37,7 @@ Strong-scaling sweep (fixed problem, more ranks)::
    ``memory_estimate.suggest_gs_truncation_threshold`` for sizing). The quick smoke config
    remains the small 10-bath workload::
 
-       RUN_SELFENERGY_BENCH=1 SELFENERGY_BENCH_NBATH=10 SELFENERGY_BENCH_NVALBATH=10 \
+       SELFENERGY_BENCH_NBATH=10 SELFENERGY_BENCH_NVALBATH=10 \
            pytest -s src/impurityModel/test/test_selfenergy_perf.py
 
 Tunables (env vars, defaults in parens): ``SELFENERGY_BENCH_NBATH`` (100),
@@ -60,14 +60,11 @@ from contextlib import contextmanager
 import numpy as np
 import pytest
 
-RUN = os.environ.get("RUN_SELFENERGY_BENCH") == "1"
+from impurityModel.test.support.bench_opts import bench_opt
 
-# `benchmark` keeps this out of standard `pytest` runs (see pytest.ini); the
-# RUN_SELFENERGY_BENCH gate is a second guard so even `pytest -m benchmark` skips
-# the known-broken 100-bath default workload unless it is explicitly requested.
+# `benchmark` keeps this out of standard `pytest` runs (see pyproject.toml).
 pytestmark = [
     pytest.mark.benchmark,
-    pytest.mark.skipif(not RUN, reason="Set RUN_SELFENERGY_BENCH=1 to run the calc_selfenergy benchmark."),
 ]
 
 # Repo root: this file is src/impurityModel/test/<this>; the h0 pickles live in <root>/h0.
@@ -75,7 +72,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", 
 
 
 def _env_int(name, default):
-    return int(os.environ.get(name, default))
+    return int(bench_opt(name, str(default)))
 
 
 # Accumulators filled by the phase-timer wrappers (keyed by phase name).
@@ -143,9 +140,9 @@ def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncatio
         truncation_threshold=truncation_threshold,
         rank=rank,
         verbose=verbose,
-        occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", "1e-12")),
-        slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", "1e-12")),
-        dN=(int(os.environ["SELFENERGY_BENCH_DN"]) if os.environ.get("SELFENERGY_BENCH_DN") else None),
+        occ_cutoff=float(bench_opt("SELFENERGY_BENCH_OCC_CUTOFF", "1e-12")),
+        slaterWeightMin=float(bench_opt("SELFENERGY_BENCH_SWMIN", "1e-12")),
+        dN=(int(bench_opt("SELFENERGY_BENCH_DN")) if bench_opt("SELFENERGY_BENCH_DN") else None),
     )
 
 
@@ -172,7 +169,7 @@ def test_calc_selfenergy_benchmark():
     dense_cutoff = _env_int("SELFENERGY_BENCH_DENSE_CUTOFF", 100000)
     truncation_threshold = _env_int("SELFENERGY_BENCH_TRUNC", 1000)
     reps = _env_int("SELFENERGY_BENCH_REPS", 1)
-    outdir = os.environ.get(
+    outdir = bench_opt(
         "SELFENERGY_BENCH_OUTDIR",
         os.path.join(REPO_ROOT, "debug", "selfenergy_bench"),
     )
@@ -214,7 +211,7 @@ def test_calc_selfenergy_benchmark():
             try:
                 result = selfenergy.calc_selfenergy(**kwargs)
             except selfenergy.UnphysicalGreensFunctionError:
-                if os.environ.get("SELFENERGY_BENCH_ALLOW_UNPHYSICAL") != "1":
+                if bench_opt("SELFENERGY_BENCH_ALLOW_UNPHYSICAL") != "1":
                     profiler.disable()
                     raise
                 if rank == 0:
@@ -231,7 +228,7 @@ def test_calc_selfenergy_benchmark():
         # Optional: dump the real-axis self-energy on rank 0 for serial-vs-MPI comparison.
         if (
             rank == 0
-            and os.environ.get("SELFENERGY_BENCH_DUMP")
+            and bench_opt("SELFENERGY_BENCH_DUMP")
             and result is not None
             and result.get("sigma_real") is not None
         ):

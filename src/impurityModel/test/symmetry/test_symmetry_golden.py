@@ -8,14 +8,14 @@ Later phases must not change the physics:
 * **P3** (physics-derived occupation restrictions) must not shift the ground state.
 
 The heavy solve (~2.5 min for the 10-bath NiO d-shell) only runs when opted in via
-``RUN_SYMMETRY_GOLDEN=1``; regenerate the stored fingerprint with
-``REGEN_SYMMETRY_GOLDEN=1``. The compare helpers (:func:`fingerprint`,
+``-m benchmark``; regenerate the stored fingerprint with
+``--regen-golden``. The compare helpers (:func:`fingerprint`,
 :func:`assert_matches_golden`) are imported by the P1/P2/P3 regression tests.
 
 Run / regenerate::
 
-    RUN_SYMMETRY_GOLDEN=1 pytest -s src/impurityModel/test/symmetry/test_symmetry_golden.py
-    REGEN_SYMMETRY_GOLDEN=1 RUN_SYMMETRY_GOLDEN=1 \
+    pytest -s src/impurityModel/test/symmetry/test_symmetry_golden.py
+    --regen-golden \
         pytest -s src/impurityModel/test/symmetry/test_symmetry_golden.py
 """
 
@@ -25,12 +25,12 @@ import os
 import numpy as np
 import pytest
 
-RUN = os.environ.get("RUN_SYMMETRY_GOLDEN") == "1"
-REGEN = os.environ.get("REGEN_SYMMETRY_GOLDEN") == "1"
+from impurityModel.test.support.bench_opts import bench_opt, regen_golden
+
+REGEN = regen_golden()
 
 pytestmark = [
     pytest.mark.benchmark,
-    pytest.mark.skipif(not RUN, reason="Set RUN_SYMMETRY_GOLDEN=1 to run the symmetry golden baseline."),
 ]
 
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "symmetry_golden.json")
@@ -91,7 +91,7 @@ def _cmp_c(name, golden_entry, current_entry, atol):
 
 def assert_matches_golden(fp, atol=1e-6):
     """Assert a fingerprint matches the stored golden baseline within ``atol``."""
-    assert os.path.exists(GOLDEN_PATH), f"No golden baseline at {GOLDEN_PATH}; regenerate with REGEN_SYMMETRY_GOLDEN=1."
+    assert os.path.exists(GOLDEN_PATH), f"No golden baseline at {GOLDEN_PATH}; regenerate with --regen-golden."
     with open(GOLDEN_PATH) as fh:
         golden = json.load(fh)
     assert fp["n_imp"] == golden["n_imp"]
@@ -109,7 +109,7 @@ def _run_spherical_baseline():
     from impurityModel.test.support._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
 
     comm = MPI.COMM_WORLD
-    n_omega = int(os.environ.get("SYMMETRY_GOLDEN_NW", "41"))
+    n_omega = int(bench_opt("SYMMETRY_GOLDEN_NW", "41"))
     # Physical NiO Ni(2+): d-only MLFT double counting (chargeTransferCorrection) so the ground
     # state is the genuine d8 energetic minimum (not a window-confined artifact), plus the valence
     # 3d spin-orbit coupling. These are golden-specific physics knobs; the shared builder defaults

@@ -16,11 +16,11 @@ Two frequencies are measured because they bracket the conditioning the driver wi
   which is where a per-frequency solve gets hard. This is the axis the plan wants benchmarked
   against block Lanczos first.
 
-Marked ``benchmark`` (skipped by default) with a second ``RUN_BICGSTAB_BENCH=1`` env gate,
+Marked ``benchmark`` (skipped by default),
 mirroring ``test_selfenergy_perf.py`` / ``test_rixs_tensor_perf.py``::
 
-    RUN_BICGSTAB_BENCH=1 pytest -s -m benchmark src/impurityModel/test/test_bicgstab_perf.py
-    RUN_BICGSTAB_BENCH=1 mpiexec -n 2 pytest -s -m benchmark --with-mpi \
+    pytest -s -m benchmark src/impurityModel/test/test_bicgstab_perf.py
+    mpiexec -n 2 pytest -s -m benchmark --with-mpi \
         src/impurityModel/test/test_bicgstab_perf.py
 
 Set ``BICG_BENCH_PROFILE=1`` to also dump a ``cProfile`` table of the solve. On the baseline
@@ -65,24 +65,23 @@ from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.ed.greens_function import _build_excited_restrictions
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp, inner
+from impurityModel.test.support.bench_opts import bench_opt
 
-RUN = os.environ.get("RUN_BICGSTAB_BENCH") == "1"
 pytestmark = [
     pytest.mark.benchmark,
-    pytest.mark.skipif(not RUN, reason="Set RUN_BICGSTAB_BENCH=1 to run the block_bicgstab benchmark."),
 ]
 
-NBATHS = int(os.environ.get("BICG_NBATHS", "50"))
-TRUNC = int(os.environ.get("BICG_TRUNC", "200000"))
+NBATHS = int(bench_opt("BICG_NBATHS", "50"))
+TRUNC = int(bench_opt("BICG_TRUNC", "200000"))
 # The CIPSI selection threshold, not the bath count, sets the ground-state basis size:
 # at the 1e-6 default the NiO anchor selects ~600 determinants and the excited basis the
 # solver grows from it never leaves the toy regime.
-DE2_MIN = float(os.environ.get("BICG_DE2_MIN", "1e-12"))
-WIDTHS = [int(w) for w in os.environ.get("BICG_WIDTHS", "1,5").split(",")]
-DELTA = float(os.environ.get("BICG_DELTA", "0.2"))
-ATOL = float(os.environ.get("BICG_ATOL", "1e-8"))
-RTOL = float(os.environ.get("BICG_RTOL", "1e-12"))
-PROFILE = os.environ.get("BICG_BENCH_PROFILE") == "1"
+DE2_MIN = float(bench_opt("BICG_DE2_MIN", "1e-12"))
+WIDTHS = [int(w) for w in bench_opt("BICG_WIDTHS", "1,5").split(",")]
+DELTA = float(bench_opt("BICG_DELTA", "0.2"))
+ATOL = float(bench_opt("BICG_ATOL", "1e-8"))
+RTOL = float(bench_opt("BICG_RTOL", "1e-12"))
+PROFILE = bench_opt("BICG_BENCH_PROFILE") == "1"
 
 DENSE_CUTOFF = 50
 SLATER_WEIGHT_MIN = 1e-12

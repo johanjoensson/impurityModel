@@ -34,8 +34,8 @@ workload before concluding anything about a different regime. Note especially th
 to global row indices only exists in the distributed branch.
 
 Nothing here is production code and nothing is monkeypatched permanently: the wrappers are
-installed for the duration of one run and removed in a ``finally``. It is opt-in
-(``RUN_MATRIX_BUILD_BENCH=1``) and ``benchmark``-marked, so the default suite skips it.
+installed for the duration of one run and removed in a ``finally``. It is
+``benchmark``-marked, so the default suite skips it.
 
 What it records
 ---------------
@@ -57,10 +57,10 @@ What it records
 
 Run it::
 
-    RUN_MATRIX_BUILD_BENCH=1 pytest -s -m benchmark \
+    pytest -s -m benchmark \
         src/impurityModel/test/basis/test_matrix_build_perf.py
 
-    RUN_MATRIX_BUILD_BENCH=1 mpiexec -n 2 python -u -m pytest -s -m benchmark --with-mpi \
+    mpiexec -n 2 python -u -m pytest -s -m benchmark --with-mpi \
         src/impurityModel/test/basis/test_matrix_build_perf.py
 
 Tunables (env, defaults in parens): ``MATRIX_BENCH_ARCHIVE`` (the FCC Ni 15-bath archive --
@@ -77,15 +77,16 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.test.support.bench_opts import bench_opt
+
 pytestmark = pytest.mark.benchmark
 
 _IMPMOD_ROOT = os.environ.get("IMPMOD_TESTS_DIR", "/home/johan/Programming/impmod_tests")
 _DEFAULT_ARCHIVE = os.path.join(
     _IMPMOD_ROOT, "FCC_Ni/impmod/15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5"
 )
-_ARCHIVE = os.environ.get("MATRIX_BENCH_ARCHIVE", _DEFAULT_ARCHIVE)
-_ENABLED = os.environ.get("RUN_MATRIX_BUILD_BENCH") == "1"
-_WIDTH = int(os.environ.get("MATRIX_BENCH_WIDTH", "4"))
+_ARCHIVE = bench_opt("MATRIX_BENCH_ARCHIVE", _DEFAULT_ARCHIVE)
+_WIDTH = int(bench_opt("MATRIX_BENCH_WIDTH", "4"))
 
 
 class _StopAfterGroundState(Exception):
@@ -401,7 +402,6 @@ def _report(recorder, extra, comm):
     return payload
 
 
-@pytest.mark.skipif(not _ENABLED, reason="set RUN_MATRIX_BUILD_BENCH=1 to run the build attribution")
 @pytest.mark.skipif(not os.path.exists(_ARCHIVE), reason=f"workload archive not available: {_ARCHIVE}")
 def test_matrix_build_attribution():
     """Measure, do not predict: the plan's Phase-0 gates all read off this run."""
@@ -410,7 +410,7 @@ def test_matrix_build_attribution():
 
     comm = MPI.COMM_WORLD
     workload = load_workload(_ARCHIVE)
-    trunc = os.environ.get("MATRIX_BENCH_TRUNC", "archive")
+    trunc = bench_opt("MATRIX_BENCH_TRUNC", "archive")
     if trunc != "archive":
         trunc = float(trunc)
 
@@ -436,7 +436,7 @@ def test_matrix_build_attribution():
         extra["spmv_seconds"] = _time_spmv(basis, h_local, _WIDTH)
 
     payload = _report(recorder, extra, comm)
-    out_path = os.environ.get("MATRIX_BENCH_JSON")
+    out_path = bench_opt("MATRIX_BENCH_JSON")
     if out_path and (comm is None or comm.rank == 0):
         with open(out_path, "w") as fh:
             json.dump(payload, fh, indent=2)

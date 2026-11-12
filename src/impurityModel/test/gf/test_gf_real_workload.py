@@ -10,7 +10,7 @@ run in the same process would be hidden under the first one's peak.
 
 Usage::
 
-    RUN_REAL_WORKLOAD_BENCH=1 WORKLOAD_H5=path/to/impurityModel_data.h5 \
+    WORKLOAD_H5=path/to/impurityModel_data.h5 \
     GF_METHOD=bicgstab N_IW=64 N_W=0 BENCH_OUT=/tmp/ni_bicgstab.npz \
     mpiexec -n 2 python -m pytest src/impurityModel/test/test_gf_real_workload.py \
         -m benchmark --with-mpi -s
@@ -32,12 +32,10 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes
-
-RUN = os.environ.get("RUN_REAL_WORKLOAD_BENCH", "0") not in ("0", "", "false", "False")
+from impurityModel.test.support.bench_opts import bench_opt
 
 pytestmark = [
     pytest.mark.benchmark,
-    pytest.mark.skipif(not RUN, reason="Set RUN_REAL_WORKLOAD_BENCH=1 (and WORKLOAD_H5) to run."),
 ]
 
 
@@ -136,7 +134,7 @@ def test_real_workload_selfenergy():
     from impurityModel.test.support.real_workload import load_workload, run_selfenergy
 
     comm = MPI.COMM_WORLD
-    h5_path = os.environ.get("WORKLOAD_H5")
+    h5_path = bench_opt("WORKLOAD_H5")
     assert h5_path, "WORKLOAD_H5 must point to an impurityModel_data.h5 archive"
 
     gf_method = os.environ.get("GF_METHOD", "lanczos")
@@ -193,7 +191,7 @@ def test_real_workload_selfenergy():
                 print("    peak RSS after first " + ", ".join(f"{k}: {format_bytes(v)}" for k, v in peak_after.items()))
                 for seconds, n_blocks, size in sorted(ph.get("unit_seconds", []), key=lambda u: -u[0])[:8]:
                     print(f"    unit {seconds:7.1f} s  n_blocks={n_blocks}  retained_size={size}")
-        out = os.environ.get("BENCH_OUT")
+        out = bench_opt("BENCH_OUT")
         if out:
             np.savez(
                 out,
