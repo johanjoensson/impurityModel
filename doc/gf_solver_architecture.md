@@ -151,7 +151,7 @@ Orthogonal switches on the default Lanczos path:
 | **deep zone** | chain-window site beyond `a < slater_min**0.5` capped at one excitation | restricts the basis a priori | `Chain windows:` line at `-v` |
 
 The settle options on `SolverOptions`: `gf_settle` (None = on), `gf_settle_ratio` (a multiple of `slater_weight_min`,
-None = `GF_SETTLE_RATIO`), `gf_settle_retry` (None = off). Block-Lanczos only.
+None = the default 3), `gf_settle_retry` (None = off). Block-Lanczos only.
 
 ## Convergence monitoring
 

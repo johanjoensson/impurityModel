@@ -5,7 +5,7 @@ the central registry in `impurityModel/ed/config.py`. Set them in the shell (or 
 before launching a calculation:
 
 ```bash
-GF_EIGENSTATE_GROUP=2 GF_SECTOR_CACHE_DIR=/scratch/sectors \
+APPLY_ROW_CHUNKS=4 GF_SECTOR_CACHE_DIR=/scratch/sectors \
     mpiexec -n 16 impurityModel selfenergy ...
 ```
 

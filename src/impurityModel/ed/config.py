@@ -66,7 +66,7 @@ class Knob:
     Parameters
     ----------
     name : str
-        The environment variable, e.g. ``"GF_EIGENSTATE_GROUP"``.
+        The environment variable, e.g. ``"APPLY_ROW_CHUNKS"``.
     kind : {"int", "float", "bool", "str"}
         How the raw string is parsed.
     default : Any

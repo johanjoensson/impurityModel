@@ -40,8 +40,8 @@ trickle). Measured on the TSQR output before the cut acts, so `ratio 1` means "e
 pruned from the next block anyway" and `ratio 0` (or `swm = 0`) is closure. From the settle on the unit is the exact
 Lanczos of `P H P` on the CSR (reort none): it drops the rows whose next-block amplitude stayed at or below the bound
 over the window. That is not an error bound on `G`; the default ratio is chosen by measurement. Nothing checks the frontier
-afterwards except the end-of-unit probe (`gf_recurrence.settled_frontier`, opt-in with `GF_SUPPORT_TRACE`). `gf_settle_ratio` /
-`GF_SETTLE_RATIO` (default 3) sets the ratio; `gf_settle` switches the rule off. The records are sums over ranks and
+afterwards except the end-of-unit probe (`gf_recurrence.settled_frontier`, opt-in with `GF_SUPPORT_TRACE`). `gf_settle_ratio`
+(default 3) sets the ratio; `gf_settle` switches the rule off. The records are sums over ranks and
 chunks, so a window within rounding of the threshold can settle a step earlier or later when the layout changes.
 
 The default and its evidence: `doc/plans/gf_support_freeze_redesign.md` (acceptance rule: Matsubara change <= 1e-7,
@@ -121,7 +121,7 @@ monitor are the same code in all three.
 ### Pruned growth (`gf_prune_tol`, default 1e-3)
 
 A step admits a new determinant only if its largest amplitude on the normalised step block exceeds `gf_prune_tol`
-(`GF_PRUNE_RULE=mass` reads it as a fraction of the frontier weight instead). The seeds' first H-shell is kept whole
+(`gf_recurrence._PRUNE_RULE = "mass"` reads it as a fraction of the frontier weight instead). The seeds' first H-shell is kept whole
 (`gf_first_shell_tol` relaxes it), which keeps the moments of `G` through `H^2`, hence the self-energy tail, exact.
 A deferred row is **not banned**: it stays in `F` with its matrix entries and enters a later step when a stronger path
 reaches it. After the growth the recurrence restarts from the seeds on the final support, so the result is the exact
