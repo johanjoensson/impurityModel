@@ -5,19 +5,13 @@
 
 """BlockLanczosCore.pyx
 =====================
-Shared numerical layer for the array (``BlockLanczosArray.pyx``) and ManyBodyState
-(``BlockLanczos.pyx``) block-Lanczos kernels: every tolerance
+Block-Lanczos kernels for numpy/scipy arrays and for ManyBodyState blocks: every tolerance
 constant, the block-tridiagonal eigensolvers (``eigh_block_tridiagonal``,
 ``eigsh``), and the representation-dispatching block primitives (``block_inner``/``apply``/
 ``add_scaled``/``combine``/``orthogonalize``/``normalize``/``tsqr``, ``apply_full_reort``) both kernels drive through.
 
-Both kernels import from here, never from each other -- this module exists so that is
-true. It used to compile inside ``BlockLanczosArray.pyx``, which forced
-``BlockLanczos.pyx`` to import from it and forced the representation-dispatch
-primitives (``_reort.pxi``) to close the resulting cycle with two **per-call** Python
-imports on the hot path (inside ``block_normalize`` and ``apply_full_reort``). Neither is
-true any more: both kernels import downward from here, and the two dispatch functions
-reference these module-level names directly.
+Both kernels live here, so the two dispatch functions reference these module-level names
+directly (no per-call imports on the hot path).
 """
 
 import time as _time

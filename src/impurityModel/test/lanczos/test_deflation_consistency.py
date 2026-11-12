@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import (
+from impurityModel.ed.BlockLanczosCore import (
     _build_banded_lower,
     _build_full_T,
     block_lanczos,

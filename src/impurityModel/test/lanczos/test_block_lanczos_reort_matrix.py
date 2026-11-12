@@ -12,7 +12,7 @@ try:
 except ImportError:
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.BlockLanczosCore import block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import (
@@ -193,7 +193,7 @@ def test_deflation_shrinking_block(p, path):
     np.random.seed(42)
     max_iter = 30
 
-    from impurityModel.ed.BlockLanczosArray import _build_full_T
+    from impurityModel.ed.BlockLanczosCore import _build_full_T
 
     if path == "array":
         H_dense = build_dense_matrix_from_manybody(h_op_mb, basis_states)
@@ -203,7 +203,7 @@ def test_deflation_shrinking_block(p, path):
 
         psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-        from impurityModel.ed.BlockLanczosArray import block_lanczos
+        from impurityModel.ed.BlockLanczosCore import block_lanczos
 
         alphas, betas, _Q_list, block_widths = block_lanczos(
             psi0=psi0,
@@ -227,7 +227,7 @@ def test_deflation_shrinking_block(p, path):
 
         psi0, _ = block_normalize(psi0_list, mpi=False, comm=None)
 
-        from impurityModel.ed.BlockLanczos import block_lanczos
+        from impurityModel.ed.BlockLanczosCore import block_lanczos
 
         alphas, betas, _Q_basis, block_widths = block_lanczos(
             psi0=psi0,
@@ -257,7 +257,7 @@ def test_deflation_shrinking_block_mpi(p, path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     max_iter = 30
 
-    from impurityModel.ed.BlockLanczosArray import _build_full_T
+    from impurityModel.ed.BlockLanczosCore import _build_full_T
 
     if path == "array":
         H_dense = build_dense_matrix_from_manybody(h_op_mb, basis_states)
@@ -275,7 +275,7 @@ def test_deflation_shrinking_block_mpi(p, path):
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
 
-        from impurityModel.ed.BlockLanczosArray import block_lanczos
+        from impurityModel.ed.BlockLanczosCore import block_lanczos
 
         alphas, betas, _Q_list, block_widths = block_lanczos(
             psi0=psi0,
@@ -307,7 +307,7 @@ def test_deflation_shrinking_block_mpi(p, path):
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-        from impurityModel.ed.BlockLanczos import block_lanczos
+        from impurityModel.ed.BlockLanczosCore import block_lanczos
 
         alphas, betas, _Q_basis, block_widths = block_lanczos(
             psi0=psi0,

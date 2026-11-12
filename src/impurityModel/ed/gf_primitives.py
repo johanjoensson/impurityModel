@@ -21,7 +21,7 @@ from impurityModel.ed.basis_transcription import (
     build_vector,
     comm_support_filter,
 )
-from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
+from impurityModel.ed.BlockLanczosCore import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes

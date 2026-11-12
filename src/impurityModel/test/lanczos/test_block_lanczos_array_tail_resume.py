@@ -12,7 +12,7 @@ import pytest
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 N_BLOCK_A = 4  # a closed 4-dimensional block: the seed column inside it deflates after 4 steps

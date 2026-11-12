@@ -11,7 +11,7 @@ zero-dimension guards used by the empty-rank MPI path.
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczosArray import _matmul_nogil_test
+from impurityModel.ed.BlockLanczosCore import _matmul_nogil_test
 from impurityModel.test.support.testtol import inner_atol
 
 N = ord("N")

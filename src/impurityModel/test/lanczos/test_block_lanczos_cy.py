@@ -1,9 +1,9 @@
 import numpy as np
 
-from impurityModel.ed.BlockLanczos import (
+from impurityModel.ed.BlockLanczosCore import (
     block_lanczos,
 )
-from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.BlockLanczosCore import block_normalize
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 
@@ -73,7 +73,7 @@ def test_block_lanczos_cy_eigenvalues_block1():
         verbose=False,
     )
 
-    from impurityModel.ed.BlockLanczosArray import _build_full_T
+    from impurityModel.ed.BlockLanczosCore import _build_full_T
 
     T = _build_full_T(alphas, betas[: len(alphas) - 1])
     eigs_T = np.linalg.eigvalsh(T)
@@ -177,7 +177,7 @@ def test_block_lanczos_cy_eigenvalues_block2():
         verbose=False,
     )
 
-    from impurityModel.ed.BlockLanczosArray import _build_full_T
+    from impurityModel.ed.BlockLanczosCore import _build_full_T
 
     T = _build_full_T(alphas, betas[: len(alphas) - 1])
     eigs_T = np.sort(np.linalg.eigvalsh(T))
@@ -191,7 +191,7 @@ def test_converged_views_equivalence():
     what the removed np.array(alphas_list) would have produced) and that convergence /
     eigenvalues are unchanged.
     """
-    from impurityModel.ed.BlockLanczosArray import _build_full_T
+    from impurityModel.ed.BlockLanczosCore import _build_full_T
 
     h_op, basis, states, eigvals = create_diagonal_h_and_basis(6)
     st = ManyBodyState()

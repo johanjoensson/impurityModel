@@ -11,7 +11,7 @@ try:
 except ImportError:
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.BlockLanczosCore import block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last

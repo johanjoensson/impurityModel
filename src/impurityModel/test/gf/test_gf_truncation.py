@@ -374,7 +374,7 @@ def test_array_path_probe_respects_cap():
 def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
     """Run the bare sparse kernel on a capped proxy; returns (alphas, betas, status, proxy, resume state)."""
     from impurityModel.ed.basis_transcription import build_state
-    from impurityModel.ed.BlockLanczos import block_lanczos
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
     from impurityModel.ed.gf_primitives import _distributed_seed_qr
 
     basis = _excited_basis(np.inf, comm=comm)
@@ -402,7 +402,7 @@ def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
 def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
     """``stop_on_freeze`` ends the recurrence on the step that froze the support, with a state the
     usual resume protocol continues from: stop + resume == one uninterrupted run, bit for bit."""
-    from impurityModel.ed.BlockLanczos import block_lanczos
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     n_total = 8

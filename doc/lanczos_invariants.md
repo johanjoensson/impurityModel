@@ -10,13 +10,12 @@ Landing place for the incident knowledge stripped out of inline comments during 
 R2 comment-triage pass of the Lanczos/IRLM/TRLM redesign (see the plan at
 `i-want-a-thorough-agile-fern.md`). The source still carries a one-line pointer at each
 site this document expands on; this is where the "why", the numbers and the history
-live. Covers `BlockLanczos.pyx`, `_lanczos_step.pxi`, `BlockLanczosArray.pyx`,
-`_reort.pxi`, and the restart layer in `ed/trlm.py` / `ed/irlm.py`.
+live. Covers `BlockLanczosCore.pyx`, `_lanczos_step.pxi`, `_block_ops.pxi`, and the restart layer in `ed/trlm.py` / `ed/irlm.py`.
 
 **Note on file names.** The restart-layer business logic named below used to live in
 `_trlm.pxi` / `_irlm.pxi`. Those files no longer exist: `_trlm_core` / `_irlm_core`,
 locking, purging and result assembly are plain Python in `ed/trlm.py` and `ed/irlm.py`,
-which `BlockLanczos.pyx` re-exports. References here have been updated; older plan
+which `BlockLanczosCore` imports. References here have been updated; older plan
 documents under `doc/plans/` still use the `.pxi` names and are left as historical
 record.
 
@@ -76,7 +75,7 @@ below) and the run deadlocks loudly instead of silently corrupting the restart. 
 ## Deflation vs breakdown scales
 
 Two different questions, deliberately kept apart throughout this stack (see
-`_cholesky_or_deflate`'s contract, `BlockLanczosArray.pyx`, and `TSQR.tsqr` which
+`_cholesky_or_deflate`'s contract, `BlockLanczosCore.pyx`, and `TSQR.tsqr` which
 inherited it):
 
 - **Breakdown** — is the block numerically zero, i.e. is the block-Krylov space closed?
@@ -324,24 +323,11 @@ incident above, so the combination is unusable regardless.
 
 ## Compiler directives (boundscheck / wraparound)
 
-`BlockLanczos.pyx` compiles `boundscheck=False, wraparound=False, cpow=True`;
-`BlockLanczosArray.pyx` and the shared `BlockLanczosCore.pyx` both compile the opposite,
-`boundscheck=True, wraparound=True`. This is a deliberate, audited split, not drift:
-
-- `_lanczos_step.pxi` (included into `BlockLanczos.pyx`) already carries the workaround
-  `lst[len(lst) - 1]` instead of `lst[-1]` on its cdef-typed lists — `wraparound=False`
-  segfaults on negative indexing into a typed buffer rather than raising, so that pattern
-  is load-bearing for the file it's compiled in.
-- `BlockLanczosArray.pyx` has no negative indexing into any `cdef`-typed memoryview or C array.
-
-Unifying either direction has a cost with no offsetting benefit: turning `wraparound`/
-`boundscheck` off on the array kernel buys nothing today (no negative-index site exists
-to speed up) while silently removing the safety net around its heavier nogil buffer
-arithmetic; turning them on for `BlockLanczos.pyx` would require rewriting the
-`len(lst) - 1` workaround back to `[-1]` and re-auditing every other typed access in
-`_lanczos_step.pxi` for a directive it was never written against. Left as-is: strict/fast
-for the single-step MBS kernel, permissive/safe for the array kernel and the primitives
-both kernels share.
+All extension modules share one set of directives, defined in `setup.py` (`_DIRECTIVES`); a
+`# cython:` header in a `.pyx` would override it and defeat `IMPURITYMODEL_BUILD=debug`.
+`wraparound=False` everywhere, so `_lanczos_step.pxi` indexes its cdef-typed lists as
+`lst[len(lst) - 1]`, never `lst[-1]` (negative indexing into a typed buffer reads out of bounds
+rather than raising). The rationale is next to `_DIRECTIVES`.
 
 ## Removed material
 

@@ -23,7 +23,7 @@ is exercised only where the point *is* the historic contrast (``test_block_lancz
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczosArray import (
+from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
     block_lanczos,
     eigsh,

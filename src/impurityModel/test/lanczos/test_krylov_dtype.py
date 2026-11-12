@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.BlockLanczos import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.greens_function import _make_gf_convergence_monitor, calc_G
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, SparseKrylovDense

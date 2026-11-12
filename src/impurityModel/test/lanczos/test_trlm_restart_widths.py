@@ -39,7 +39,7 @@ try:
 except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practice
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.BlockLanczosCore import block_normalize
 from impurityModel.ed.greens_function import _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.trlm import _thick_restart_block_lanczos_array, thick_restart_block_lanczos

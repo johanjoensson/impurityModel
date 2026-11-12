@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.gf_convergence import (
     EvalMeshes,
     _gf_axis_tols,

@@ -40,10 +40,10 @@ from mpi4py import MPI
 
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_sparse_matrix
-from impurityModel.ed.BlockLanczos import (
+from impurityModel.ed.BlockLanczosCore import (
     block_lanczos,
 )
-from impurityModel.ed.BlockLanczosArray import (
+from impurityModel.ed.BlockLanczosCore import (
     block_normalize,
     eigh_block_tridiagonal,
 )

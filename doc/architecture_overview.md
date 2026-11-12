@@ -43,7 +43,7 @@ the representation-dispatching primitives of `_block_ops.pxi` (`block_apply`, `b
 `ndarray` blocks. The two public front ends differ only in how they build the starting blocks,
 the matvec and the Krylov store:
 
-`block_lanczos()` (`BlockLanczosCore.pyx`, re-exported by `BlockLanczos.pyx` and `BlockLanczosArray.pyx`) is the one
+`block_lanczos()` (`BlockLanczosCore.pyx`) is the one
 entry point: it picks the setup from the start block and runs the same `lanczos_step` loop.
 
 - **`ManyBodyState` blocks** — sparse / hash-distributed.
@@ -93,7 +93,7 @@ then forms `Q = A R^{-1}` by back substitution, instead of going through the Gra
   invariant subspace), `k == -1` (non-finite factor — a *corrupted* recurrence, not a closed
   one).
 - `TSQR.pyx` owns `EPS`, `DEFLATE_TOL`, `DEFLATE_EVAL_TOL` and `BREAKDOWN_TOL`;
-  `BlockLanczosCore` imports them directly and `BlockLanczosArray` / `BlockLanczos` re-export the ones their callers read from them.
+  `BlockLanczosCore` imports them directly.
 - `block_tsqr` (in `BlockLanczosCore.pyx`'s `_block_ops.pxi`) is the
   representation-dispatching entry point, so array, single-`ManyBodyState` and
   `list[ManyBodyState]` callers all run the same factorization.
@@ -108,7 +108,6 @@ modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a
   `_block_ops.pxi` (representation-dispatching block primitives, `DenseKrylovStore`) +
   `_lanczos_step.pxi` (`lanczos_step`, `_lanczos_loop`, the two front ends). `TSQR` is its only
   upstream dependency.
-- `BlockLanczos.pyx` / `BlockLanczosArray.pyx` = thin re-export modules.
 - `ManyBodyUtils.pyx` = `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
   `_krylov_store.pxi` (`SparseKrylovDense`) + `_block_state.pxi` (`ManyBodyState`).
 

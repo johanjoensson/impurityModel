@@ -511,7 +511,7 @@ def test_block_inner_dispatcher_accepts_blocks():
     """``BlockLanczosArray.block_inner`` must dispatch a ``ManyBodyState`` to
     ``block_inner_cy`` rather than falling through to the list-only ``inner_multi``
     (which would silently iterate determinant keys instead of rows)."""
-    from impurityModel.ed.BlockLanczosArray import block_inner
+    from impurityModel.ed.BlockLanczosCore import block_inner
 
     rng = np.random.default_rng(65)
     A_states = _random_states(rng, 3, 25)
@@ -525,7 +525,7 @@ def test_block_add_scaled_dispatcher_accepts_blocks():
     """``BlockLanczosArray.block_add_scaled`` must rebind (not mutate in place) when fed
     a ``ManyBodyState`` -- the union support can outgrow the target's own storage,
     so the caller must use the returned block, exactly as every current caller does."""
-    from impurityModel.ed.BlockLanczosArray import block_add_scaled
+    from impurityModel.ed.BlockLanczosCore import block_add_scaled
 
     rng = np.random.default_rng(66)
     A_states = _random_states(rng, 3, 25)
@@ -814,7 +814,7 @@ def test_block_combine_dispatcher_accepts_blocks():
     ``block_combine_sparse`` (prerequisite for Phase 5's TRLM Q_basis conversion:
     once Q_basis stays a block across a restart, every ``block_combine(Q_basis, ...)``
     call in ``ed/trlm.py`` hits this path)."""
-    from impurityModel.ed.BlockLanczosArray import block_combine
+    from impurityModel.ed.BlockLanczosCore import block_combine
 
     rng = np.random.default_rng(70)
     states = _random_states(rng, 4, 30)
@@ -837,7 +837,7 @@ def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
     that store, slaterWeightMin genuinely reaches this dispatcher from live TRLM
     calls, so the block arm takes the round trip through per-state ``prune`` rather
     than reusing the cheaper but differently-scoped ``prune_rows``."""
-    from impurityModel.ed.BlockLanczosArray import block_combine
+    from impurityModel.ed.BlockLanczosCore import block_combine
 
     det0 = _det(1)
     det1 = _det(2)
@@ -859,7 +859,7 @@ def test_block_orthogonalize_dispatcher_accepts_blocks():
     """``BlockLanczosArray.block_orthogonalize`` must dispatch a ``ManyBodyState``
     wp/Q pair to the block-native ``block_inner``/``block_add_scaled`` composition
     rather than the list-only ``block_orthogonalize_sparse``."""
-    from impurityModel.ed.BlockLanczosArray import block_orthogonalize
+    from impurityModel.ed.BlockLanczosCore import block_orthogonalize
 
     rng = np.random.default_rng(71)
     Q_states = _random_states(rng, 3, 25)
@@ -879,7 +879,7 @@ def test_block_normalize_accepts_blocks():
     """``block_normalize``'s non-array branch must accept a ``ManyBodyState``
     (``block_normalize_sparse`` was relaxed from a ``list``-typed parameter to a plain
     passthrough, since ``block_tsqr`` beneath it already dispatches on both)."""
-    from impurityModel.ed.BlockLanczosArray import block_normalize
+    from impurityModel.ed.BlockLanczosCore import block_normalize
 
     rng = np.random.default_rng(72)
     states = _random_states(rng, 3, 25)

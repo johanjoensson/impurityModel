@@ -45,7 +45,7 @@ better than :math:`\varepsilon^{3/4}`, far under the ``sqrt(EPS)`` semi-orthogon
 the reorthogonalization machinery maintains.
 
 This module is a leaf: it imports nothing from the solver layer, and it owns the machine
-constants and deflation floors that ``BlockLanczosArray`` (and through it every other
+constants and deflation floors that ``BlockLanczosCore`` (and through it every other
 Krylov module) re-exports.
 """
 

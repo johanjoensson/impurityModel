@@ -130,7 +130,7 @@ times, but the closure of an unrestricted calculation does not change with it.
 Orthogonal switches on the default Lanczos path:
 
 - **`sparse`** — `block_Green_sparse` operates on the `ManyBodyState` representation (the
-  matrix is never formed; the sparse hash-distributed Lanczos kernel `BlockLanczos.pyx`), vs
+  matrix is never formed; the sparse hash-distributed Lanczos kernel `BlockLanczosCore.pyx`), vs
   `block_green_impl` which forms a CSR sector (`DistributedSparseMatrix`) and runs the same
   `lanczos_step` on `ndarray` blocks (`block_lanczos` on `ndarray` blocks). Rule of thumb: array kernel for small/dense sectors, sparse when
   the matrix cannot be formed. See `architecture_overview.md` ("which one to use").

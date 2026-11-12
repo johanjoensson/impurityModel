@@ -26,7 +26,7 @@ Two properties these tests exist to protect, both of which a naive implementatio
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.greens_function import (
     _GF_MONITOR_POINTS,
     _GF_REL_TOL_FLOOR,

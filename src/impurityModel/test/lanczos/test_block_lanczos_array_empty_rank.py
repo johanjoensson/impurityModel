@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import _build_full_T, block_lanczos
+from impurityModel.ed.BlockLanczosCore import _build_full_T, block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 

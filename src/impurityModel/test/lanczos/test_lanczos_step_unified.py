@@ -13,7 +13,7 @@ Serial: the multi-rank behaviour of the loop is covered by the existing ``-n 2``
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.BlockLanczosCore import (
     DenseKrylovStore,
     block_add_scaled,

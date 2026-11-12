@@ -43,7 +43,7 @@ Issues = "https://github.com/johanjoensson/impurityModel//issues"
 
 
 [build-system]
-# scipy is a build-time dependency: BlockLanczosArray.pyx does
+# scipy is a build-time dependency: BlockLanczosCore.pyx does
 # `from scipy.linalg.cython_blas cimport zgemm`, so Cython needs scipy's
 # cython_blas.pxd present when compiling (not just at runtime).
 requires = ["setuptools >= 77.0.3", "setuptools-scm", "cython", "numpy", "scipy"]
@@ -109,8 +109,8 @@ ignore_missing_imports = true
 # analyze them. Treat them like the third-party libraries above.
 [[tool.mypy.overrides]]
 module = [
-    "impurityModel.ed.BiCGSTAB", "impurityModel.ed.BlockLanczos", "impurityModel.ed.BlockLanczosArray",
-    "impurityModel.ed.BlockLanczosCore", "impurityModel.ed.SparseScatter", "impurityModel.ed.GMRES",
+    "impurityModel.ed.BiCGSTAB", "impurityModel.ed.BlockLanczosCore",
+    "impurityModel.ed.SparseScatter", "impurityModel.ed.GMRES",
     "impurityModel.ed.ManyBodyUtils", "impurityModel.ed.TSQR",
 ]
 ignore_missing_imports = true

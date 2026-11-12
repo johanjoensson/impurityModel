@@ -21,7 +21,7 @@ check that the resulting ``calc_G`` reproduces the exact diagonal resolvent
 
 import numpy as np
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.greens_function import _trim_blocks, build_qr, calc_G
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.lanczos_fixtures import MockBasis

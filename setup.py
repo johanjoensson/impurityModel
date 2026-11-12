@@ -199,16 +199,6 @@ ext_modules = [
         extra_link_args=extra_link_args,
     ),
     Extension(
-        name="impurityModel.ed.BlockLanczos",
-        sources=[
-            os.path.join(_cython_src_dir, "BlockLanczos.pyx"),
-        ],
-        language="c++",
-        include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args,
-        extra_link_args=extra_link_args,
-    ),
-    Extension(
         name="impurityModel.ed.BlockLanczosCore",
         sources=[
             os.path.join(_cython_src_dir, "BlockLanczosCore.pyx"),
@@ -216,16 +206,6 @@ ext_modules = [
         depends=[
             os.path.join(_cython_src_dir, "_block_ops.pxi"),
             os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
-        ],
-        language="c++",
-        include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args,
-        extra_link_args=extra_link_args,
-    ),
-    Extension(
-        name="impurityModel.ed.BlockLanczosArray",
-        sources=[
-            os.path.join(_cython_src_dir, "BlockLanczosArray.pyx"),
         ],
         language="c++",
         include_dirs=include_dirs,

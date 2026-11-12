@@ -18,7 +18,7 @@ Two per-rank scaling regimes matter (see ``doc/architecture_overview.md``):
 
 * the sparse (hash-distributed) kernels hold ``~n_dets / ranks`` determinants per
   rank, so per-rank memory shrinks with the communicator size;
-* the array block-Lanczos kernel's matvec (``BlockLanczosArray.pyx`` / ``_block_ops.pxi``'s
+* the array block-Lanczos kernel's matvec (``BlockLanczosCore.pyx`` / ``_block_ops.pxi``'s
   ``block_apply``) used to replicate the full ``(global_N, block_width)`` product on every
   rank; since the row-chunked reduce-scatter fix (``doc/plans/dc_smo_performance.md``) it
   is bounded by ``max(counts, over ranks) * block_width`` instead, so this term now shrinks

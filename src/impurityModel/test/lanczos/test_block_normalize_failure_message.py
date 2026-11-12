@@ -20,7 +20,7 @@ pin that the block's shape travels with them.
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczosArray import BlockBreakdown, block_normalize
+from impurityModel.ed.BlockLanczosCore import BlockBreakdown, block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 

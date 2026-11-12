@@ -486,7 +486,7 @@ def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwa
 
     Matches ``block_lanczos``'s actual convergence-callback contract -- it calls
     ``converged_fn(alphas, betas, verbose=verbose, block_widths=block_widths + [n_curr])``
-    on *every* iteration (see ``BlockLanczos.pyx``), not just ``(alphas, betas, verbose)``.
+    on *every* iteration (see ``BlockLanczosCore.pyx``), not just ``(alphas, betas, verbose)``.
     Used by :class:`KrylovShiftedResolvent`, whose ``solve`` judges convergence itself
     between resume rounds via the exact shifted Galerkin residuals
     (:func:`_shifted_tridiag_solutions`), never through the kernel's own check.

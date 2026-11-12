@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczos import (
+from impurityModel.ed.BlockLanczosCore import (
     block_lanczos,
 )
-from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.BlockLanczosCore import block_normalize
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 

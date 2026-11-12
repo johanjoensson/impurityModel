@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import block_tsqr
+from impurityModel.ed.BlockLanczosCore import block_tsqr
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,

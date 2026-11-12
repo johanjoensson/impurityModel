@@ -3,8 +3,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state
-from impurityModel.ed.BlockLanczos import block_lanczos
-from impurityModel.ed.BlockLanczosArray import eigsh
+from impurityModel.ed.BlockLanczosCore import block_lanczos
+from impurityModel.ed.BlockLanczosCore import eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
@@ -259,7 +259,7 @@ def test_block_lanczos_cy_mpi(reort_mode):
 
 @pytest.mark.parametrize("reort_mode", [False, True])
 def test_get_block_Lanczos_matrices_and_GS(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -287,7 +287,7 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
 @pytest.mark.mpi
 @pytest.mark.parametrize("reort_mode", [False, True])
 def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -327,7 +327,7 @@ def test_get_block_Lanczos_array_matvec_survives_an_empty_rank():
     comm = MPI.COMM_WORLD
     if comm.size < 3:
         pytest.skip("needs >= 3 ranks to guarantee an empty rank with 2 determinants")
-    from impurityModel.ed.BlockLanczosArray import block_lanczos
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     eigvals = np.array([0.5, 1.0])
     states = [b"\x80", b"\x40"]
@@ -366,7 +366,7 @@ def test_get_block_Lanczos_array_sparse_matvec_survives_an_empty_rank():
     comm = MPI.COMM_WORLD
     if comm.size < 3:
         pytest.skip("needs >= 3 ranks to guarantee an empty rank with 2 determinants")
-    from impurityModel.ed.BlockLanczosArray import block_lanczos
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     eigvals = np.array([0.5, 1.0])
     states = [b"\x80", b"\x40"]

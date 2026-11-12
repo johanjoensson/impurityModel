@@ -15,7 +15,7 @@ Green's function must converge *reliably*:
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.greens_function import (
     _make_gf_convergence_monitor,
     _sanitize_continued_fraction,
