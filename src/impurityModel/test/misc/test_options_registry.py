@@ -78,3 +78,21 @@ def test_describe_uses_the_words_of_the_grammar():
     )
     assert rows["Determinant cap (truncation_threshold)"] == "unlimited"
     assert rows["GF swap refinement rounds"] == "off"
+
+
+def test_every_solver_option_is_a_toml_key():
+    from impurityModel.inputformat.schema import TABLES
+
+    keys = {key.name for key in TABLES["solver"].keys}
+    assert {s.name for s in OPTION_SPECS if s.group == "solver"} <= keys
+
+
+def test_every_flag_is_a_selfenergy_argument():
+    import argparse
+
+    from impurityModel.scripts import selfenergy
+
+    parser = argparse.ArgumentParser()
+    selfenergy.add_arguments(parser)
+    flags = {flag for action in parser._actions for flag in action.option_strings}
+    assert {s.cli for s in OPTION_SPECS if s.cli} <= flags

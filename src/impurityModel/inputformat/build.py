@@ -726,28 +726,20 @@ def _build_solver(resolved):
 
 
 def _solver_options_from(SolverOptions, table):
-    return SolverOptions(
-        dense_cutoff=table["dense_cutoff"],
-        sparse_green=table["sparse_green"],
-        gf_method=table["gf_method"],
-        # "auto" -> None: not specified, which is "all".
-        gf_admission=None if table["gf_admission"] == "auto" else table["gf_admission"],
-        gf_admit_tol=table["gf_admit_tol"],
-        # "auto" -> None (on); "on" / "off" are explicit.
-        gf_settle={"auto": None, "on": True, "off": False}[table["gf_settle"]],
-        gf_settle_ratio=table["gf_settle_ratio"],
-        gf_settle_retry={"auto": None, "on": True, "off": False}[table["gf_settle_retry"]],
-        gf_prune_tol=table["gf_prune_tol"],
-        gf_first_shell_tol=table["gf_first_shell_tol"],
-        gf_growth_tol=table["gf_growth_tol"],
-        gf_refine_rounds=table["gf_refine_rounds"],
-        gf_refine_tol=table["gf_refine_tol"],
-        gf_refine_swap=table["gf_refine_swap"],
-        gf_tol=table["gf_tol"],
-        gf_real_tol=table["gf_real_tol"],
-        gf_min_weight=table["gf_min_weight"],
-        sigma_causality_tol=table["sigma_causality_tol"],
-    )
+    """One keyword per registered solver option; the TOML key is the field name."""
+    from impurityModel.ed.options import OPTION_SPECS
+
+    kwargs = {}
+    for spec in OPTION_SPECS:
+        if spec.group != "solver":
+            continue
+        value = table[spec.name]
+        if spec.kind == "onoff":  # "auto" -> None (the option's own default), "on" / "off" explicit
+            value = {"auto": None, "on": True, "off": False}[value]
+        elif spec.auto_none is not None and value == spec.auto_none:
+            value = None
+        kwargs[spec.name] = value
+    return SolverOptions(**kwargs)
 
 
 def _build_spectra_options(resolved, notes):
