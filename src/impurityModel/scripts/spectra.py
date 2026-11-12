@@ -134,6 +134,12 @@ def add_arguments(parser):
         help="Smearing HWHM for RIXS (eV); <= 0 disables the RIXS calculation.",
     )
     parser.add_argument("--deltaNIXS", type=float, default=0.100, help="Smearing HWHM for NIXS (eV).")
+    parser.add_argument(
+        "--rixs-adaptive-tol",
+        type=float,
+        default=None,
+        help="Stop tolerance of the greedy adaptive sampling of the RIXS incoming-energy grid (default: solve the whole grid).",
+    )
     add_cap_argument(parser)
     parser.add_argument(
         "--cost_budget",
@@ -252,6 +258,7 @@ def run(args):
         delta=args.delta,
         deltaRIXS=args.deltaRIXS,
         deltaNIXS=args.deltaNIXS,
+        rixs_adaptive_tol=args.rixs_adaptive_tol,
         radial=radial,
         auto_block_structure=args.auto_block_structure,
     )

@@ -416,3 +416,9 @@ def test_the_growth_tolerance_flag_overrides_the_record_and_leaving_lanczos_clea
         out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
     )
     assert bicg.gf_growth_tol is None
+
+
+def test_spectra_rixs_adaptive_tol_reaches_the_options():
+    args = _parse(spectra.add_arguments, ["h0.pickle", "radial.dat", "--rixs-adaptive-tol", "1e-4"])
+    assert args.rixs_adaptive_tol == 1e-4
+    assert _parse(spectra.add_arguments, ["h0.pickle", "radial.dat"]).rixs_adaptive_tol is None

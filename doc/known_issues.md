@@ -65,7 +65,7 @@ one had an empty conduction list (fixed; see `test/spectra/test_bath_layout.py`)
 
 A production self-energy run can hit `sigma.check_greens_function`'s causality check
 (`Im Sigma_ii(omega) > 0`) at a real-frequency point sitting on a sharp hybridization
-resonance. `config.SIGMA_CAUSALITY_TOL` (default `1e-3`, relative, per diagonal orbital) warns
+resonance. `SolverOptions.sigma_causality_tol` (`sigma_causality_tol` on the solver line, `--sigma-causality-tol`, `[solver].sigma_causality_tol`; default `1e-3`, relative, per diagonal orbital) warns
 and continues below that threshold instead of raising — sized against a real production run
 (see below) that violated at `7.6e-3` — but the mechanism itself is a genuine finite-resolution
 artifact of the excited-state basis and real-axis broadening, not a solver defect.
@@ -112,7 +112,7 @@ knobs the user already owns, not a code path to patch.
 
 **Why it is not fixed here.** There is no code defect to fix: `Sigma = G0^-1 - G^-1` is exact
 only in the limit of an unrestricted excited-sector basis and infinitesimal broadening, and
-production runs use neither for tractability. `SIGMA_CAUSALITY_TOL` accepts that trade
+production runs use neither for tractability. `sigma_causality_tol` accepts that trade
 explicitly instead of aborting a multi-hour/multi-rank job over an artifact whose only cure is
 "spend more compute" or "smooth more."
 

@@ -199,7 +199,7 @@ eigendecompositions to disk across runs (`config.GF_SECTOR_CACHE_DIR`) — the o
 is the dominant cost, so it is paid once per material rather than once per run.
 
 On top of the per-`wIn` chain sits the **greedy adaptive sampler** (`_rixs_map_adaptive`,
-enabled by `config.GF_RIXS_ADAPTIVE_TOL`): a set-valued AAA rational interpolant predicts the
+enabled by `SpectraOptions.rixs_adaptive_tol`, i.e. `--rixs-adaptive-tol` or `[spectroscopy.rixs].adaptive_tol`): a set-valued AAA rational interpolant predicts the
 map and only the incoming energies it cannot yet predict are actually solved (measured 28 of
 121 solves on NiO L3 at 1e-4 relative error).
 
