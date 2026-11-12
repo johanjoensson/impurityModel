@@ -125,7 +125,7 @@ class BasisOptions:
 
 #: The Green's-function support options a run uses when the options leave them unset (``gf_method="lanczos"``):
 #: importance-pruned growth at this tolerance and this many swap-refinement rounds (a unit the cap does not bind is
-#: not refined). ``0`` switches either off; archives that predate the options read as ``0``.
+#: not refined). ``0`` switches either off. An unset option is an absent archive attribute and reads back as unset, so a replay uses these defaults.
 DEFAULT_GF_PRUNE_TOL = 1e-3
 DEFAULT_GF_REFINE_ROUNDS = 3
 
@@ -308,7 +308,7 @@ class SolverOptions:
         for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol"):
             value = getattr(self, name)
             if value is None or (value == 0.0 and name == "gf_prune_tol"):
-                continue  # 0 is the explicit off: it is also what an archive without the option reads as
+                continue  # 0 is the explicit off
             if self.gf_method != "lanczos":
                 raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
             if not (math.isfinite(value) and value >= 0.0):
@@ -694,7 +694,7 @@ _CLI = {
         "--gf-prune-tol",
         "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant only if "
         "its largest amplitude on the normalised step block exceeds this. Deferred determinants are not banned. "
-        "Replaces the support settle (default: 1e-3; 0 is off; an archive without the option reads as off).",
+        "Replaces the support settle (default: 1e-3; 0 is off; an archive that did not set it replays with the default).",
     ),
     "gf_first_shell_tol": (
         "--gf-first-shell-tol",
@@ -710,7 +710,7 @@ _CLI = {
         "--gf-refine-rounds",
         "Swap refinement of a unit the determinant cap froze: up to this many rounds of swapping the least "
         "important retained determinants for the most important discovered ones at the same cap (default: 3; 0 "
-        "is off; an archive without the option reads as off). Needs the discovered matrix; costs minutes per "
+        "is off; an archive that did not set it replays with the default). Needs the discovered matrix; costs minutes per "
         "capped unit.",
     ),
     "gf_refine_tol": (
@@ -775,7 +775,7 @@ def _read_value(spec, word, text):
         except ValueError:
             # 2e3 style
             number = _read_number(word, text)
-            if number != int(number):
+            if not math.isfinite(number) or number != int(number):
                 raise ValueError(f"'{word}' needs an integer, got {text!r}") from None
             return int(number)
     if kind == "onoff":
@@ -841,7 +841,10 @@ def parse_option_tokens(tokens):
 def options_to_attrs(basis, solver):
     """Flat ``{attr: value}`` record of the registered options, for the archive."""
     groups = {"basis": basis, "solver": solver}
-    return {spec.attr_name: getattr(groups[spec.group], spec.name) for spec in OPTION_SPECS}
+    attrs = {spec.attr_name: getattr(groups[spec.group], spec.name) for spec in OPTION_SPECS}
+    if isinstance(attrs.get("mv"), dict):
+        raise ValueError("a per-group mixed_valence dict cannot be recorded in an archive; use None, a bool or a word")
+    return attrs
 
 
 def options_from_attrs(attrs):

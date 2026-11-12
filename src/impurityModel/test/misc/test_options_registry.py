@@ -96,3 +96,15 @@ def test_every_flag_is_a_selfenergy_argument():
     selfenergy.add_arguments(parser)
     flags = {flag for action in parser._actions for flag in action.option_strings}
     assert {s.cli for s in OPTION_SPECS if s.cli} <= flags
+
+
+@pytest.mark.parametrize("word", ["dense_cutoff", "dn", "gf_refine_rounds"])
+@pytest.mark.parametrize("text", ["inf", "nan", "1.5"])
+def test_an_integer_option_refuses_a_non_integer_with_a_value_error(word, text):
+    with pytest.raises(ValueError):
+        parse_option_tokens([word, text])
+
+
+def test_a_mixed_valence_dict_is_refused_by_the_archive_record():
+    with pytest.raises(ValueError, match="mixed_valence"):
+        options_to_attrs(BasisOptions(nominal_occ={2: 8}, mixed_valence={2: 1}), SolverOptions())
