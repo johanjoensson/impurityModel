@@ -10,7 +10,8 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.model import BasisOptions, Meshes, SolverOptions, load_model, load_selfenergy_archive
+from impurityModel.ed.archive import load_selfenergy_archive
+from impurityModel.ed.model import BasisOptions, Meshes, SolverOptions, load_model
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
 from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args

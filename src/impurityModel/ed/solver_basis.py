@@ -293,15 +293,12 @@ def prepare_solver_basis(
         # nothing about which orbitals it stands for.
         print(f"Block structure: {len(block_structure.blocks)} blocks, solving in the basis supplied by the caller")
         print("Impurity orbital groups:")
-        print(f"  {'group':>5}  {'orbitals':<20} {'imp':>4} {'val':>4} {'con':>4}" f" {'nominal':>7}")
+        print(f"  {'group':>5}  {'orbitals':<20} {'imp':>4} {'val':>4} {'con':>4} {'nominal':>7}")
         for i in sorted(impurity_orbitals):
             orbs = sorted(orb for block in impurity_orbitals[i] for orb in block)
             n_val = sum(len(block) for block in valence_baths[i])
             n_con = sum(len(block) for block in conduction_baths[i])
-            print(
-                f"  {i:>5}  {format_index_ranges(orbs):<20} {len(orbs):>4} {n_val:>4} {n_con:>4}"
-                f" {nominal_occ[i]:>7}"
-            )
+            print(f"  {i:>5}  {format_index_ranges(orbs):<20} {len(orbs):>4} {n_val:>4} {n_con:>4} {nominal_occ[i]:>7}")
     if multishell:
         shell_has_bath = dict.fromkeys(range(len(shell_ls)), False)
         for k in impurity_orbitals:

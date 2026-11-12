@@ -14,17 +14,14 @@ Layering: this is a bottom-layer module. It imports only ``atomic_physics``,
 without pulling in the many-body machinery.
 """
 
-import ast
 import os
-import re
-import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics, config, h0_format
+from impurityModel.ed import atomic_physics, h0_format
 from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator, get_noninteracting_hamiltonian_operator
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
@@ -42,7 +39,6 @@ __all__ = [
     "SolverOptions",
     "SpectraOptions",
     "atomic_u4",
-    "load_selfenergy_archive",
 ]
 
 
@@ -413,7 +409,7 @@ class ImpurityModel:
             reason = (
                 "already contains spin-orbit coupling"
                 if parsed.contains_soc
-                else "does not declare 'contains_soc', so whether it already contains " "spin-orbit coupling is unknown"
+                else "does not declare 'contains_soc', so whether it already contains spin-orbit coupling is unknown"
             )
             raise ValueError(
                 f"{path}: the file {reason}; xi={xi} could double-count it. Pass xi=0, or "
@@ -621,8 +617,7 @@ class ImpurityModel:
         # susceptibility builds no dipole operator and has no reason to obey it.
         if set(shells) != set(val_shells):
             raise ValueError(
-                f"shells and val_shells must cover the same angular momenta: "
-                f"{sorted(shells)} vs {sorted(val_shells)}"
+                f"shells and val_shells must cover the same angular momenta: {sorted(shells)} vs {sorted(val_shells)}"
             )
 
         shells = OrderedDict(shells)
@@ -634,7 +629,7 @@ class ImpurityModel:
             reason = (
                 "already contains spin-orbit coupling"
                 if parsed_h0.contains_soc
-                else "does not declare 'contains_soc', so whether it already contains " "spin-orbit coupling is unknown"
+                else "does not declare 'contains_soc', so whether it already contains spin-orbit coupling is unknown"
             )
             raise ValueError(
                 f"{h0_filename}: the file {reason}; the l={valence_l} spin-orbit coupling "
@@ -761,7 +756,9 @@ class ImpurityModel:
         -------
         ImpurityModel
         """
-        raw = _read_archive_group(path, cluster, iteration, with_options=False)
+        from impurityModel.ed.archive import read_archive_group
+
+        raw = read_archive_group(path, cluster, iteration)
         return cls(
             h0=raw["h0"],
             u4=raw["u4"],
@@ -1096,312 +1093,6 @@ def _operator_from_matrix(h_matrix) -> dict:
     exactly one place.
     """
     return matrixToIOp(np.asarray(h_matrix))
-
-
-def _optional_float(value):
-    return None if value is None else float(value)
-
-
-def _optional_int(value):
-    return None if value is None else int(value)
-
-
-_TRUE_WORDS = frozenset({"true", "on", "yes", "1"})
-_FALSE_WORDS = frozenset({"false", "off", "no", "0"})
-
-
-def _optional_bool(value):
-    """An archive boolean attribute: ``None`` when absent or recorded as ``"None"``.
-
-    Accepts real and numpy booleans, the integers 0 and 1, and the strings (or bytes) true/false, on/off, yes/no, 1/0
-    in any case. Anything else raises: ``bool("False")`` is ``True``, so a writer that stringifies booleans must not be
-    read with ``bool()``."""
-    if value is None:
-        return None
-    if isinstance(value, (bool, np.bool_)):
-        return bool(value)
-    if isinstance(value, (int, np.integer)) and int(value) in (0, 1):
-        return bool(int(value))
-    if isinstance(value, (str, bytes)):
-        word = (value.decode() if isinstance(value, bytes) else value).strip().lower()
-        if word == "none":
-            return None
-        if word in _TRUE_WORDS:
-            return True
-        if word in _FALSE_WORDS:
-            return False
-    raise ValueError(f"cannot read {value!r} as a boolean archive attribute")
-
-
-def _optional_str(value):
-    """An archive string attribute, ``None`` when absent (h5py may hand back ``bytes``)."""
-    if value is None:
-        return None
-    return value.decode() if isinstance(value, bytes) else str(value)
-
-
-def _replayable_gf_method(gf_method):
-    """Map a ``gf_method`` recorded by an older run onto one this version still runs.
-
-    An archive is a record of a finished calculation, so replaying it must not fail on a kernel
-    that has since been retired (:data:`config.RETIRED_GF_METHODS`): it is replayed with the
-    default Lanczos kernel instead, loudly. Every other front end rejects a retired value.
-    """
-    if gf_method in config.RETIRED_GF_METHODS:
-        warnings.warn(
-            f"archive records gf_method={gf_method!r}, which {config.RETIRED_GF_METHODS[gf_method]}; "
-            "replaying it with gf_method='lanczos'.",
-            stacklevel=2,
-        )
-        return "lanczos"
-    return gf_method
-
-
-def _archive_attr(attrs, key, default=None):
-    """Group attribute with the interface's ``None``-stored-as-the-string-``"None"`` undone."""
-    value = attrs.get(key, default)
-    if isinstance(value, (str, bytes)) and str(value) == "None":
-        return None
-    return value
-
-
-def _archive_mixed_valence(attrs):
-    """The archive's ``mv``: ``None`` (unset), a tri-state word, or a legacy int / ``{group: int}`` rendering.
-
-    Old archives stored the interface's integer (``0``), a numpy scalar, or the text of a dict; a tri-state
-    archive stores ``"auto"``/``"on"``/``"off"``. The result is what
-    :func:`~impurityModel.ed.sector_ensemble.resolve_mixed_valence` accepts, so reading never decides the mode.
-    """
-    value = _archive_attr(attrs, "mv")
-    if isinstance(value, bytes):
-        value = value.decode()
-    if isinstance(value, str):
-        text = value.strip()
-        if text.lower() in ("auto", "on", "off", "true", "false"):
-            return text.lower()
-        try:
-            return ast.literal_eval(text)
-        except (ValueError, SyntaxError):
-            return text
-    if hasattr(value, "item"):  # numpy scalar
-        return value.item()
-    return value
-
-
-def _archived_excitation_budget(attrs):
-    """The excitation budget an archive records, or ``None``: the attribute, else the third token of the old grammar.
-
-    The budget is retired (the excited bases run under bounds derived from the converged ground state), so this is
-    only read to tell the replayer that its run will differ from the archived one.
-    """
-    recorded = _archive_attr(attrs, "excitation_budget")
-    if recorded is not None:
-        return int(recorded), "attribute"
-    tokens = str(attrs.get("solver line", "")).split("!")[0].split("#")[0].split()
-    if len(tokens) >= 3 and re.fullmatch(r"-?\d+", tokens[2]):
-        return int(tokens[2]), f"solver line {' '.join(tokens)!r}"
-    return None
-
-
-def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -> dict:
-    """Parse one ``(cluster, iteration)`` group of an ``impurityModel_data.h5`` archive.
-
-    Returns the raw physics arrays (``h0`` operator dict, ``u4``, ``impurity_orbitals``,
-    ``rot_to_spherical``, ``n_spin_orbitals``), both frequency meshes and every recorded
-    solver/basis option, plus the group ``label``. Shared by :meth:`ImpurityModel.from_hdf5`
-    and :func:`load_selfenergy_archive`. ``with_options=False`` (the physics-only
-    ``from_hdf5``) skips recovering the excitation budget from the solver line, and its warning.
-    """
-    import h5py
-
-    with h5py.File(path, "r") as f:
-        if iteration is None:
-            iteration = int(f.attrs.get("last iteration", 1))
-        if cluster is None:
-            labels = sorted(f.keys())
-            if not labels:
-                raise ValueError(f"{path}: archive holds no cluster groups")
-            cluster = labels[0].rsplit(" ", 1)[0]
-        name = f"{cluster} {iteration}"
-        if name not in f:
-            raise ValueError(f"{path}: no group {name!r}; available: {sorted(f.keys())}")
-        g = f[name]
-        attrs = dict(g.attrs)
-
-        h_solver = np.asarray(g["H solver"])
-        _u4 = np.asarray(g["U"])
-        _dc = np.asarray(g["DC"]) if "DC" in g else None
-        iw_mesh = np.asarray(g["Matsubara frequency mesh"])
-        w_mesh = np.asarray(g["Real frequency mesh"])
-        rot_to_spherical = np.asarray(g["Rot to spherical"])
-        impurity_indices = [int(i) for i in np.asarray(g["Impurity orbitals"])]
-        # Multi-shell archives only; absent means one shell inferred from the column count.
-        _shell_l = g["Spherical shell l"] if "Spherical shell l" in g else attrs.get("Spherical shell l")
-        shell_ls = tuple(int(l) for l in np.atleast_1d(np.asarray(_shell_l))) if _shell_l is not None else None
-        _occ_shell = (
-            g["nominal occupation per shell"]
-            if "nominal occupation per shell" in g
-            else attrs.get("nominal occupation per shell")
-        )
-        nominal_occ = (
-            {a: int(n) for a, n in enumerate(np.atleast_1d(np.asarray(_occ_shell)))}
-            if _occ_shell is not None
-            else {0: int(attrs["nominal occupation"])}
-        )
-
-    # The interface hands calc_selfenergy the Hamiltonian as a second-quantized operator.
-    h0 = _operator_from_matrix(h_solver)
-    u4 = atomic_physics.getUop_from_rspt_u4(_u4)
-    dc = tensors_to_operator(_dc).to_dict() if _dc is not None else None
-
-    truncation_threshold = _archive_attr(attrs, "truncation_threshold")
-    if truncation_threshold is not None:
-        truncation_threshold = float(truncation_threshold)
-    dN = _archive_attr(attrs, "dN")
-    if dN is not None:
-        dN = int(dN)
-    recorded_budget = _archived_excitation_budget(attrs) if with_options else None
-    if recorded_budget is not None:
-        value, where = recorded_budget
-        warnings.warn(
-            f"archive records excitation_budget={value} (from its {where}), which is retired: this replay derives "
-            "the excitation bounds from its own converged ground state (see the ground-state report), so its basis "
-            "and Sigma can differ from the archived run's.",
-            stacklevel=2,
-        )
-
-    recorded_reort = _archive_attr(attrs, "reort") if with_options else None
-    if recorded_reort is not None:
-        warnings.warn(
-            f"archive records reort={recorded_reort!r}, which is retired: the Green's-function path "
-            "always runs without reorthogonalization and the eigensolver always reorthogonalizes "
-            "fully; replaying it with those.",
-            stacklevel=2,
-        )
-
-    return {
-        "label": name,
-        "h0": h0,
-        "u4": u4,
-        "dc": dc,
-        "n_spin_orbitals": int(h_solver.shape[0]),
-        "impurity_orbitals": {0: impurity_indices},
-        "rot_to_spherical": rot_to_spherical,
-        # Meshes are stored real-valued; the Matsubara mesh is z = i * nu (see Meshes.iw).
-        "iw_mesh": iw_mesh if iw_mesh.size else None,
-        "w_mesh": w_mesh if w_mesh.size else None,
-        "nominal_occ": nominal_occ,
-        "shell_ls": shell_ls,
-        "mixed_valence": _archive_mixed_valence(attrs),
-        "tau": float(attrs["tau"]),
-        "delta": float(attrs["delta"]),
-        "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", config.GS_DENSE_CUTOFF)),
-        "chain_restrict": bool(_archive_attr(attrs, "chain_restrict", False)),
-        "occ_cutoff": float(_archive_attr(attrs, "occ_cutoff", 1e-6)),
-        "truncation_threshold": truncation_threshold,
-        "slater_weight_min": float(_archive_attr(attrs, "slater_min", 0.0)),
-        "dN": dN,
-        # Absent from archives written before the cost budget existed: those runs had none.
-        "cost_budget": _optional_float(_archive_attr(attrs, "cost_budget")),
-        # Absent from archives written before it was recorded: those runs used the default.
-        "e_pt2_tol": _optional_float(_archive_attr(attrs, "e_pt2_tol")),
-        # Absent from archives written before it existed: those runs let the interaction merge blocks.
-        "interaction_merges_blocks": _archive_attr(attrs, "interaction_merges_blocks", True),
-        "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
-        "gf_method": _replayable_gf_method(str(_archive_attr(attrs, "gf_method", "lanczos"))),
-        # Absent from archives written before the policy was an option: those runs did not set it.
-        "gf_admission": _optional_str(_archive_attr(attrs, "gf_admission")),
-        "gf_admit_tol": _optional_float(_archive_attr(attrs, "gf_admit_tol")),
-        # Absent from archives written before the tolerances were options: those runs used the default.
-        "gf_tol": _optional_float(_archive_attr(attrs, "gf_tol")),
-        "gf_real_tol": _optional_float(_archive_attr(attrs, "gf_real_tol")),
-        "gf_min_weight": _optional_float(_archive_attr(attrs, "gf_min_weight")),
-        # Absent from archives written before the support settle was an option: those runs ran its default.
-        "gf_settle": _optional_bool(_archive_attr(attrs, "gf_settle")),
-        "gf_settle_ratio": _optional_float(_archive_attr(attrs, "gf_settle_ratio")),
-        "gf_settle_retry": _optional_bool(_archive_attr(attrs, "gf_settle_retry")),
-        # Absent from archives written before pruned growth was an option: those runs did not prune.
-        # Absent from archives written before pruned growth and swap refinement existed: those runs did neither, so
-        # absence is an explicit off (0), not the new default.
-        "gf_prune_tol": _optional_float(_archive_attr(attrs, "gf_prune_tol", 0.0)),
-        "gf_first_shell_tol": _optional_float(_archive_attr(attrs, "gf_first_shell_tol")),
-        # Absent from archives written before the growth tolerance existed: those runs grew to the full tolerance.
-        "gf_growth_tol": _optional_float(_archive_attr(attrs, "gf_growth_tol")),
-        "gf_refine_rounds": _optional_int(_archive_attr(attrs, "gf_refine_rounds", 0)),
-        "gf_refine_tol": _optional_float(_archive_attr(attrs, "gf_refine_tol")),
-        "gf_refine_swap": _optional_float(_archive_attr(attrs, "gf_refine_swap")),
-    }
-
-
-def load_selfenergy_archive(path, cluster=None, iteration=None):
-    """Reconstruct a full ``calc_selfenergy`` call from an ``impurityModel_data.h5`` archive.
-
-    Returns ``(model, meshes, basis, solver, cluster_label)`` -- the :class:`ImpurityModel`
-    together with the frequency meshes and the recorded basis/solver options, so an archived
-    DFT-embedded self-energy run can be reproduced offline (see :meth:`ImpurityModel.from_hdf5`
-    for the physics-only view).
-
-    Parameters
-    ----------
-    path : str or path-like
-        Path to the archive.
-    cluster : str, optional
-        Cluster label; defaults to the first group's label.
-    iteration : int, optional
-        DMFT iteration; defaults to the archive's ``last iteration`` attribute.
-
-    Returns
-    -------
-    (ImpurityModel, Meshes, BasisOptions, SolverOptions, str)
-    """
-    raw = _read_archive_group(path, cluster, iteration)
-    model = ImpurityModel(
-        h0=raw["h0"],
-        dc=raw["dc"],
-        u4=raw["u4"],
-        impurity_orbitals=raw["impurity_orbitals"],
-        rot_to_spherical=raw["rot_to_spherical"],
-        n_spin_orbitals=raw["n_spin_orbitals"],
-        shell_ls=raw["shell_ls"],
-    )
-    meshes = Meshes(
-        iw=1j * raw["iw_mesh"] if raw["iw_mesh"] is not None else None,
-        w=raw["w_mesh"],
-        delta=raw["delta"],
-    )
-    basis = BasisOptions(
-        nominal_occ=raw["nominal_occ"],
-        mixed_valence=raw["mixed_valence"],
-        dN=raw["dN"],
-        truncation_threshold=raw["truncation_threshold"],
-        chain_restrict=raw["chain_restrict"],
-        occ_cutoff=raw["occ_cutoff"],
-        slater_weight_min=raw["slater_weight_min"],
-        tau=raw["tau"],
-        cost_budget=raw["cost_budget"],
-        e_pt2_tol=raw["e_pt2_tol"],
-        interaction_merges_blocks=_optional_bool(raw["interaction_merges_blocks"]) is not False,
-    )
-    solver = SolverOptions(
-        dense_cutoff=raw["dense_cutoff"],
-        sparse_green=raw["sparse_green"],
-        gf_method=raw["gf_method"],
-        gf_admission=raw["gf_admission"],
-        gf_admit_tol=raw["gf_admit_tol"],
-        gf_tol=raw["gf_tol"],
-        gf_real_tol=raw["gf_real_tol"],
-        gf_min_weight=raw["gf_min_weight"],
-        gf_settle=raw["gf_settle"],
-        gf_settle_ratio=raw["gf_settle_ratio"],
-        gf_settle_retry=raw["gf_settle_retry"],
-        gf_prune_tol=raw["gf_prune_tol"],
-        gf_first_shell_tol=raw["gf_first_shell_tol"],
-        gf_growth_tol=raw["gf_growth_tol"],
-        gf_refine_rounds=raw["gf_refine_rounds"],
-        gf_refine_tol=raw["gf_refine_tol"],
-        gf_refine_swap=raw["gf_refine_swap"],
-    )
-    return model, meshes, basis, solver, raw["label"]
 
 
 def _count_spin_orbitals(h0) -> int:

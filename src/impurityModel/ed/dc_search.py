@@ -234,7 +234,7 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
             break
         if cap <= min_cap:
             raise MemoryError(
-                f"the double-counting cap could not be evaluated even at the floor of {min_cap:,} " "determinants"
+                f"the double-counting cap could not be evaluated even at the floor of {min_cap:,} determinants"
             )
         cap = max(int(cap) // 2, min_cap)
         status = "memory_retreat"

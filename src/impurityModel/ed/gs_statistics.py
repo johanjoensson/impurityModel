@@ -1031,7 +1031,7 @@ def print_gs_statistics(stats, file=None, verbose=1):
         else:
             occ = f"{sorted(d['impurity_occupied'])}|{d['valence_occupied']}|{d['conduction_occupied']}"
         print(
-            f"{n_imp:>5d} {n_val:>5d} {n_con:>5d} " f"{d['weight']:>12.6f} {100 * d['fraction']:>8.3f}  {occ}",
+            f"{n_imp:>5d} {n_val:>5d} {n_con:>5d} {d['weight']:>12.6f} {100 * d['fraction']:>8.3f}  {occ}",
             file=file,
         )
 

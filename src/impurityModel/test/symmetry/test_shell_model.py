@@ -151,7 +151,7 @@ def test_model_shell_ls_defaults_to_one_inferred_shell_and_survives_the_construc
 
 def test_archive_reads_per_shell_l_and_occupation_when_present_and_not_otherwise(tmp_path):
     h5py = pytest.importorskip("h5py")
-    from impurityModel.ed.model import _read_archive_group
+    from impurityModel.ed.archive import ARCHIVE_VERSION, read_archive_group
 
     def write(path, multi):
         with h5py.File(path, "w") as f:
@@ -164,17 +164,17 @@ def test_archive_reads_per_shell_l_and_occupation_when_present_and_not_otherwise
             g["Impurity orbitals"] = np.arange(n)
             g["Matsubara frequency mesh"] = np.zeros(0)
             g["Real frequency mesh"] = np.zeros(0)
-            g.attrs.update({"nominal occupation": 8, "tau": 0.1, "delta": 0.1, "mv": 0})
+            g.attrs.update({"nominal occupation": 8, "tau": 0.1, "delta": 0.1, "archive version": ARCHIVE_VERSION})
             if multi:
                 g["Spherical shell l"] = np.array([1, 2])
                 g["nominal occupation per shell"] = np.array([6, 8])
 
     write(tmp_path / "a.h5", False)
     write(tmp_path / "b.h5", True)
-    single = _read_archive_group(tmp_path / "a.h5", with_options=False)
-    assert single["shell_ls"] is None and single["nominal_occ"] == {0: 8}
-    multi = _read_archive_group(tmp_path / "b.h5", with_options=False)
-    assert multi["shell_ls"] == (1, 2) and multi["nominal_occ"] == {0: 6, 1: 8}
+    single = read_archive_group(tmp_path / "a.h5")
+    assert single["shell_ls"] is None and single["basis_kwargs"]["nominal_occ"] == {0: 8}
+    multi = read_archive_group(tmp_path / "b.h5")
+    assert multi["shell_ls"] == (1, 2) and multi["basis_kwargs"]["nominal_occ"] == {0: 6, 1: 8}
 
 
 def test_whole_shell_spin_pairs_cover_every_shell_of_a_multishell_rotation():

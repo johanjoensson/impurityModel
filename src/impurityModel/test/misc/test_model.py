@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import atomic_physics
+from impurityModel.ed.archive import load_selfenergy_archive
 from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.model import (
     BasisOptions,
@@ -14,7 +15,6 @@ from impurityModel.ed.model import (
     Meshes,
     SolverOptions,
     atomic_u4,
-    load_selfenergy_archive,
 )
 from impurityModel.ed.operator_algebra import c2i, matrixToIOp
 from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL, DEFAULT_GF_REFINE_ROUNDS
@@ -118,22 +118,11 @@ def test_from_h0_file_matches_nio_workload_inputs():
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
 
 
-def _write_synthetic_archive(
-    path,
-    solver_line="1 1 chain",
-    excitation_budget=None,
-    e_pt2_tol=None,
-    gf_method=None,
-    gf_admission=None,
-    gf_admit_tol=None,
-    reort=None,
-):
-    """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does.
-
-    ``solver_line=None`` omits the provenance line; ``excitation_budget`` (when given) writes the
-    attribute newer interface versions store.
-    """
+def _write_synthetic_archive(path, basis_kwargs=None, solver_kwargs=None):
+    """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) through the archive writer."""
     import h5py
+
+    from impurityModel.ed.archive import write_selfenergy_group
 
     h_solver = np.zeros((3, 3), dtype=complex)
     h_solver[0, 0] = 0.5
@@ -142,41 +131,32 @@ def _write_synthetic_archive(
     h_solver[0, 2] = h_solver[2, 0] = 0.3  # impurity-bath hybridization
     u4 = np.zeros((2, 2, 2, 2), dtype=complex)
     u4[0, 1, 1, 0] = 2.0
+    basis = BasisOptions(nominal_occ={0: 1}, tau=0.0025, slater_weight_min=0.0, **(basis_kwargs or {}))
+    solver = SolverOptions(dense_cutoff=500, **(solver_kwargs or {}))
     with h5py.File(path, "w") as f:
         f.attrs["last iteration"] = 2
-        g = f.create_group("X 2")
-        g.create_dataset("H solver", data=h_solver)
-        g.create_dataset("U", data=u4)
-        g.create_dataset("Matsubara frequency mesh", data=np.linspace(0.1, 5.0, 8))
-        g.create_dataset("Real frequency mesh", data=np.linspace(-3, 3, 11))
-        g.create_dataset("Rot to spherical", data=np.eye(2, dtype=complex))
-        g.create_dataset("Impurity orbitals", data=np.array([0, 1]))
-        g.attrs["nominal occupation"] = 1
-        g.attrs["tau"] = 0.0025
-        g.attrs["delta"] = 0.1
-        g.attrs["mv"] = "None"
-        if reort is not None:
-            g.attrs["reort"] = reort
-        g.attrs["dense_cutoff"] = 500
-        g.attrs["spin_flip_dj"] = False
-        g.attrs["chain_restrict"] = True
-        g.attrs["occ_cutoff"] = 1e-6
-        g.attrs["truncation_threshold"] = "None"
-        g.attrs["slater_min"] = 0.0
-        g.attrs["dN"] = "None"
-        g.attrs["sparse_green"] = True
-        if gf_method is not None:
-            g.attrs["gf_method"] = gf_method
-        if gf_admission is not None:
-            g.attrs["gf_admission"] = gf_admission
-        if gf_admit_tol is not None:
-            g.attrs["gf_admit_tol"] = gf_admit_tol
-        if solver_line is not None:
-            g.attrs["solver line"] = solver_line
-        if excitation_budget is not None:
-            g.attrs["excitation_budget"] = excitation_budget
-        if e_pt2_tol is not None:
-            g.attrs["e_pt2_tol"] = e_pt2_tol
+        write_selfenergy_group(
+            f.create_group("X 2"),
+            basis=basis,
+            solver=solver,
+            delta=0.1,
+            w=np.linspace(-3, 3, 11),
+            iw=np.linspace(0.1, 5.0, 8),
+            h_solver=h_solver,
+            u4=u4,
+            dc=np.zeros((2, 2), dtype=complex),
+            rot_to_spherical=np.eye(2, dtype=complex),
+            impurity_orbitals=np.array([0, 1]),
+            valence_orbitals=np.array([2]),
+            conduction_orbitals=np.array([], dtype=int),
+            h_dft=h_solver[:2, :2],
+            h_bath=h_solver[2:, 2:],
+            v=h_solver[:2, 2:],
+        )
+
+
+def _archive_with_attrs(path, **solver_kwargs):
+    _write_synthetic_archive(str(path), solver_kwargs=solver_kwargs)
 
 
 def test_from_hdf5_reads_archive_group(tmp_path):
@@ -190,19 +170,11 @@ def test_from_hdf5_reads_archive_group(tmp_path):
     u4 = np.zeros((2, 2, 2, 2), dtype=complex)
     u4[0, 1, 1, 0] = 2.0
     assert model.u4 == atomic_physics.getUop_from_rspt_u4(u4)
-    # No "DC" dataset in this archive fixture -> dc is None (the default, no correction).
-    assert model.dc is None
+    # The fixture writes an all-zero double counting: an empty operator.
+    assert not model.dc
     np.testing.assert_array_equal(model.rot_to_spherical, np.eye(2, dtype=complex))
     # h0 holds the non-zero H solver entries, including the hybridization.
     assert model.h0[((0, "c"), (2, "a"))] == 0.3
-
-
-def test_archive_recording_a_reort_replays_with_a_warning(tmp_path):
-    """`reort` is no longer a solver option; an archive that recorded one is replayed, loudly."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), reort="partial")
-    with pytest.warns(UserWarning, match="reort='partial', which is retired"):
-        load_selfenergy_archive(str(archive))
 
 
 def test_load_selfenergy_archive_recovers_options(tmp_path):
@@ -226,31 +198,9 @@ def test_load_selfenergy_archive_recovers_options(tmp_path):
     assert isinstance(model, ImpurityModel)
 
 
-def test_archive_excitation_budget_attribute_is_retired_with_a_warning(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line="1 1 chain", excitation_budget=3)
-    with pytest.warns(UserWarning, match=r"excitation_budget=3 \(from its attribute\).*retired"):
-        _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-    assert not hasattr(basis, "excitation_budget")
-
-
-def test_archive_old_grammar_solver_line_is_retired_with_a_warning(tmp_path):
-    """Archives written before the interface stored the budget carry it as the third solver-line token."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line="3 3 8 peeled ! comment 9")
-    with pytest.warns(UserWarning, match=r"excitation_budget=8 \(from its solver line.*retired"):
-        load_selfenergy_archive(str(archive))
-
-
-def test_archive_new_grammar_solver_line_is_silent(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line="3 3 peeled ! comment 9")
-    load_selfenergy_archive(str(archive))  # filterwarnings=error turns any warning into a failure
-
-
 def test_archive_e_pt2_tol_round_trips_and_its_absence_means_the_default(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), e_pt2_tol=1e-6)
+    _write_synthetic_archive(str(archive), basis_kwargs={"e_pt2_tol": 1e-6})
     _, _, basis, _, _ = load_selfenergy_archive(str(archive))
     assert basis.e_pt2_tol == 1e-6
 
@@ -270,23 +220,6 @@ def test_a_negative_de2_min_is_refused_and_zero_means_no_floor():
     with pytest.raises(ValueError, match="de2_min must be non-negative"):
         BasisOptions(nominal_occ={0: 1}, de2_min=-1e-8)
     assert BasisOptions(nominal_occ={0: 1}, de2_min=0.0).de2_min == 0.0
-
-
-def test_from_hdf5_does_not_warn_about_a_missing_solver_line(tmp_path):
-    """The physics-only reader never uses the options, so an archive without them must load silently."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line=None)
-    ImpurityModel.from_hdf5(str(archive))  # filterwarnings=error turns any warning into a failure
-
-
-def test_from_hdf5_stays_silent_about_a_retired_budget_that_the_options_reader_would_warn_on(tmp_path):
-    """The retired-budget warning belongs to the options reader (``with_options``) only: the physics-only reader
-    must not warn for the same archive, or ``filterwarnings=error`` consumers of old archives would break."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), solver_line="1 1 3 chain", excitation_budget=3)
-    ImpurityModel.from_hdf5(str(archive))  # silent
-    with pytest.warns(UserWarning, match="retired"):
-        load_selfenergy_archive(str(archive))  # the same archive through the options reader does warn
 
 
 def _blocks():
@@ -375,14 +308,6 @@ def test_from_solver_matrix_dc_round_trips_through_operator_dict():
     np.testing.assert_allclose(recovered, dc)
 
 
-def test_from_hdf5_without_dc_dataset_leaves_dc_none(tmp_path):
-    """Archives written before the DC field existed (no 'DC' dataset) load with dc=None."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive))  # the fixture has no "DC" dataset
-    model = ImpurityModel.from_hdf5(str(archive))
-    assert model.dc is None
-
-
 def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
     """A 'DC' dataset in the archive round-trips to model.dc as an operator dict."""
     import h5py
@@ -391,7 +316,7 @@ def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
     _write_synthetic_archive(str(archive))
     dc = np.array([[0.25, 0.0], [0.0, 0.25]], dtype=complex)
     with h5py.File(str(archive), "a") as f:
-        f["X 2"].create_dataset("DC", data=dc)
+        f["X 2"]["DC"][...] = dc
 
     model = ImpurityModel.from_hdf5(str(archive))
     assert isinstance(model.dc, dict)
@@ -399,66 +324,25 @@ def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
     np.testing.assert_allclose(recovered, dc)
 
 
-@pytest.mark.parametrize("retired", ["sliced", "cipsi"])
-def test_archive_with_a_retired_gf_method_replays_with_lanczos_and_warns(tmp_path, retired):
-    """An archive records a finished run: replaying it must not fail on a kernel retired since,
-    but it must not pass silently either (config.RETIRED_GF_METHODS)."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), gf_method=retired)
-    with pytest.warns(UserWarning, match=f"gf_method='{retired}'.*replaying it with gf_method='lanczos'"):
-        _, _, _, solver, _ = load_selfenergy_archive(str(archive))
-    assert solver.gf_method == "lanczos"
-
-
 def test_archive_records_and_replays_the_admission_policy(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)
+    _write_synthetic_archive(
+        str(archive), solver_kwargs={"gf_method": "bicgstab", "gf_admission": "outer", "gf_admit_tol": 1e-5}
+    )
     _, _, _, solver, _ = load_selfenergy_archive(str(archive))
     assert (solver.gf_method, solver.gf_admission) == ("bicgstab", "outer")
     assert solver.gf_admit_tol == pytest.approx(1e-5)
 
 
-def test_an_archive_from_before_the_policy_existed_replays_as_unspecified(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), gf_method="bicgstab")
-    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
-    assert solver.gf_method == "bicgstab" and solver.gf_admission is None and solver.gf_admit_tol is None
-
-
-def test_an_archive_that_stored_none_as_a_string_is_read_as_unspecified(tmp_path):
-    """The interface writes ``None`` attributes as the string ``"None"``."""
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), gf_method="lanczos", gf_admission="None", gf_admit_tol="None")
-    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
-    assert solver.gf_admission is None and solver.gf_admit_tol is None
-
-
-def _archive_with_attrs(path, **attrs):
-    import h5py
-
-    _write_synthetic_archive(str(path), gf_method="lanczos")
-    with h5py.File(path, "r+") as f:
-        group = f[sorted(f.keys())[0]]
-        for key, value in attrs.items():
-            group.attrs[key] = value
-
-
 def test_archive_records_and_replays_the_support_settle(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
-    _archive_with_attrs(archive, gf_settle=False, gf_settle_ratio="None")
+    _archive_with_attrs(archive, gf_settle=False)
     _, _, _, solver, _ = load_selfenergy_archive(str(archive))
     assert solver.gf_settle is False and solver.gf_settle_ratio is None
     archive = tmp_path / "second.h5"
     _archive_with_attrs(archive, gf_settle=True, gf_settle_ratio=3.0)
     solver = load_selfenergy_archive(str(archive))[3]
     assert solver.gf_settle is True and solver.gf_settle_ratio == pytest.approx(3.0)
-
-
-def test_an_archive_from_before_the_settle_was_an_option_replays_as_unspecified(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(str(archive), gf_method="lanczos")
-    solver = load_selfenergy_archive(str(archive))[3]
-    assert solver.gf_settle is None and solver.gf_settle_ratio is None
 
 
 @pytest.mark.parametrize(
@@ -490,43 +374,13 @@ def test_the_settle_retry_option_replays_and_refuses_contradictions(tmp_path):
 
     _archive_with_attrs(tmp_path / "a.h5", gf_settle_retry=False)
     assert load_selfenergy_archive(str(tmp_path / "a.h5"))[3].gf_settle_retry is False
-    _write_synthetic_archive(str(tmp_path / "b.h5"), gf_method="lanczos")
+    _write_synthetic_archive(str(tmp_path / "b.h5"))
     assert load_selfenergy_archive(str(tmp_path / "b.h5"))[3].gf_settle_retry is None
     with pytest.raises(ValueError, match="contradicts gf_settle off"):
         SolverOptions(gf_settle=False, gf_settle_retry=True)
     with pytest.raises(ValueError, match="applies only to gf_method='lanczos'"):
         SolverOptions(gf_method="bicgstab", gf_settle_retry=True)
     assert SolverOptions(gf_settle=False, gf_settle_retry=False).gf_settle_retry is False
-
-
-@pytest.mark.parametrize(
-    "value,want",
-    [
-        (True, True),
-        (np.bool_(False), False),
-        (1, True),
-        (0, False),
-        ("off", False),
-        ("False", False),
-        (b"false", False),
-        ("ON", True),
-        ("yes", True),
-        ("None", None),
-        (None, None),
-    ],
-)
-def test_archive_booleans_written_as_words_read_back_right(value, want):
-    from impurityModel.ed.model import _optional_bool
-
-    assert _optional_bool(value) is want
-
-
-@pytest.mark.parametrize("value", ["maybe", 2, 0.5, b"x"])
-def test_an_unreadable_archive_boolean_raises(value):
-    from impurityModel.ed.model import _optional_bool
-
-    with pytest.raises(ValueError, match="boolean"):
-        _optional_bool(value)
 
 
 def test_a_settle_ratio_below_one_warns_that_it_is_a_multiple():
@@ -544,10 +398,9 @@ def test_archive_records_and_replays_the_pruned_growth(tmp_path):
     solver = load_selfenergy_archive(str(archive))[3]
     assert solver.gf_prune_tol == pytest.approx(1e-4) and solver.gf_first_shell_tol == pytest.approx(1e-6)
     archive = tmp_path / "old.h5"
-    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    _write_synthetic_archive(str(archive))
     solver = load_selfenergy_archive(str(archive))[3]
-    # An archive that predates the option did not prune: absence reads as an explicit off, not the new default.
-    assert solver.gf_prune_tol == 0.0 and solver.resolved_gf_prune_tol == 0.0 and solver.gf_first_shell_tol is None
+    assert solver.gf_prune_tol is None and solver.gf_first_shell_tol is None
 
 
 @pytest.mark.parametrize(
@@ -592,9 +445,9 @@ def test_archive_records_and_replays_the_swap_refinement(tmp_path):
     solver = load_selfenergy_archive(str(archive))[3]
     assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, pytest.approx(1e-4), 0.2)
     archive = tmp_path / "old.h5"
-    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    _write_synthetic_archive(str(archive))
     solver = load_selfenergy_archive(str(archive))[3]
-    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (0, None, None)
+    assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (None, None, None)
 
 
 @pytest.mark.parametrize(
@@ -644,7 +497,7 @@ def test_the_growth_tolerance_is_recorded_replayed_and_absent_means_off(tmp_path
     _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_growth_tol=1e-5)
     assert load_selfenergy_archive(str(archive))[3].gf_growth_tol == pytest.approx(1e-5)
     archive = tmp_path / "old.h5"
-    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    _write_synthetic_archive(str(archive))
     assert load_selfenergy_archive(str(archive))[3].gf_growth_tol is None
 
 
@@ -669,3 +522,26 @@ def test_the_growth_tolerance_defaults_to_off():
 
     assert SolverOptions().gf_growth_tol is None
     assert SolverOptions(gf_growth_tol=1e-5).gf_growth_tol == 1e-5
+
+
+def test_an_archive_group_without_the_current_version_is_refused(tmp_path):
+    import h5py
+
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive))
+    with h5py.File(archive, "r+") as f:
+        del f["X 2"].attrs["archive version"]
+    with pytest.raises(ValueError, match="archive version"):
+        load_selfenergy_archive(str(archive))
+    with pytest.raises(ValueError, match="archive version"):
+        ImpurityModel.from_hdf5(str(archive))
+
+
+def test_the_options_written_to_an_archive_are_the_options_read_back(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    basis_kwargs = {"dN": 3, "chain_restrict": False, "mixed_valence": "auto", "cost_budget": 2.0}
+    solver_kwargs = {"gf_settle": False, "gf_tol": 1e-7, "gf_refine_rounds": 0}
+    _write_synthetic_archive(str(archive), basis_kwargs=basis_kwargs, solver_kwargs=solver_kwargs)
+    _, _, basis, solver, _ = load_selfenergy_archive(str(archive))
+    assert (basis.dN, basis.chain_restrict, basis.mixed_valence, basis.cost_budget) == (3, False, "auto", 2.0)
+    assert (solver.gf_settle, solver.gf_tol, solver.gf_refine_rounds) == (False, 1e-7, 0)

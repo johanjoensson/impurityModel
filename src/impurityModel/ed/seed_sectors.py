@@ -318,8 +318,7 @@ def print_plan(plan):
     e0 = plan.classes[0].energy
     for k, c in enumerate(plan.classes):
         print(
-            f"  class {k:3d}: dim={c.span.shape[1]:4d} E_seed-E_min={c.energy - e0:.6f} "
-            f"sigma={c.sigma:.4g} {c.status}",
+            f"  class {k:3d}: dim={c.span.shape[1]:4d} E_seed-E_min={c.energy - e0:.6f} sigma={c.sigma:.4g} {c.status}",
             flush=True,
         )
 

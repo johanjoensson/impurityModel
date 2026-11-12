@@ -89,13 +89,11 @@ def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None, *, 
         )
     if len(Fcv) != direct_array_length(lv, lc):
         raise ValueError(
-            f"Fcv has {len(Fcv)} components, but l_valence={lv} / l_core={lc} "
-            f"requires {direct_array_length(lv, lc)}."
+            f"Fcv has {len(Fcv)} components, but l_valence={lv} / l_core={lc} requires {direct_array_length(lv, lc)}."
         )
     if len(Gcv) != exchange_array_length(lv, lc):
         raise ValueError(
-            f"Gcv has {len(Gcv)} components, but l_valence={lv} / l_core={lc} "
-            f"requires {exchange_array_length(lv, lc)}."
+            f"Gcv has {len(Gcv)} components, but l_valence={lv} / l_core={lc} requires {exchange_array_length(lv, lc)}."
         )
 
     # Average core-valence repulsion: F^0_cv minus the spherical average of the exchange G^k.
@@ -561,9 +559,7 @@ def direct_array_length(lv, lc):
 def _check_slater_length(name, values, expected, lv, lc):
     """Cross-check one Slater-Condon array against the length its shells imply."""
     if values is not None and len(values) != expected:
-        raise ValueError(
-            f"{name} has {len(values)} components, but l_valence={lv} / l_core={lc} " f"requires {expected}."
-        )
+        raise ValueError(f"{name} has {len(values)} components, but l_valence={lv} / l_core={lc} requires {expected}.")
 
 
 def slater_condon_Uop(lv, lc, Fvv, Fcc=None, Fcv=None, Gcv=None):

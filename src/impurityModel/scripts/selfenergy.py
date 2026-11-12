@@ -16,12 +16,12 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
+from impurityModel.ed.archive import load_selfenergy_archive
 from impurityModel.ed.model import (
     BasisOptions,
     Meshes,
     SolverOptions,
     load_model,
-    load_selfenergy_archive,
 )
 from impurityModel.ed.selfenergy import calc_selfenergy
 from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap

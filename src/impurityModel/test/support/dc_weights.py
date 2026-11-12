@@ -429,7 +429,7 @@ def main(argv=None):
     """
     import argparse
 
-    from impurityModel.ed.model import load_selfenergy_archive
+    from impurityModel.ed.archive import load_selfenergy_archive
 
     from .restriction_diagnostics import DEFAULT_ITERATION, WORKLOADS
 

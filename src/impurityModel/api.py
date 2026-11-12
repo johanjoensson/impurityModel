@@ -25,6 +25,7 @@ run driven from outside this package -- RSPt through ``impurityModel_interface``
 still be described by one file instead of a shell's worth of exported variables.
 """
 
+from impurityModel.ed.archive import load_selfenergy_archive
 from impurityModel.ed.dc_record import dc_levels, dc_spread
 from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.greens_function import save_Greens_function
@@ -36,7 +37,6 @@ from impurityModel.ed.model import (
     SolverOptions,
     SpectraOptions,
     atomic_u4,
-    load_selfenergy_archive,
 )
 from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.options import (

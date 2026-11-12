@@ -58,8 +58,8 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import config, solver_trace
+from impurityModel.ed.archive import load_selfenergy_archive
 from impurityModel.ed.memory_estimate import suggest_gs_truncation_threshold
-from impurityModel.ed.model import load_selfenergy_archive
 from impurityModel.ed.selfenergy import (
     fixed_gap_dc,
     fixed_occupation_dc,

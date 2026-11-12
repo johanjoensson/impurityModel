@@ -48,6 +48,7 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
 
+
 def _shell_orbitals(nBaths, l):
     """Sorted global spin-orbital indices of impurity shell ``l`` (spin-up then spin-down m's)."""
     return sorted(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))

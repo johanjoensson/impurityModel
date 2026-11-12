@@ -1340,17 +1340,19 @@ def suggest_gs_truncation_threshold(
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
     return _largest_fitting(
-        lambda n: estimate_gs_peak_bytes(
-            n,
-            n_spin_orbitals,
-            block_width,
-            ranks,
-            nnz_per_state,
-            num_wanted=gs_num_wanted,
-            selection_fanout=selection_fanout,
-            window_states=window_states,
+        lambda n: (
+            estimate_gs_peak_bytes(
+                n,
+                n_spin_orbitals,
+                block_width,
+                ranks,
+                nnz_per_state,
+                num_wanted=gs_num_wanted,
+                selection_fanout=selection_fanout,
+                window_states=window_states,
+            )
+            <= budget
         )
-        <= budget
     )
 
 

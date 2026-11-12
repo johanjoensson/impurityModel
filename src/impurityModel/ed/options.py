@@ -729,12 +729,14 @@ def options_to_attrs(basis, solver):
 def options_from_attrs(attrs):
     """Inverse of :func:`options_to_attrs`: ``(basis_kwargs, solver_kwargs)`` from an attribute record.
 
-    Every registered option must be present; ``None`` is stored as an absent attribute by HDF5
-    writers, so a missing key reads as ``None``.
+    HDF5 cannot store ``None``, so an unset option is an absent attribute; absent keys are left out
+    and the dataclass default applies.
     """
     out = {"basis": {}, "solver": {}}
     for spec in OPTION_SPECS:
-        value = attrs.get(spec.attr_name)
+        if spec.attr_name not in attrs:
+            continue
+        value = attrs[spec.attr_name]
         if hasattr(value, "item"):
             value = value.item()
         if isinstance(value, bytes):

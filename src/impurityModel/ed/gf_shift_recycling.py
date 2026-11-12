@@ -164,7 +164,7 @@ class SectorResolventCache:
         self._n_builds += 1
         if verbose:
             print(
-                f"Sector resolvent cache: {how} a {len(basis)}-determinant sector " f"(build {self._n_builds}).",
+                f"Sector resolvent cache: {how} a {len(basis)}-determinant sector (build {self._n_builds}).",
                 flush=True,
             )
         return True

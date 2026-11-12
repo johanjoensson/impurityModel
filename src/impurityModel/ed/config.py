@@ -188,12 +188,10 @@ RETIRED_KNOBS = {
     ),
     "GS_MEMORY_BUDGET_INCLUDE_RESIDENT": "retired: the ground-state memory budget always includes the resident set",
     "GF_CHECK_EVERY": (
-        "retired: a fixed tuning constant of the convergence monitor (every 8 blocks until within 2x of "
-        "the tolerance)"
+        "retired: a fixed tuning constant of the convergence monitor (every 8 blocks until within 2x of the tolerance)"
     ),
     "GF_NEAR_FACTOR": (
-        "retired: a fixed tuning constant of the convergence monitor (every 8 blocks until within 2x of "
-        "the tolerance)"
+        "retired: a fixed tuning constant of the convergence monitor (every 8 blocks until within 2x of the tolerance)"
     ),
     "GF_BICGSTAB_MAX_ITER": "retired: a fixed bound (500 iterations per point)",
     "GF_GMRES_MAX_RESTARTS": "retired: a fixed bound (25 GMRES restart cycles)",
@@ -203,10 +201,10 @@ RETIRED_KNOBS = {
     "GS_APPLY_ROW_CHUNKS": "retired: merged with GF_APPLY_ROW_CHUNKS into APPLY_ROW_CHUNKS",
     "GF_APPLY_ROW_CHUNKS": "retired: merged with GS_APPLY_ROW_CHUNKS into APPLY_ROW_CHUNKS",
     "GF_WEIGHTED_TOL": (
-        "retired: weighting the convergence tolerance by thermal weight was removed (it never left " "experimental)"
+        "retired: weighting the convergence tolerance by thermal weight was removed (it never left experimental)"
     ),
     "GF_WEIGHTED_TOL_CEILING": (
-        "retired: weighting the convergence tolerance by thermal weight was removed (it never left " "experimental)"
+        "retired: weighting the convergence tolerance by thermal weight was removed (it never left experimental)"
     ),
     "DC_CAP_STRATEGY": (
         "retired: the double-counting cap is always resolved by running at the ceiling; the ascending cap "
