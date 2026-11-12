@@ -77,7 +77,7 @@ _CONSUMED_ATTRS = frozenset(
 #: Attributes old runs recorded that no longer steer anything. They are reported as ``retired_attrs`` (not
 #: ``ignored_attrs``, which means "a replay would silently solve a different problem"): the replay derives its
 #: excitation bounds from its own ground state, so it can differ from the archived run's basis.
-_RETIRED_ATTRS = frozenset({"excitation_budget", "spin_flip_dj"})
+_RETIRED_ATTRS = frozenset({"excitation_budget", "spin_flip_dj", "u_densify"})
 _BATH_FIT_ONLY = frozenset(
     {
         "bath_geometry",
@@ -97,6 +97,7 @@ _BATH_FIT_ONLY = frozenset(
         "DC ground state sector",
         "DC guess fingerprint",
         "impurityModel version",
+        "archive version",
         "impurityModel_interface version",
         "rspt2spectra version",
     }
