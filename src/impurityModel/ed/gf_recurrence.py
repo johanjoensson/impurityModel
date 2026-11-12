@@ -1367,9 +1367,14 @@ def block_Green_discovered(
         cap_info["k_over_p"] = k_over_p
     n_blocks = len(alphas)
     if not converged_flag[0] and rank == 0:
+        why = (
+            "its divergence guard truncated a corrupted tail"
+            if status == "diverged"
+            else "the block budget ran out before the monitor's tolerance was met"
+        )
         print(
             f"warning: block Green's function did not reach the convergence tolerance {delta_min:.1e}; the "
-            f"block-Lanczos recurrence was truncated after {n_blocks} block(s) (divergent tail). The continued "
+            f"block-Lanczos recurrence stopped after {n_blocks} block(s) ({why}). The continued "
             "fraction uses the subspace built so far.",
             flush=True,
         )
