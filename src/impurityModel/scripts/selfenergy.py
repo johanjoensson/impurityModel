@@ -248,6 +248,12 @@ def add_arguments(parser):
             "Boltzmann weight is below this from the Green's function and self-energy (default: keep all)."
         ),
     )
+    parser.add_argument(
+        "--sigma-causality-tol",
+        type=float,
+        default=None,
+        help="Relative tolerance of the self-energy causality check; smaller violations only warn (default: 1e-3).",
+    )
     parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")
     parser.add_argument(
         "--no-sparse-green", dest="sparse_green", action="store_false", help="Disable the sparse block-Lanczos path."
@@ -349,6 +355,7 @@ def apply_solver_overrides(solver, args):
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
             ("gf_min_weight", args.gf_min_weight),
+            ("sigma_causality_tol", args.sigma_causality_tol),
         )
         if value is not None
     }
@@ -464,6 +471,7 @@ def run(args):
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
             gf_min_weight=args.gf_min_weight,
+            sigma_causality_tol=args.sigma_causality_tol,
         )
         cluster_label = args.clustername
 

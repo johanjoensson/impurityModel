@@ -1151,6 +1151,16 @@ _TABLE_LIST += [
                 "eigensolver's energy window, each of which costs a full set of Green's-function units.",
                 minimum=0.0,
             ),
+            Key(
+                "sigma_causality_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "Relative tolerance of the self-energy causality check (Im Sigma_ii <= 0, per diagonal "
+                "orbital). A violation below it is reported as a warning and the run continues; above it "
+                "the run fails. Absent: 1e-3, above roundoff but below the lobes a real artifact gives. "
+                "0 always fails on a violation.",
+                minimum=0.0,
+            ),
             Key("dense_cutoff", Kind.COUNT, 500, "Use a dense eigensolver below this matrix size.", minimum=1),
             Key("sparse_green", Kind.BOOL, True, "Use the sparse block-Lanczos Green's-function path."),
             Key(

@@ -16,10 +16,10 @@ from impurityModel.test.support.metal_models import metal_h0, write_metal
 @pytest.fixture(autouse=True)
 def _restore_what_the_rig_sets(monkeypatch):
     """``freeze_replay.run`` sets process-wide state (the causality tolerance, the prune rule, the matrix mode):
-    undo it after each test, or the self-energy tests that run later see ``SIGMA_CAUSALITY_TOL=1e9``."""
-    from impurityModel.ed import gf_solvers
+    undo it after each test, or the self-energy tests that run later see a causality tolerance of 1e9."""
+    from impurityModel.ed import gf_solvers, selfenergy
 
-    monkeypatch.setenv("SIGMA_CAUSALITY_TOL", "1e9")  # the rig's own value; the undo removes it again
+    monkeypatch.setattr(selfenergy, "DEFAULT_CAUSALITY_TOL", selfenergy.DEFAULT_CAUSALITY_TOL)  # the rig sets 1e9
     from impurityModel.ed import gf_recurrence
 
     monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", "eta")

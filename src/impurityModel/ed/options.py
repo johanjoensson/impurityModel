@@ -223,6 +223,10 @@ class SolverOptions:
         ``gf_refine_rounds``.
     gf_refine_swap : float or None
         The largest fraction of the cap one round swaps, in (0, 0.5]. ``None``: 0.1. Needs ``gf_refine_rounds``.
+    sigma_causality_tol : float or None
+        Relative tolerance of the self-energy causality check (per diagonal orbital, ``Im Sigma_ii <= 0``).
+        A violation below it is printed as a warning and tolerated; above it the run fails. ``None``: 1e-3;
+        ``0`` always fails on a violation.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -238,6 +242,7 @@ class SolverOptions:
     gf_tol: Optional[float] = None
     gf_real_tol: Optional[float] = None
     gf_min_weight: Optional[float] = None
+    sigma_causality_tol: Optional[float] = None
     gf_settle: Optional[bool] = None
     gf_settle_ratio: Optional[float] = None
     gf_settle_retry: Optional[bool] = None
@@ -282,6 +287,8 @@ class SolverOptions:
             raise ValueError(
                 f"gf_min_weight must lie in (0, 1) (got {self.gf_min_weight!r}); omit it to keep every state"
             )
+        if self.sigma_causality_tol is not None and not self.sigma_causality_tol >= 0.0:
+            raise ValueError(f"sigma_causality_tol must be >= 0 (got {self.sigma_causality_tol!r})")
         for name in ("gf_settle", "gf_settle_ratio", "gf_settle_retry"):
             if getattr(self, name) is not None and self.gf_method != "lanczos":
                 raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
@@ -579,6 +586,14 @@ OPTION_SPECS = (
     _spec("gf_tol", "solver", "float", "GF convergence tolerance", token="gf_tol", unset="default"),
     _spec("gf_real_tol", "solver", "float", "GF real-axis tolerance", token="gf_real_tol", unset="default"),
     _spec("gf_min_weight", "solver", "float", "GF minimal thermal weight", token="gf_min_weight", unset="off"),
+    _spec(
+        "sigma_causality_tol",
+        "solver",
+        "float",
+        "Self-energy causality tolerance",
+        token="sigma_causality_tol",
+        unset="default (1e-3)",
+    ),
     _spec("occ_cutoff", "basis", "float", "Occupation cutoff", token="occ_cutoff"),
     _spec("dN", "basis", "int", "dN", token="dn"),
     _spec(

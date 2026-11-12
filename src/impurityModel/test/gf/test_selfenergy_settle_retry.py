@@ -100,7 +100,7 @@ def _call(state, run, units, comm=None, retry=True, record=None):
     return selfenergy._settle_retry(
         run=run, gf_report=_Report(units), family_matsubara=["M"], family_realaxis=["R"], iw=IW, w=W, delta=DELTA,
         estimator=None, sb=_SB(), blocks=BLOCKS, comm=comm, report=Reporter(0, 0 if comm is None else comm.rank),
-        cluster_label="x", retry=retry, gf_seconds=12.0,
+        cluster_label="x", retry=retry, gf_seconds=12.0, tol=1e-3,
     )  # fmt: skip
 
 
@@ -210,7 +210,7 @@ def test_every_rank_enters_the_re_solve_or_none_does(fake_sigma):
     out = selfenergy._settle_retry(
         run=run, gf_report=_Report([_unit(0, 0)]) if comm.rank == 0 else None, family_matsubara=fam_m,
         family_realaxis=fam_r, iw=IW, w=W, delta=DELTA, estimator=None, sb=_SB(), blocks=BLOCKS, comm=comm,
-        report=Reporter(0, comm.rank), cluster_label="x", retry=True, gf_seconds=1.0,
+        report=Reporter(0, comm.rank), cluster_label="x", retry=True, gf_seconds=1.0, tol=1e-3,
     )  # fmt: skip
     assert out[3] is True and run.calls == [([0], 0.0)], f"rank {comm.rank}"
     assert len(set(comm.allgather(out[3]))) == 1

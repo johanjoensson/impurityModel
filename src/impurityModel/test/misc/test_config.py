@@ -40,9 +40,6 @@ def test_parsers_and_clamps(monkeypatch):
     monkeypatch.setenv("GF_EIGENSTATE_GROUP", "0")  # minimum=1
     assert config.GF_EIGENSTATE_GROUP.get() == 1
 
-    monkeypatch.setenv("SIGMA_CAUSALITY_TOL", "-1.0")  # minimum=0.0
-    assert config.SIGMA_CAUSALITY_TOL.get() == 0.0
-
     monkeypatch.setenv("GF_SECTOR_CACHE_DIR", "/tmp/sectors")
     assert config.GF_SECTOR_CACHE_DIR.get() == "/tmp/sectors"
 

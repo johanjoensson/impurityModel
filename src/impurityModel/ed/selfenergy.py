@@ -63,6 +63,10 @@ from impurityModel.ed.solver_basis import (  # noqa: F401
 )
 from impurityModel.ed.utils import V_DETAIL, V_RESULT, V_SUMMARY, Reporter
 
+#: Relative tolerance of the self-energy causality check when ``SolverOptions.sigma_causality_tol`` is unset: above
+#: roundoff, below the lobe a real run hit at a sharp hybridization resonance (a genuine artifact stays an error).
+DEFAULT_CAUSALITY_TOL = 1e-3
+
 
 def _raise_together(comm, message):
     """Turn a rank-local validation verdict into a *collective* raise.
@@ -136,13 +140,13 @@ def _sigma_collect(mesh, gss, *, delta, estimator, solver_basis, cluster_label, 
     return sigma, components, reports
 
 
-def _judge_sigma(sigma, mesh, reports, *, label, cluster_label, note=""):
+def _judge_sigma(sigma, mesh, reports, *, label, cluster_label, tol, note=""):
     """Rank 0: print the within-tolerance warnings, and return the failure message (or ``None``).
 
-    A violation within ``SIGMA_CAUSALITY_TOL`` (relative, per diagonal orbital) is printed and tolerated; the first
+    A violation within ``tol`` (``SolverOptions.sigma_causality_tol``; relative, per diagonal orbital) is printed
+    and tolerated; the first
     block above it fails the run: every block's self-energy is saved (``sig-i``) and the message names it
     (``note`` -- the retry's attribution -- is appended). Same verdicts and output as the check it replaces."""
-    tol = config.SIGMA_CAUSALITY_TOL.get()
     for block_i in sorted(reports):
         record = reports[block_i]
         text = _format_causality_report(record, f"{label} self-energy")
@@ -158,7 +162,9 @@ def _judge_sigma(sigma, mesh, reports, *, label, cluster_label, note=""):
     return None
 
 
-def _self_energy_on_mesh(mesh, gss, *, delta, estimator, solver_basis, cluster_label, blocks, comm, label, note=""):
+def _self_energy_on_mesh(
+    mesh, gss, *, delta, estimator, solver_basis, cluster_label, blocks, comm, label, tol, note=""
+):
     """Compute (and collectively physicality-check) the self-energy on one frequency mesh.
 
     ``gss`` are the Green's functions of ``estimator``'s operator families, and ``estimator``
@@ -183,7 +189,7 @@ def _self_energy_on_mesh(mesh, gss, *, delta, estimator, solver_basis, cluster_l
     )
     message = None
     if sigma is not None:
-        message = _judge_sigma(sigma, mesh, reports, label=label, cluster_label=cluster_label, note=note)
+        message = _judge_sigma(sigma, mesh, reports, label=label, cluster_label=cluster_label, tol=tol, note=note)
     _raise_together(comm, message)
     return sigma
 
@@ -252,16 +258,15 @@ def _pole_note(omega, record, orbital, poles, delta):
         text += (
             "; G0^-1 is dominated by that pole: if the settle is not the cause this is the bath-discretisation "
             "artefact of doc/known_issues.md (raise delta or the number of bath states, or accept it with "
-            "SIGMA_CAUSALITY_TOL)"
+            "sigma_causality_tol)"
         )
     return text
 
 
-def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_run):
+def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_run, tol):
     """``(lines, retry_unit_ids)`` for one failing block: what the violation looks like and whether the support
     settle can be blamed. ``failures`` are the block's ``(mesh label, mesh, record)`` above tolerance. Rank 0 only;
     the lines are what a user reads when the run stops."""
-    tol = config.SIGMA_CAUSALITY_TOL.get()
     lines = []
     real_axis = False
     for label, mesh, record in failures:
@@ -269,7 +274,7 @@ def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_
         where = f"{omega.real:.4g}" if omega.imag == 0 else f"i*{omega.imag:.4g}"
         lines.append(
             f"{label} self-energy, block {block}: worst Im Sigma = {record['worst_val']:+.3e} at w = {where} "
-            f"(orbital {record['worst_orbital']}), relative {record['worst_ratio']:.2e} > SIGMA_CAUSALITY_TOL {tol:.0e}"
+            f"(orbital {record['worst_orbital']}), relative {record['worst_ratio']:.2e} > sigma_causality_tol {tol:.0e}"
         )
         g0i, gi = record.get("g0_inv_at_worst"), record.get("ginv_at_worst")
         if g0i is not None:
@@ -343,6 +348,7 @@ def _settle_retry(
     cluster_label,
     retry,
     gf_seconds,
+    tol,
 ):
     """Attribute a self-energy causality failure and, when the support settle can plausibly be blamed and
     ``gf_settle_retry`` is on, solve the settled units again once, closure-only (``gf_settle_ratio = 0``).
@@ -360,7 +366,6 @@ def _settle_retry(
     **Collective** on ``comm``: the plan is broadcast from rank 0 before any rank branches, and
     :meth:`GFRun.resolve` is entered by every rank or by none."""
     rank0 = comm is None or comm.rank == 0
-    tol = config.SIGMA_CAUSALITY_TOL.get()
     plan = {"units": []}
     note_lines = []
     failing = {}
@@ -391,6 +396,7 @@ def _settle_retry(
                     delta,
                     retry,
                     run is not None,
+                    tol,
                 )
                 note_lines += lines
                 plan["units"] += ids
@@ -633,6 +639,7 @@ def calc_selfenergy(
     gf_tol = solver.gf_tol
     gf_real_tol = solver.gf_real_tol
     gf_min_weight = solver.gf_min_weight
+    causality_tol = DEFAULT_CAUSALITY_TOL if solver.sigma_causality_tol is None else solver.sigma_causality_tol
     estimator = make_estimator(solver.sigma_method)
 
     # MPI variables
@@ -892,6 +899,7 @@ def calc_selfenergy(
             cluster_label=cluster_label,
             retry=settle_retry,
             gf_seconds=gf_seconds,
+            tol=causality_tol,
         )
         gf_run.clear()  # the run held every unit's seeds and results; nothing needs them past this point
         if retried:
@@ -989,6 +997,7 @@ def calc_selfenergy(
         blocks=inequivalent_blocks,
         comm=comm,
         label="Real frequency",
+        tol=causality_tol,
         note=retry_note,
     )
     sigma = _self_energy_on_mesh(
@@ -1001,6 +1010,7 @@ def calc_selfenergy(
         blocks=inequivalent_blocks,
         comm=comm,
         label="Matsubara",
+        tol=causality_tol,
         note=retry_note,
     )
 

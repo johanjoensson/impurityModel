@@ -746,6 +746,7 @@ def _solver_options_from(SolverOptions, table):
         gf_tol=table["gf_tol"],
         gf_real_tol=table["gf_real_tol"],
         gf_min_weight=table["gf_min_weight"],
+        sigma_causality_tol=table["sigma_causality_tol"],
     )
 
 

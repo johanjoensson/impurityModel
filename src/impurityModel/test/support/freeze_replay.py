@@ -3,12 +3,12 @@ r"""Replay one archived solver call with the Green's-function support freeze (se
 The measurement rig behind ``doc/plans/gf_support_freeze_redesign.md``. One run = one (archive, cluster,
 iteration, ``slaterWeightMin``, freeze mode) point: the archived ``calc_selfenergy`` call is rebuilt through
 :mod:`real_workload` (same options, ``gf_tol``/``gf_real_tol`` from the archive), the self-energy causality guard
-is left non-fatal (``SIGMA_CAUSALITY_TOL``) so the Sigma comes out whatever it is, and the arrays are written
-to an ``.npz``. :func:`grade` then compares two such runs against the acceptance rule of the plan:
+is left non-fatal (``selfenergy.DEFAULT_CAUSALITY_TOL``) so the Sigma comes out whatever it is, and the arrays
+are written to an ``.npz``. :func:`grade` then compares two such runs against the acceptance rule of the plan:
 
 * (A) ``max |dSigma_mats|`` on the Matsubara mesh;
 * (B) per orbital, pointwise on the real mesh, ``|dSigma_ii(w)| / h_i(w)`` with the causality guard's own headroom
-  ``h_i(w) = -Im Sigma_ref,ii(w) + tol * max_w |Im Sigma_ref,ii|`` (``tol`` = ``SIGMA_CAUSALITY_TOL``);
+  ``h_i(w) = -Im Sigma_ref,ii(w) + tol * max_w |Im Sigma_ref,ii|`` (``tol`` = the causality tolerance);
 * ``max |dG| / max |G|`` per axis, reported and not gated.
 
 Run (one process per point; ``-n 3`` is what the numbers in the write-up used)::
@@ -307,7 +307,9 @@ def run(
         from impurityModel.ed import gf_recurrence
 
         gf_recurrence._PRUNE_RULE = prune_rule
-    os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
+    from impurityModel.ed import selfenergy
+
+    selfenergy.DEFAULT_CAUSALITY_TOL = 1e9  # non-fatal: the Sigma comes out whatever it is
     from impurityModel.test.support import real_workload as rw
 
     gf_settle, gf_settle_ratio, mode = settle_options(freeze)
