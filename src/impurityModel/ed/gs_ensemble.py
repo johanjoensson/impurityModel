@@ -1,7 +1,8 @@
 """The charge-sector ensemble: one ground-state search, then every member sector the plan keeps.
 
 :func:`solve_charge_sector_ensemble` walks the charge sectors (via
-:func:`~impurityModel.ed.groundstate.find_ground_state_sector`), plans the members, solves each, and hands every finished member to a visitor. The per-member state
+:func:`~impurityModel.ed.groundstate.find_ground_state_sector`), plans the members, solves each,
+and hands every finished member to a visitor. The per-member state
 (:class:`MemberState`, :class:`DrivenState`), the refusal rule (:func:`member_refusal`) and the
 truncation roll-up live here; :mod:`~impurityModel.ed.gs_calc` drives it for the selfenergy/spectra solve.
 """

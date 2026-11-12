@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from impurityModel.ed import config, dc_criteria, memory_estimate
+from impurityModel.ed import config, dc_gap, dc_occupation, dc_peak, dc_sector_context, memory_estimate
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +42,9 @@ def test_every_driver_honours_it_through_the_one_resolver(monkeypatch):
     """What regressed before was the *argument*: the parameter existed and one driver never passed
     it. Every driver, the double-counting search included, now sizes through `resolve_cap_policy`,
     which reads the knob itself -- so setting it must change the cap they all get."""
-    src = Path(dc_criteria.__file__).read_text()
+    src = "".join(
+        Path(m.__file__).read_text() for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)
+    )
     assert src.count("resolve_cap_policy(") == 2
     monkeypatch.setattr(memory_estimate, "available_bytes_per_rank", lambda c: 5 * 2**30)
     monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")

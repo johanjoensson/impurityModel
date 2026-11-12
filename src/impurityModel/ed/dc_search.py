@@ -731,7 +731,7 @@ def _solve_in_interval(
         A hit within ``tol`` is not automatically a plateau: the acceptance band is ``tol /
         |slope|`` wide in ``mu`` all by itself, and mapping *that* by bisection measures the
         tolerance, not the physics. It matters as soon as a criterion has reason to set a loose
-        energy tolerance -- :func:`dc_criteria.fixed_gap_dc` scales its tolerance to the measured
+        energy tolerance -- :func:`dc_gap.fixed_gap_dc` scales its tolerance to the measured
         gap width, because converging tighter than a percent of it is chasing the truncation noise
         of two independently expanded CIPSI sectors, and that made the band 30x wider than the
         ``mu`` resolution. Measured on the analytic toy: 17 evaluations landing 1.3e-3 from the

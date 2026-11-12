@@ -777,9 +777,11 @@ def test_the_double_counting_search_resolves_its_cap_like_every_other_driver():
     then solves -- not by two sizers happening to agree."""
     from pathlib import Path
 
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_gap, dc_occupation, dc_peak, dc_sector_context
 
-    src = Path(dc_criteria.__file__).read_text()
+    src = "".join(
+        Path(m.__file__).read_text() for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)
+    )
     assert src.count("resolve_cap_policy(") == 2
     assert "suggest_gs_truncation_threshold(" not in src and "suggest_truncation_threshold(" not in src
 

@@ -218,7 +218,7 @@ def nominal_dc(model, nominal_occupation, *, u=None, j=None):
     saturate and cannot inherit that fit sensitivity. Haule, *PRL* **115**, 196403 (2015) finds
     FLL at the nominal occupation close to the exact double counting for transition-metal oxides,
     which makes this the natural ``dc_guess`` for the first iteration of a CSC loop, and a
-    reference to compare a converged :func:`dc_criteria.fixed_occupation_dc` answer against.
+    reference to compare a converged :func:`dc_occupation.fixed_occupation_dc` answer against.
 
     Parameters
     ----------

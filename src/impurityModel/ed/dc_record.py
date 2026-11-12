@@ -41,7 +41,7 @@ RECORD_FOOTER = "====================================="
 #:
 #: Most keys are therefore criterion-specific, and one is deliberately narrower than it looks:
 #: ``n_gs``, the thermal impurity occupation, is filled by ``fixed_occupation_dc`` alone. The peak
-#: and gap criteria work on :class:`dc_criteria._SectorContext`, which yields the *integer* charge
+#: and gap criteria work on :class:`dc_sector_context._SectorContext`, which yields the *integer* charge
 #: sector and nothing else, so reporting a thermal occupation beside them would cost an extra
 #: ground-state solve for a cosmetic field. ``sector`` is what they have, and it is the number the
 #: DC<->GS parity claim is actually about.

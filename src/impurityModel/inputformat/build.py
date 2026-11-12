@@ -833,7 +833,7 @@ def apply_double_counting(resolved, model, basis, solver, notes, comm, verbosity
     """
     from dataclasses import replace
 
-    from impurityModel.ed import dc_criteria, dc_static
+    from impurityModel.ed import dc_gap, dc_occupation, dc_peak, dc_static
     from impurityModel.ed.dc_search import DoubleCountingUnreachable
     from impurityModel.ed.lie_algebra import tensors_to_operator
 
@@ -858,9 +858,9 @@ def apply_double_counting(resolved, model, basis, solver, notes, comm, verbosity
         return replace(model, dc=tensors_to_operator(np.asarray(matrix, dtype=complex)).to_dict())
 
     search = {
-        "fixed_occupation": dc_criteria.fixed_occupation_dc,
-        "fixed_peak": dc_criteria.fixed_peak_dc,
-        "fixed_gap": dc_criteria.fixed_gap_dc,
+        "fixed_occupation": dc_occupation.fixed_occupation_dc,
+        "fixed_peak": dc_peak.fixed_peak_dc,
+        "fixed_gap": dc_gap.fixed_gap_dc,
     }[scheme]
     target = {
         "fixed_occupation": {"occupation": table.get("occupation")},

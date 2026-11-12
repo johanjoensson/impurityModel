@@ -2,7 +2,7 @@
 
 :mod:`impurityModel.test.support.dc_weights` measures, per charge sector and per eigenstate, the
 impurity occupation and the Lehmann weight ``w_n = sum_d |<n|c_d^dagger|0>|^2``. It exists to
-answer whether :func:`dc_criteria.fixed_gap_dc`'s ``omega_+-`` -- the *lowest* eigenvalue of the
+answer whether :func:`dc_gap.fixed_gap_dc`'s ``omega_+-`` -- the *lowest* eigenvalue of the
 ``N +- 1`` sectors, taken with no impurity projection at all -- are poles of ``A_imp`` or states
 invisible to it.
 
@@ -230,9 +230,10 @@ def test_the_lowest_and_the_thermal_manifold_agree_on_the_ground_state_energy():
     """
     from mpi4py import MPI
 
-    from impurityModel.ed.dc_criteria import _per_group_occupation, _prepare_sector_context
+    from impurityModel.ed.dc_sector_context import _prepare_sector_context
     from impurityModel.ed.eigensolvers import Within
     from impurityModel.ed.groundstate import calc_energy, solve_sector
+    from impurityModel.ed.solver_basis import _per_group_occupation
 
     kwargs, _dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=DC)
     ctx = _prepare_sector_context(
@@ -264,7 +265,7 @@ def test_the_lowest_and_the_thermal_manifold_agree_on_the_ground_state_energy():
 def test_the_gap_edge_can_carry_exactly_zero_weight():
     """F2, exhibited: the edge the criterion fixes against is invisible in ``A_imp``.
 
-    This is the case :func:`dc_criteria._warn_if_a_gap_edge_is_not_impurity_like` disclaims in
+    This is the case :func:`dc_gap._warn_if_a_gap_edge_is_not_impurity_like` disclaims in
     prose and cannot detect. Every other fixture in the suite has one impurity spatial orbital,
     which ties ``delta`` to the weight -- scanned across an impurity Zeeman field from 0 to 3, the
     edge's ``delta`` and ``weight_fraction`` never separated by more than a few percent. Three

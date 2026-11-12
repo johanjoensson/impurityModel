@@ -256,7 +256,7 @@ def test_a_bath_component_hopping_to_two_shells_is_refused():
 
 
 def test_a_skipped_bath_less_shell_near_the_fermi_level_is_refused_by_the_dc_search():
-    from impurityModel.ed.dc_criteria import DC_INACTIVE_SHELL_EF_WINDOW, _check_active_shells
+    from impurityModel.ed.dc_sector_context import DC_INACTIVE_SHELL_EF_WINDOW, _check_active_shells
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     h0, rot = _p_plus_d_model()  # p at +5: far from E_F, a core-like shell

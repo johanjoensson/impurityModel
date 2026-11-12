@@ -7,7 +7,9 @@ from mpi4py import MPI
 
 from impurityModel.ed import (
     config,
-    dc_criteria,
+    dc_gap,
+    dc_occupation,
+    dc_peak,
     get_spectra,
     groundstate,
     gs_ensemble,
@@ -29,10 +31,10 @@ ENTRIES = [
     (rixs.calc_map, "basis.comm"),
     (rixs.calc_tensor_map, "basis.comm"),
     # their collectives hard-code COMM_WORLD whatever `comm` says
-    (dc_criteria.fixed_peak_dc, "MPI.COMM_WORLD"),
-    (dc_criteria.fixed_gap_dc, "MPI.COMM_WORLD"),
-    (dc_criteria.occupation_and_energy_at_mu, "MPI.COMM_WORLD"),
-    (dc_criteria.fixed_occupation_dc, "MPI.COMM_WORLD"),
+    (dc_peak.fixed_peak_dc, "MPI.COMM_WORLD"),
+    (dc_gap.fixed_gap_dc, "MPI.COMM_WORLD"),
+    (dc_occupation.occupation_and_energy_at_mu, "MPI.COMM_WORLD"),
+    (dc_occupation.fixed_occupation_dc, "MPI.COMM_WORLD"),
 ]
 
 

@@ -19,7 +19,7 @@ Both searches now determine their sector(s) through
 ``groundstate.find_ground_state_sector`` -- the identical search
 ``calc_selfenergy`` uses -- rather than by construction at a fixed N0, so
 that a dc found here means the same thing calc_selfenergy will find at that
-dc (see dc_criteria.py's module docstring). ``find_ground_state_sector``
+dc (see dc_sector_context.py's module docstring). ``find_ground_state_sector``
 does not hold total N fixed: with mixed_valence=0 (the default in this
 file), a bath orbital's occupation cannot deviate from nominal at all, so
 "N_imp = 2" as a *trial sector* pairs with the bath still fully occupied
@@ -45,9 +45,9 @@ import pytest
 from mpi4py import MPI
 
 import impurityModel.ed.memory_estimate as _memory_estimate
-from impurityModel.ed import dc_criteria
+from impurityModel.ed import dc_gap, dc_occupation, dc_peak, dc_sector_context
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
+from impurityModel.ed.dc_gap import GAP_ENERGY_TOLERANCE_FRACTION
 from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.groundstate import solve_ground_state
@@ -580,7 +580,7 @@ def test_the_ensemble_observable_attains_a_target_the_single_sector_one_steps_ov
 def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monkeypatch, capsys):
     """Review #3: under auto a refusal flags the point (one aggregated note; a cap-bound verdict only if the cap
     caused it); it never raises."""
-    from impurityModel.ed import dc_criteria, gs_ensemble
+    from impurityModel.ed import dc_occupation, dc_sector_context, gs_ensemble
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
@@ -594,24 +594,24 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
         return real(member, truncation, convergence, comm)
 
     monkeypatch.setattr(gs_ensemble, "member_refusal", held)
-    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
+    ctx = dc_occupation._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     mus = [0.0, 1.5, 1.75]  # 1.5 and 1.75 sit on the crossing (n = 1.25 -> 1.98): two members
-    free = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
+    free = [dc_occupation._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
     assert ctx.refused_at == {} and not any(ctx.cap_bound_at.values())
     refuse["on"] = True
     ctx.cap_bound_at.clear()
     capsys.readouterr()
-    got = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
+    got = [dc_occupation._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
     assert sorted(ctx.refused_at) == [1.5, 1.75], ctx.refused_at
     # a memory-guard refusal is not the cap's doing: the cap ladder must not be asked to halve it away (review MV2)
     assert [mu for mu, flag in sorted(ctx.cap_bound_at.items()) if flag] == []
-    assert dc_criteria._any_cap_bound(ctx) is False
+    assert dc_sector_context._any_cap_bound(ctx) is False
     assert got[0] == free[0]  # the unrefused point is untouched
     assert got[1] != free[1]  # a refused point carries the winning sector alone
     # the per-trial warning is silenced: the search reports the refusal once, in the DC record
     assert "keeps the single N_imp" not in capsys.readouterr().out
     refuse["on"] = False  # a re-measure of an unrefused point forgets its old refusal (the pop in the evaluator)
-    dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
+    dc_occupation._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
     assert sorted(ctx.refused_at) == [1.75], ctx.refused_at
 
 
@@ -639,12 +639,12 @@ def test_the_between_sector_variance_warning_fires_only_when_the_occupation_is_s
 def test_the_ensemble_occupation_is_monotone_in_mu_across_the_sector_crossing_on_a_tau_over_5_grid():
     """n(mu) = sum_s c_s n_s must rise smoothly through the crossing -- at every rank count (an empty rank included)."""
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
-    ctx = dc_criteria._prepare_occupation_context(
+    ctx = dc_occupation._prepare_occupation_context(
         kwargs["model"], dataclasses.replace(kwargs["basis"], mixed_valence="on"), kwargs["solver"]
     )
     tau = kwargs["basis"].tau
     mus = [1.3 + k * tau / 5 for k in range(round(0.5 / (tau / 5)) + 1)]
-    n = np.array([dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, float(mu), False, 0)[0] for mu in mus])
+    n = np.array([dc_occupation._evaluate_occupation_and_energy_at_mu(ctx, float(mu), False, 0)[0] for mu in mus])
     assert np.all(np.diff(n) >= -1e-9), np.round(n, 4)
     assert n[0] < 1.1 and n[-1] > 1.9, np.round(n, 4)  # the grid spans the whole crossing
     assert np.max(np.diff(n)) < 0.5, "a smooth ensemble average has no sector-sized jump"
@@ -880,8 +880,8 @@ def test_the_gap_tolerance_says_which_of_its_four_cases_produced_it(capsys):
     cases from a model means engineering a truncation pathology, and the point of extracting the
     function is that the four cases are decidable from three numbers.
     """
-    from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION as frac
-    from impurityModel.ed.dc_criteria import _size_gap_tolerance
+    from impurityModel.ed.dc_gap import GAP_ENERGY_TOLERANCE_FRACTION as frac
+    from impurityModel.ed.dc_gap import _size_gap_tolerance
 
     mu_tol, bandwidth = 1e-3, 3.0
 
@@ -947,7 +947,7 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     ``pytest_runtest_teardown``. Exactly the rule in CLAUDE.md, broken in a test written to check
     something else: **never gate a collective on rank-local state.**
     """
-    from impurityModel.ed.dc_criteria import GAP_EDGE_IMPURITY_FLOOR
+    from impurityModel.ed.dc_gap import GAP_EDGE_IMPURITY_FLOOR
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
     fixed_gap_dc(offset=-0.4, **kwargs)
@@ -1011,7 +1011,7 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
     energies ``omega_+-`` came from only if CIPSI selection is deterministic. Reading the pair off
     one solve makes them co-derived by construction.
     """
-    from impurityModel.ed import dc_criteria as dc_module
+    from impurityModel.ed import dc_gap
     from impurityModel.ed import groundstate as gs_module
 
     solves = {"n": 0}
@@ -1028,7 +1028,7 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
     monkeypatch.setattr(gs_module, "solve_sector", counted)
 
     spent = {}
-    real_measure = dc_module._measure_edge_character
+    real_measure = dc_gap._measure_edge_character
 
     def watched(ctx, mu, n_center):
         before = solves["n"]
@@ -1036,7 +1036,7 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
         spent["solves"] = solves["n"] - before
         return result
 
-    monkeypatch.setattr(dc_module, "_measure_edge_character", watched)
+    monkeypatch.setattr(dc_gap, "_measure_edge_character", watched)
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
     report = {}
@@ -1211,8 +1211,8 @@ def test_the_impurity_character_warning_fires_on_the_weaker_edge(capsys):
     motivated it (sum 0.218); raising it to 0.5 fixed that one and still stayed silent on NiO
     5-bath, whose removal edge is *pure ligand* (0.032) but whose sum is 0.593.
     """
-    from impurityModel.ed.dc_criteria import GAP_EDGE_IMPURITY_FLOOR as floor
-    from impurityModel.ed.dc_criteria import _warn_if_a_gap_edge_is_not_impurity_like as warn
+    from impurityModel.ed.dc_gap import GAP_EDGE_IMPURITY_FLOOR as floor
+    from impurityModel.ed.dc_gap import _warn_if_a_gap_edge_is_not_impurity_like as warn
 
     # NiO 5-bath, measured directly: an impurity-like addition edge above a ligand valence band.
     # The sum is 0.593 -- above any sum-based floor that does not also fire on healthy models.
@@ -1258,7 +1258,7 @@ def test_the_gap_tolerance_names_the_term_that_actually_won(capsys):
     than through a search, because reaching all five cases by building a model for each is how
     the case that misreports came to be untested in the first place.
     """
-    from impurityModel.ed.dc_criteria import _size_gap_tolerance
+    from impurityModel.ed.dc_gap import _size_gap_tolerance
 
     mu_tol, bandwidth = 2.5e-3, 10.0
 
@@ -1416,13 +1416,12 @@ def test_dc_search_visits_the_same_mu_sequence_on_every_rank(monkeypatch, criter
     they hang rather than return, so a test comparing return values can never see it. Recording
     the trial ``mu`` sequence and comparing it across ranks is what actually pins the property.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
     comm = MPI.COMM_WORLD
     kwargs, _ = common_kwargs(v=0.01 if criterion == "peak" else 0.3, tau=1e-3 if criterion == "peak" else 1e-2)
 
     visited = []
-    real_solve = dc_module._solve_dc_shift
+    real_solve = dc_peak._solve_dc_shift
 
     def recording_solve(observable, target, **kw):
         def recording_observable(mu):
@@ -1435,7 +1434,9 @@ def test_dc_search_visits_the_same_mu_sequence_on_every_rank(monkeypatch, criter
     # _solve_dc_shift` is a *new binding*, so patching it there leaves the real call site reading
     # its own and the stub never runs -- with `visited` empty on every rank, the comparison below
     # succeeds vacuously. The non-empty assertion is what makes a dead patch fail loudly.
-    monkeypatch.setattr(dc_module, "_solve_dc_shift", recording_solve)
+    monkeypatch.setattr(dc_peak, "_solve_dc_shift", recording_solve)
+    monkeypatch.setattr(dc_gap, "_solve_dc_shift", recording_solve)
+    monkeypatch.setattr(dc_occupation, "_solve_dc_shift", recording_solve)
     call(kwargs)
     assert visited, "the _solve_dc_shift stub never ran: the monkeypatch missed the call site"
 
@@ -1563,7 +1564,6 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
 def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
     """Phase 5 (3/3), doc/plans/dc_smo_performance.md: the cap ladder is wired in, and only when
     the cap defaulted from the memory probe."""
-    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -1572,7 +1572,8 @@ def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_no
         value = quantity(memory_cap)  # a single rung, at the (stubbed) memory cap itself
         return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake_ladder)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", fake_ladder)
+
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 50)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -1590,12 +1591,12 @@ def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_no
 def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(monkeypatch):
     """An explicit ``truncation_threshold`` is the caller's instruction, never a candidate for
     recalibration -- the ladder must not run, and the record must carry no cap fields at all."""
-    import impurityModel.ed.dc_criteria as dc_module
 
     def exploding_ladder(*args, **kwargs):
         raise AssertionError("resolve_cap_at_max ran on an explicit truncation_threshold")
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", exploding_ladder)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", exploding_ladder)
+
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)  # truncation_threshold is set by common_kwargs
     report = {}
@@ -1605,7 +1606,6 @@ def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(mon
 
 
 def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
-    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -1614,7 +1614,8 @@ def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monk
         value = quantity(memory_cap)
         return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake_ladder)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", fake_ladder)
+
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 50)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -1630,12 +1631,12 @@ def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monk
 
 
 def test_fixed_gap_dc_skips_the_cap_ladder_when_threshold_is_explicit(monkeypatch):
-    import impurityModel.ed.dc_criteria as dc_module
 
     def exploding_ladder(*args, **kwargs):
         raise AssertionError("resolve_cap_at_max ran on an explicit truncation_threshold")
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", exploding_ladder)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", exploding_ladder)
+
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)  # truncation_threshold is set by common_kwargs
     report = {}
@@ -1649,10 +1650,9 @@ def _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap, ladder_cap=700):
     and then accept ``accepted_cap``, recording every genuinely new (not cache-hit) sector solve
     as ``(mu, n_trial, cap)`` -- the observable the cache-reuse guard (91109b8) is about.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
     misses = []
-    original_solve = dc_module._SectorContext.sector_solve
+    original_solve = dc_sector_context._SectorContext.sector_solve
 
     def counting_solve(self, h_op, mu, n_trial):
         was_cached = (mu, n_trial) in self.sector_at
@@ -1661,13 +1661,14 @@ def _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap, ladder_cap=700):
             misses.append((mu, n_trial, self.truncation_threshold))
         return result
 
-    monkeypatch.setattr(dc_module._SectorContext, "sector_solve", counting_solve)
+    monkeypatch.setattr(dc_sector_context._SectorContext, "sector_solve", counting_solve)
 
     def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm, **kwargs):
         value = quantity(ladder_cap)
         return accepted_cap, 0.0, [(ladder_cap, value)], "settled"
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake_ladder)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", fake_ladder)
+
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 10**6)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -1723,9 +1724,12 @@ def test_fixed_occupation_dc_records_mu_tol_effective_from_chi(monkeypatch):
     charge-sector boundary at the couplings this suite otherwise uses (unreachable, or chi = 0),
     which is a fine property of the model and a bad one to depend on for this unit's own logic.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
-    monkeypatch.setattr(dc_module, "_dc_chi", lambda *a, **kw: (0.4, 0.1))
+    monkeypatch.setattr(dc_peak, "_dc_chi", lambda *a, **kw: (0.4, 0.1))
+
+    monkeypatch.setattr(dc_gap, "_dc_chi", lambda *a, **kw: (0.4, 0.1))
+
+    monkeypatch.setattr(dc_occupation, "_dc_chi", lambda *a, **kw: (0.4, 0.1))
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     report = {}
@@ -1747,9 +1751,8 @@ def test_fixed_gap_dc_records_mu_tol_effective_as_inf_at_a_genuine_zero_slope(mo
     happens to measure a zero sum) because forcing that exact physical case through the toy model
     is not the point of this unit -- the record's handling of the value it is handed is.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
-    monkeypatch.setattr(dc_module, "_measure_edge_character", lambda *a, **kw: (0.4, -0.4))
+    monkeypatch.setattr(dc_gap, "_measure_edge_character", lambda *a, **kw: (0.4, -0.4))
     # A zero lever is also what the conditioning gate refuses; this test is about the record.
     monkeypatch.setenv("DC_GAP_LEVER_MIN", "0")
 
@@ -1766,9 +1769,12 @@ def test_fixed_occupation_dc_records_mu_tol_effective_as_inf_at_a_genuine_zero_s
     """As the gap criterion's zero-slope test above, but ``occ_chi == 0.0`` -- a genuine
     charge-sector plateau, which this same function's ``plateau_ok=True`` already treats as a
     real, expected case rather than an error."""
-    import impurityModel.ed.dc_criteria as dc_module
 
-    monkeypatch.setattr(dc_module, "_dc_chi", lambda *a, **kw: (0.0, 0.1))
+    monkeypatch.setattr(dc_peak, "_dc_chi", lambda *a, **kw: (0.0, 0.1))
+
+    monkeypatch.setattr(dc_gap, "_dc_chi", lambda *a, **kw: (0.0, 0.1))
+
+    monkeypatch.setattr(dc_occupation, "_dc_chi", lambda *a, **kw: (0.0, 0.1))
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     report = {}
@@ -1810,16 +1816,17 @@ def test_dc_search_applies_weighted_restrictions(monkeypatch):
     assert attached  # one scan per trial solve
     assert any(b is not None for b in attached)  # the model has bath orbitals: bounds exist
 
-    import impurityModel.ed.dc_criteria as dc_module
 
     seen = []
-    original = dc_module.build_weighted_restrictions
+    original = dc_sector_context.build_weighted_restrictions
 
     def spy(*args, **kw):
         seen.append((args, kw.get("cost_budget")))
         return original(*args, **kw)
 
-    monkeypatch.setattr(dc_module, "build_weighted_restrictions", spy)
+    monkeypatch.setattr(dc_sector_context, "build_weighted_restrictions", spy)
+
+    monkeypatch.setattr(dc_occupation, "build_weighted_restrictions", spy)
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], cost_budget=0.3)
     fixed_occupation_dc(occupation=1.0, **kwargs)
@@ -2074,6 +2081,7 @@ def test_dc_criteria_freeze_nothing_and_pass_no_tau(monkeypatch, criterion, call
     picks up) and inspect every call's kwargs directly.
     """
     import impurityModel.ed.groundstate as groundstate_module
+    from impurityModel.ed import gs_ensemble
 
     real_find_ground_state_sector = groundstate_module.find_ground_state_sector
     calls = []
@@ -2083,6 +2091,8 @@ def test_dc_criteria_freeze_nothing_and_pass_no_tau(monkeypatch, criterion, call
         return real_find_ground_state_sector(*args, **kwargs)
 
     monkeypatch.setattr(groundstate_module, "find_ground_state_sector", spy)
+    # the occupation criterion reaches it through the ensemble, which imported the name
+    monkeypatch.setattr(gs_ensemble, "find_ground_state_sector", spy)
 
     kwargs, _ = _frozen_core_kwargs()
     # This fixture's fixed-occupation target (4.0, the nominal) happens to sit on a charge-sector
@@ -2198,7 +2208,7 @@ def test_a_sector_solve_with_a_bath_less_group_is_the_unfrozen_sector():
         rot_to_spherical=np.eye(6, dtype=complex),
         bath_valence_conduction=(list(range(6, 10)), []),
     )
-    ctx = dc_criteria._prepare_sector_context(model, kwargs["basis"], kwargs["solver"], memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(model, kwargs["basis"], kwargs["solver"], memory_label="test")
     sb_baths = {
         i: sum(len(b) for b in ctx.bath_states[0][i]) + sum(len(b) for b in ctx.bath_states[1][i]) for i in ctx.N0
     }
@@ -2219,7 +2229,7 @@ def test_a_sector_solve_with_a_bath_less_group_is_the_unfrozen_sector():
             dense_cutoff=ctx.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=False,
-            truncation_threshold=dc_criteria._ctx_cap_policy(ctx),
+            truncation_threshold=dc_sector_context._ctx_cap_policy(ctx),
             slaterWeightMin=ctx.slater_weight_min,
             weighted_restrictions=ctx.weighted_restrictions,
             frozen_occupations=frozen,
@@ -2497,7 +2507,7 @@ def test_the_occupation_context_records_a_cap_verdict_per_mu():
     """``cap_bound_at`` is keyed by ``mu`` because the verdict genuinely can differ between
     shifts: the walk can settle on a different charge sector at a different ``mu``, and a sector
     that fits under the cap at one shift need not at another."""
-    from impurityModel.ed.dc_criteria import _evaluate_occupation_and_energy_at_mu, _prepare_occupation_context
+    from impurityModel.ed.dc_occupation import _evaluate_occupation_and_energy_at_mu, _prepare_occupation_context
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     ctx = _prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
@@ -2524,7 +2534,7 @@ class _FakeCtx:
 
 
 def _solution(*, cap_bound=False, memory_bound=False):
-    return dc_criteria._SectorSolution(
+    return dc_sector_context._SectorSolution(
         energy=-1.0,
         occupation=1.0,
         cap_bound=cap_bound,
@@ -2534,7 +2544,7 @@ def _solution(*, cap_bound=False, memory_bound=False):
 
 def test_nothing_solved_yet_is_unknown_not_a_rejection():
     rec = {}
-    dc_criteria._reject_if_memory_bound(_FakeCtx(), rec, rank=0)
+    dc_sector_context._reject_if_memory_bound(_FakeCtx(), rec, rank=0)
     assert rec["dc_memory_bound"] == "unknown"
 
 
@@ -2544,7 +2554,7 @@ def test_a_deliberately_capped_search_is_accepted():
     reads `memory_bound` instead. Gating on `cap_bound` would reject routine production runs."""
     ctx = _FakeCtx(sector_at={("mu", 1): _solution(cap_bound=True, memory_bound=False)})
     rec = {}
-    dc_criteria._reject_if_memory_bound(ctx, rec, rank=0)
+    dc_sector_context._reject_if_memory_bound(ctx, rec, rank=0)
     assert rec["dc_memory_bound"] == "no"
 
 
@@ -2557,7 +2567,7 @@ def test_one_memory_bound_sector_rejects_the_answer():
     )
     rec = {}
     with pytest.raises(DoubleCountingUnreachable, match="ran out of memory"):
-        dc_criteria._reject_if_memory_bound(ctx, rec, rank=0)
+        dc_sector_context._reject_if_memory_bound(ctx, rec, rank=0)
     assert rec["dc_memory_bound"] == "yes", "the record must say so even when the call raises"
 
 
@@ -2566,13 +2576,13 @@ def test_the_occupation_criterions_per_mu_verdict_gates_too():
     solution, so both shapes have to be read or the gate is silently half-wired."""
     ctx = _FakeCtx(memory_bound_at={0.0: False, 0.25: True})
     with pytest.raises(DoubleCountingUnreachable, match="ran out of memory"):
-        dc_criteria._reject_if_memory_bound(ctx, {}, rank=0)
+        dc_sector_context._reject_if_memory_bound(ctx, {}, rank=0)
 
 
 def test_the_escape_hatch_downgrades_the_rejection_to_a_warning(capsys):
     ctx = _FakeCtx(sector_at={("mu", 1): _solution(memory_bound=True)})
     rec = {}
-    dc_criteria._reject_if_memory_bound(ctx, rec, rank=0, allow_memory_bound=True)
+    dc_sector_context._reject_if_memory_bound(ctx, rec, rank=0, allow_memory_bound=True)
     assert rec["dc_memory_bound"] == "yes"
     assert "ran out of memory" in capsys.readouterr().out
 
@@ -2581,7 +2591,9 @@ def test_every_criterion_gates_its_own_return():
     """Source-level, like `test_both_expand_call_sites_pass_the_budget`: the three criteria are
     long collective functions that need a full solve to reach, and what would regress is the
     *call*, not the helper. All three -- peak, gap and occupation -- must check."""
-    src = Path(dc_criteria.__file__).read_text()
+    src = "".join(
+        Path(m.__file__).read_text() for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)
+    )
     assert src.count("_reject_if_memory_bound(ctx, dc_rec, rank=rank, allow_memory_bound=allow_memory_bound)") == 3
 
 
@@ -2656,16 +2668,18 @@ def test_dc_sector_solve_reads_the_resolved_threshold_not_a_constant():
     that drove the call itself was green against the bug."""
     import inspect
 
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_occupation, dc_sector_context
 
-    src = inspect.getsource(dc_criteria)
-    assert "_ctx_spec(self)" in src and "de2_min=ctx.de2_min," in inspect.getsource(dc_criteria._ctx_spec)
+    src = "".join(
+        inspect.getsource(m) for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)
+    )
+    assert "_ctx_spec(self)" in src and "de2_min=ctx.de2_min," in inspect.getsource(dc_sector_context._ctx_spec)
     assert "de2_min=GS_DE2_MIN," not in src, "the unconditional constant must be gone"
 
 
 def test_dc_de2_min_precedence_argument_beats_solver_floor_beats_default():
     """RSPt line > the solver's BasisOptions.de2_min > GS_DE2_MIN. 0 is a setting (no floor)."""
-    from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
+    from impurityModel.ed.dc_sector_context import _resolve_dc_de2_min
     from impurityModel.ed.groundstate import GS_DE2_MIN
 
     assert _resolve_dc_de2_min() == GS_DE2_MIN
@@ -2679,7 +2693,7 @@ def test_dc_e_pt2_tol_precedence_line_beats_solver_line_beats_default():
     """DC line > the solver's BasisOptions.e_pt2_tol > GS_E_PT2_TOL. With nothing set on the DC
     side the search inherits the solver line's tolerance: parity with the ground state the
     self-energy run will find."""
-    from impurityModel.ed.dc_criteria import _resolve_dc_e_pt2_tol
+    from impurityModel.ed.dc_sector_context import _resolve_dc_e_pt2_tol
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
     assert _resolve_dc_e_pt2_tol(None, None) == GS_E_PT2_TOL
@@ -2693,19 +2707,20 @@ def test_the_energy_difference_criteria_carry_e_pt2_tol_to_their_sector_solves(c
     import dataclasses
     import inspect
 
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_sector_context
 
-    assert "e_pt2_tol" in inspect.signature(getattr(dc_criteria, criterion)).parameters
+    module = {"fixed_peak_dc": dc_peak, "fixed_gap_dc": dc_gap}[criterion]
+    assert "e_pt2_tol" in inspect.signature(getattr(module, criterion)).parameters
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6)
-    ctx = dc_criteria._prepare_sector_context(kwargs["model"], basis, kwargs["solver"], memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(kwargs["model"], basis, kwargs["solver"], memory_label="test")
     assert ctx.e_pt2_tol == 1e-6
-    ctx = dc_criteria._prepare_sector_context(
+    ctx = dc_sector_context._prepare_sector_context(
         kwargs["model"], basis, kwargs["solver"], memory_label="test", e_pt2_tol=1e-5
     )
     assert ctx.e_pt2_tol == 1e-5
-    assert "_ctx_spec(self)" in inspect.getsource(dc_criteria._SectorContext.sector_solve)
-    assert "e_pt2_tol=ctx.e_pt2_tol," in inspect.getsource(dc_criteria._ctx_spec)
+    assert "_ctx_spec(self)" in inspect.getsource(dc_sector_context._SectorContext.sector_solve)
+    assert "e_pt2_tol=ctx.e_pt2_tol," in inspect.getsource(dc_sector_context._ctx_spec)
 
 
 def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override():
@@ -2714,20 +2729,20 @@ def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override():
     import dataclasses
     import inspect
 
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_occupation, dc_sector_context
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
-    assert "e_pt2_tol" not in inspect.signature(dc_criteria.fixed_occupation_dc).parameters
+    assert "e_pt2_tol" not in inspect.signature(dc_occupation.fixed_occupation_dc).parameters
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
-    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
+    ctx = dc_occupation._prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
     assert ctx.e_pt2_tol == GS_E_PT2_TOL
     basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6, de2_min=1e-9)
-    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
+    ctx = dc_occupation._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     assert ctx.e_pt2_tol == 1e-6
     assert ctx.de2_min == 1e-9
-    src = inspect.getsource(dc_criteria._evaluate_occupation_and_energy_at_mu)
+    src = inspect.getsource(dc_occupation._evaluate_occupation_and_energy_at_mu)
     assert "_ctx_spec(ctx)" in src
-    spec_src = inspect.getsource(dc_criteria._ctx_spec)
+    spec_src = inspect.getsource(dc_sector_context._ctx_spec)
     assert "e_pt2_tol=ctx.e_pt2_tol," in spec_src and "de2_min=ctx.de2_min," in spec_src
 
 
@@ -2738,14 +2753,14 @@ def test_dc_criteria_accept_de2_min_and_carry_it_to_the_context():
     self-energy's own basis rather than only the double counting's."""
     import inspect
 
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_occupation, dc_sector_context
 
     for name in ("fixed_gap_dc", "fixed_peak_dc"):
-        sig = inspect.signature(getattr(dc_criteria, name))
+        sig = inspect.signature(getattr(dc_gap if 'gap' in name else dc_peak, name))
         assert "de2_min" in sig.parameters, name
         assert sig.parameters["de2_min"].default is None, name
-    assert "de2_min" not in inspect.signature(dc_criteria.fixed_occupation_dc).parameters
-    assert "de2_min" in inspect.signature(dc_criteria._prepare_sector_context).parameters
+    assert "de2_min" not in inspect.signature(dc_occupation.fixed_occupation_dc).parameters
+    assert "de2_min" in inspect.signature(dc_sector_context._prepare_sector_context).parameters
 
 
 def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
@@ -2779,16 +2794,16 @@ def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
 def test_an_unlimited_cap_never_runs_the_cap_ladder(monkeypatch, which):
     """``inf`` is an instruction, not a request to size from memory: the ladder halves a finite cap, so an
     infinite one reaching it would raise OverflowError (review of 8816783e)."""
-    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
-    real = dc_module.resolve_cap_at_max
+    real = dc_sector_context.resolve_cap_at_max
 
     def spy(*args, **kwargs):
         calls.append(kwargs.get("memory_cap"))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", spy)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", spy)
+
     if which == "occupation":
         kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
         kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=np.inf)
@@ -2803,15 +2818,15 @@ def test_an_unlimited_cap_never_runs_the_cap_ladder(monkeypatch, which):
 def test_the_ledger_records_the_cap_the_ladder_settled_on(monkeypatch):
     """The interface stamps ``ledger.resolved`` for the self-energy: it must be the cap the DC solved at,
     not the one sized before the ladder lowered it (review of 8816783e)."""
-    import impurityModel.ed.dc_criteria as dc_module
     from impurityModel.ed.memory_estimate import CapLedger
 
     def fake(quantity, tol, **kwargs):
         quantity(7)
         return 7, 0.0, 1, "memory_retreat"
 
-    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake)
-    monkeypatch.setattr(dc_module, "_any_cap_bound", lambda ctx: True)
+    monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", fake)
+
+    monkeypatch.setattr(dc_sector_context, "_any_cap_bound", lambda ctx: True)
     ledger = CapLedger()
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
@@ -2833,7 +2848,7 @@ def test_peak_and_gap_dc_warn_when_a_neighbour_sector_is_thermal_and_stay_silent
 
 def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
     """A refused trial keeps one member with a neighbour in the window: the note belongs to Sigma, not each trial."""
-    from impurityModel.ed import dc_criteria, gs_ensemble
+    from impurityModel.ed import dc_occupation, gs_ensemble
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
@@ -2842,9 +2857,9 @@ def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
         "member_refusal",
         lambda member, *_: f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard",
     )
-    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
+    ctx = dc_occupation._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     capsys.readouterr()
-    dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
+    dc_occupation._evaluate_occupation_and_energy_at_mu(ctx, 1.5, False, 0)
     assert "a neighbouring sector lies within the thermal window" not in capsys.readouterr().out
 
 
@@ -2889,18 +2904,18 @@ def test_the_occupation_search_is_sector_first_with_the_single_sector_bracket(mi
     """Both settings start sector-first (``sector_of``, a nominal sector) at the single-sector bracket width; the
     continuous search is only the fallback after a member-flip collapse (``continuous_fallback``)."""
     seen = {}
-    real = dc_criteria._solve_dc_shift
+    real = dc_occupation._solve_dc_shift
 
     def spy(*args, **kw):
         seen.update(kw)
         return real(*args, **kw)
 
-    monkeypatch.setattr(dc_criteria, "_solve_dc_shift", spy)
+    monkeypatch.setattr(dc_occupation, "_solve_dc_shift", spy)
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence=mixed_valence)
     fixed_occupation_dc(occupation=1.0, **{**kwargs, "basis": basis})
     assert callable(seen["sector_of"]) and seen["nominal_sector"] is not None
-    assert seen["width_tol"] == dc_criteria.bracket_width_tol(basis.tau)
+    assert seen["width_tol"] == dc_occupation.bracket_width_tol(basis.tau)
 
 
 def test_auto_reaches_a_target_inside_a_member_flip_by_searching_continuously():
@@ -2919,10 +2934,10 @@ def test_a_collapse_is_a_member_flip_only_between_two_formed_ensembles():
     from types import SimpleNamespace
 
     ctx = SimpleNamespace(mixed_valence=True, members_at={-1.0: 2, -0.9: 2, 0.5: 1}, refused_at={})
-    assert dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))
-    assert not dc_criteria._member_flip_collapse(ctx, (-0.9, 0.5))  # a one-member endpoint: a real step
-    assert not dc_criteria._member_flip_collapse(ctx, None)
+    assert dc_occupation._member_flip_collapse(ctx, (-1.0, -0.9))
+    assert not dc_occupation._member_flip_collapse(ctx, (-0.9, 0.5))  # a one-member endpoint: a real step
+    assert not dc_occupation._member_flip_collapse(ctx, None)
     ctx.refused_at = {-0.9: "cap"}
-    assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # a refused endpoint carries the winner alone
+    assert not dc_occupation._member_flip_collapse(ctx, (-1.0, -0.9))  # a refused endpoint carries the winner alone
     ctx.refused_at, ctx.mixed_valence = {}, False
-    assert not dc_criteria._member_flip_collapse(ctx, (-1.0, -0.9))  # off never forms an ensemble
+    assert not dc_occupation._member_flip_collapse(ctx, (-1.0, -0.9))  # off never forms an ensemble

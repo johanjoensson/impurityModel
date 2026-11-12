@@ -81,7 +81,7 @@ def test_every_declared_knob_is_registered():
     each other while the knob is silently undocumented -- even though it is fully functional at
     its call site, because ``Knob.get`` reads the environment directly and never consults
     ``KNOBS``. That is exactly what happened to ``DC_CAP_STRATEGY``: declared, wired into
-    ``dc_criteria._calibrate_cap``, working, and in no document. This scans the module's own
+    ``dc_sector_context._calibrate_cap``, working, and in no document. This scans the module's own
     globals instead, which is the only place the omission is visible, and makes ``dump``'s
     docstring claim -- "a knob declared here is documented by construction" -- actually true.
     """

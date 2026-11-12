@@ -1,7 +1,7 @@
 r"""The DFT reference filling every double-counting scheme measures against.
 
 ``model.h0`` is the KS/DFT Hamiltonian of the ``h0 - dc + U`` contract, so its *raw* Fermi
-filling is the DFT impurity occupation -- the target :func:`dc_criteria.fixed_occupation_dc`
+filling is the DFT impurity occupation -- the target :func:`dc_occupation.fixed_occupation_dc`
 pins when given none, and the point at which :mod:`dc_static`'s three formulas are evaluated.
 No double counting is subtracted before filling: subtracting a realistic ``dc`` first sinks the
 impurity levels far below the Fermi level and saturates the reference at the full shell (NiO:
@@ -245,7 +245,7 @@ def _reference_impurity_occupation(model, tau, *, warn=True):
 
 
 def discretized_impurity_occupation(model, tau):
-    """The DFT reference occupation ``n0`` that :func:`dc_criteria.fixed_occupation_dc` pins to
+    """The DFT reference occupation ``n0`` that :func:`dc_occupation.fixed_occupation_dc` pins to
     when given no explicit target -- exposed for external callers (e.g. the RSPt interface's B1
     diagnostic, :func:`report_continuum_reference`) that need the same "n0 the criterion uses
     today" without duplicating the Fermi fill and its saturation check. Unwarned: the caller is
@@ -380,7 +380,7 @@ def report_continuum_reference(h_dft, hyb, hyb_fit, w, eim, tau, n0_disc, *, ran
     different ways -- a Feshbach/Woodbury projection identity, not an approximation -- so a large
     disagreement between them indicates a bug in this diagnostic, not a physics finding.
 
-    This is a **diagnostic only**: it does not change what :func:`dc_criteria.fixed_occupation_dc`
+    This is a **diagnostic only**: it does not change what :func:`dc_occupation.fixed_occupation_dc`
     pins to. Printing only (no collective), so gating on rank 0 is safe.
     """
     if rank is None:

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import dc_criteria
+from impurityModel.ed import dc_gap, dc_occupation, dc_peak, dc_sector_context
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
 
 P_ORBS = list(range(6))
@@ -62,7 +62,7 @@ def _p_plus_d(p_level=-60.0, u=0.0, d_rotation=None):
 
 def test_the_occupation_context_shifts_and_counts_only_the_hybridising_shell():
     model, basis, solver = _p_plus_d()
-    ctx = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
+    ctx = dc_occupation._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
     want = np.diag([0.0] * 6 + [1.0] * 10)
     np.testing.assert_array_equal(ctx.shift_input, want)
     np.testing.assert_array_equal(ctx.shift_solver, want)
@@ -73,7 +73,7 @@ def test_the_occupation_context_shifts_and_counts_only_the_hybridising_shell():
 
 def test_the_sector_context_shift_leaves_the_p_block_of_the_dc_untouched():
     model, basis, solver = _p_plus_d()
-    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     dc = ctx.dc(0.7)
     np.testing.assert_array_equal(dc[:6, :6], np.zeros((6, 6)))
     np.testing.assert_allclose(dc[6:, 6:], 0.7 * np.identity(10))
@@ -84,7 +84,7 @@ def test_a_single_shell_model_keeps_the_exact_identity_and_the_full_index_list()
     from impurityModel.test.gf.test_fixed_dc import common_kwargs
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
-    ctx = dc_criteria._prepare_sector_context(
+    ctx = dc_sector_context._prepare_sector_context(
         kwargs["model"], kwargs["basis"], kwargs["solver"], comm=MPI.COMM_WORLD, memory_label="test"
     )
     assert ctx.active_indices is None
@@ -94,8 +94,8 @@ def test_a_single_shell_model_keeps_the_exact_identity_and_the_full_index_list()
 
 def test_the_plan_store_measures_the_class_occupation_over_the_active_shell():
     model, basis, solver = _p_plus_d()
-    sector = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
-    occupation = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
+    sector = dc_sector_context._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    occupation = dc_occupation._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
     assert sector.plan_store.active_orbitals == tuple(D_ORBS)
     assert occupation.plan_store.active_orbitals == tuple(D_ORBS)
 
@@ -122,7 +122,7 @@ def test_a_single_shell_plan_store_keeps_the_whole_impurity():
         slater_weight_min=basis.slater_weight_min,
         truncation_threshold=int(1e8),
     )
-    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     assert ctx.plan_store.active_orbitals is None
 
 
@@ -130,7 +130,7 @@ def test_fixed_occupation_dc_shifts_only_the_hybridising_shell():
     """p(6) + d with U: the DC search moves the d block, leaves the deep p block at its guess, and the
     charge state it settles on keeps the p shell full (the sector total is 6 + the target d occupation)."""
     model, basis, solver = _p_plus_d(u=3.0)
-    dc, sector = dc_criteria.fixed_occupation_dc(
+    dc, sector = dc_occupation.fixed_occupation_dc(
         model, basis, solver, occupation=1.0, comm=MPI.COMM_WORLD, return_sector=True
     )
     np.testing.assert_array_equal(dc[:6, :6], np.zeros((6, 6)))
@@ -142,7 +142,7 @@ def test_fixed_occupation_dc_shifts_only_the_hybridising_shell():
 
 
 def test_the_dc_search_says_which_shells_the_shift_covers(capsys):
-    from impurityModel.ed.dc_criteria import _check_active_shells
+    from impurityModel.ed.dc_sector_context import _check_active_shells
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     model, basis, _solver = _p_plus_d()
@@ -157,14 +157,14 @@ def test_the_dc_search_says_which_shells_the_shift_covers(capsys):
 def test_the_nominal_the_reference_is_compared_with_counts_the_active_shell_only():
     """n0 counts the active d shell, so it is compared with the active nominal (2), not the p+d total (8)."""
     model, basis, solver = _p_plus_d(u=3.0)
-    ctx = dc_criteria._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
+    ctx = dc_occupation._prepare_occupation_context(model, basis, solver, comm=MPI.COMM_WORLD)
     assert ctx.nominal_active == 2
     assert sum(ctx.N0.values()) == 8
 
 
 def test_the_solver_hamiltonian_is_shifted_on_the_active_block_only():
     model, basis, solver = _p_plus_d()
-    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     diff = ctx.shifted_h(0.7) - ctx.shifted_h(0.0)
     terms = {k: v for k, v in dict(diff).items() if abs(v) > 1e-12}
     ps = {orb for key in terms for (orb, _t) in key}
@@ -181,7 +181,7 @@ def test_a_multishell_model_without_a_hybridising_shell_is_refused_up_front():
         shell_has_bath={0: False, 1: False},
     )
     with pytest.raises(ValueError, match="no shell to act on"):
-        dc_criteria._check_active_shells(sb, 0, 1)
+        dc_sector_context._check_active_shells(sb, 0, 1)
 
 
 def _assert_only_the_d_block_moved(dc):
@@ -193,14 +193,14 @@ def _assert_only_the_d_block_moved(dc):
 
 def test_fixed_gap_dc_shifts_only_the_hybridising_shell():
     model, basis, solver = _p_plus_d(u=3.0)
-    dc, sector = dc_criteria.fixed_gap_dc(model, basis, solver, comm=MPI.COMM_WORLD, return_sector=True)
+    dc, sector = dc_gap.fixed_gap_dc(model, basis, solver, comm=MPI.COMM_WORLD, return_sector=True)
     _assert_only_the_d_block_moved(dc)
     assert sector == 8  # the p shell stays full: nominal 6 + 2
 
 
 def test_fixed_peak_dc_shifts_only_the_hybridising_shell():
     model, basis, solver = _p_plus_d(u=3.0)
-    dc, _sector = dc_criteria.fixed_peak_dc(
+    dc, _sector = dc_peak.fixed_peak_dc(
         model, basis, solver, peak_position=2.0, comm=MPI.COMM_WORLD, return_sector=True, allow_charge_state_change=True
     )
     _assert_only_the_d_block_moved(dc)
@@ -211,7 +211,7 @@ def test_a_rotated_d_shell_keeps_the_shift_on_the_d_orbitals_in_both_bases():
     keeps only rotations inside a shell, so both shifts must still select exactly the d orbitals."""
     q, _ = np.linalg.qr(np.random.default_rng(3).normal(size=(10, 10)))
     model, basis, solver = _p_plus_d(u=3.0, d_rotation=q)
-    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     want = np.diag([0.0] * 6 + [1.0] * 10)
     np.testing.assert_array_equal(ctx.shift_input, want)
     np.testing.assert_array_equal(ctx.shift_solver, want)
@@ -304,7 +304,7 @@ def test_n0_does_not_depend_on_which_shell_sits_at_the_higher_input_indices():
         )
         return model, basis, SolverOptions(dense_cutoff=1000)
 
-    n0 = [dc_criteria._prepare_occupation_context(*build(first), comm=MPI.COMM_WORLD).n0 for first in (True, False)]
+    n0 = [dc_occupation._prepare_occupation_context(*build(first), comm=MPI.COMM_WORLD).n0 for first in (True, False)]
     assert n0[0] == pytest.approx(n0[1], abs=1e-6)
 
 
@@ -315,20 +315,21 @@ def test_dc_trial_sectors_keep_the_bath_less_window_at_its_nominal_filling(dc_d)
     at its nominal filling; the DC's trial sectors must too, at every total around the nominal one."""
     from mpi4py import MPI
 
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_sector_context
+    from impurityModel.ed.lie_algebra import extract_tensors
 
     model, basis, solver = _p_plus_d(u=3.0)
     dc = np.zeros((16, 16), dtype=complex)
     dc[6:, 6:] = dc_d * np.eye(10)
     model = ImpurityModel.from_solver_matrix(
-        np.asarray(dc_criteria.extract_tensors(model.h0, n_orb=20, two_body=False)[0]),
+        np.asarray(extract_tensors(model.h0, n_orb=20, two_body=False)[0]),
         16,
         dc=dc,
         rot_to_spherical=model.rot_to_spherical,
         bath_valence_conduction=([16, 17], [18, 19]),
         shell_ls=(1, 2),
     )
-    ctx = dc_criteria._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
+    ctx = dc_sector_context._prepare_sector_context(model, basis, solver, comm=MPI.COMM_WORLD, memory_label="test")
     window = sorted(ctx.seed_window)
     nominal = sum(ctx.N0[g] for g in window)
     assert nominal == 6

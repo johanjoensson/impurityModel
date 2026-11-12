@@ -217,7 +217,7 @@ DC_SCHEMES = (
 
 #: Schemes that run a search: each costs 1-15 full collective ground-state solves, and their
 #: collectives run on ``MPI.COMM_WORLD`` regardless of any ``comm`` argument
-#: (``ed/dc_criteria.py:675``).
+#: (``ed/dc_sector_context.py``).
 DC_SEARCH_SCHEMES = ("fixed_occupation", "fixed_peak", "fixed_gap")
 
 #: Keys shared by every searching double-counting variant.

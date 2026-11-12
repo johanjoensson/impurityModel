@@ -493,17 +493,17 @@ def test_every_dense_cutoff_default_has_one_owner():
 
 
 def test_the_spec_keywords_a_dc_call_site_hands_on_are_exactly_the_ones_its_callee_accepts():
-    """Each ``_ctx_spec(...).solve_kwargs(<names>)`` call in ``dc_criteria`` names an explicit subset (the callee
+    """Each ``_ctx_spec(...).solve_kwargs(<names>)`` call in the ``dc_*`` criteria names an explicit subset (the callee
     has no ``**kwargs``). Dropping a name silently reverts that keyword to the callee's default, so the subset
     is pinned to what the callee declares among the keywords the spec decides."""
     import ast
     import inspect
 
-    from impurityModel.ed import dc_criteria, groundstate
+    from impurityModel.ed import dc_gap, dc_occupation, dc_peak, dc_sector_context, groundstate
     from impurityModel.ed.gs_calc import GroundStateSpec
 
     decided = set(GroundStateSpec(tau=0.01).solve_kwargs())
-    tree = ast.parse(inspect.getsource(dc_criteria))
+    tree = ast.parse("".join(inspect.getsource(m) for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)))
     seen = {}
     for call in ast.walk(tree):
         if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):

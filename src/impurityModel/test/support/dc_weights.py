@@ -1,6 +1,6 @@
 r"""Does the gap criterion's ``omega_+-`` carry any impurity spectral weight?
 
-:func:`dc_criteria.fixed_gap_dc` centres ``(E_0[N+1] - E_0[N-1])/2`` on the Fermi level, where
+:func:`dc_gap.fixed_gap_dc` centres ``(E_0[N+1] - E_0[N-1])/2`` on the Fermi level, where
 each ``E_0`` is the *lowest* eigenvalue of a charge sector. Karolak et al.'s prescription is about
 the gap of the local spectral function
 
@@ -26,7 +26,7 @@ centre sector's reference, so the ``N +- 1`` blocks never grow past whatever
 each** against 18 in the centre. A ``ManyBodyState`` is keyed by determinant, so
 ``<psi_n | c_d^dagger psi_0>`` is a sum over the intersection of two supports and needs no shared
 ``Basis`` at all. Each sector then keeps its own properly expanded space, which also means the
-energies here are the ones :func:`dc_criteria.fixed_gap_dc` actually uses rather than a frozen-space
+energies here are the ones :func:`dc_gap.fixed_gap_dc` actually uses rather than a frozen-space
 model of them.
 
 Serial only. The overlaps and the representability check are new reductions over determinants, and
@@ -43,11 +43,12 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.dc_criteria import _per_group_occupation, _prepare_sector_context
+from impurityModel.ed.dc_sector_context import _prepare_sector_context
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import solve_sector
 from impurityModel.ed.operator_algebra import ManyBodyOperator
+from impurityModel.ed.solver_basis import _per_group_occupation
 
 #: Most eigenpairs kept per sector. A thermal manifold is not a spectrum:
 #: the lowest states of an ``N +- 1`` sector can all be bath excitations, and the whole question
@@ -148,7 +149,7 @@ def spectral_moments(h_op, psi_ground, e_ground, imp_flat):
 
 
 def _sector_states(ctx, h_op, n_trial, num_states, max_energy):
-    """``(es, psis, basis)`` for one sector, on :func:`dc_criteria._SectorContext`'s conventions.
+    """``(es, psis, basis)`` for one sector, on :func:`dc_sector_context._SectorContext`'s conventions.
 
     Mirrors :meth:`_SectorContext.sector_energy` exactly -- same bounds check, same arguments --
     except that it keeps the eigenvectors. ``(None, None, None)`` where that method returns
@@ -199,7 +200,7 @@ def sector_weight_table(
     ----------
     mu : float
         The trial double-counting shift, in ``dc = dc_guess + mu * identity`` -- the same
-        coordinate :func:`dc_criteria.fixed_gap_dc` searches over.
+        coordinate :func:`dc_gap.fixed_gap_dc` searches over.
     max_energy : float, optional
         Cut on ``e - e0`` per sector. Defaults to the full one-body bandwidth, which is far above
         the Boltzmann cut ``solve_sector`` would otherwise apply and is what makes this an

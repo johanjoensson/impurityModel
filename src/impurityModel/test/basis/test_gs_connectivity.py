@@ -76,9 +76,15 @@ def test_a_cap_the_user_set_is_not_measured(monkeypatch):
 
 def test_every_driver_hands_its_solver_basis_connectivity_to_the_cap_resolver():
     """The double-counting search and the self-energy must size one cap from one set of numbers."""
-    from impurityModel.ed import dc_criteria, groundstate, selfenergy, susceptibility
+    from impurityModel.ed import (
+        dc_sector_context,
+        groundstate,
+        selfenergy,
+        susceptibility,
+    )
 
-    for module, count in ((selfenergy, 1), (susceptibility, 1), (dc_criteria, 2), (groundstate, 1)):
+    drivers = (selfenergy, susceptibility, dc_sector_context, groundstate)
+    for module, count in zip(drivers, (1, 1, 1, 1)):
         src = Path(module.__file__).read_text()
         assert src.count("connectivity=") >= count and "resolve_cap_policy(" in src, module.__name__
 

@@ -442,7 +442,7 @@ def test_each_static_dc_scheme_attaches_its_own_matrix(tmp_path):
 
 
 def _stub_occupation_search(monkeypatch, behaviour):
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_occupation
 
     calls = []
 
@@ -450,7 +450,7 @@ def _stub_occupation_search(monkeypatch, behaviour):
         calls.append((model, kwargs))
         return behaviour(model)
 
-    monkeypatch.setattr(dc_criteria, "fixed_occupation_dc", stub)
+    monkeypatch.setattr(dc_occupation, "fixed_occupation_dc", stub)
     return calls
 
 
@@ -519,7 +519,7 @@ def test_a_zero_e_pt2_tol_is_refused(written):
 
 @pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak"])
 def test_the_energy_difference_criteria_forward_their_convergence_keys(tmp_path, monkeypatch, scheme):
-    from impurityModel.ed import dc_criteria
+    from impurityModel.ed import dc_gap, dc_peak
 
     calls = []
 
@@ -527,7 +527,7 @@ def test_the_energy_difference_criteria_forward_their_convergence_keys(tmp_path,
         calls.append(kwargs)
         return np.zeros((2, 2), dtype=complex)
 
-    monkeypatch.setattr(dc_criteria, f"{scheme}_dc", stub)
+    monkeypatch.setattr({"fixed_gap": dc_gap, "fixed_peak": dc_peak}[scheme], f"{scheme}_dc", stub)
     table = f"[double_counting.{scheme}]\n" + ("peak_position = 1.0\n" if scheme == "fixed_peak" else "")
     build(load_input(_dc_input(tmp_path, table)))
     assert calls[-1]["e_pt2_tol"] is None and calls[-1]["de2_min"] is None, "absent inherits"
