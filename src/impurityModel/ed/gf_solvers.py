@@ -527,6 +527,7 @@ def block_Green_sparse(
     first_shell_tol=None,
     refine=None,
     growth_tol=None,
+    growth_quiet=None,
 ):
     """
     Calculate one block of the Greens function: the block-Lanczos recurrence on the determinants the seeds
@@ -557,6 +558,8 @@ def block_Green_sparse(
 
     ``growth_tol``: with pruned growth, the growth pass stops at this looser relative-change tolerance and the
     restart on the final P converges G fully (see :func:`gf_recurrence.block_Green_discovered`); ``None``: off.
+    ``growth_quiet``: with pruned growth, the growth pass also ends after that many consecutive blocks that admitted
+    nothing, with the same restart; ``None``: off.
 
     ``refine``: a :class:`gf_refinement.RefineSpec` with ``rounds > 0`` swap-refines a unit the cap froze; it needs
     the discovered matrix, so ``"auto"`` keeps that mode when it fits.
@@ -590,6 +593,7 @@ def block_Green_sparse(
         first_shell_tol=first_shell_tol,
         refine=refine,
         growth_tol=growth_tol,
+        growth_quiet=growth_quiet,
     )
 
 

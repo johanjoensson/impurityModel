@@ -291,3 +291,96 @@ def test_distributed_early_growth_stop_is_the_exact_PHP_resolvent(monkeypatch, g
     G, info, z = _run_growth(monkeypatch, 0.05, growth_tol, reort=True, comm=comm)
     assert comm.allgather(info["passes"]["growth_blocks"]) == [info["passes"]["growth_blocks"]] * comm.size
     np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)
+
+
+def _run_quiet(monkeypatch, eta, quiet, cap=np.inf, reort=None, comm=None):
+    """Like :func:`_run_growth` (monitor sampled every block, full tolerance), with ``growth_quiet`` for the growth."""
+    from impurityModel.ed import gf_convergence
+    from impurityModel.ed.gf_convergence import EvalMeshes
+
+    monkeypatch.setattr(gf_convergence, "_GF_CHECK_EVERY", 1)
+    basis = _seed_basis(cap=cap, comm=comm)
+    full = _seeds()
+    seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
+    z = OMEGA + 1j * DELTA
+    info = {}
+    alphas, betas, r = block_Green_sparse(
+        _siam_6(),
+        seeds,
+        basis,
+        DELTA,
+        reort=reort,
+        verbose=False,
+        cap_info=info,
+        eval_meshes=EvalMeshes([z], [1e-9]),
+        growth_quiet=quiet,
+        prune_tol=eta,
+    )
+    return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info, z
+
+
+@pytest.mark.parametrize("reort", [None, True])
+@pytest.mark.parametrize("quiet", [1, 2])
+def test_a_quiet_window_ends_a_closed_growth_early_on_the_same_support_and_the_same_G(monkeypatch, quiet, reort):
+    """At eta 0.05 the support is complete after 4 blocks (admitted per block [5, 6, 3, 1, 0, ...]) while the monitor
+    needs 8 (reorthogonalized) or 10 blocks: the window ends the growth ``quiet`` blocks after the last admission, the restart finds the same P.
+    """
+    G_ref, ref, _z = _run_quiet(monkeypatch, 0.05, None, reort=reort)
+    G, info, z = _run_quiet(monkeypatch, 0.05, quiet, reort=reort)
+    assert ref["passes"]["growth_stop"] == "converged" and ref["passes"]["growth_blocks"] >= 8
+    assert info["passes"]["growth_stop"] == "quiet"
+    assert info["passes"]["growth_blocks"] == 4 + quiet
+    assert info["passes"]["restart_blocks"] == ref["passes"]["restart_blocks"] > 0
+    assert _retained(info) == _retained(ref)
+    np.testing.assert_allclose(G, G_ref, atol=1e-12)
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+
+
+def test_a_window_longer_than_the_growth_changes_nothing(monkeypatch):
+    G_ref, ref, _z = _run_quiet(monkeypatch, 0.05, None)
+    G, info, _z = _run_quiet(monkeypatch, 0.05, 500)
+    assert info["passes"] == {**ref["passes"], **{k: info["passes"][k] for k in ("growth_seconds", "restart_seconds")}}
+    assert info["passes"]["growth_stop"] == "converged"
+    np.testing.assert_array_equal(G, G_ref)
+
+
+def test_a_row_admitted_after_a_gap_longer_than_the_window_is_the_accepted_loss(monkeypatch):
+    """At eta 0.225 a row clears the threshold at block 6, after a quiet block: window 1 misses three determinants
+    (still the exact resolvent of what it kept), window 2 sees them. The stop is a heuristic and says so."""
+    _G, ref, _z = _run_quiet(monkeypatch, 0.225, None)
+    G1, tight, z = _run_quiet(monkeypatch, 0.225, 1)
+    _G, wide, _z = _run_quiet(monkeypatch, 0.225, 2)
+    assert ref["retained_size"] == 18 and tight["retained_size"] == 15
+    assert wide["retained_size"] == 18
+    np.testing.assert_allclose(G1, _dense_G_on(_retained(tight), z), atol=1e-9)
+
+
+def test_the_quiet_window_is_off_for_an_unpruned_support_and_a_frozen_one(monkeypatch):
+    _G, unpruned, _z = _run_quiet(monkeypatch, 0.0, 1)
+    assert unpruned["passes"]["growth_stop"] == "converged"
+    G, capped, z = _run_quiet(monkeypatch, 0.05, 1, cap=14)
+    assert capped["cap_hit"] and capped["passes"]["growth_stop"] != "quiet"
+    np.testing.assert_allclose(G, _dense_G_on(_retained(capped), z), atol=1e-9)
+
+
+def test_a_quiet_stop_must_be_followed_by_the_restart(monkeypatch):
+    """Negative control: with the restart switched off the quiet-stopped coefficients would be returned as the
+    answer, which the kernel refuses rather than return."""
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "_needs_restart", lambda support, n_seed: False)
+    monkeypatch.setattr(gf_recurrence, "_restart_after_early_stop", lambda stopped_early: False)
+    with pytest.raises(RuntimeError, match="restart"):
+        _run_quiet(monkeypatch, 0.05, 1)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("quiet", [1, 2])
+def test_distributed_quiet_stop_is_the_same_block_on_every_rank_and_the_exact_PHP_resolvent(monkeypatch, quiet):
+    comm = MPI.COMM_WORLD
+    G, info, z = _run_quiet(monkeypatch, 0.05, quiet, reort=True, comm=comm)
+    blocks = info["passes"]["growth_blocks"]
+    assert blocks == 4 + quiet
+    assert comm.allgather(blocks) == [blocks] * comm.size
+    assert comm.allgather(info["passes"]["growth_stop"]) == ["quiet"] * comm.size
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)

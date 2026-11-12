@@ -228,7 +228,7 @@ def _block_green_group(
         # the rerun from the seeds on the final support, each with its own blocks and wall.
         passes = cap_stats.get("passes")
         csr = (
-            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s"
+            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s{' (quiet)' if passes.get('growth_stop') == 'quiet' else ''}"
             f", restart={passes['restart_blocks']} blk/{passes['restart_seconds']:.1f} s"
             if passes
             else ""

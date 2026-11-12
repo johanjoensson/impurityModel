@@ -714,12 +714,13 @@ def block_lanczos_discovered(
     shifted_rtol=None,
     score_only=False,
     score_gate=None,
+    quiet_window=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
 
     Returns ``(alphas, betas, widths, status, q_last)``: the padded ``(m, n, n)`` coefficient arrays, the
-    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"`` or
+    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"``, ``"quiet"`` or
     ``"max_iter"``) and this rank's rows of the last accepted block (P-slot order of the final matrix).
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
     ``shifted`` (a :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) is stepped with every block the
@@ -730,7 +731,10 @@ def block_lanczos_discovered(
     alone (the Green's-function monitor is still called every block) and reports ``"scored"``: the coefficients are
     then good for the scores, not for ``G``. ``score_gate()`` (collective) is asked once, when the Green's function
     has converged on a frozen P: if it says no row is worth scoring, ``shifted`` is dropped (``shifted.skipped``) and
-    the run ends there.
+    the run ends there. ``quiet_window`` (pruned growth that is not frozen yet; ``None``: off) ends the run with the
+    status ``"quiet"`` once that many consecutive blocks admitted nothing -- the growth has found its support and
+    only the restart on it (which the caller must run) is left to do. The test reads the replicated
+    ``support.step_counts``, so every rank leaves on the same block.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -830,6 +834,13 @@ def block_lanczos_discovered(
             if comm is not None:
                 comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
             done = bool(worst[0] <= shifted_rtol)
+        if not done and quiet_window and support.prunes and not d.frozen and not score_only:
+            counts = support.step_counts
+            if len(counts) > quiet_window and not any(counts[len(counts) - quiet_window :]):
+                status = "quiet"
+                widths.append(n_curr)
+                it += 1
+                break
         if done:
             status = "scored" if score_only else "converged"
             widths.append(n_curr)
@@ -1032,6 +1043,7 @@ def block_Green_discovered(
     first_shell_tol=None,
     refine=None,
     growth_tol=None,
+    growth_quiet=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
@@ -1050,7 +1062,8 @@ def block_Green_discovered(
     ``basis.truncation_threshold``; ``prune_tol > 0`` turns on importance pruning. ``growth_tol``
     (pruned growth only; ``None``: off) is the relative-change tolerance of the growth pass's own convergence
     monitor: the pass stops once G has moved less than that on the evaluation meshes, and the restart on the
-    final P (always run after such a stop) converges G to the full tolerance.
+    final P (always run after such a stop) converges G to the full tolerance. ``growth_quiet`` (pruned growth only;
+    ``None``: off) ends the growth pass once that many consecutive blocks admitted nothing, with the same restart.
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
@@ -1192,13 +1205,16 @@ def block_Green_discovered(
         shifted=acc,
         shifted_rtol=None if plan is None else plan.stop_rtol,
         score_gate=None if plan is None else _swappable_gate,
+        quiet_window=growth_quiet if support.prunes else None,
     )
-    stopped_early = growth_flag is not None and bool(growth_flag[0])
+    quiet_stop = status == "quiet"
+    stopped_early = (growth_flag is not None and bool(growth_flag[0])) or quiet_stop
     if growth_flag is not None:
         converged_flag = growth_flag
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap or the settle
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
     passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
+    passes["growth_stop"] = "quiet" if quiet_stop else ("tol" if stopped_early else "converged")
     passes.update(restart_blocks=0, restart_seconds=0.0)
     if acc is not None and getattr(acc, "skipped", False):
         plan, acc = None, None
@@ -1324,6 +1340,8 @@ def block_Green_discovered(
             converged_flag, delta_min, last_dg = monitor_state
         if verbose and rank == 0:
             print(_refine_line(outcome.record), flush=True)
+    if status == "quiet":
+        raise RuntimeError("a quiet-stopped growth pass must be followed by the restart on the final support")
     seconds = time.perf_counter() - t0
     if status in ("converged", "invariant_subspace"):
         converged_flag[0] = True
