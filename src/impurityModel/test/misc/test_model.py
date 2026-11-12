@@ -9,8 +9,6 @@ import pytest
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.model import (
-    DEFAULT_GF_PRUNE_TOL,
-    DEFAULT_GF_REFINE_ROUNDS,
     BasisOptions,
     ImpurityModel,
     Meshes,
@@ -19,6 +17,7 @@ from impurityModel.ed.model import (
     load_selfenergy_archive,
 )
 from impurityModel.ed.operator_algebra import c2i, matrixToIOp
+from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL, DEFAULT_GF_REFINE_ROUNDS
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
