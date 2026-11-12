@@ -810,6 +810,7 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
 
 # ---- opt-in pytest entry -------------------------------------------------------------
 
+
 @pytest.mark.benchmark
 def test_dc_baseline():
     from mpi4py import MPI
@@ -823,9 +824,7 @@ def test_dc_baseline():
         mu_env = bench_opt("DC_DIAG_MU")
         if mu_env is None:
             raise RuntimeError("DC_DIAG_MODE=occupation_convergence needs DC_DIAG_MU set.")
-        caps = [int(c) for c in bench_opt("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(
-            DEFAULT_CONVERGENCE_CAPS
-        )
+        caps = [int(c) for c in bench_opt("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(DEFAULT_CONVERGENCE_CAPS)
         occupation_convergence_sweep(
             key,
             float(mu_env),

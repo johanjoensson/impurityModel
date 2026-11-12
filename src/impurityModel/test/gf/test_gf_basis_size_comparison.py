@@ -225,7 +225,6 @@ def test_a_compact_ground_state_means_a_small_seed_support(geometries):
 # --- the benchmark -------------------------------------------------------------------------------
 
 
-
 @pytest.mark.benchmark
 @pytest.mark.parametrize("fixture", ["F-NiO", "F-pos"])
 def test_full_size_comparison(fixture):

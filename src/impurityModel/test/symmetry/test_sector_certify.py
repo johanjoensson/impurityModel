@@ -286,7 +286,6 @@ def test_a_sector_too_large_to_certify_is_counted_as_uncertified(comm, monkeypat
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-
     def solve(store):
         solve_sector(
             _hamiltonian(),

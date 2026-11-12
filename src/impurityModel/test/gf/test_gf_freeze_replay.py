@@ -58,8 +58,6 @@ def test_a_reference_point_already_acausal_is_counted_not_gated_to_nan():
     assert np.isfinite(out["real_abs"]) and out["artefact_points"] >= 1
 
 
-
-
 @pytest.mark.benchmark
 def test_replay_runs_and_writes_arrays(tmp_path):
     from mpi4py import MPI
@@ -67,8 +65,6 @@ def test_replay_runs_and_writes_arrays(tmp_path):
     h5 = bench_opt("WORKLOAD_H5")
     assert h5, "WORKLOAD_H5 must point to an impurityModel_data.h5 archive"
     out = str(tmp_path / "replay")
-    res = fr.run(
-        h5, out, iteration=int(bench_opt("ITERATION", "1")), freeze="on", comm=MPI.COMM_WORLD, verbosity=0
-    )
+    res = fr.run(h5, out, iteration=int(bench_opt("ITERATION", "1")), freeze="on", comm=MPI.COMM_WORLD, verbosity=0)
     if MPI.COMM_WORLD.rank == 0:
         assert "sigma_real" in res and os.path.exists(out + ".npz")

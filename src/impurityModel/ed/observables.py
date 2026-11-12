@@ -1311,5 +1311,3 @@ def gated_term_symbol(s2, l2, j2, j_sharp):
     term = term_symbol(s_qn, l_qn, j_qn)
     g_j, mu_eff, _ = lande_g_and_moments(s2, l2, j2)
     return term, g_j, mu_eff
-
-

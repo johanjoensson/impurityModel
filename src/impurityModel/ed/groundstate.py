@@ -1637,5 +1637,3 @@ def sector_bounds(impurity_orbitals, frozen_occupations):
         return sum(occupation[i] for i in occupation if i in frozen)
 
     return max_total, free_capacity, pinned_of
-
-

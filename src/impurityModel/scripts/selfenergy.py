@@ -159,8 +159,7 @@ def add_arguments(parser):
         type=float,
         default=None,
         help=(
-            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: 3, "
-            "or the archive's)."
+            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: 3, " "or the archive's)."
         ),
     )
     parser.add_argument(

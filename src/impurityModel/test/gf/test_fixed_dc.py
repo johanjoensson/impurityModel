@@ -1597,7 +1597,6 @@ def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(mon
 
     monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", exploding_ladder)
 
-
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)  # truncation_threshold is set by common_kwargs
     report = {}
     fixed_occupation_dc(occupation=1.0, report=report, **kwargs)
@@ -1636,7 +1635,6 @@ def test_fixed_gap_dc_skips_the_cap_ladder_when_threshold_is_explicit(monkeypatc
         raise AssertionError("resolve_cap_at_max ran on an explicit truncation_threshold")
 
     monkeypatch.setattr(dc_sector_context, "resolve_cap_at_max", exploding_ladder)
-
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)  # truncation_threshold is set by common_kwargs
     report = {}
@@ -1815,7 +1813,6 @@ def test_dc_search_applies_weighted_restrictions(monkeypatch):
     fixed_occupation_dc(occupation=1.0, **kwargs)
     assert attached  # one scan per trial solve
     assert any(b is not None for b in attached)  # the model has bath orbitals: bounds exist
-
 
     seen = []
     original = dc_sector_context.build_weighted_restrictions
@@ -2591,9 +2588,7 @@ def test_every_criterion_gates_its_own_return():
     """Source-level, like `test_both_expand_call_sites_pass_the_budget`: the three criteria are
     long collective functions that need a full solve to reach, and what would regress is the
     *call*, not the helper. All three -- peak, gap and occupation -- must check."""
-    src = "".join(
-        Path(m.__file__).read_text() for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)
-    )
+    src = "".join(Path(m.__file__).read_text() for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation))
     assert src.count("_reject_if_memory_bound(ctx, dc_rec, rank=rank, allow_memory_bound=allow_memory_bound)") == 3
 
 
@@ -2670,9 +2665,7 @@ def test_dc_sector_solve_reads_the_resolved_threshold_not_a_constant():
 
     from impurityModel.ed import dc_occupation, dc_sector_context
 
-    src = "".join(
-        inspect.getsource(m) for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation)
-    )
+    src = "".join(inspect.getsource(m) for m in (dc_sector_context, dc_peak, dc_gap, dc_occupation))
     assert "_ctx_spec(self)" in src and "de2_min=ctx.de2_min," in inspect.getsource(dc_sector_context._ctx_spec)
     assert "de2_min=GS_DE2_MIN," not in src, "the unconditional constant must be gone"
 
@@ -2756,7 +2749,7 @@ def test_dc_criteria_accept_de2_min_and_carry_it_to_the_context():
     from impurityModel.ed import dc_occupation, dc_sector_context
 
     for name in ("fixed_gap_dc", "fixed_peak_dc"):
-        sig = inspect.signature(getattr(dc_gap if 'gap' in name else dc_peak, name))
+        sig = inspect.signature(getattr(dc_gap if "gap" in name else dc_peak, name))
         assert "de2_min" in sig.parameters, name
         assert sig.parameters["de2_min"].default is None, name
     assert "de2_min" not in inspect.signature(dc_occupation.fixed_occupation_dc).parameters

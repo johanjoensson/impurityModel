@@ -15,7 +15,6 @@ enumeration/chunking/seed-construction logic gap, not the restriction-applicatio
 which has its own dedicated coverage under restrictions/.
 """
 
-
 from impurityModel.ed.gf_units import enumerate_gf_units
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.gf_switches import gf_tuning
