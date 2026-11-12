@@ -14,7 +14,6 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed.archive import load_selfenergy_archive
 from impurityModel.ed.model import (
     BasisOptions,
@@ -22,6 +21,7 @@ from impurityModel.ed.model import (
     SolverOptions,
     load_model,
 )
+from impurityModel.ed.options import OPTION_SPECS
 from impurityModel.ed.selfenergy import calc_selfenergy
 from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args
@@ -100,163 +100,17 @@ def add_arguments(parser):
         "--n_matsubara", type=int, default=0, help="Number of fermionic Matsubara points (0 disables Matsubara)."
     )
 
-    # Basis / solver knobs.
-    parser.add_argument("--dN", type=int, default=None, help="Impurity occupation window (+-dN) for the excited bases.")
+    # Basis / solver knobs: one argument per registry row that has a flag (ed/options.py).
     add_cap_argument(parser)
-    parser.add_argument(
-        "--cost_budget",
-        type=float,
-        default=None,
-        help=(
-            "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
-            "bounded by round(COST_KAPPA*alpha*-log(slater_weight_min)), COST_KAPPA = 8. "
-            "default: off (see doc/plans/gf_relevant_support.md)."
-        ),
-    )
-    parser.add_argument(
-        "--no-chain-restrict",
-        dest="chain_restrict",
-        action="store_false",
-        help="Disable chain occupation restrictions.",
-    )
-    parser.add_argument(
-        "--gf-method",
-        type=str,
-        default=None,
-        choices=list(config.GF_METHODS),
-        help="Green's-function kernel (default: lanczos, or the one recorded in the archive with --from-archive).",
-    )
-    parser.add_argument(
-        "--gf-admission",
-        type=str,
-        default=None,
-        choices=list(config.GF_ADMISSIONS),
-        help=(
-            "Basis-growth policy of the per-frequency kernel (needs --gf-method bicgstab): 'all' admits "
-            "everything the solver produces, 'outer' admits only what scores above --gf-admit-tol and "
-            "reports a measured error bound. Default: 'all' (or the "
-            "archive's, with --from-archive)."
-        ),
-    )
-    parser.add_argument(
-        "--gf-admit-tol",
-        type=float,
-        default=None,
-        help="Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
-    )
-    parser.add_argument(
-        "--gf-settle",
-        choices=("on", "off"),
-        default=None,
-        help=(
-            "Support settle of the block-Lanczos Green's function: 'on' (the default) lets a unit stop admitting "
-            "determinants once its frontier is below --gf-settle-ratio x slater_weight_min, 'off' keeps every "
-            "unit growing until it closes or hits a cap."
-        ),
-    )
-    parser.add_argument(
-        "--gf-settle-ratio",
-        type=float,
-        default=None,
-        help=(
-            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: 3, " "or the archive's)."
-        ),
-    )
-    parser.add_argument(
-        "--gf-prune-tol",
-        type=float,
-        default=None,
-        help=(
-            "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant only if "
-            "its largest amplitude on the normalised step block exceeds this. Deferred determinants are not banned. "
-            "Replaces the support settle (default: 1e-3; 0 is off; an archive without the option reads as off)."
-        ),
-    )
-    parser.add_argument(
-        "--gf-refine-rounds",
-        type=int,
-        default=None,
-        help=(
-            "Swap refinement of a unit the determinant cap froze: up to this many rounds of swapping the least "
-            "important retained determinants for the most important discovered ones at the same cap (default: 3; 0 "
-            "is off; an archive without the option reads as off). Needs the discovered matrix; costs minutes per "
-            "capped unit."
-        ),
-    )
-    parser.add_argument(
-        "--gf-refine-tol",
-        type=float,
-        default=None,
-        help="With --gf-refine-rounds: stop when the estimated remaining gain is below this fraction of |G| (1e-3).",
-    )
-    parser.add_argument(
-        "--gf-refine-swap",
-        type=float,
-        default=None,
-        help="With --gf-refine-rounds: the largest fraction of the cap one round swaps, in (0, 0.5] (0.1).",
-    )
-    parser.add_argument(
-        "--gf-first-shell-tol",
-        type=float,
-        default=None,
-        help=(
-            "With pruning on: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
-            "the self-energy tail stays exact only then)."
-        ),
-    )
-    parser.add_argument(
-        "--gf-growth-tol",
-        type=float,
-        default=None,
-        help=(
-            "With pruning on: stop the matrix-free growth pass at this looser relative-change tolerance in (0, 1); "
-            "the restart on the final support converges G fully (default: the growth converges fully)."
-        ),
-    )
-    parser.add_argument(
-        "--gf-settle-retry",
-        choices=("on", "off"),
-        default=None,
-        help=(
-            "On a real-axis self-energy causality failure the support settle can plausibly explain, solve the settled "
-            "units again once closure-only ('on') or not ('off', the default: the re-solve can take as long as an "
-            "unsettled Green's function). The attribution is printed either way."
-        ),
-    )
-    parser.add_argument(
-        "--gf-tol",
-        type=float,
-        default=None,
-        help=(
-            "Block-Lanczos Green's-function convergence tolerance (relative change of G) on every axis "
-            "(default: max(slater_weight_min^2, 1e-9), or the archive's)."
-        ),
-    )
-    parser.add_argument(
-        "--gf-real-tol",
-        type=float,
-        default=None,
-        help="The same tolerance on the real-frequency axis only (default: --gf-tol's value).",
-    )
-    parser.add_argument(
-        "--gf-min-weight",
-        type=float,
-        default=None,
-        help=(
-            "Drop thermal states (whole degenerate manifolds, never the ground one) whose normalised "
-            "Boltzmann weight is below this from the Green's function and self-energy (default: keep all)."
-        ),
-    )
-    parser.add_argument(
-        "--sigma-causality-tol",
-        type=float,
-        default=None,
-        help="Relative tolerance of the self-energy causality check; smaller violations only warn (default: 1e-3).",
-    )
-    parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")
-    parser.add_argument(
-        "--no-sparse-green", dest="sparse_green", action="store_false", help="Disable the sparse block-Lanczos path."
-    )
+    for spec in _FLAG_SPECS:
+        if spec.kind == "bool":
+            parser.add_argument(spec.cli, dest=spec.name, action="store_false", help=spec.help)
+        elif spec.kind == "onoff":
+            parser.add_argument(spec.cli, choices=("on", "off"), default=None, help=spec.help)
+        elif spec.kind == "enum":
+            parser.add_argument(spec.cli, type=str, default=None, choices=list(spec.choices), help=spec.help)
+        else:
+            parser.add_argument(spec.cli, type={"int": int, "float": float}[spec.kind], default=None, help=spec.help)
     parser.add_argument(
         "--output", type=str, default=None, help="Per-cluster HDF5 output (default: selfenergy-<cluster>.h5)."
     )
@@ -329,6 +183,25 @@ def _save_results(result, meshes, cluster_label, output, directory=None):
     print(f"Wrote self-energy archive to {output} (cluster '{cluster_label}').")
 
 
+#: The registry rows that are command-line flags.
+_FLAG_SPECS = tuple(spec for spec in OPTION_SPECS if spec.cli)
+
+
+def given_options(args, group):
+    """The ``group`` ("basis" or "solver") option flags that were passed, as dataclass keywords.
+
+    A flag left at its ``None`` default is absent, so the dataclass default (or an archive's
+    recorded value) stands. The store-false switches are not overrides: they always have a value.
+    """
+    out = {}
+    for spec in _FLAG_SPECS:
+        value = getattr(args, spec.name, None)
+        if spec.group != group or spec.kind == "bool" or value is None:
+            continue
+        out[spec.name] = value == "on" if spec.kind == "onoff" else value
+    return out
+
+
 def apply_solver_overrides(solver, args):
     """``solver`` (an archive's recorded options) with the Green's-function flags that were passed.
 
@@ -336,28 +209,7 @@ def apply_solver_overrides(solver, args):
     whole, so a flag that contradicts the record (``--gf-method lanczos`` on a run recorded with
     outer admission) is refused rather than half applied.
     """
-    overrides = {
-        name: value
-        for name, value in (
-            ("gf_method", args.gf_method),
-            ("gf_admission", args.gf_admission),
-            ("gf_admit_tol", args.gf_admit_tol),
-            ("gf_settle", None if args.gf_settle is None else args.gf_settle == "on"),
-            ("gf_settle_ratio", args.gf_settle_ratio),
-            ("gf_settle_retry", None if args.gf_settle_retry is None else args.gf_settle_retry == "on"),
-            ("gf_prune_tol", args.gf_prune_tol),
-            ("gf_first_shell_tol", args.gf_first_shell_tol),
-            ("gf_growth_tol", args.gf_growth_tol),
-            ("gf_refine_rounds", args.gf_refine_rounds),
-            ("gf_refine_tol", args.gf_refine_tol),
-            ("gf_refine_swap", args.gf_refine_swap),
-            ("gf_tol", args.gf_tol),
-            ("gf_real_tol", args.gf_real_tol),
-            ("gf_min_weight", args.gf_min_weight),
-            ("sigma_causality_tol", args.sigma_causality_tol),
-        )
-        if value is not None
-    }
+    overrides = given_options(args, "solver")
     # A flag that switches the settle off, or leaves the block-Lanczos kernel, makes the archive's settle fields
     # meaningless: clear the ones the command line did not set itself, or the options refuse the combination.
     leaves_lanczos = overrides.get("gf_method", solver.gf_method) != "lanczos"
@@ -417,8 +269,7 @@ def run(args):
             args.from_archive, cluster=args.cluster, iteration=args.iteration
         )
         solver = apply_solver_overrides(solver, args)
-        if args.cost_budget is not None:
-            basis = replace(basis, cost_budget=args.cost_budget)
+        basis = replace(basis, **given_options(args, "basis"))
         if args.truncation_threshold is not CAP_NOT_GIVEN:
             # Likewise an explicit cap, including an explicit `auto`, overrides the archived one.
             basis = replace(basis, truncation_threshold=args.truncation_threshold)
@@ -446,32 +297,12 @@ def run(args):
         basis = BasisOptions(
             nominal_occ={ls: args.n0imps},
             mixed_valence=args.mixed_valence,
-            dN=args.dN,
             truncation_threshold=requested_cap(args),
             chain_restrict=args.chain_restrict,
             tau=args.tau,
-            cost_budget=args.cost_budget,
+            **given_options(args, "basis"),
         )
-        solver = SolverOptions(
-            dense_cutoff=args.dense_cutoff,
-            sparse_green=args.sparse_green,
-            gf_method=args.gf_method or "lanczos",
-            gf_admission=args.gf_admission,
-            gf_admit_tol=args.gf_admit_tol,
-            gf_settle=None if args.gf_settle is None else args.gf_settle == "on",
-            gf_settle_ratio=args.gf_settle_ratio,
-            gf_settle_retry=None if args.gf_settle_retry is None else args.gf_settle_retry == "on",
-            gf_prune_tol=args.gf_prune_tol,
-            gf_first_shell_tol=args.gf_first_shell_tol,
-            gf_growth_tol=args.gf_growth_tol,
-            gf_refine_rounds=args.gf_refine_rounds,
-            gf_refine_tol=args.gf_refine_tol,
-            gf_refine_swap=args.gf_refine_swap,
-            gf_tol=args.gf_tol,
-            gf_real_tol=args.gf_real_tol,
-            gf_min_weight=args.gf_min_weight,
-            sigma_causality_tol=args.sigma_causality_tol,
-        )
+        solver = SolverOptions(sparse_green=args.sparse_green, **given_options(args, "solver"))
         cluster_label = args.clustername
 
     result = calc_selfenergy(model, meshes, basis, solver, comm=comm, verbosity=verbosity, cluster_label=cluster_label)

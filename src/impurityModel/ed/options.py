@@ -7,7 +7,7 @@ pulling in any many-body machinery.
 import math
 import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 
 import numpy as np
@@ -482,6 +482,11 @@ class OptionSpec:
         What the header shows for ``None``; ``None`` shows the raw value.
     choices : tuple of str
         The words an ``"enum"`` takes; ``auto_none`` is read as ``None``.
+    cli : str or None
+        The ``impurityModel selfenergy`` command-line flag (``None``: not a flag).  A ``"bool"``
+        field is a store-false switch (``--no-chain-restrict``); the others take a value.
+    help : str
+        The flag's help text.
     """
 
     name: str
@@ -496,6 +501,8 @@ class OptionSpec:
     choices: tuple = ()
     auto_none: Optional[str] = None
     positive: bool = False
+    cli: Optional[str] = None
+    help: str = ""
 
     @property
     def attr_name(self):
@@ -639,6 +646,102 @@ OPTION_SPECS = (
         unset="auto",
     ),
 )
+
+#: ``impurityModel selfenergy`` flags: ``{field: (flag, help)}``.  Kept beside the rows so that a new
+#: option is one place; ``scripts/selfenergy.py`` builds its arguments and overrides from them.
+_CLI = {
+    "dN": ("--dN", "Impurity occupation window (+-dN) for the excited bases."),
+    "cost_budget": (
+        "--cost_budget",
+        "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
+        "bounded by round(COST_KAPPA*alpha*-log(slater_weight_min)), COST_KAPPA = 8. "
+        "default: off (see doc/plans/gf_relevant_support.md).",
+    ),
+    "chain_restrict": ("--no-chain-restrict", "Disable chain occupation restrictions."),
+    "dense_cutoff": ("--dense-cutoff", "Use a dense eigensolver below this size."),
+    "sparse_green": ("--no-sparse-green", "Disable the sparse block-Lanczos path."),
+    "gf_method": (
+        "--gf-method",
+        "Green's-function kernel (default: lanczos, or the one recorded in the archive with --from-archive).",
+    ),
+    "gf_admission": (
+        "--gf-admission",
+        "Basis-growth policy of the per-frequency kernel (needs --gf-method bicgstab): 'all' admits "
+        "everything the solver produces, 'outer' admits only what scores above --gf-admit-tol and "
+        "reports a measured error bound. Default: 'all' (or the archive's, with --from-archive).",
+    ),
+    "gf_admit_tol": (
+        "--gf-admit-tol",
+        "Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
+    ),
+    "gf_settle": (
+        "--gf-settle",
+        "Support settle of the block-Lanczos Green's function: 'on' (the default) lets a unit stop admitting "
+        "determinants once its frontier is below --gf-settle-ratio x slater_weight_min, 'off' keeps every "
+        "unit growing until it closes or hits a cap.",
+    ),
+    "gf_settle_ratio": (
+        "--gf-settle-ratio",
+        "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: 3, or the archive's).",
+    ),
+    "gf_settle_retry": (
+        "--gf-settle-retry",
+        "On a real-axis self-energy causality failure the support settle can plausibly explain, solve the settled "
+        "units again once closure-only ('on') or not ('off', the default: the re-solve can take as long as an "
+        "unsettled Green's function). The attribution is printed either way.",
+    ),
+    "gf_prune_tol": (
+        "--gf-prune-tol",
+        "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant only if "
+        "its largest amplitude on the normalised step block exceeds this. Deferred determinants are not banned. "
+        "Replaces the support settle (default: 1e-3; 0 is off; an archive without the option reads as off).",
+    ),
+    "gf_first_shell_tol": (
+        "--gf-first-shell-tol",
+        "With pruning on: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
+        "the self-energy tail stays exact only then).",
+    ),
+    "gf_growth_tol": (
+        "--gf-growth-tol",
+        "With pruning on: stop the matrix-free growth pass at this looser relative-change tolerance in (0, 1); "
+        "the restart on the final support converges G fully (default: the growth converges fully).",
+    ),
+    "gf_refine_rounds": (
+        "--gf-refine-rounds",
+        "Swap refinement of a unit the determinant cap froze: up to this many rounds of swapping the least "
+        "important retained determinants for the most important discovered ones at the same cap (default: 3; 0 "
+        "is off; an archive without the option reads as off). Needs the discovered matrix; costs minutes per "
+        "capped unit.",
+    ),
+    "gf_refine_tol": (
+        "--gf-refine-tol",
+        "With --gf-refine-rounds: stop when the estimated remaining gain is below this fraction of |G| (1e-3).",
+    ),
+    "gf_refine_swap": (
+        "--gf-refine-swap",
+        "With --gf-refine-rounds: the largest fraction of the cap one round swaps, in (0, 0.5] (0.1).",
+    ),
+    "gf_tol": (
+        "--gf-tol",
+        "Block-Lanczos Green's-function convergence tolerance (relative change of G) on every axis "
+        "(default: max(slater_weight_min^2, 1e-9), or the archive's).",
+    ),
+    "gf_real_tol": ("--gf-real-tol", "The same tolerance on the real-frequency axis only (default: --gf-tol's value)."),
+    "gf_min_weight": (
+        "--gf-min-weight",
+        "Drop thermal states (whole degenerate manifolds, never the ground one) whose normalised "
+        "Boltzmann weight is below this from the Green's function and self-energy (default: keep all).",
+    ),
+    "sigma_causality_tol": (
+        "--sigma-causality-tol",
+        "Relative tolerance of the self-energy causality check; smaller violations only warn (default: 1e-3).",
+    ),
+}
+OPTION_SPECS = tuple(
+    replace(spec, cli=_CLI[spec.name][0], help=_CLI[spec.name][1]) if spec.name in _CLI else spec
+    for spec in OPTION_SPECS
+)
+assert set(_CLI) <= {spec.name for spec in OPTION_SPECS}
 
 #: Fields that were never options: ``nominal_occ`` and ``tau`` are the caller's, the rest of
 #: ``BasisOptions`` is reached through :data:`OPTION_SPECS`.
