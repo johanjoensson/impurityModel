@@ -281,14 +281,13 @@ class ImpurityModel:
         *,
         l: Optional[int] = None,
         slater=None,
-        n_impurity_orbitals: Optional[int] = None,
         xi: float = 0.0,
         h_field=(0.0, 0.0, 0.0),
         allow_noninteracting: bool = False,
         u4: Optional[np.ndarray] = None,
         spin_degenerate: bool = False,
     ) -> "ImpurityModel":
-        """Build a model from a ``.h0`` file (or the legacy bare-integer form).
+        """Build a model from a ``.h0`` file.
 
         Reads the flat single-index format described in ``doc/h0_file_format.md`` and
         delegates to :meth:`from_solver_matrix`. Deliberately **not** routed through
@@ -301,16 +300,13 @@ class ImpurityModel:
         Parameters
         ----------
         path : str or pathlib.Path
-            The ``.h0`` (or legacy ``.dict``/``.dat``) file.
+            The ``.h0`` file.
         l : int, optional
             Angular momentum of the correlated shell. Taken from the header's ``interaction``
             block or ``impurity_l`` when not given.
         slater : sequence of float, optional
             Slater-Condon parameters for the atomic Coulomb tensor. Taken from the header's
             ``interaction`` block when not given.
-        n_impurity_orbitals : int, optional
-            Required for the legacy format, which carries no orbital layout. Validated
-            against the sparsity pattern by the reader.
         xi : float, optional
             Spin-orbit coupling of the correlated shell. Built directly into the flat matrix
             (see Raises) when the header guarantees the basis and spin ordering it needs.
@@ -353,16 +349,7 @@ class ImpurityModel:
             raise ValueError(
                 f"{path}: pass either slater= or u4=, not both; they are two descriptions of one interaction."
             )
-        if spin_degenerate and not h0_format.is_h0_format(path):
-            raise ValueError(
-                f"{path}: spin_degenerate needs a self-describing .h0 file; a legacy flat file does not "
-                "record which orbitals are the impurity, so its spatial layout cannot be doubled safely."
-            )
-        parsed = (
-            h0_format.read_h0_file(path)
-            if h0_format.is_h0_format(path)
-            else h0_format.read_legacy_flat_h0(path, _require_n_imp(path, n_impurity_orbitals))
-        )
+        parsed = h0_format.read_h0_file(path)
         if spin_degenerate:
             if xi or any(h_field):
                 raise ValueError(
@@ -890,7 +877,7 @@ class ImpurityModel:
 #: Extensions handled by the labelled (l, s, m) readers in :mod:`hamiltonian_io`.
 _LABELLED_EXTENSIONS = {".pickle", ".json"}
 #: Extensions handled by the flat single-index reader in :mod:`h0_format`.
-_FLAT_EXTENSIONS = {".h0", ".dict"}
+_FLAT_EXTENSIONS = {".h0"}
 
 
 def load_model(
@@ -902,7 +889,6 @@ def load_model(
     xi: float = 0.0,
     h_field=None,
     n_val_baths=None,
-    n_impurity_orbitals=None,
     allow_noninteracting: bool = False,
     u4=None,
     spin_degenerate: bool = False,
@@ -923,10 +909,9 @@ def load_model(
     self-energy, susceptibility and spectra CLIs all route through it, so a new format is
     added once rather than in each of them.
 
-    Dispatch is on *content* first and extension second, because the extensions are
-    overloaded: a ``.dat`` may hold either the labelled ``(l, s, m)`` operator list that
-    :mod:`op_parser` reads or the legacy flat-index terms, since renaming a ``.dict`` to
-    ``.dat`` was the standard way around the extension check that used to reject it.
+    Dispatch is on *content* first and extension second: a file with the ``.h0`` magic line
+    is the self-describing flat format whatever it is called; otherwise ``.pickle``/``.json``/
+    ``.dat`` select the labelled ``(l, s, m)`` readers.
 
     Parameters
     ----------
@@ -948,8 +933,6 @@ def load_model(
         when the header guarantees ``basis: "spherical"`` and ``spin_ordering: "down_first"``
         (see :meth:`ImpurityModel.from_h0_text`), and raises otherwise rather than being
         silently dropped or guessed at.
-    n_impurity_orbitals : int, optional
-        Impurity block size, required only by the legacy flat format.
     allow_noninteracting : bool, optional
         Permit a model with no Coulomb tensor; see :meth:`ImpurityModel.from_h0_text`.
     u4 : numpy.ndarray, optional
@@ -963,7 +946,7 @@ def load_model(
         :meth:`ImpurityModel.from_shells`. ``valence_l`` is required alongside ``shells``;
         ``core_l`` is ``None`` for a model with no core shell. When ``shells`` is given, every
         other keyword above (``l``, ``n_baths``, ``slater``, ``xi``, ``n_val_baths``,
-        ``n_impurity_orbitals``, ``allow_noninteracting``) is ignored; ``h_field`` still
+        ``allow_noninteracting``) is ignored; ``h_field`` still
         applies (to the valence shell only).
     rank, verbose
         Forwarded to the reader for rank-0 logging.
@@ -998,16 +981,11 @@ def load_model(
     ext = os.path.splitext(path)[1].lower()
 
     flat = ext in _FLAT_EXTENSIONS or h0_format.is_h0_format(path)
-    if not flat and ext == ".dat":
-        # A .dat that is really the flat form -- the renamed-.dict case.
-        flat = h0_format.looks_like_flat_terms(path)
-
     if flat:
         return ImpurityModel.from_h0_text(
             path,
             l=l,
             slater=slater,
-            n_impurity_orbitals=n_impurity_orbitals,
             xi=xi,
             h_field=(0.0, 0.0, 0.0) if h_field is None else tuple(h_field),
             allow_noninteracting=allow_noninteracting,
@@ -1040,21 +1018,10 @@ def load_model(
 
     raise ValueError(
         f"{path}: unrecognised h0 format {ext!r}. Supported: .h0 (self-describing flat index, "
-        "read by the selfenergy and susceptibility sub-commands), .dict/.dat (legacy flat index), "
+        "read by the selfenergy and susceptibility sub-commands), "
         ".pickle/.json/.dat (labelled (l, s, m), the only formats the spectra sub-command takes). "
         "See doc/h0_file_format.md."
     )
-
-
-def _require_n_imp(path, n_impurity_orbitals):
-    """The legacy format carries no orbital layout, so the caller must supply the boundary."""
-    if n_impurity_orbitals is None:
-        raise ValueError(
-            f"{path} is in the legacy bare-integer h0 format, which records no impurity/bath "
-            "boundary. Pass n_impurity_orbitals=..., or regenerate the file with build_h0 to get "
-            "a self-describing .h0 (see doc/h0_file_format.md)."
-        )
-    return int(n_impurity_orbitals)
 
 
 def _add_soc_and_field(h, l, xi, h_field):

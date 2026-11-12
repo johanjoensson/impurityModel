@@ -22,8 +22,7 @@ def _d_shell_file(tmp_path, name="d_shell.h0", **header_extra):
     """A 10-impurity-orbital (d) model with 4 bath orbitals, written through the writer.
 
     Every impurity orbital couples to every bath orbital, as in a real hybridization fit --
-    a bath that reaches only part of the impurity block would leave the trailing sub-block
-    narrow-banded and (correctly) trip the layout check in the legacy reader.
+    a bath that reaches only part of the impurity block is not what a fit produces.
     """
     n_imp, n_bath = 10, 4
     n = n_imp + n_bath
@@ -179,40 +178,14 @@ def test_from_h0_text_carries_the_bath_split_and_rotation(tmp_path):
     np.testing.assert_array_equal(model.rot_to_spherical, np.eye(4, dtype=complex))
 
 
-def test_from_h0_text_reads_the_legacy_format_when_given_n_imp(tmp_path):
-    _path, h = _d_shell_file(tmp_path)
-    legacy = tmp_path / "legacy_h0_op.dict"
-    legacy.write_text(
-        "\n".join(
-            f"{i} {j} {complex(h[i, j]).real!r} {complex(h[i, j]).imag!r}"
-            for i in range(h.shape[0])
-            for j in range(h.shape[0])
-            if h[i, j] != 0
-        )
-        + "\n"
-    )
+def test_a_headerless_flat_file_is_refused(tmp_path):
+    """The bare-integer format records no layout; the magic line is what makes a file a .h0."""
+    headerless = tmp_path / "headerless.h0"
+    headerless.write_text("  0   0 -4.125093021114729  0.000000000000000\n")
+    assert not h0_format.is_h0_format(headerless)
 
-    with pytest.deprecated_call():
-        model = ImpurityModel.from_h0_text(legacy, l=2, slater=D_SHELL_SLATER, n_impurity_orbitals=10)
-    assert model.n_spin_orbitals == 14
-    assert model.impurity_orbitals == {0: list(range(10))}
-
-
-def test_from_h0_text_legacy_without_n_imp_raises(tmp_path):
-    legacy = tmp_path / "legacy_h0_op.dict"
-    legacy.write_text("0 0 1.0 0.0\n")
-    with pytest.raises(ValueError, match="n_impurity_orbitals"):
-        ImpurityModel.from_h0_text(legacy)
-
-
-def test_a_renamed_legacy_file_is_still_routed_to_the_legacy_reader(tmp_path):
-    """Extension is not the discriminator; the magic line is."""
-    disguised = tmp_path / "actually_legacy.h0"
-    disguised.write_text("  0   0 -4.125093021114729  0.000000000000000\n")
-    assert not h0_format.is_h0_format(disguised)
-
-    with pytest.raises(ValueError, match="n_impurity_orbitals"):
-        ImpurityModel.from_h0_text(disguised)
+    with pytest.raises(h0_format.H0FormatError):
+        ImpurityModel.from_h0_text(headerless)
 
 
 def test_header_impurity_group_key_survives_json(tmp_path):

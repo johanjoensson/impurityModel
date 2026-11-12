@@ -26,19 +26,6 @@ def _flat_matrix(n_imp=10, n_bath=4):
     return h
 
 
-def _write_legacy(path, h):
-    n = h.shape[0]
-    path.write_text(
-        "\n".join(
-            f"{i} {j} {complex(h[i, j]).real!r} {complex(h[i, j]).imag!r}"
-            for i in range(n)
-            for j in range(n)
-            if h[i, j] != 0
-        )
-        + "\n"
-    )
-
-
 def test_dispatches_the_h0_format(tmp_path):
     h = _flat_matrix()
     path = tmp_path / "model.h0"
@@ -49,21 +36,9 @@ def test_dispatches_the_h0_format(tmp_path):
     assert model.u4 is not None
 
 
-@pytest.mark.parametrize("suffix", [".dict", ".dat"])
-def test_sniffs_a_legacy_flat_file_whatever_it_is_called(tmp_path, suffix):
-    """A .dict renamed to .dat was the standard workaround, so the wild is full of them."""
-    h = _flat_matrix()
-    path = tmp_path / f"legacy{suffix}"
-    _write_legacy(path, h)
-
-    with pytest.deprecated_call():
-        model = load_model(path, l=2, slater=D_SHELL_SLATER, n_impurity_orbitals=10)
-    assert model.n_spin_orbitals == 14
-
-
 @pytest.mark.skipif(not NIO_PICKLE.exists(), reason="NiO h0 pickle fixture not available")
 def test_labelled_pickle_still_routes_to_the_labelled_reader():
-    """The legacy labelled path must be untouched; it is what `spectra` and the shipped
+    """The labelled path must be untouched; it is what `spectra` and the shipped
     workloads use."""
     model = load_model(NIO_PICKLE, l=2, n_baths=10, slater=D_SHELL_SLATER)
     assert model.impurity_orbitals == {2: list(range(10))}
@@ -130,5 +105,4 @@ def test_sniffing_does_not_misroute_a_labelled_dat(tmp_path):
     """A labelled .dat must still reach the labelled reader, not the flat one."""
     path = tmp_path / "labelled.dat"
     path.write_text("# a comment\nOpName\n(2, 0, -2) (2, 0, -2) -1.5 0.0\n")
-    assert not h0_format.looks_like_flat_terms(path)
     assert os.path.splitext(path)[1] == ".dat"

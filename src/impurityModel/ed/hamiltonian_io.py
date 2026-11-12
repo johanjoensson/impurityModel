@@ -140,16 +140,7 @@ def read_h0_operator(filename, nBaths, nValBaths=None, rank=0, verbose=True, *, 
         return read_h0_dict(filename)
     if ext.lower() == ".json":
         return crystal_field(filename)
-    if ext.lower() in (".h0", ".dict"):
-        if not h0_format.is_h0_format(filename):
-            # A legacy headerless flat file: no basis, no spin ordering, nothing to
-            # justify the relabelling below.
-            raise RuntimeError(
-                f"{filename}: this is the legacy headerless flat h0 format, which records no "
-                "basis or spin ordering. The labelled readers cannot interpret it without those "
-                "guarantees; regenerate it with build_h0 to get a self-describing .h0. "
-                "See doc/h0_file_format.md."
-            )
+    if ext.lower() == ".h0":
         return flat_h0_to_labelled(h0_format.read_h0_file(filename), nBaths, path=filename, rank=rank, verbose=verbose)
     raise RuntimeError(f"Unknown file h0 file extension {ext}")
 

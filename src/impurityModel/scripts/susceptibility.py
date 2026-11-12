@@ -43,16 +43,6 @@ def add_arguments(parser):
     )
     parser.add_argument("--clustername", type=str, default="cluster", help="Label of the cluster.")
     parser.add_argument("--ls", type=int, default=2, help="Angular momentum of the correlated orbitals.")
-    parser.add_argument(
-        "--n-impurity-orbitals",
-        dest="n_impurity_orbitals",
-        type=int,
-        default=None,
-        help=(
-            "Impurity block size, for the legacy bare-integer h0 format only (it records no "
-            "orbital layout). Validated against the file's sparsity pattern. See doc/h0_file_format.md."
-        ),
-    )
     parser.add_argument("--nBaths", type=int, default=10, help="Total number of bath states.")
     parser.add_argument("--n0imps", type=int, default=8, help="Nominal impurity occupation.")
     parser.add_argument(
@@ -146,7 +136,6 @@ def run(args):
             slater=args.Fdd,
             xi=args.xi,
             h_field=None if args.hField is None else tuple(args.hField),
-            n_impurity_orbitals=args.n_impurity_orbitals,
             rank=comm.rank,
             verbose=verbosity > 0,
         )

@@ -83,7 +83,6 @@ straight to today's `-vv`; if a script parses stdout, re-check it against the ne
    | Format | Indices | Read by |
    | --- | --- | --- |
    | `.h0` | flat, impurity block first, self-describing header | `spectra`\*, `selfenergy`, `susceptibility` |
-   | `.dict` / flat `.dat` | flat, no header (legacy; needs `--n-impurity-orbitals`) | `selfenergy`, `susceptibility` |
    | `.pickle` | labelled `(l,s,m)` / `(l,b)` operator dict | `spectra`, `selfenergy`, `susceptibility` |
    | `.json` | crystal-field parameters | `spectra`, `selfenergy`, `susceptibility` |
    | labelled `.dat` | labelled operator-term list | `spectra`, `selfenergy`, `susceptibility` |
@@ -103,7 +102,7 @@ straight to today's `-vv`; if a script parses stdout, re-check it against the ne
 
    Note the labelled `.dat` is an operator-term list (`(l,s,m) (l,s,m) re im`), **not** a
    dense matrix. `load_model` picks the reader by inspecting the file, not just its
-   extension, so a `.dict` renamed to `.dat` still reaches the right one.
+   extension: a file with the `.h0` magic line is a `.h0` whatever it is called.
 
    The `spectra` sub-command combines
    it with the interaction (Slater–Condon `Fdd`/`Fpp`/`Fpd`/`Gpd`), spin–orbit coupling (`xi_2p`,

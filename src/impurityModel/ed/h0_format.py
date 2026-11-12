@@ -18,7 +18,6 @@ pure function of the file bytes and therefore rank-invariant by construction.
 import json
 import os
 import re
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -38,10 +37,6 @@ DEFAULT_DROP_TOLERANCE = 1e-12
 
 #: Hermiticity check tolerance, relative to max|H|. Two ULP of a float64 mantissa.
 HERMITICITY_RTOL = 2e-15
-
-#: Bath one-body blocks are diagonal (star) or tridiagonal (chain); used to validate a
-#: caller-supplied n_imp for the legacy format.
-MAX_BATH_BANDWIDTH = 1
 
 RY_TO_EV = 13.605693122994232
 
@@ -460,141 +455,9 @@ def is_h0_format(path) -> bool:
     return False
 
 
-def looks_like_flat_terms(path) -> bool:
-    """Whether ``path``'s first data line is a bare-integer ``i j re im`` term.
-
-    Sniffing is necessary because the ``.dat`` extension is overloaded: it is the labelled
-    ``(l, s, m)`` operator format that :mod:`op_parser` reads, *and* the legacy flat format,
-    because renaming a ``.dict`` to ``.dat`` was the standard workaround for the extension
-    check that used to reject it.
-    """
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                fields = stripped.split()
-                if len(fields) != 4:
-                    return False
-                try:
-                    int(fields[0]), int(fields[1]), float(fields[2]), float(fields[3])
-                except ValueError:
-                    return False
-                return True
-    except OSError:
-        return False
-    return False
-
-
 def _as_index_tuple(value):
     """``None`` stays ``None``; anything else becomes a tuple of ints."""
     return None if value is None else tuple(int(v) for v in value)
-
-
-def infer_n_impurity_orbitals(terms, n_orb):
-    """Smallest ``k`` whose trailing block ``H[k:, k:]`` has bandwidth <= 1.
-
-    The impurity block is dense and hybridizes to every bath orbital, while a star bath block
-    is diagonal and a chain bath block tridiagonal -- so the first split that leaves a
-    narrow-banded remainder is the impurity/bath boundary. Over the stored legacy workloads
-    this recovers ``n_imp`` correctly in every case, with a wide margin.
-
-    Used to *check* a caller-supplied ``n_imp``, never to infer one silently: the bandwidth
-    assumption is verified for star and chain geometries only.
-
-    Parameters
-    ----------
-    terms : dict
-        ``{(i, j): complex}``.
-    n_orb : int
-        Total spin-orbitals.
-
-    Returns
-    -------
-    int or None
-        The recovered boundary, or ``None`` if no split qualifies.
-    """
-    present = [(i, j) for (i, j), value in terms.items() if value != 0]
-    for k in range(1, n_orb):
-        bandwidth = max((abs(i - j) for i, j in present if i >= k and j >= k), default=0)
-        if bandwidth <= MAX_BATH_BANDWIDTH:
-            return k
-    return None
-
-
-def read_legacy_flat_h0(path, n_imp, *, verify_layout=True):
-    """Read the legacy bare-integer ``i j re im`` file written by older ``build_h0``.
-
-    The legacy file carries no header, so ``n_imp`` must come from the caller. It is
-    validated against the sparsity pattern (see :func:`infer_n_impurity_orbitals`) rather
-    than trusted. Both triangles are stored and were filtered elementwise by the producer, so
-    the result is symmetrized on load.
-
-    Parameters
-    ----------
-    path : str or pathlib.Path
-        The file to read.
-    n_imp : int
-        Number of impurity spin-orbitals (the leading block dimension).
-    verify_layout : bool, optional
-        Check ``n_imp`` against the sparsity pattern. Default True.
-
-    Returns
-    -------
-    H0File
-        ``unit`` and ``energy_reference`` are unknown for this format and are reported as
-        given by the producer's convention, i.e. not validated.
-
-    Raises
-    ------
-    H0FormatError
-        On a malformed line, or when ``n_imp`` contradicts the sparsity pattern.
-    """
-    path = str(path)
-    text = Path(path).read_text(encoding="utf-8")
-    terms = parse_flat_terms(text.splitlines(), path=path)
-    if not terms:
-        _fail(path, None, "file contains no terms")
-
-    n_orb = max(max(k) for k in terms) + 1
-    n_imp = int(n_imp)
-    if not 0 < n_imp <= n_orb:
-        raise H0FormatError(f"{path}: n_imp = {n_imp} is not in 1..{n_orb}")
-
-    if verify_layout:
-        recovered = infer_n_impurity_orbitals(terms, n_orb)
-        if recovered is not None and recovered != n_imp:
-            raise H0FormatError(
-                f"{path}: n_imp = {n_imp} disagrees with the sparsity pattern. The bath block "
-                f"H[{n_imp}:, {n_imp}:] is not diagonal/tridiagonal; the smallest consistent value is "
-                f"n_imp = {recovered}. Pass n_imp={recovered} if that is correct, or verify_layout=False "
-                f"for a bath geometry this check does not cover."
-            )
-
-    warnings.warn(
-        f"{path} is in the legacy bare-integer h0 format, which records no unit, energy "
-        f"reference, basis or orbital layout. Regenerate it with build_h0 to get a .h0 file; "
-        f"see doc/h0_file_format.md.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    # The producer applied its zero-filter elementwise to a matrix that is not bitwise
-    # Hermitian, so the two triangles can disagree -- one shipped file has an element whose
-    # conjugate partner was dropped entirely. Symmetrize rather than reject.
-    symmetric = {}
-    for i, j in set(terms) | {(j, i) for i, j in terms}:
-        symmetric[(i, j)] = 0.5 * (terms.get((i, j), 0.0) + np.conj(terms.get((j, i), 0.0)))
-
-    return H0File(
-        h0=_terms_to_operator({key: value for key, value in symmetric.items() if value != 0}),
-        n_orb=n_orb,
-        impurity_orbitals={0: tuple(range(n_imp))},
-        unit="unknown",
-        energy_reference="unknown",
-        header={},
-    )
 
 
 def write_h0_file(

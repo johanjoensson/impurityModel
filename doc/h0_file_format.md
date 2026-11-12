@@ -34,13 +34,11 @@ fact wrong. The format below makes each one explicit and machine-checkable.
    comes from JSON's own grammar.
 4. **Terms** — one `i j re im` line per stored matrix element, whitespace-separated.
 
-### Discriminating the legacy format
+### Discriminating the format
 
 **The magic line, not the file extension, decides.** A file whose first non-blank line does
-not match the pattern is the legacy bare-integer form and must be routed to
-`h0_format.read_legacy_flat_h0`. Extension-based dispatch is not sufficient: legacy `.dict`
-files renamed to `.dat` (to get past an older extension check) are common in the wild, and a
-legacy file renamed to `.h0` must still be diagnosed correctly rather than mis-parsed.
+not match the pattern is not a `.h0` and is refused (`H0FormatError`). The predecessor bare
+`i j re im` form is no longer read; regenerate such a file with `build_h0`.
 
 ## Header keys
 
@@ -271,25 +269,6 @@ to 2p and 3d — `slater_condon_Uop`, `dc_MLFT` and the spin-orbit/Zeeman terms 
 which shell is which — so a file whose `impurity_l` is not 2 is assembled on the shell it
 declares. The header's `impurity_l` is still cross-checked against the `[[shell]]` carrying
 `role = "valence"`; a disagreement is an error, since one of the two is then wrong.
-
-## Legacy format
-
-Bare `i j re im` lines, no header, both triangles, `%.15f` amplitudes, flat indices. Read with
-`h0_format.read_legacy_flat_h0(path, n_imp)`; the reader symmetrizes on load and emits a
-`DeprecationWarning`.
-
-`n_imp` cannot be inferred from the file, but a wrong value **can** be caught. The impurity
-block is dense and hybridizes to every bath orbital, while the bath block is diagonal (star) or
-tridiagonal (chain), so
-
-```
-k* = min{ k : bandwidth(sparsity[k:, k:]) <= 1 }
-```
-
-recovers it. Over the nine stored legacy files this is correct 9/9, with margins of 7–154
-against the threshold, and it finds an f-shell `n_imp = 14` unaided. Use it as a **check** that
-raises and suggests `k*`, never as a silent inference — and note the bandwidth assumption is
-verified for star and chain geometries only.
 
 ## Cross-checking the two implementations
 

@@ -456,8 +456,6 @@ def emit_toml(command, args):
         "[hamiltonian.file]",
         _line("path", args.h0_filename or "SET_ME"),
     ]
-    if getattr(args, "n_impurity_orbitals", None) is not None:
-        out.append(_line("n_impurity_orbitals", args.n_impurity_orbitals))
 
     if command == "spectra":
         shells = list(zip(args.ls, args.nBaths, args.nValBaths, args.n0imps))

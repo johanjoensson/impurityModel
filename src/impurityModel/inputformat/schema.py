@@ -402,14 +402,6 @@ _TABLE_LIST += [
                 choices=("eV", "Ry", "Ha"),
             ),
             Key(
-                "n_impurity_orbitals",
-                Kind.COUNT,
-                None,
-                "Impurity block size, for the legacy bare-integer format only -- it records no "
-                "orbital layout. Validated against the file's sparsity pattern.",
-                minimum=1,
-            ),
-            Key(
                 "contains_soc",
                 Kind.BOOL,
                 None,

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import h0_format
+from impurityModel.ed.h0_format import H0FormatError
 from impurityModel.ed.hamiltonian_io import flat_h0_to_labelled, read_h0_operator
 from impurityModel.ed.operator_algebra import c2i, i2c
 
@@ -113,11 +114,11 @@ def test_flat_h0_to_labelled_rejects_multi_shell_files(tmp_path):
         flat_h0_to_labelled(parsed, OrderedDict({2: 0}))
 
 
-def test_read_h0_operator_rejects_legacy_headerless_files(tmp_path):
-    legacy = tmp_path / "legacy.h0"
-    legacy.write_text("0 0 1.0 0.0\n")
-    with pytest.raises(RuntimeError, match="legacy"):
-        read_h0_operator(str(legacy), OrderedDict({2: 0}))
+def test_read_h0_operator_rejects_headerless_files(tmp_path):
+    headerless = tmp_path / "headerless.h0"
+    headerless.write_text("0 0 1.0 0.0\n")
+    with pytest.raises(H0FormatError):
+        read_h0_operator(str(headerless), OrderedDict({2: 0}))
 
 
 def test_flat_h0_to_labelled_kramers_warning_gated_on_contains_soc(tmp_path, capsys):

@@ -655,7 +655,6 @@ def _build_model(resolved, header, notes, rank, verbose):
             # In this format, omitting it means no field, on every path.
             h_field=tuple(zeeman or NO_ZEEMAN),
             n_val_baths=valence["n_valence_bath"],
-            n_impurity_orbitals=resolved.tables["hamiltonian.file"]["n_impurity_orbitals"],
             allow_noninteracting=resolved.interaction_kind == "none",
             rank=rank,
             verbose=verbose,

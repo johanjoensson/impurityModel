@@ -169,9 +169,7 @@ def extract_operator(line):
     Raises
     ------
     ValueError
-        If the line is not in this format -- notably for the bare-integer flat-index form
-        ``"  0   0 -4.12 0.0"`` written by ``rspt2spectra``, which needs
-        :func:`impurityModel.ed.h0_format.read_legacy_flat_h0` instead.
+        If the line is not in this format.
 
     Examples
     --------
