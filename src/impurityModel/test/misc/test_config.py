@@ -131,7 +131,6 @@ def test_gf_method_choices_match_the_registry():
 
     key = next(k for k in TABLES["solver"].keys if k.name == "gf_method")
     assert tuple(key.choices) == config.GF_METHODS
-    assert not set(key.choices) & set(config.RETIRED_GF_METHODS)
 
 
 def test_gf_admission_choices_match_the_registry():
@@ -140,24 +139,6 @@ def test_gf_admission_choices_match_the_registry():
 
     key = next(k for k in TABLES["solver"].keys if k.name == "gf_admission")
     assert tuple(key.choices) == ("auto",) + config.GF_ADMISSIONS
-
-
-@pytest.mark.parametrize("name", sorted(config.RETIRED_KNOBS))
-def test_a_retired_knob_is_no_longer_registered(name):
-    assert name not in config.KNOBS
-
-
-def test_a_retired_knob_still_set_in_the_environment_warns(monkeypatch):
-    """An exported variable nobody reads any more must not be ignored silently."""
-    monkeypatch.setenv("GF_OPERATOR_SPLIT", "1")
-    with pytest.warns(UserWarning, match="GF_OPERATOR_SPLIT is set but no longer read"):
-        config.warn_retired_knobs()
-    monkeypatch.delenv("GF_OPERATOR_SPLIT")
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        config.warn_retired_knobs()
 
 
 def test_sigma_method_choices_match_the_estimator_registry():

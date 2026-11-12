@@ -355,26 +355,13 @@ def test_ground_state_manifold_is_no_longer_a_key(write_input, scheme):
         load_input(write_input(text))
 
 
-def test_a_removed_key_says_it_was_removed_not_that_it_is_a_typo(write_input):
-    """spin_flip_dj was a documented key; a file written while it existed should be told why it
-    now fails, not offered a spelling suggestion."""
-    text = MINIMAL_SELFENERGY.replace("[selfenergy]", "[many_body_basis]\nspin_flip_dj = true\n[selfenergy]")
-    with pytest.raises(InputError, match="'spin_flip_dj' is no longer a key: it never had an effect"):
-        load_input(write_input(text))
-
-
-def test_a_retired_key_is_ignored_with_a_warning(write_input):
-    """`[solver] reort` named a choice the solver now makes itself: an input written for an older
-    version still runs, and says why the line did nothing."""
-    text = MINIMAL_SELFENERGY.replace("[selfenergy]", '[solver]\nreort = "partial"\n[selfenergy]')
-    resolved = load_input(write_input(text))
-    assert any("'reort' is retired" in w for w in resolved.warnings)
-
-
-def test_the_retired_excitation_budget_key_is_ignored_with_a_warning(write_input):
-    text = MINIMAL_SELFENERGY.replace("[selfenergy]", "[many_body_basis]\nexcitation_budget = 4\n[selfenergy]")
-    resolved = load_input(write_input(text))
-    assert any("'excitation_budget' is retired" in w and "delete the line" in w for w in resolved.warnings)
+def test_a_key_that_no_longer_exists_is_unknown(write_input):
+    """`[solver] reort` and `[many_body_basis] excitation_budget` were once keys; they are now
+    reported like any other unknown key."""
+    for table, key, value in (("solver", "reort", '"partial"'), ("many_body_basis", "excitation_budget", "4")):
+        text = MINIMAL_SELFENERGY.replace("[selfenergy]", f"[{table}]\n{key} = {value}\n[selfenergy]")
+        with pytest.raises(InputError, match=f"unknown key '{key}'"):
+            load_input(write_input(text))
 
 
 # ---- every refusal has a message that names the problem --------------------------------------

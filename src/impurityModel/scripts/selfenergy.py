@@ -9,7 +9,6 @@ disk: the frequency-dependent self-energy and impurity Green's function in RSPt 
 
 import argparse
 import os
-import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -114,14 +113,12 @@ def add_arguments(parser):
             "default: off (see doc/plans/gf_relevant_support.md)."
         ),
     )
-    parser.add_argument("--excitation_budget", type=str, default=None, help=argparse.SUPPRESS)  # retired; warns
     parser.add_argument(
         "--no-chain-restrict",
         dest="chain_restrict",
         action="store_false",
         help="Disable chain occupation restrictions.",
     )
-    parser.add_argument("--reort", type=str, default=None, help=argparse.SUPPRESS)  # retired; warns in main()
     parser.add_argument(
         "--gf-method",
         type=str,
@@ -391,18 +388,6 @@ def apply_solver_overrides(solver, args):
 
 def run(args):
     """Build the model and option groups from ``args``, solve, and save the results on rank 0."""
-    if getattr(args, "excitation_budget", None) is not None:
-        warnings.warn(
-            "--excitation_budget is retired and ignored: the excitation bounds are derived from the converged "
-            "ground state and printed in the ground-state report.",
-            stacklevel=2,
-        )
-    if getattr(args, "reort", None) is not None:
-        warnings.warn(
-            "--reort is retired and ignored: the Green's-function path runs without reorthogonalization "
-            "and the eigensolver reorthogonalizes fully.",
-            stacklevel=2,
-        )
     # A no-op on --from-archive: the archive supplies its own model/meshes, none of these CLI
     # attributes are read on that path, so converting them unconditionally is harmless.
     if getattr(args, "emit_toml", False):

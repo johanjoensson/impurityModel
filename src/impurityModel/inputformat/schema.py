@@ -40,31 +40,6 @@ __all__ = [
 #: (warn and ignore). See :func:`impurityModel.inputformat.reader.load_input`.
 SPEC_VERSION = (1, 0)
 
-#: Keys that were once declared and have been removed, with why and what to do instead. An
-#: unknown key is otherwise reported as a probable typo, which is the wrong message for a line
-#: that was valid when the file was written.
-REMOVED_KEYS = {
-    ("many_body_basis", "spin_flip_dj"): (
-        "it never had an effect -- only the pre-CIPSI basis expansion read it -- and has been "
-        "removed. Delete the line."
-    ),
-}
-
-#: Keys that were once meaningful and are now ignored with a warning, so an input written for an
-#: older version still runs. Unlike :data:`REMOVED_KEYS` (a hard error: the line would have done
-#: something that no longer happens), these name a choice the solver now makes itself.
-RETIRED_KEYS = {
-    ("solver", "reort"): (
-        "the Green's-function path always runs without reorthogonalization and the ground-state "
-        "eigensolver always reorthogonalizes fully; the key is ignored"
-    ),
-    ("many_body_basis", "excitation_budget"): (
-        "the ground state is no longer budgeted; the excited bases run under excitation bounds derived from the "
-        "converged ground state and printed in its report. The value is ignored; delete the line"
-    ),
-}
-
-
 class _Unset:
     """Sentinel for "no default"; distinct from ``None``, which is a meaningful default."""
 

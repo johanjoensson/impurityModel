@@ -99,16 +99,6 @@ def test_the_cut_is_after_the_sum_whenever_something_is_summed(monkeypatch):
     assert not matvec_cut_after_sum(False, 0.1)  # no redistribute: the apply sees whole sums
 
 
-def test_the_retired_before_sum_knob_is_warned_about_and_not_read(monkeypatch):
-    from impurityModel.ed import config
-
-    assert "MATVEC_PRUNE" in config.RETIRED_KNOBS
-    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
-    with pytest.warns(UserWarning, match="MATVEC_PRUNE"):
-        config.warn_retired_knobs()
-    assert matvec_cut_after_sum(True, 0.1)
-
-
 def test_no_redistribute_is_the_plain_apply():
     H, block = _siam_6(), ManyBodyState.from_states(_states())
     _assert_rows_match(_rows(apply_and_redistribute(H, block, None, 0.3, False)), _rows(H.apply_block(block, 0.3)))

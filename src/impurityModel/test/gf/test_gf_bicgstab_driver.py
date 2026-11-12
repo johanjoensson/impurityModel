@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -170,13 +169,6 @@ def test_driver_grouping_invariance():
 def test_driver_rejects_unknown_method():
     with pytest.raises(ValueError, match="gf_method"):
         _run_driver("haydock", None)
-
-
-@pytest.mark.parametrize("retired", sorted(config.RETIRED_GF_METHODS))
-def test_driver_rejects_a_retired_method_with_its_reason(retired):
-    """A retired kernel is not merely unknown: the error says it was retired, and why."""
-    with pytest.raises(ValueError, match=f"'{retired}' was retired"):
-        _run_driver(retired, None)
 
 
 # --------------------------------------------------------------------------- #

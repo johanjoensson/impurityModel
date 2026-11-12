@@ -136,94 +136,6 @@ GS_LOWEST_SOLVERS = ("auto", "davidson", "trlm")
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
 
-#: Retired ``gf_method`` values, each with the reason and the replacement. Archive replay maps
-#: them to ``"lanczos"`` with a warning; every other front end rejects them with this message.
-RETIRED_GF_METHODS = {
-    "sliced": (
-        "was retired: spectrum slicing never delivered its projected memory win (the live basis "
-        "is the H-connectivity closure of the seed support, doc/plans/spectrum_slicing.md) and "
-        "missed the exact G by ~1e-5 (doc/reviews/gf_review.md, S1); use 'lanczos' or 'bicgstab'"
-    ),
-    "cipsi": (
-        "was retired: resolvent-targeted CIPSI selection matched, but did not beat, the plain "
-        "freeze-growth cap at equal determinant budget, at 1.5-2x the wall cost "
-        "(doc/plans/gf_cipsi_frequency_truncation.md; doc/reviews/gf_review.md, S2); use "
-        "'bicgstab' with a truncation_threshold, or 'lanczos'"
-    ),
-}
-
-#: Knobs that no longer exist, each with the reason. ``[environment]`` rejects them with this
-#: message, and a GF run warns when one is still set in the process environment
-#: (:func:`warn_retired_knobs`) -- an exported variable nobody reads any more would otherwise
-#: be silently ignored.
-RETIRED_KNOBS = {
-    **dict.fromkeys(("GF_SLICES", "GF_SLICE_DEGREE", "GF_SLICE_TOL"), "retired with gf_method='sliced'"),
-    **dict.fromkeys(
-        (
-            "GF_CIPSI_BUDGET",
-            "GF_CIPSI_MAX_NEW",
-            "GF_CIPSI_DE2_MIN",
-            "GF_CIPSI_MAX_ROUNDS",
-            "GF_CIPSI_BOUNDARY_TOL",
-            "GF_CIPSI_SCORER",
-            "GF_CIPSI_PT2",
-        ),
-        "retired with gf_method='cipsi'",
-    ),
-    **dict.fromkeys(
-        ("GF_CLOSURE_FREEZE", "GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW"),
-        "retired with the zero-growth and absolute-threshold freezes; the settle rule replaces both "
-        "(a new determinant's amplitude against slaterWeightMin; GF_SETTLE_RATIO 0 is closure-only)",
-    ),
-    "MATVEC_PRUNE": (
-        "retired: the slaterWeightMin cut of a redistributed sparse matvec is always made on the summed rows "
-        "('after_sum'); 'before_sum' made the result depend on the rank and chunk count "
-        "(doc/gf_support_pipeline.md)"
-    ),
-    "GF_FROZEN_CSR": "retired: the frozen recurrence always runs on the P H P matrix when it fits",
-    "GF_SUPPORT_FREEZE": ("retired: use the gf_settle solver option (on/off) or GF_SETTLE_RATIO (0 = closure only)"),
-    "GS_SELECTION_PRUNE": (
-        "retired: the CIPSI selection round always cuts the summed amplitude ('after_sum'); 'before_sum' "
-        "made the selected set depend on the rank and chunk count"
-    ),
-    "GS_MEMORY_BUDGET_INCLUDE_RESIDENT": "retired: the ground-state memory budget always includes the resident set",
-    "GF_CHECK_EVERY": (
-        "retired: a fixed tuning constant of the convergence monitor (every 8 blocks until within 2x of the tolerance)"
-    ),
-    "GF_NEAR_FACTOR": (
-        "retired: a fixed tuning constant of the convergence monitor (every 8 blocks until within 2x of the tolerance)"
-    ),
-    "GF_BICGSTAB_MAX_ITER": "retired: a fixed bound (500 iterations per point)",
-    "GF_GMRES_MAX_RESTARTS": "retired: a fixed bound (25 GMRES restart cycles)",
-    "GF_BICGSTAB_RESTARTS": "retired: a fixed bound (10 BiCGSTAB restarts before the GMRES fallback)",
-    "GF_BICGSTAB_WARM_HISTORY": "retired: a fixed constant (3 warm-start solutions)",
-    "GF_RIXS_ADAPTIVE_BATCH": "retired: the adaptive wIn sampler always solves one new point per round",
-    "GS_APPLY_ROW_CHUNKS": "retired: merged with GF_APPLY_ROW_CHUNKS into APPLY_ROW_CHUNKS",
-    "GF_APPLY_ROW_CHUNKS": "retired: merged with GS_APPLY_ROW_CHUNKS into APPLY_ROW_CHUNKS",
-    "GF_WEIGHTED_TOL": (
-        "retired: weighting the convergence tolerance by thermal weight was removed (it never left experimental)"
-    ),
-    "GF_WEIGHTED_TOL_CEILING": (
-        "retired: weighting the convergence tolerance by thermal weight was removed (it never left experimental)"
-    ),
-    "DC_CAP_STRATEGY": (
-        "retired: the double-counting cap is always resolved by running at the ceiling; the ascending cap "
-        "ladder was removed"
-    ),
-    "DC_CAP_LADDER_START": "retired: the double-counting cap ladder was removed",
-    "DC_CAP_LADDER_MAX_RUNGS": "retired: the double-counting cap ladder was removed",
-    "GS_MATVEC_EXCHANGE": (
-        "retired: the distributed array matvec always uses the sparse graph exchange; the per-root 'reduce' "
-        "spelling was the A/B arm it replaced (mpi_comm.MatvecExchangePlan)"
-    ),
-    "GF_OPERATOR_SPLIT": (
-        "retired: the pairwise operator split (scalar continued fractions per operator pair) was an "
-        "opt-in load-balancing mode that multiplied the Krylov work, and the improved-estimator "
-        "self-energy needs whole-block recurrences (doc/reviews/gf_review.md, S3)"
-    ),
-}
-
-
 def effective_ranking_cap(cap):
     """The cap pass 1 of a certification ranks under, or ``None`` (rank at the full cap).
 
@@ -247,15 +159,6 @@ def effective_ranking_cap(cap):
             raise ValueError(f"GS_RANKING_CAP must be 'auto', 'off' or a positive integer, got {setting!r}")
     ranking = min(ranking, int(cap))
     return None if ranking >= int(cap) else ranking
-
-
-def warn_retired_knobs():
-    """Warn once per call for every retired knob still set in ``os.environ``."""
-    import warnings
-
-    for name, reason in RETIRED_KNOBS.items():
-        if os.environ.get(name, "") != "":
-            warnings.warn(f"environment variable {name} is set but no longer read: {reason}.", stacklevel=2)
 
 
 # --- Green's function: per-frequency BiCGSTAB solver (gf_method="bicgstab") -----------------

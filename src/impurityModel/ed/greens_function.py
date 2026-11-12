@@ -497,9 +497,6 @@ def _gf_lanczos_plan(
     """Validate the options, build the excited-sector windows and enumerate the work units. Collective.
 
     At ``verbose`` the chain windows print as one line; ``verbose_extra`` adds one line per chain."""
-    config.warn_retired_knobs()
-    if gf_method in config.RETIRED_GF_METHODS:
-        raise ValueError(f"gf_method {gf_method!r} {config.RETIRED_GF_METHODS[gf_method]}")
     if gf_method not in config.GF_METHODS:
         raise ValueError(f"Unknown gf_method {gf_method!r}; expected one of {', '.join(map(repr, config.GF_METHODS))}")
     if gf_admission is not None and gf_admission not in config.GF_ADMISSIONS:

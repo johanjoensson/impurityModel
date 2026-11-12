@@ -7,7 +7,6 @@ in the current directory. Contract the stored polarization tensors at plot time 
 """
 
 import argparse
-import warnings
 from collections import OrderedDict
 
 import numpy as np
@@ -146,7 +145,6 @@ def add_arguments(parser):
             "default: off (see doc/plans/gf_relevant_support.md)."
         ),
     )
-    parser.add_argument("--excitation_budget", type=str, default=None, help=argparse.SUPPRESS)  # retired; warns
     parser.add_argument(
         "--no-auto-block-structure",
         dest="auto_block_structure",
@@ -209,12 +207,6 @@ def _validate(args):
 
 def run(args):
     """Build the model and option groups from ``args`` and run the spectra calculation."""
-    if getattr(args, "excitation_budget", None) is not None:
-        warnings.warn(
-            "--excitation_budget is retired and ignored: the excitation bounds are derived from the converged "
-            "ground state and printed in the ground-state report.",
-            stacklevel=2,
-        )
     if getattr(args, "emit_toml", False):
         # Before convert_energy_args: the emitted file declares the unit that was typed and
         # keeps the numbers as typed, rather than silently rewriting them all into eV.

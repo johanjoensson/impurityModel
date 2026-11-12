@@ -19,7 +19,6 @@ tests pin:
 """
 
 import itertools
-import warnings
 
 import numpy as np
 import pytest
@@ -56,7 +55,6 @@ def _hermetic_knobs(monkeypatch):
         "GF_FROZEN_CSR",
         "APPLY_ROW_CHUNKS",
         "MATVEC_PRUNE",
-        *config.RETIRED_KNOBS,
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -215,15 +213,6 @@ def test_every_rank_holds_the_same_history_and_decides_alike():
     assert len(info["support_trace"]) == len(serial["support_trace"])
     assert info["retained_size"] == serial["retained_size"]
     np.testing.assert_allclose(_g(result), _g(_trickle()), atol=1e-6)
-
-
-@pytest.mark.parametrize("name", ["GF_CLOSURE_FREEZE", "GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW"])
-def test_the_retired_freezes_warn_that_they_are_no_longer_read(name, monkeypatch):
-    monkeypatch.setenv(name, "1")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        config.warn_retired_knobs()
-    assert any(name in str(w.message) and "settle rule" in str(w.message) for w in caught)
 
 
 def _dense_chain(seed):
