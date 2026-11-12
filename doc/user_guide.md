@@ -208,7 +208,7 @@ writes the frequency-dependent Σ and impurity G in RSPt `.dat` format, the stat
 file, and a per-cluster HDF5 archive. `--from-archive impurityModel_data.h5 [--cluster L]`
 reproduces a recorded DFT-embedded run (model, meshes and solver options all come from the
 archive). The double-counting is fixed by pinning either a spectral peak or the impurity
-occupation (`dc_criteria.py`; the closed-form FLL/AMF/Σ(∞) schemes are in `dc_static.py`).
+occupation (`dc_peak.py`, `dc_gap.py`, `dc_occupation.py`; the closed-form FLL/AMF/Σ(∞) schemes are in `dc_static.py`).
 
 ## Susceptibilities
 
