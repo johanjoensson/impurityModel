@@ -102,7 +102,7 @@ allow_redefinition = true
 disable_error_code = ["annotation-unchecked"]
 
 [[tool.mypy.overrides]]
-module = ["matplotlib.*", "h5py.*", "scipy.*", "mpi4py.*", "sympy.*"]
+module = ["matplotlib.*", "h5py.*", "scipy.*", "mpi4py.*", "sympy.*", "rspt2spectra.*"]
 ignore_missing_imports = true
 
 # Compiled Cython/C++ extension modules ship no type stubs or py.typed marker, so mypy cannot

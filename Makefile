@@ -9,4 +9,4 @@ check_black:
 	black . --check
 
 check_mypy:
-	mypy --no-incremental --config-file setup.cfg -p impurityModel
+	mypy --no-incremental -p impurityModel

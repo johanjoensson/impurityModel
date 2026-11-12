@@ -21,7 +21,6 @@ clear message when the file is missing, so the callers can skip cleanly.
 
 import numpy as np
 
-from impurityModel.ed.model import _optional_bool
 from impurityModel.ed.selfenergy import calc_selfenergy
 
 
@@ -102,6 +101,16 @@ _BATH_FIT_ONLY = frozenset(
         "rspt2spectra version",
     }
 )
+
+
+def _optional_bool(value):
+    """``None`` stays ``None``; a string ``"True"``/``"False"`` or a number becomes a bool."""
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        text = value.decode() if isinstance(value, bytes) else value
+        return text.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 def _optional(attrs, key, cast):
