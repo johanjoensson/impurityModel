@@ -411,7 +411,10 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, tol: f
         suggestion=(
             ""
             if converged
-            else "the recurrence's own divergence guard truncated it; try reort=full or a tighter slaterWeightMin"
+            else (
+                "the recurrence stopped before the monitor's tolerance was met; the warning printed by the unit "
+                "names why. A divergence-guard truncation: try reort=full or a tighter slaterWeightMin"
+            )
         ),
         needs_more_iterations=not converged,
     )

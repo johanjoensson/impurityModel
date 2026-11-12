@@ -699,6 +699,26 @@ def _gf_solve_units(
     return results
 
 
+def _merge_unit_convergence(cstats, conv_stats):
+    """Fold one unit's monitor verdict (``conv_stats``) into its block's ``cstats`` (``converged``, ``d_g``,
+    ``n_blocks``). The block converged only if every unit did; once one has not, ``d_g`` / ``n_blocks`` describe the
+    units that did NOT converge (a converged unit's 729 blocks and 7.6e-10 beside an unconverged 7-block unit made
+    the row read "not converged after 729 blocks"). A trivially-converged (empty seed) unit reports ``d_g`` nan, and
+    an unconverged unit the monitor never sampled reports ``None``: neither made a measurement, so neither poisons
+    the max with a NaN."""
+    unit_ok = bool(conv_stats.get("converged", True))
+    was_ok = cstats["converged"]
+    cstats["converged"] = was_ok and unit_ok
+    if unit_ok and not was_ok:
+        return
+    if was_ok and not unit_ok:
+        cstats["d_g"], cstats["n_blocks"] = 0.0, 0
+    unit_d_g = conv_stats.get("d_g")
+    if unit_d_g is not None and not np.isnan(unit_d_g):
+        cstats["d_g"] = max(cstats["d_g"], unit_d_g)
+    cstats["n_blocks"] = max(cstats["n_blocks"], conv_stats.get("n_blocks", 0))
+
+
 def _gf_assemble(
     plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted, print_table=True
 ):
@@ -796,13 +816,7 @@ def _gf_assemble(
                     "tol": conv_stats.get("tol", np.nan),
                 },
             )
-            cstats["converged"] = cstats["converged"] and bool(conv_stats.get("converged", True))
-            # A trivially-converged (empty seed) unit reports d_g=nan -- it made no measurement,
-            # so it must not poison the block's worst-case max with a NaN.
-            unit_d_g = conv_stats.get("d_g")
-            if unit_d_g is not None and not np.isnan(unit_d_g):
-                cstats["d_g"] = max(cstats["d_g"], unit_d_g)
-            cstats["n_blocks"] = max(cstats["n_blocks"], conv_stats.get("n_blocks", 0))
+            _merge_unit_convergence(cstats, conv_stats)
 
         thermal = ThermalEnsemble(es, tau)
         e0, Z = thermal.e0, thermal.Z

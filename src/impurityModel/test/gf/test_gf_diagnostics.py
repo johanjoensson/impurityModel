@@ -408,3 +408,21 @@ def test_the_max_basis_table_note_agrees_with_the_row():
     assert "1,014" in gd.check_support_settled(records, 1e-10).message
     rows = gfm._unit_basis_rows([[0, 1]], {(0, 1): (24_456, False), (0, 0): (13, False)}, notes)
     assert rows[1][3] == notes[(0, 1)] and rows[0][3] == ""
+
+
+def test_a_blocks_convergence_numbers_come_from_its_unconverged_units():
+    """A converged 729-block unit beside an unconverged 7-block one must not make the block read "not converged after
+    729 blocks, 7.6e-10" (NiO 5-bath run); order of the units must not matter."""
+    from impurityModel.ed.greens_function import _merge_unit_convergence
+
+    good = {"converged": True, "d_g": 7.6e-10, "n_blocks": 729}
+    bad = {"converged": False, "d_g": None, "n_blocks": 7}
+    for units in ([good, bad], [bad, good]):
+        cstats = {"converged": True, "d_g": 0.0, "n_blocks": 0}
+        for u in units:
+            _merge_unit_convergence(cstats, u)
+        assert cstats == {"converged": False, "d_g": 0.0, "n_blocks": 7}
+    cstats = {"converged": True, "d_g": 0.0, "n_blocks": 0}
+    for u in (good, {"converged": True, "d_g": float("nan"), "n_blocks": 0}):
+        _merge_unit_convergence(cstats, u)
+    assert cstats == {"converged": True, "d_g": 7.6e-10, "n_blocks": 729}
