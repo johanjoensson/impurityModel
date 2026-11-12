@@ -52,8 +52,11 @@ from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
 #: Support-settle threshold, a multiple of ``slaterWeightMin`` (``SolverOptions.gf_settle_ratio``).
 DEFAULT_SETTLE_RATIO = 3.0
 
-#: Cut rule of the importance pruning: ``"eta"`` (amplitude) or ``"mass"`` (a fraction of the step's frontier weight).
+#: Cut rule of the importance pruning: ``"eta"`` (amplitude: a row is admitted when one block's largest column
+#: ``|amp|^2`` exceeds ``eta^2``), ``"accumulated"`` (the same quantity summed over the blocks that reach the row) or
+#: ``"mass"`` (a fraction of the step's frontier weight; rig only).
 _PRUNE_RULE = "eta"
+_PRUNE_RULES = ("eta", "accumulated", "mass")
 
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
 _FORWARDED = {
@@ -84,8 +87,8 @@ class DiscoveredSupport:
     mode_ran = None
 
     def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, rule="eta"):
-        if rule not in ("eta", "mass"):
-            raise ValueError(f"the prune rule must be 'eta' or 'mass', got {rule!r}")
+        if rule not in _PRUNE_RULES:
+            raise ValueError(f"the prune rule must be one of {_PRUNE_RULES}, got {rule!r}")
         self.matrix = matrix
         self.decisions = decisions
         self.comm = matrix.comm
@@ -101,6 +104,18 @@ class DiscoveredSupport:
         self.step_counts = []
         #: Key-only block of this rank's first-shell rows the cut kept (``None`` before the first shell).
         self.shell_keys = None
+        #: Accumulated frontier weight per K slot (rule ``"accumulated"``; grown with the matrix's K).
+        self._acc = np.zeros(0)
+
+    def accumulate(self, slots, norms2):
+        """Add ``norms2`` to the running weight of the K ``slots`` and return their totals (rank-local)."""
+        n_k = self.matrix.n_k_local
+        if len(self._acc) < n_k:
+            grown = np.zeros(n_k)
+            grown[: len(self._acc)] = self._acc
+            self._acc = grown
+        self._acc[slots] += norms2
+        return self._acc[slots]
 
     def depth_histogram(self):
         """Global number of determinants admitted at each H-depth from the seeds (step ``k`` reaches depth ``k``);
@@ -398,6 +413,10 @@ class _Admission:
             fraction = sup._shell_tol if first_shell else sup._eta
             budget = fraction * float(d.allreduce_sum(float(weight.sum())))
             sel = weight > collective_mass_cutoff(weight, budget, d.comm)
+        elif sup.rule == "accumulated":
+            totals = sup.accumulate(slots, norms2)
+            sel = (norms2 if first_shell else totals) > (sup._shell_tol2 if first_shell else sup._eta2)
+            norms2 = totals
         else:
             sel = norms2 > (sup._shell_tol2 if first_shell else sup._eta2)
         slots, norms2 = slots[sel], norms2[sel]
@@ -541,6 +560,8 @@ class _ApplyEngine:
     their ids are row numbers of the applied block."""
 
     def __init__(self, matrix, admission, hop, basis, retained):
+        if admission.support.rule == "accumulated":
+            raise NotImplementedError("the accumulated rule needs frontier ids that are stable across steps")
         self.matrix = matrix
         self.admission = admission
         self.hop = hop

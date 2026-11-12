@@ -384,3 +384,59 @@ def test_distributed_quiet_stop_is_the_same_block_on_every_rank_and_the_exact_PH
     assert comm.allgather(blocks) == [blocks] * comm.size
     assert comm.allgather(info["passes"]["growth_stop"]) == ["quiet"] * comm.size
     np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)
+
+
+def _run_rule(monkeypatch, rule, eta, cap=np.inf, comm=None):
+    from impurityModel.ed import gf_recurrence
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, matrix_mode="discovered")
+    monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", rule)
+    return _run_quiet(monkeypatch, eta, None, cap=cap, comm=comm)
+
+
+@pytest.mark.mpi
+def test_the_accumulated_rule_admits_rows_the_amplitude_rule_never_does_and_stays_exact(monkeypatch):
+    """At eta 0.45 no single block carries a row's amplitude over eta for half of the 18 determinants, but they are
+    reached again and again: their summed weight crosses eta^2 and they are admitted. G is the exact resolvent of the
+    support either rule ends on."""
+    comm = MPI.COMM_WORLD
+    G_amp, amp, z = _run_rule(monkeypatch, "eta", 0.45, comm=comm)
+    G_acc, acc, _z = _run_rule(monkeypatch, "accumulated", 0.45, comm=comm)
+    assert len(_retained(amp, comm)) == 9
+    assert len(_retained(acc, comm)) == 18
+    np.testing.assert_allclose(G_amp, _dense_G_on(_retained(amp, comm), z), atol=1e-9)
+    np.testing.assert_allclose(G_acc, _dense_G_on(_retained(acc, comm), z), atol=1e-9)
+
+
+@pytest.mark.parametrize("cap", [11, 14])
+def test_the_accumulated_rule_ranks_the_cap_on_its_totals_and_stays_exact(monkeypatch, cap):
+    G, info, z = _run_rule(monkeypatch, "accumulated", 0.45, cap=cap)
+    assert info["cap_hit"]
+    assert len(_retained(info)) <= cap
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+
+
+class _KSlots:
+    comm = None
+
+    def __init__(self, n):
+        self.n_k_local = n
+
+
+def test_a_row_reached_repeatedly_below_eta_is_admitted_when_its_sum_crosses_and_not_before():
+    from impurityModel.ed.gf_recurrence import DiscoveredSupport
+
+    sup = DiscoveredSupport(_KSlots(3), None, eta=0.5, rule="accumulated")
+    slots = np.array([0, 2])
+    np.testing.assert_allclose(sup.accumulate(slots, np.array([0.1, 0.2])), [0.1, 0.2])
+    sup.matrix.n_k_local = 5  # K grew: the totals of the old slots survive
+    np.testing.assert_allclose(sup.accumulate(np.array([2, 4]), np.array([0.1, 0.3])), [0.3, 0.3])
+    assert sup._acc[0] == pytest.approx(0.1) and sup._acc[4] == pytest.approx(0.3)
+
+
+def test_an_unknown_prune_rule_is_refused():
+    from impurityModel.ed.gf_recurrence import DiscoveredSupport
+
+    with pytest.raises(ValueError, match="prune rule"):
+        DiscoveredSupport(_KSlots(1), None, eta=0.5, rule="nope")
