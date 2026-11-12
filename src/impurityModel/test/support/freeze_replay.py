@@ -258,7 +258,7 @@ def _toml_inputs(path, comm, verbosity, *, swm, cap, cost_budget, solver_overrid
     return built.model, basis, solver, built.meshes, built.extra.get("cluster_label", "cluster")
 
 
-def run(
+def _run(
     h5_path,
     out,
     iteration=1,
@@ -411,6 +411,20 @@ def run(
     )
     print(f"RESULT {out}: swm {swm_used:g} freeze {mode} wall {wall:.1f} s", flush=True)
     return arrays
+
+
+def run(*args, **kwargs):
+    """:func:`_run`, with the module settings it overrides put back afterwards (see there for the arguments)."""
+    from impurityModel.ed import gf_recurrence, selfenergy
+
+    saved = gf_recurrence._PRUNE_RULE, selfenergy.DEFAULT_CAUSALITY_TOL
+    try:
+        return _run(*args, **kwargs)
+    finally:
+        gf_recurrence._PRUNE_RULE, selfenergy.DEFAULT_CAUSALITY_TOL = saved
+
+
+run.__doc__ = _run.__doc__
 
 
 def main(argv=None):

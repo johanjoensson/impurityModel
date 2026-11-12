@@ -63,7 +63,8 @@ def test_replay_runs_and_writes_arrays(tmp_path):
     from mpi4py import MPI
 
     h5 = bench_opt("WORKLOAD_H5")
-    assert h5, "WORKLOAD_H5 must point to an impurityModel_data.h5 archive"
+    if not h5:
+        pytest.skip("WORKLOAD_H5 must point to an impurityModel_data.h5 archive (--bench-opt WORKLOAD_H5=...)")
     out = str(tmp_path / "replay")
     res = fr.run(h5, out, iteration=int(bench_opt("ITERATION", "1")), freeze="on", comm=MPI.COMM_WORLD, verbosity=0)
     if MPI.COMM_WORLD.rank == 0:

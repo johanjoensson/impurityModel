@@ -135,7 +135,8 @@ def test_real_workload_selfenergy():
 
     comm = MPI.COMM_WORLD
     h5_path = bench_opt("WORKLOAD_H5")
-    assert h5_path, "WORKLOAD_H5 must point to an impurityModel_data.h5 archive"
+    if not h5_path:
+        pytest.skip("WORKLOAD_H5 must point to an impurityModel_data.h5 archive (--bench-opt WORKLOAD_H5=...)")
 
     gf_method = os.environ.get("GF_METHOD", "lanczos")
     cap = os.environ.get("CAP", "archive")
