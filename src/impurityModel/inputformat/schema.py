@@ -243,6 +243,14 @@ _DC_SEARCH_KEYS = (
         "generator. 1.0 (no damping) here, since a standalone run has no outer loop.",
         minimum=0.0,
     ),
+    Key(
+        "allow_memory_bound",
+        Kind.BOOL,
+        False,
+        "Accept a double counting found from charge-sector ground states that were stopped by the "
+        "memory guard rather than by convergence (printed as a warning). By default such a search is "
+        "refused: its energies are those of whatever basis each expansion had reached.",
+    ),
     Key("occ_tol", Kind.DIMENSIONLESS, 1e-2, "Occupation convergence tolerance.", minimum=0.0),
     Key("initial_step", Kind.ENERGY, 0.25, "First trial step of the shift search."),
     Key("max_shift", Kind.ENERGY, 20.0, "Largest |mu| the search will try before giving up."),

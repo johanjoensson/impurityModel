@@ -715,7 +715,7 @@ def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
     :math:`2\delta`. ``residual_pt2`` is summed over a degenerate ground manifold, so ``2 *
     residual`` is an upper bound, not an estimate; and it is only a measurement of the kept basis
     when ``residual_is_current``. A resource limit, so a ``WARN``; the double-counting search
-    refuses a memory-bound answer outright (``DC_ALLOW_MEMORY_BOUND``) because it differences
+    refuses a memory-bound answer outright (``allow_memory_bound``) because it differences
     sector energies.
 
     Args:

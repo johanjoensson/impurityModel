@@ -83,6 +83,7 @@ Centre dc in the charge gap (Karolak's insulator prescription): put the midpoint
 | `guess` | energy | `0.0` | Starting double counting for the search. |
 | `on_unreachable` | enum | `'abort'` | What to do when the target has no solution -- a plateau, or a target the observable steps across at a charge-sector boundary. This is the *expected* outcome of a fixed-occupation search on a charge-transfer insulator, so it is a modelling verdict, not necessarily a bug: 'keep_guess' proceeds loudly with the guess, 'abort' stops. Choices: `abort`, `keep_guess`. |
 | `damping` | dimensionless | `1.0` | Mixing against the previous answer, dc = dc_prev + damping * (dc_found - dc_prev). RSPt's 'alpha' on the double-counting line, where it defaults to 0.5 because an undamped Newton step on a target that moves each CSC iteration is a limit-cycle generator. 1.0 (no damping) here, since a standalone run has no outer loop. |
+| `allow_memory_bound` | bool | `False` | Accept a double counting found from charge-sector ground states that were stopped by the memory guard rather than by convergence (printed as a warning). By default such a search is refused: its energies are those of whatever basis each expansion had reached. |
 | `occ_tol` | dimensionless | `0.01` | Occupation convergence tolerance. |
 | `initial_step` | energy | `0.25` | First trial step of the shift search. |
 | `max_shift` | energy | `20.0` | Largest |mu| the search will try before giving up. |
@@ -99,6 +100,7 @@ Choose dc so the interacting thermal impurity occupation hits a target. Karolak'
 | `guess` | energy | `0.0` | Starting double counting for the search. |
 | `on_unreachable` | enum | `'abort'` | What to do when the target has no solution -- a plateau, or a target the observable steps across at a charge-sector boundary. This is the *expected* outcome of a fixed-occupation search on a charge-transfer insulator, so it is a modelling verdict, not necessarily a bug: 'keep_guess' proceeds loudly with the guess, 'abort' stops. Choices: `abort`, `keep_guess`. |
 | `damping` | dimensionless | `1.0` | Mixing against the previous answer, dc = dc_prev + damping * (dc_found - dc_prev). RSPt's 'alpha' on the double-counting line, where it defaults to 0.5 because an undamped Newton step on a target that moves each CSC iteration is a limit-cycle generator. 1.0 (no damping) here, since a standalone run has no outer loop. |
+| `allow_memory_bound` | bool | `False` | Accept a double counting found from charge-sector ground states that were stopped by the memory guard rather than by convergence (printed as a warning). By default such a search is refused: its energies are those of whatever basis each expansion had reached. |
 | `occ_tol` | dimensionless | `0.01` | Occupation convergence tolerance. |
 | `initial_step` | energy | `0.25` | First trial step of the shift search. |
 | `max_shift` | energy | `20.0` | Largest |mu| the search will try before giving up. |
@@ -113,6 +115,7 @@ Choose dc so a peak in the impurity spectral function lands at a given energy. P
 | `guess` | energy | `0.0` | Starting double counting for the search. |
 | `on_unreachable` | enum | `'abort'` | What to do when the target has no solution -- a plateau, or a target the observable steps across at a charge-sector boundary. This is the *expected* outcome of a fixed-occupation search on a charge-transfer insulator, so it is a modelling verdict, not necessarily a bug: 'keep_guess' proceeds loudly with the guess, 'abort' stops. Choices: `abort`, `keep_guess`. |
 | `damping` | dimensionless | `1.0` | Mixing against the previous answer, dc = dc_prev + damping * (dc_found - dc_prev). RSPt's 'alpha' on the double-counting line, where it defaults to 0.5 because an undamped Newton step on a target that moves each CSC iteration is a limit-cycle generator. 1.0 (no damping) here, since a standalone run has no outer loop. |
+| `allow_memory_bound` | bool | `False` | Accept a double counting found from charge-sector ground states that were stopped by the memory guard rather than by convergence (printed as a warning). By default such a search is refused: its energies are those of whatever basis each expansion had reached. |
 | `occ_tol` | dimensionless | `0.01` | Occupation convergence tolerance. |
 | `initial_step` | energy | `0.25` | First trial step of the shift search. |
 | `max_shift` | energy | `20.0` | Largest |mu| the search will try before giving up. |

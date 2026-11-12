@@ -47,8 +47,8 @@ def test_parsers_and_clamps(monkeypatch):
 @pytest.mark.parametrize("raw,expected", [("1", True), ("yes", True), ("0", False), ("false", False), ("", False)])
 def test_bool_truthiness(monkeypatch, raw, expected):
     """Only the explicit falsehoods (and unset/empty) are false -- the historical convention."""
-    monkeypatch.setenv("DC_ALLOW_MEMORY_BOUND", raw)
-    assert config.DC_ALLOW_MEMORY_BOUND.get() is expected
+    monkeypatch.setenv("DC_DIAGNOSTICS", raw)
+    assert config.DC_DIAGNOSTICS.get() is expected
 
 
 def test_derived_knobs_return_none_when_unset(monkeypatch):

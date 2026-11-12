@@ -305,7 +305,7 @@ def _any_memory_bound(ctx):
     return any(verdicts)
 
 
-def _reject_if_memory_bound(ctx, dc_rec, *, rank):
+def _reject_if_memory_bound(ctx, dc_rec, *, rank, allow_memory_bound=False):
     """Refuse to hand back a double counting whose sectors ran out of memory.
 
     The SrMnO3 cubic gap-DC run reported ``status = converged`` and shipped
@@ -327,7 +327,8 @@ def _reject_if_memory_bound(ctx, dc_rec, *, rank):
     it. It bounds the error from above: below tolerance proves the answer is fine, above it
     proves nothing.
 
-    ``DC_ALLOW_MEMORY_BOUND=1`` downgrades the refusal to a warning.
+    ``allow_memory_bound`` (the criteria's argument; ``allow_memory_bound`` on the RSPt double-counting line)
+    downgrades the refusal to a warning.
     """
     bound = _any_memory_bound(ctx)
     dc_rec["dc_memory_bound"] = "unknown" if bound is None else ("yes" if bound else "no")
@@ -339,10 +340,10 @@ def _reject_if_memory_bound(ctx, dc_rec, *, rank):
         "bisected on are those of whatever basis each expansion had reached, not of a basis "
         "anyone chose. Raise the per-rank memory (fewer ranks per node, e.g. a larger '-c'), "
         "lower the determinant cap so the budget is spent deliberately, or set "
-        "DC_ALLOW_MEMORY_BOUND=1 to accept the answer anyway. The per-sector 'GS basis cap hit' "
+        "allow_memory_bound to accept the answer anyway. The per-sector 'GS basis cap hit' "
         "warnings above say how much PT2 importance each retained subspace left behind."
     )
-    if config.DC_ALLOW_MEMORY_BOUND.get():
+    if allow_memory_bound:
         if rank == 0:
             print(f"WARNING: {message}", flush=True)
         return
@@ -1017,6 +1018,7 @@ def fixed_peak_dc(
     report=None,
     de2_min=None,
     e_pt2_tol=None,
+    allow_memory_bound=False,
     cap_ledger=None,
 ):
     r"""
@@ -1269,7 +1271,7 @@ def fixed_peak_dc(
         _warn_if_a_neighbour_sector_is_thermal(
             None if dc_rec.get("peak") is None else abs(dc_rec["peak"]), tau, rank, "fixed-peak"
         )
-        _reject_if_memory_bound(ctx, dc_rec, rank=rank)
+        _reject_if_memory_bound(ctx, dc_rec, rank=rank, allow_memory_bound=allow_memory_bound)
         return (dc, n_center) if return_sector else dc
 
 
@@ -1539,6 +1541,7 @@ def fixed_gap_dc(
     report=None,
     de2_min=None,
     e_pt2_tol=None,
+    allow_memory_bound=False,
     cap_ledger=None,
 ):
     r"""Double counting from the **centre of the charge gap** -- after Karolak's insulator
@@ -2018,7 +2021,7 @@ def fixed_gap_dc(
                 "dc_guess/offset to land nearer the nominal sector."
             )
 
-        _reject_if_memory_bound(ctx, dc_rec, rank=rank)
+        _reject_if_memory_bound(ctx, dc_rec, rank=rank, allow_memory_bound=allow_memory_bound)
         return (dc, n_center) if return_sector else dc
 
 
@@ -2386,6 +2389,7 @@ def fixed_occupation_dc(
     max_shift=20.0,
     return_sector=False,
     report=None,
+    allow_memory_bound=False,
     cap_ledger=None,
 ):
     r"""
@@ -2756,5 +2760,5 @@ def fixed_occupation_dc(
         # path where |n - target| <= occ_tol -- a miss beyond that raises DoubleCountingUnreachable
         # instead, so the record's n_gs never has a genuine miss hidden in it.
         _dump_dc_matrices(dc_guess, dc, rank)
-        _reject_if_memory_bound(ctx, dc_rec, rank=rank)
+        _reject_if_memory_bound(ctx, dc_rec, rank=rank, allow_memory_bound=allow_memory_bound)
         return (dc, sector) if return_sector else dc

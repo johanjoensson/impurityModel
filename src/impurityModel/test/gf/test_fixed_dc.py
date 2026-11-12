@@ -2569,11 +2569,10 @@ def test_the_occupation_criterions_per_mu_verdict_gates_too():
         dc_criteria._reject_if_memory_bound(ctx, {}, rank=0)
 
 
-def test_the_escape_hatch_downgrades_the_rejection_to_a_warning(monkeypatch, capsys):
-    monkeypatch.setenv("DC_ALLOW_MEMORY_BOUND", "1")
+def test_the_escape_hatch_downgrades_the_rejection_to_a_warning(capsys):
     ctx = _FakeCtx(sector_at={("mu", 1): _solution(memory_bound=True)})
     rec = {}
-    dc_criteria._reject_if_memory_bound(ctx, rec, rank=0)
+    dc_criteria._reject_if_memory_bound(ctx, rec, rank=0, allow_memory_bound=True)
     assert rec["dc_memory_bound"] == "yes"
     assert "ran out of memory" in capsys.readouterr().out
 
@@ -2583,7 +2582,7 @@ def test_every_criterion_gates_its_own_return():
     long collective functions that need a full solve to reach, and what would regress is the
     *call*, not the helper. All three -- peak, gap and occupation -- must check."""
     src = Path(dc_criteria.__file__).read_text()
-    assert src.count("_reject_if_memory_bound(ctx, dc_rec, rank=rank)") == 3
+    assert src.count("_reject_if_memory_bound(ctx, dc_rec, rank=rank, allow_memory_bound=allow_memory_bound)") == 3
 
 
 def test_a_healthy_search_records_the_memory_verdict(capsys):

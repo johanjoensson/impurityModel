@@ -866,6 +866,7 @@ def apply_double_counting(resolved, model, basis, solver, notes, comm, verbosity
         "fixed_peak": {"peak_position": table.get("peak_position")},
         "fixed_gap": {"offset": table.get("offset")},
     }[scheme]
+    target["allow_memory_bound"] = table["allow_memory_bound"]
     if scheme == "fixed_occupation":
         target.update(occ_tol=table["occ_tol"], initial_step=table["initial_step"], max_shift=table["max_shift"])
     else:
