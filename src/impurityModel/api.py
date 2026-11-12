@@ -25,7 +25,7 @@ run driven from outside this package -- RSPt through ``impurityModel_interface``
 still be described by one file instead of a shell's worth of exported variables.
 """
 
-from impurityModel.ed.archive import load_selfenergy_archive
+from impurityModel.ed.archive import load_selfenergy_archive, write_selfenergy_group
 from impurityModel.ed.dc_record import dc_levels, dc_spread
 from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.greens_function import save_Greens_function
@@ -115,4 +115,5 @@ __all__ = [
     "report_continuum_reference",
     "save_Greens_function",
     "sigma_inf_dc",
+    "write_selfenergy_group",
 ]
