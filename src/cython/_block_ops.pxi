@@ -121,7 +121,7 @@ cdef object _apply_through(object H, object V, double cutoff, object keep):
     return H.apply_block(V, cutoff, keep)
 
 
-# Opt-in matvec stage timer (``IMPMOD_MATVEC_PROF=1``): per-process seconds and call counts per stage of
+# Opt-in matvec stage timer (``IMPMOD_MATVEC_PROF=1``, via ``config``): per-process seconds and call counts per stage of
 # ``apply_and_redistribute``, printed by ``matvec_prof_report``. Measurement aid only -- no collective inside.
 cdef dict _MATVEC_PROF = {}
 
@@ -197,7 +197,7 @@ def apply_and_redistribute(
         policy.transport if policy is not None else (basis.redistribute_block if redistribute else None)
     )
     cdef double t0 = _time.perf_counter(), t1, t2
-    cdef bint timed = bool(os.environ.get("IMPMOD_MATVEC_PROF"))
+    cdef bint timed = config.IMPMOD_MATVEC_PROF.get()
     cdef double apply_cutoff = 0.0 if after else cutoff
     cdef object W, part, raw, piece, bounds
     cdef object keep_filter = None

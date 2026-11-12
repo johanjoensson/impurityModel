@@ -25,7 +25,6 @@ matching epochs.
 """
 
 import contextlib
-import os
 import sys
 import time
 
@@ -58,7 +57,7 @@ _QUEUE_POKE_KETS = 4096
 #: Opt-in stage timer (``IMPMOD_MATVEC_PROF=1``): seconds, calls and the resident-set high-water per stage of the
 #: Green's-function recurrence, printed to stderr every 30 s (a killed run still leaves numbers). Measurement
 #: aid only: no collective inside, nothing read back.
-_PROF = bool(os.environ.get("IMPMOD_MATVEC_PROF"))
+_PROF = config.IMPMOD_MATVEC_PROF.get()
 _STAGES: dict = {}
 _LAST_DUMP = [0.0]
 

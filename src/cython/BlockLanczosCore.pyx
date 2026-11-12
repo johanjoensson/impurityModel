@@ -20,13 +20,13 @@ true any more: both kernels import downward from here, and the two dispatch func
 reference these module-level names directly.
 """
 
-import os
 import time as _time
 import numpy as np
 cimport numpy as np
 from scipy.linalg.cython_blas cimport zgemm
 import scipy.linalg as la
 import scipy.sparse as sps
+from impurityModel.ed import config
 
 from mpi4py import MPI
 
