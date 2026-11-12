@@ -6,7 +6,7 @@ import numpy as np
 
 from impurityModel.ed.block_structure import BlockStructure, block_structure_summary
 from impurityModel.ed.gs_report import _restriction_label
-from impurityModel.ed.observables import collapse_screening_levels, print_screening_diagnostics
+from impurityModel.ed.observable_reports import collapse_screening_levels, print_screening_diagnostics
 from impurityModel.ed.utils import print_density_matrix_summary
 
 

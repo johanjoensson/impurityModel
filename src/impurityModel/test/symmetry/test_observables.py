@@ -1,9 +1,6 @@
 import numpy as np
 
-from impurityModel.ed.observables import (
-    get_Lz_from_rho_spherical,
-    get_occupations_from_rho_spherical,
-)
+from impurityModel.ed.observables import get_Lz_from_rho_spherical, get_occupations_from_rho_spherical
 
 
 def test_rho_spherical_functions():

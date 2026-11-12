@@ -363,7 +363,7 @@ def _d_shell_block_structure():
 
 def test_print_expectation_values_columns(capsys):
     """Existing per-eigenstate columns are preserved and <L.S> is appended."""
-    from impurityModel.ed.observables import print_expectation_values
+    from impurityModel.ed.observable_reports import print_expectation_values
 
     n = 10  # d shell, l=2
     rot = np.eye(n)
@@ -388,7 +388,7 @@ def test_print_expectation_values_columns(capsys):
 
 def test_print_thermal_expectation_values_lines(capsys):
     """Existing thermal lines are preserved and a <L.S> line is added."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     n = 10
     rot = np.eye(n)
@@ -419,7 +419,7 @@ def test_print_thermal_expectation_values_lines(capsys):
 
 def test_print_expectation_values_S_column(capsys):
     """Passing s_values appends an 'S' column; omitting it preserves old output."""
-    from impurityModel.ed.observables import print_expectation_values
+    from impurityModel.ed.observable_reports import print_expectation_values
 
     n = 10
     rot = np.eye(n)
@@ -439,7 +439,7 @@ def test_print_expectation_values_S_column(capsys):
 
 def test_print_thermal_S2_line(capsys):
     """Passing s_thermal adds an <S^2> line with the matching S quantum number."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     n = 10
     rot = np.eye(n)
@@ -484,7 +484,7 @@ def test_impurity_casimir_operators_rotated():
 
 def test_print_expectation_values_LJ_columns(capsys):
     """Passing l_values / j_values appends 'L' and 'J' columns after 'S'."""
-    from impurityModel.ed.observables import print_expectation_values
+    from impurityModel.ed.observable_reports import print_expectation_values
 
     n = 10
     bs = _d_shell_block_structure()
@@ -509,7 +509,7 @@ def test_print_expectation_values_LJ_columns(capsys):
 
 def test_print_thermal_LJ_lines(capsys):
     """Passing l_thermal / j_thermal adds <L^2> and <J^2> lines with quantum numbers."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     n = 10
     bs = _d_shell_block_structure()
@@ -825,7 +825,7 @@ def test_layout_pairs_crystal_field_manifolds():
 
 def test_correlation_diagnostics_analytic():
     """Double occupancy / local moments / Sz^2 / Hund matrix on constructed two-orbital states."""
-    from impurityModel.ed.observables import compute_correlation_diagnostics
+    from impurityModel.ed.observable_reports import compute_correlation_diagnostics
 
     # Two impurity spatial orbitals: pairs (0,1) and (2,3); no bath (4-orbital space).
     imp_pairs = [(0, 1), (2, 3)]
@@ -864,7 +864,7 @@ def test_correlation_diagnostics_analytic():
 
 def test_energy_decomposition_analytic():
     """Tr(h rho) block split on a hand-built rho/h; Coulomb = remainder."""
-    from impurityModel.ed.observables import compute_energy_decomposition
+    from impurityModel.ed.observable_reports import compute_energy_decomposition
 
     # 2 impurity orbitals (0,1), 2 bath orbitals (2,3).
     h1 = np.array(
@@ -897,7 +897,7 @@ def test_energy_decomposition_analytic():
 
 def test_screening_diagnostics_analytic():
     """Bath-level table + per-level correlation on the two-spin singlet/triplet."""
-    from impurityModel.ed.observables import compute_screening_diagnostics
+    from impurityModel.ed.observable_reports import compute_screening_diagnostics
 
     imp_pairs = [(0, 1)]
     bath_pairs = [(2, 3)]
@@ -1408,10 +1408,7 @@ def test_compute_shell_observables_matches_many_body_casimir_path():
     which infers l per shell correctly by construction. This is exactly the two paths that
     disagreed in the real bug report (ground_state_statistics.json: sz_thermal ~ -1e-11 vs
     the (buggy) rho-path sz ~ -0.58)."""
-    from impurityModel.ed.observables import (
-        compute_shell_observables,
-        make_impurity_casimir_operators,
-    )
+    from impurityModel.ed.observables import compute_shell_observables, make_impurity_casimir_operators
 
     impurity_orbitals, rot_to_spherical, rho_imp, occupied = _two_shell_fixture()
     result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
@@ -1456,10 +1453,7 @@ def test_compute_shell_observables_matches_many_body_casimir_path_with_rotation(
     exactly the composition a wrong dict key or a wrong shell ordering would corrupt while
     leaving <N> (rotation-invariant) looking correct, so it is the case that actually
     exercises the risk the dict-key-vs-inferred-l fix (Stage 1 review item 1) addresses."""
-    from impurityModel.ed.observables import (
-        compute_shell_observables,
-        make_impurity_casimir_operators,
-    )
+    from impurityModel.ed.observables import compute_shell_observables, make_impurity_casimir_operators
 
     w = _random_unitary(10, seed=1234)
     impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
@@ -1614,7 +1608,8 @@ def _eg_t2g_block_structure():
 def test_block_group_labels_no_impurity_orbitals():
     """Without impurity_orbitals there is no group to name a class after, so labels fall
     back to plain letters."""
-    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.observables import block_group_labels
 
     bs = _eg_t2g_block_structure()
     eq = get_equivalent_blocks(bs)
@@ -1626,7 +1621,8 @@ def test_block_group_labels_no_impurity_orbitals():
 def test_block_group_labels_one_class_per_group():
     """One equivalence class per group -- the grouping every solver path derives from the
     block structure -- names each class after its group key, nothing else."""
-    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.observables import block_group_labels
 
     bs = _eg_t2g_block_structure()
     eq = get_equivalent_blocks(bs)
@@ -1640,7 +1636,8 @@ def test_block_group_labels_one_class_per_group():
 def test_block_group_labels_group_split_into_several_classes():
     """A single group the block structure splits further (one d shell auto-split into
     eg/t2g) keeps the group key and adds a letter, so the classes stay distinguishable."""
-    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.observables import block_group_labels
 
     bs = _eg_t2g_block_structure()
     eq = get_equivalent_blocks(bs)
@@ -1655,7 +1652,8 @@ def test_block_group_labels_multi_group_impurity():
     """A two-group impurity names each class after its own group; the keys are whatever the
     caller's impurity_orbitals uses (here the angular momenta of a 2p + 3d impurity)."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.observables import block_group_labels
 
     bs = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -1677,7 +1675,8 @@ def test_block_group_labels_class_spanning_groups():
     """A (synthetic, shouldn't happen in practice) class spanning two groups is named after
     both rather than silently attributed to either."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.observables import block_group_labels
 
     bs = BlockStructure(
         blocks=[list(range(6)) + list(range(6, 16))],  # one block spanning both groups
@@ -1697,7 +1696,8 @@ def test_block_group_labels_orbital_outside_every_group():
     """An orbital in no group at all leaves nothing to name the class after, so it falls
     back to a letter instead of guessing a group."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.observables import block_group_labels
 
     bs = BlockStructure(
         blocks=[[0, 1], [2, 3]],
@@ -1716,7 +1716,8 @@ def test_print_impurity_orbital_groups_legend(capsys):
     """The legend prints one entry per label, mapping to the correct global orbitals, and
     is a no-op when there is nothing to disambiguate (a single group)."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import get_equivalent_blocks, print_impurity_orbital_groups
+    from impurityModel.ed.observable_reports import print_impurity_orbital_groups
+    from impurityModel.ed.block_structure import get_equivalent_blocks
 
     bs = _eg_t2g_block_structure()
     impurity_orbitals = {0: [[0, 1, 4, 5]], 1: [[2, 3, 6, 7, 8, 9]]}
@@ -1741,7 +1742,7 @@ def test_print_thermal_expectation_values_n_labels_name_their_group(capsys):
     """The N(...) column labels in the thermal report name the orbital group the column is
     for -- not raw block indices (the bug that produced the tutorial's meaningless
     N(4,6,9,11) label), and not a shell guessed from the group's orbital count."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     bs = _eg_t2g_block_structure()
     impurity_orbitals = {0: [list(range(10))]}
@@ -1760,7 +1761,7 @@ def test_print_thermal_expectation_values_per_shell_table(capsys):
     per-shell N/Lz/Sz values and a total row, and Casimir/term columns populated from
     shell_casimir when given."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     bs = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -1801,7 +1802,7 @@ def test_print_thermal_expectation_values_per_shell_table(capsys):
 def test_print_thermal_expectation_values_single_shell_has_no_per_shell_table(capsys):
     """A single-shell impurity (or impurity_orbitals=None) prints no per-shell table --
     unchanged from before this feature existed."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     bs = _d_shell_block_structure()
     rho = np.eye(10, dtype=complex)
@@ -1878,7 +1879,7 @@ def test_print_thermal_expectation_values_j_sharp_gate(capsys):
     magnetism block and from the per-shell table, and both use the same (ungated-J)
     term -- the desync the Stage 4 review flagged must not happen."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     bs = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -1962,10 +1963,7 @@ _DIAG_IMP, _DIAG_BATH = [(0, 1)], [(2, 3)]
 
 def _diagnostics(psis, keep, comm=None, redistribute=None):
     """All three diagnostics that gs_report hands its filter to, flattened to one array of numbers."""
-    from impurityModel.ed.observables import (
-        compute_correlation_diagnostics,
-        compute_screening_diagnostics,
-    )
+    from impurityModel.ed.observable_reports import compute_correlation_diagnostics, compute_screening_diagnostics
 
     es, tau = np.array([0.0]), 0.05
     rho = np.diag([0.0, 1.0, 1.0, 0.0]).astype(complex)
@@ -2032,7 +2030,7 @@ def test_report_diagnostics_through_the_support_filter_change_nothing_distribute
 
 
 def test_thermal_report_shows_the_pairing_note_and_the_pairing_source(capsys):
-    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.observable_reports import print_thermal_expectation_values
 
     rho_one = np.zeros((10, 10), dtype=complex)
     rho_one[9, 9] = 1.0

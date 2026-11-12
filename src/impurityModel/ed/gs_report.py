@@ -37,15 +37,23 @@ from impurityModel.ed.gs_statistics import (
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_root import on_root
-from impurityModel.ed.observables import (
-    block_group_labels,
-    casimir_operator,
-    casimir_to_quantum_number,
+from impurityModel.ed.observable_reports import (
     compute_correlation_diagnostics,
     compute_energy_decomposition,
     compute_magnetic_summary,
     compute_screening_diagnostics,
     compute_state_summary,
+    print_correlation_diagnostics,
+    print_expectation_values,
+    print_impurity_orbital_groups,
+    print_screening_diagnostics,
+    print_state_summary,
+    print_thermal_expectation_values,
+)
+from impurityModel.ed.observables import (
+    block_group_labels,
+    casimir_operator,
+    casimir_to_quantum_number,
     get_Sz_from_rho_pairs,
     is_j_sharp,
     make_impurity_casimir_operators,
@@ -53,12 +61,6 @@ from impurityModel.ed.observables import (
     manifold_observable_matrices,
     manifold_square_weights,
     manifold_values_from_matrices,
-    print_correlation_diagnostics,
-    print_expectation_values,
-    print_impurity_orbital_groups,
-    print_screening_diagnostics,
-    print_state_summary,
-    print_thermal_expectation_values,
     spin_correlation_operator,
     spin_curie_susceptibility,
     thermal_observable_value,
