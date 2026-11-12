@@ -39,6 +39,12 @@ from impurityModel.ed.model import (
     load_selfenergy_archive,
 )
 from impurityModel.ed.operator_algebra import matrixToIOp
+from impurityModel.ed.options import (
+    describe_options,
+    options_from_attrs,
+    options_to_attrs,
+    parse_option_tokens,
+)
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,
     amf_dc,
@@ -59,6 +65,10 @@ from impurityModel.inputformat.reader import (
     load_environment,
 )
 
+#: Bumped when this surface changes incompatibly; a wrapper checks it once at import and
+#: tells the user to rebuild, instead of probing for individual attributes.
+API_VERSION = 1
+
 try:
     from importlib.metadata import PackageNotFoundError, version
 
@@ -70,6 +80,7 @@ except ImportError:  # pragma: no cover
     __version__ = "unknown"
 
 __all__ = [
+    "API_VERSION",
     "BasisOptions",
     "CapLedger",
     "DoubleCountingUnreachable",
@@ -85,6 +96,7 @@ __all__ = [
     "calc_susceptibility_workflow",
     "dc_levels",
     "dc_spread",
+    "describe_options",
     "discretized_impurity_occupation",
     "emit_dc_record",
     "find_environment_file",
@@ -96,6 +108,9 @@ __all__ = [
     "load_selfenergy_archive",
     "matrixToIOp",
     "nominal_dc",
+    "options_from_attrs",
+    "options_to_attrs",
+    "parse_option_tokens",
     "parse_truncation_threshold",
     "report_continuum_reference",
     "save_Greens_function",

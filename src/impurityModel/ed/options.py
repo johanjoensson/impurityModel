@@ -5,15 +5,27 @@ pulling in any many-body machinery.
 """
 
 import math
+import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
 import numpy as np
 
 from impurityModel.ed import config
 
-__all__ = ["BasisOptions", "Meshes", "SolverOptions", "SpectraOptions"]
+__all__ = [
+    "OPTION_SPECS",
+    "BasisOptions",
+    "Meshes",
+    "OptionSpec",
+    "SolverOptions",
+    "SpectraOptions",
+    "describe_options",
+    "options_from_attrs",
+    "options_to_attrs",
+    "parse_option_tokens",
+]
 
 
 @dataclass(frozen=True)
@@ -428,3 +440,322 @@ class SpectraOptions:
     xas: Optional[bool] = None
     rixs: Optional[bool] = None
     nixs: Optional[bool] = None
+
+
+# ----------------------------------------------------------------------------------------------
+# The registry: one row per user-settable option.  The solver-line grammar, the option header of
+# an output file and the archive attribute record are all derived from it, so adding an option
+# is one row here plus the dataclass field.
+# ----------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OptionSpec:
+    """How one :class:`BasisOptions` / :class:`SolverOptions` field is spelled, read and shown.
+
+    Attributes
+    ----------
+    name : str
+        Field name on the dataclass.
+    group : {"basis", "solver"}
+        Which dataclass owns the field.
+    kind : {"int", "float", "onoff", "enum", "cap", "bool"}
+        How a value is read from text.  ``"bool"`` is a field that has only flag spellings.
+    token : str or None
+        The word that takes a value (``None`` for a field that has no valued spelling).
+    aliases : tuple of str
+        Other words for the same valued option.
+    flags : dict
+        ``{word: value}``: words that set the field without a value (``no_mv`` -> ``False``).
+    attr : str
+        The key in the archive attribute record (historical name where it differs from ``name``).
+    label : str
+        The row label of the option header.
+    unset : str or None
+        What the header shows for ``None``; ``None`` shows the raw value.
+    choices : tuple of str
+        The words an ``"enum"`` takes; ``auto_none`` is read as ``None``.
+    """
+
+    name: str
+    group: str
+    kind: str
+    label: str
+    token: Optional[str] = None
+    aliases: tuple = ()
+    flags: dict = field(default_factory=dict)
+    attr: Optional[str] = None
+    unset: Optional[str] = None
+    choices: tuple = ()
+    auto_none: Optional[str] = None
+    positive: bool = False
+
+    @property
+    def attr_name(self):
+        return self.attr or self.name
+
+    @property
+    def words(self):
+        return () if self.token is None else (self.token, *self.aliases)
+
+
+def _spec(name, group, kind, label, **kw):
+    return OptionSpec(name, group, kind, label, **kw)
+
+
+#: In header print order: the Green's-function kernel first, then the basis construction.
+OPTION_SPECS = (
+    _spec("interaction_merges_blocks", "basis", "bool", "Interaction merges GF blocks"),
+    _spec("dense_cutoff", "solver", "int", "Dense matrix size cutoff", token="dense_cutoff"),
+    _spec("sparse_green", "solver", "bool", "Sparse Green's function", flags={"dense_green": False}),
+    _spec("gf_method", "solver", "enum", "Green's function method", token="gf_method", choices=config.GF_METHODS),
+    _spec(
+        "gf_admission",
+        "solver",
+        "enum",
+        "GF basis admission",
+        token="gf_admission",
+        choices=config.GF_ADMISSIONS,
+        auto_none="auto",
+        unset="auto",
+    ),
+    _spec(
+        "gf_admit_tol",
+        "solver",
+        "float",
+        "GF admission threshold",
+        token="gf_admit_tol",
+        unset="default",
+        positive=True,
+    ),
+    _spec("gf_settle", "solver", "onoff", "GF support settle", token="gf_settle", unset="on"),
+    _spec(
+        "gf_settle_ratio",
+        "solver",
+        "float",
+        "GF settle ratio (x slater_min)",
+        token="gf_settle_ratio",
+        unset="default",
+    ),
+    _spec("gf_settle_retry", "solver", "onoff", "GF settle retry", token="gf_settle_retry", unset="off"),
+    _spec(
+        "gf_prune_tol",
+        "solver",
+        "float",
+        "GF pruned growth threshold",
+        token="gf_prune_tol",
+        unset="default (1e-3)",
+    ),
+    _spec(
+        "gf_first_shell_tol",
+        "solver",
+        "float",
+        "GF first-shell threshold",
+        token="gf_first_shell_tol",
+        unset="whole shell",
+    ),
+    _spec("gf_growth_tol", "solver", "float", "GF growth tolerance", token="gf_growth_tol", unset="full"),
+    _spec(
+        "gf_refine_rounds",
+        "solver",
+        "int",
+        "GF swap refinement rounds",
+        token="gf_refine_rounds",
+        unset="default (3)",
+    ),
+    _spec(
+        "gf_refine_tol",
+        "solver",
+        "float",
+        "GF refinement stop (x max|G|)",
+        token="gf_refine_tol",
+        unset="default",
+    ),
+    _spec(
+        "gf_refine_swap",
+        "solver",
+        "float",
+        "GF refinement swap fraction",
+        token="gf_refine_swap",
+        unset="default",
+    ),
+    _spec("cost_budget", "basis", "float", "Hopping-cost budget", token="cost_budget", unset="off"),
+    _spec("gf_tol", "solver", "float", "GF convergence tolerance", token="gf_tol", unset="default"),
+    _spec("gf_real_tol", "solver", "float", "GF real-axis tolerance", token="gf_real_tol", unset="default"),
+    _spec("gf_min_weight", "solver", "float", "GF minimal thermal weight", token="gf_min_weight", unset="off"),
+    _spec("occ_cutoff", "basis", "float", "Occupation cutoff", token="occ_cutoff"),
+    _spec("dN", "basis", "int", "dN", token="dn"),
+    _spec(
+        "mixed_valence",
+        "basis",
+        "bool",
+        "Mixed valence allowed",
+        flags={"no_mv": False},
+        attr="mv",
+        unset="auto (default)",
+    ),
+    _spec("chain_restrict", "basis", "bool", "Chain occ. restrictions", flags={"no_chain_restrict": False}),
+    _spec(
+        "slater_weight_min",
+        "basis",
+        "float",
+        "Minimal Slater weight",
+        token="slater_min",
+        aliases=("slater_weight_min",),
+        attr="slater_min",
+    ),
+    _spec(
+        "e_pt2_tol",
+        "basis",
+        "float",
+        "GS residual PT2 tolerance",
+        token="e_pt2",
+        aliases=("e_pt2_tol",),
+        unset="default",
+        positive=True,
+    ),
+    _spec("de2_min", "basis", "float", "GS per-determinant PT2 floor", token="de2_min", unset="default"),
+    _spec(
+        "truncation_threshold",
+        "basis",
+        "cap",
+        "Determinant cap (truncation_threshold)",
+        token="truncation_threshold",
+        unset="auto",
+    ),
+)
+
+#: Fields that were never options: ``nominal_occ`` and ``tau`` are the caller's, the rest of
+#: ``BasisOptions`` is reached through :data:`OPTION_SPECS`.
+_SPEC_BY_WORD = {}
+for _s in OPTION_SPECS:
+    for _w in _s.words:
+        _SPEC_BY_WORD[_w] = (_s, None)
+    for _w, _v in _s.flags.items():
+        _SPEC_BY_WORD[_w] = (_s, _v)
+del _s, _w
+
+
+def _read_number(word, text):
+    # Fortran writes 1d-2 for 1e-2
+    try:
+        return float(re.sub(r"(?<=[0-9.])[dD](?=[+-]?\d)", "e", text))
+    except ValueError:
+        raise ValueError(f"'{word}' needs a number, got {text!r}") from None
+
+
+def _read_value(spec, word, text):
+    kind = spec.kind
+    if kind == "float":
+        value = _read_number(word, text)
+        if spec.positive and not value > 0:
+            raise ValueError(f"'{word}' must be positive, got {text!r}")
+        return value
+    if kind == "int":
+        try:
+            return int(text)
+        except ValueError:
+            # 2e3 style
+            number = _read_number(word, text)
+            if number != int(number):
+                raise ValueError(f"'{word}' needs an integer, got {text!r}") from None
+            return int(number)
+    if kind == "onoff":
+        lowered = text.lower()
+        if lowered not in ("on", "off"):
+            raise ValueError(f"'{word}' must be on or off, got {text!r}")
+        return lowered == "on"
+    if kind == "enum":
+        lowered = text.lower()
+        if spec.auto_none is not None and lowered == spec.auto_none:
+            return None
+        return lowered  # the dataclass refuses a word it does not know, with the reason
+    if kind == "cap":
+        from impurityModel.ed.memory_estimate import parse_truncation_threshold
+
+        return parse_truncation_threshold(text)
+    raise ValueError(f"'{word}' cannot take a value")
+
+
+def parse_option_tokens(tokens):
+    """Read basis and solver options out of solver-line words.
+
+    Parameters
+    ----------
+    tokens : sequence of str
+        Whitespace-separated words, comments already removed.  Words are case-insensitive.
+
+    Returns
+    -------
+    basis_kwargs, solver_kwargs : dict
+        Keyword arguments for :class:`BasisOptions` / :class:`SolverOptions`; only options that
+        appeared are present.
+    unused : list of str
+        Every word that is not an option, in order.  A caller that shares the line with other
+        consumers (the bath fit) hands the remainder on; one that does not should refuse it.
+
+    Raises
+    ------
+    ValueError
+        An option without a value, or with one that cannot be read.
+    """
+    found = {"basis": {}, "solver": {}}
+    unused = []
+    i = 0
+    while i < len(tokens):
+        word = tokens[i].lower()
+        entry = _SPEC_BY_WORD.get(word)
+        if entry is None:
+            unused.append(tokens[i])
+        else:
+            spec, flag_value = entry
+            if word in spec.flags:
+                found[spec.group][spec.name] = flag_value
+            else:
+                if i + 1 >= len(tokens):
+                    raise ValueError(f"'{tokens[i]}' on the solver line needs a value")
+                found[spec.group][spec.name] = _read_value(spec, tokens[i], tokens[i + 1])
+                i += 1
+        i += 1
+    return found["basis"], found["solver"], unused
+
+
+def options_to_attrs(basis, solver):
+    """Flat ``{attr: value}`` record of the registered options, for the archive."""
+    groups = {"basis": basis, "solver": solver}
+    return {spec.attr_name: getattr(groups[spec.group], spec.name) for spec in OPTION_SPECS}
+
+
+def options_from_attrs(attrs):
+    """Inverse of :func:`options_to_attrs`: ``(basis_kwargs, solver_kwargs)`` from an attribute record.
+
+    Every registered option must be present; ``None`` is stored as an absent attribute by HDF5
+    writers, so a missing key reads as ``None``.
+    """
+    out = {"basis": {}, "solver": {}}
+    for spec in OPTION_SPECS:
+        value = attrs.get(spec.attr_name)
+        if hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, bytes):
+            value = value.decode()
+        out[spec.group][spec.name] = value
+    return out["basis"], out["solver"]
+
+
+def _show(spec, value):
+    if value is None:
+        return spec.unset if spec.unset is not None else value
+    if spec.kind == "onoff":
+        return "on" if value else "off"
+    if spec.kind == "cap":
+        return "unlimited" if not value < float("inf") else f"{int(value):,} (final)"
+    if spec.name in ("gf_prune_tol", "gf_refine_rounds") and value == 0:
+        return "off"
+    return value
+
+
+def describe_options(basis, solver):
+    """``[(label, text)]`` rows for a run header, in print order."""
+    groups = {"basis": basis, "solver": solver}
+    return [(spec.label, _show(spec, getattr(groups[spec.group], spec.name))) for spec in OPTION_SPECS]
