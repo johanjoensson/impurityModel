@@ -19,7 +19,7 @@ from impurityModel.ed.groundstate import build_basis_and_solver, solve_sector
 from impurityModel.ed.interaction_models import kanamori_u4
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
-from impurityModel.ed.sector_solver import certification_plan, certify_sector, describe_plan
+from impurityModel.ed.sector_certify import certification_plan, certify_sector, describe_plan
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.symmetry.test_seed_sectors import BATH_STATES, IMPURITY_ORBITALS, N_IMP, N_ORB
@@ -206,7 +206,7 @@ def test_a_mirror_image_follows_its_source_in_the_thermal_union():
     """The union adds the kept classes in order and stops at the cap, so an image must sit where the
     mirror's own degenerate class would have sorted -- right behind its source -- or a binding cap
     would drop the degenerate partner before a higher class."""
-    from impurityModel.ed.sector_solver import _thermal_union_order
+    from impurityModel.ed.sector_certify import _thermal_union_order
 
     # Winner 2 (mirrored by 7), then in-window classes 0 and 3 by energy; 3 is mirrored by 6.
     order = _thermal_union_order(winner=2, inside=[2, 0, 3], mirrored={6: 3, 7: 2})
@@ -214,7 +214,7 @@ def test_a_mirror_image_follows_its_source_in_the_thermal_union():
 
 
 def test_the_thermal_union_carries_the_winners_image():
-    from impurityModel.ed.sector_solver import _image_keys
+    from impurityModel.ed.sector_certify import _image_keys
 
     h_op = _hamiltonian()
     basis = _seed(h_op, None)

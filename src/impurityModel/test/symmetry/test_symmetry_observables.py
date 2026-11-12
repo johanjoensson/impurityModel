@@ -1651,8 +1651,7 @@ def test_block_group_labels_group_split_into_several_classes():
 def test_block_group_labels_multi_group_impurity():
     """A two-group impurity names each class after its own group; the keys are whatever the
     caller's impurity_orbitals uses (here the angular momenta of a 2p + 3d impurity)."""
-    from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks
     from impurityModel.ed.observables import block_group_labels
 
     bs = BlockStructure(
@@ -1674,8 +1673,7 @@ def test_block_group_labels_multi_group_impurity():
 def test_block_group_labels_class_spanning_groups():
     """A (synthetic, shouldn't happen in practice) class spanning two groups is named after
     both rather than silently attributed to either."""
-    from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks
     from impurityModel.ed.observables import block_group_labels
 
     bs = BlockStructure(
@@ -1695,8 +1693,7 @@ def test_block_group_labels_class_spanning_groups():
 def test_block_group_labels_orbital_outside_every_group():
     """An orbital in no group at all leaves nothing to name the class after, so it falls
     back to a letter instead of guessing a group."""
-    from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.block_structure import get_equivalent_blocks
+    from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks
     from impurityModel.ed.observables import block_group_labels
 
     bs = BlockStructure(
@@ -1715,9 +1712,8 @@ def test_block_group_labels_orbital_outside_every_group():
 def test_print_impurity_orbital_groups_legend(capsys):
     """The legend prints one entry per label, mapping to the correct global orbitals, and
     is a no-op when there is nothing to disambiguate (a single group)."""
-    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks
     from impurityModel.ed.observable_reports import print_impurity_orbital_groups
-    from impurityModel.ed.block_structure import get_equivalent_blocks
 
     bs = _eg_t2g_block_structure()
     impurity_orbitals = {0: [[0, 1, 4, 5]], 1: [[2, 3, 6, 7, 8, 9]]}

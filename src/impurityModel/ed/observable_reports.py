@@ -1,5 +1,7 @@
-"""Ground-state observable reports: the ``compute_*`` summaries and ``print_*`` tables built on
-:mod:`impurityModel.ed.observables`, which keeps the ρ-based values and the operator builders."""
+"""Ground-state observable reports: the ``compute_*`` summaries and ``print_*`` tables.
+
+Built on :mod:`impurityModel.ed.observables`, which keeps the ρ-based values and the operator builders.
+"""
 
 import numpy as np
 

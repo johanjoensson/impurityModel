@@ -42,6 +42,7 @@ from impurityModel.ed.memory_estimate import (
 )
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.orbits import build_orbits
+from impurityModel.ed.sector_certify import WINDOW_OVERTAKE_WARN, certification_plan, describe_plan, window_overtake
 from impurityModel.ed.sector_ensemble import (
     ENSEMBLE_RESIDUAL_FACTOR,
     plan_ensemble,
@@ -50,14 +51,7 @@ from impurityModel.ed.sector_ensemble import (
     weight_interval,
     winner_plan,
 )
-from impurityModel.ed.sector_solver import (
-    WINDOW_OVERTAKE_WARN,
-    SectorPlanStore,
-    certification_plan,
-    describe_plan,
-    solve_certified,
-    window_overtake,
-)
+from impurityModel.ed.sector_solver import SectorPlanStore, solve_certified
 from impurityModel.ed.seed_sectors import _images as seed_images
 from impurityModel.ed.seed_sectors import gather_seed
 from impurityModel.ed.spin_pairs import spin_layout

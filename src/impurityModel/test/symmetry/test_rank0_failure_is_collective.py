@@ -7,7 +7,7 @@ while the other ranks waited in the broadcast forever (probe: mpiexec exit 124 a
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import groundstate, gs_connectivity, orbits, sector_solver, seed_sectors
+from impurityModel.ed import groundstate, gs_connectivity, orbits, sector_certify, seed_sectors
 from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.ed.groundstate import build_basis_and_solver
 from impurityModel.test.support.cubic_d_shell import cubic_d_shell
@@ -51,8 +51,8 @@ def test_a_rank0_failure_is_raised_on_every_rank(monkeypatch, site):
         monkeypatch.setattr(seed_sectors, "_build_classes", _boom)
         call = lambda: seed_sectors.seed_class_plan(H, basis, max_seed=10**6)  # noqa: E731
     elif site == "certification_plan":
-        monkeypatch.setattr(sector_solver, "conserves_sz", _boom)
-        call = lambda: sector_solver.certification_plan(H, basis, max_seed=10**6)  # noqa: E731
+        monkeypatch.setattr(sector_certify, "conserves_sz", _boom)
+        call = lambda: sector_certify.certification_plan(H, basis, max_seed=10**6)  # noqa: E731
     elif site == "orbits":
         monkeypatch.setattr(orbits, "resolve_spin_layout", _boom)
         call = lambda: orbits.build_orbits(H, basis)  # noqa: E731

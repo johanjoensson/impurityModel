@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import sector_solver
+from impurityModel.ed import sector_certify
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.sector_solver import (
+from impurityModel.ed.sector_certify import (
     RANK_FLOOR,
     CertificationJob,
     CertificationPlan,
@@ -100,7 +100,7 @@ def test_pass_2_continues_a_capped_class_by_its_frozen_verdict_and_not_by_the_fa
             verdict = ClassVerdict(job, -1.03, 200, 0.0, False, False)
         return verdict, np.array([verdict.energy]), None, SimpleNamespace(_keys={}, weighted_restrictions=None), None
 
-    monkeypatch.setattr(sector_solver, "_expand_job", fake_expand_job)
+    monkeypatch.setattr(sector_certify, "_expand_job", fake_expand_job)
     basis = SimpleNamespace(is_distributed=False, comm=None, weighted_restrictions=None, truncation_threshold=1000)
     h_op = SimpleNamespace(set_weighted_restrictions=lambda w: None)
     certify_sector(h_op, basis, plan, expand_kwargs={}, dense_cutoff=1000, slater_weight_min=0, ranking_cap=100)
@@ -115,14 +115,14 @@ def test_pass_1_stops_at_the_ranking_cap_pass_2_reaches_the_full_cap_and_the_win
     plan = certification_plan(h_op, basis)
     cap = basis.size + 1  # the two-orbital model closes at 8 determinants
     seen = []
-    real = sector_solver._expand_job
+    real = sector_certify._expand_job
 
     def spy(*args, rank=False, **kwargs):
         out = real(*args, rank=rank, **kwargs)
         seen.append((rank, out[0]))
         return out
 
-    monkeypatch.setattr(sector_solver, "_expand_job", spy)
+    monkeypatch.setattr(sector_certify, "_expand_job", spy)
     es, _psis, winner, _solver, verdicts = certify_sector(
         h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0, ranking_cap=cap
     )
@@ -150,7 +150,7 @@ def test_a_cubic_d6_level_keeps_all_fifteen_states_when_its_classes_are_ranked_u
     monkeypatch.setenv("GS_RANKING_CAP", str(ranking_cap))
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True)
     pass_1 = []
-    real = sector_solver._expand_job
+    real = sector_certify._expand_job
 
     def spy(*args, rank=False, **kwargs):
         out = real(*args, rank=rank, **kwargs)
@@ -158,7 +158,7 @@ def test_a_cubic_d6_level_keeps_all_fifteen_states_when_its_classes_are_ranked_u
             pass_1.append(out[0])
         return out
 
-    monkeypatch.setattr(sector_solver, "_expand_job", spy)
+    monkeypatch.setattr(sector_certify, "_expand_job", spy)
     admitted = []
     select = CIPSISolver.determine_new_Dj
 
@@ -208,7 +208,7 @@ def test_a_pass_2_solve_replaces_the_pass_1_solve_of_the_same_class_even_when_it
         marker.pass_2 = not rank
         return verdict, np.array([verdict.energy]), None, marker, None
 
-    monkeypatch.setattr(sector_solver, "_expand_job", fake_expand_job)
+    monkeypatch.setattr(sector_certify, "_expand_job", fake_expand_job)
     basis = SimpleNamespace(is_distributed=False, comm=None, weighted_restrictions=None, truncation_threshold=1000)
     h_op = SimpleNamespace(set_weighted_restrictions=lambda w: None)
     _es, _psis, winner, _solver, verdicts = certify_sector(
@@ -226,7 +226,7 @@ def test_a_capped_partner_of_a_converged_lowest_class_is_continued_with_it():
         0: ClassVerdict(jobs[0], -1.0, 50, 1e-4, False, False),
         1: _capped(jobs[1], -0.9999, 1e-6),  # lower = -0.999901: misses the floor by more than its own bar
     }
-    assert verdicts[1].lower - (-1.0) > sector_solver._bound_error(
+    assert verdicts[1].lower - (-1.0) > sector_certify._bound_error(
         verdicts[1]
     )  # the first test alone would not select it
     assert _ranking_contenders(verdicts, [1], reach=0.0) == {1}

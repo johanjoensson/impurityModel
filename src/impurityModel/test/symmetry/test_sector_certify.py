@@ -13,7 +13,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.ed.groundstate import build_basis_and_solver
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.sector_solver import certification_plan, certify_sector
+from impurityModel.ed.sector_certify import certification_plan, certify_sector
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.symmetry.test_seed_sectors import (
     BATH_STATES,
@@ -163,14 +163,15 @@ def _exact_spectrum(h_op):
 
 
 def _verdict(k, energy, n_imp, residual=0.0, stopped=False):
-    from impurityModel.ed.sector_solver import CertificationJob, ClassVerdict
+    from impurityModel.ed.sector_certify import CertificationJob, ClassVerdict
 
     job = CertificationJob(two_sz=k, parity=(), seed_class=None, n_seed=1)
     return job, ClassVerdict(job, energy, 10, residual, False, False, n_imp, stopped)
 
 
 def test_the_store_keeps_the_classes_that_can_still_win_and_widens_with_the_shift():
-    from impurityModel.ed.sector_solver import CertificationPlan, SectorPlanStore
+    from impurityModel.ed.sector_certify import CertificationPlan
+    from impurityModel.ed.sector_solver import SectorPlanStore
 
     jobs, verdicts = zip(_verdict(0, -1.00, 8.6), _verdict(1, -0.95, 8.7), _verdict(2, -0.50, 8.6))
     store = SectorPlanStore()
@@ -499,7 +500,7 @@ def test_a_class_held_by_the_cap_marks_the_sector_solve_cap_bound(monkeypatch):
     """A class can lose *because* the cap held it high. The sector solve callers read (the DC's cap
     calibration through ``truncation_report``) must say so even when the winner itself was unbound."""
     from impurityModel.ed import groundstate
-    from impurityModel.ed.sector_solver import CertificationJob, ClassVerdict
+    from impurityModel.ed.sector_certify import CertificationJob, ClassVerdict
 
     real = groundstate.solve_certified
 
@@ -568,7 +569,7 @@ def test_a_tangent_violation_replaces_the_stored_record_and_is_a_full_certificat
 
 
 def test_a_leaked_class_stops_only_once_it_has_settled_near_a_finished_one():
-    from impurityModel.ed.sector_solver import LEAK_ENERGY_TOL, LEAK_PLATEAU_TOL, _has_leaked
+    from impurityModel.ed.sector_certify import LEAK_ENERGY_TOL, LEAK_PLATEAU_TOL, _has_leaked
 
     finished = [-1.0]
     near = -1.0 + 0.5 * LEAK_ENERGY_TOL
@@ -581,7 +582,8 @@ def test_a_leaked_class_stops_only_once_it_has_settled_near_a_finished_one():
 
 
 def test_the_store_expands_a_stopped_class_with_the_class_it_leaked_into():
-    from impurityModel.ed.sector_solver import CertificationPlan, SectorPlanStore
+    from impurityModel.ed.sector_certify import CertificationPlan
+    from impurityModel.ed.sector_solver import SectorPlanStore
 
     # Class 2 leaked into class 1's state (stopped near -0.95): its energy bounds nothing.
     jobs, verdicts = zip(_verdict(0, -1.00, 8.6), _verdict(1, -0.95, 8.7), _verdict(2, -0.9496, 8.6, stopped=True))
@@ -592,7 +594,8 @@ def test_the_store_expands_a_stopped_class_with_the_class_it_leaked_into():
 
 
 def test_a_solve_above_its_certified_tangent_is_a_violation():
-    from impurityModel.ed.sector_solver import CertificationPlan, SectorPlanStore
+    from impurityModel.ed.sector_certify import CertificationPlan
+    from impurityModel.ed.sector_solver import SectorPlanStore
 
     jobs, verdicts = zip(_verdict(0, -1.00, 8.6), _verdict(1, -0.95, 8.7))
     store = SectorPlanStore()
@@ -607,17 +610,17 @@ def test_a_solve_above_its_certified_tangent_is_a_violation():
 def test_the_ground_state_certifies_its_winning_sector_once(monkeypatch):
     """``solve_ground_state``'s walk and thermal solve share one store: the thermal solve expands only
     the classes inside its window, not every class of the sector a second time."""
-    from impurityModel.ed import sector_solver
+    from impurityModel.ed import sector_certify, sector_solver
     from impurityModel.ed.groundstate import solve_ground_state
 
     calls = {"n": 0}
-    real = sector_solver._expand_job
+    real = sector_certify._expand_job
 
     def counted(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(sector_solver, "_expand_job", counted)
+    monkeypatch.setattr(sector_certify, "_expand_job", counted)
 
     def run():
         calls["n"] = 0
@@ -638,7 +641,7 @@ def test_the_window_overtake_is_the_crossover_measured_against_the_window(monkey
     """The crossover toy's winner overtakes the seed-lowest class (the atomic triplet): the ratio is
     that overtake, in units of the winner's own spread, over the window's ``window / sigma_max`` --
     so it halves when the window factor doubles, and is positive here."""
-    from impurityModel.ed.sector_solver import window_overtake
+    from impurityModel.ed.sector_certify import window_overtake
 
     monkeypatch.delenv("GS_CERTIFY_WINDOW", raising=False)
     ratios = []
@@ -657,7 +660,7 @@ def test_the_ranking_rule_never_settles_the_nio_d6_winner_and_bounds_a_loser_abo
     no prefix of its trajectory may count as settled, or pass 1 would rank the ground state 0.13
     high. A loser that has settled must be bounded above the winner's energy, or pass 2 would waste
     a full expansion on it."""
-    from impurityModel.ed.sector_solver import _ranking_remaining
+    from impurityModel.ed.sector_certify import _ranking_remaining
 
     winner = [-41.09834, -42.45474, -42.97355, -43.13595, -43.15667, -43.19871, -43.26283, -43.32773, -43.32777]
     assert all(_ranking_remaining(winner[: k + 1]) is None for k in range(len(winner) - 1))
@@ -678,7 +681,7 @@ def test_a_class_whose_state_left_its_class_is_marked_leaked_even_unstopped(monk
     from impurityModel.ed import seed_sectors
 
     monkeypatch.setattr(seed_sectors, "class_weight", lambda *args, **kwargs: 0.0)
-    monkeypatch.setattr("impurityModel.ed.sector_solver._has_leaked", lambda *args: False)
+    monkeypatch.setattr("impurityModel.ed.sector_certify._has_leaked", lambda *args: False)
     _energy, _plan, verdicts = _certify(_hamiltonian(), None)
     classed = [v for v in verdicts if v.job.seed_class is not None]
     assert classed, "the fixture has no class expansions"
@@ -767,7 +770,8 @@ def test_spin_partners_stop_at_the_largest_seed_two_sz():
     """The thermal union's partner rows reach every ``|2 S_z| <= max_two_sz`` and nothing beyond: no
     state of the window has a row there, and on NiO those rows were a quarter of the union."""
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-    from impurityModel.ed.sector_solver import _bits, _spin_partner_keys
+    from impurityModel.ed.sector_certify import _bits
+    from impurityModel.ed.sector_solver import _spin_partner_keys
 
     pairs = [(0, 1), (2, 3), (4, 5)]  # (dn, up)
     det = SlaterDeterminant(((1 << 63) | (1 << 61) | (1 << 58),))  # 0 (dn), 2 (dn), 5 (up): 2 S_z = -1
@@ -859,8 +863,8 @@ def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energ
     the error bar as well widens the reach to ``2 * tail``."""
     from types import SimpleNamespace
 
-    from impurityModel.ed import sector_solver
-    from impurityModel.ed.sector_solver import CertificationJob, CertificationPlan, ClassVerdict
+    from impurityModel.ed import sector_certify
+    from impurityModel.ed.sector_certify import CertificationJob, CertificationPlan, ClassVerdict
 
     e_win, e_ranked = -1.0, -1.0 + 0.015
     jobs = [CertificationJob(None, (0,), None, 1), CertificationJob(None, (1,), None, 1)]
@@ -876,7 +880,7 @@ def test_pass_2_reruns_a_ranked_class_only_if_its_bound_reaches_the_lowest_energ
             verdict = ClassVerdict(job, e_ranked, 1, tail, False, False, ranked=True, lower=e_ranked - tail)
         return verdict, np.array([verdict.energy]), None, SimpleNamespace(_keys={}, weighted_restrictions=None), None
 
-    monkeypatch.setattr(sector_solver, "_expand_job", fake_expand_job)
+    monkeypatch.setattr(sector_certify, "_expand_job", fake_expand_job)
     basis = SimpleNamespace(is_distributed=False, comm=None, weighted_restrictions=None, truncation_threshold=np.inf)
     h_op = SimpleNamespace(set_weighted_restrictions=lambda w: None)
     certify_sector(h_op, basis, plan, expand_kwargs={}, dense_cutoff=1000, slater_weight_min=0)
@@ -901,12 +905,12 @@ def test_a_closed_shell_seed_is_widened_so_the_other_symmetry_class_is_expanded(
     """Review S1: one determinant spans one symmetry class and ``H|seed>`` never leaves it. The sector
     here (4 impurity electrons, 2 valence) has its ground state in a class the seed cannot reach; the
     seed is widened by its single excitations, re-planned on more than one job, and the solve is exact."""
-    from impurityModel.ed import groundstate, sector_solver
+    from impurityModel.ed import groundstate, sector_certify, sector_solver
     from impurityModel.test.support import gs_oracle
 
     h_op, imp, bath, _N0, n_orb, n_val, _ = gs_oracle.pinned_model(11, 77)
     plans = []
-    real = sector_solver.certification_plan
+    real = sector_certify.certification_plan
 
     def spy(*args, **kwargs):
         plans.append(real(*args, **kwargs))
@@ -979,7 +983,7 @@ def test_a_cut_gives_every_in_window_unit_a_share_and_a_mirror_is_the_image_of_i
     """Under a binding cap each unit keeps something (none is starved to feed another), and a mirror is
     the image of the share its source kept -- an independent cut of the mirror would keep other keys."""
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-    from impurityModel.ed.sector_solver import _add_units_within_cap
+    from impurityModel.ed.sector_truncation import _add_units_within_cap
 
     merged, single = _unit_test_basis()
 
@@ -1041,7 +1045,7 @@ def test_a_class_that_holds_two_window_states_makes_the_window_expect_both():
 def test_a_class_is_in_the_window_by_its_own_error_bar_not_the_largest_residual_of_another(monkeypatch):
     """Review B2: the window's membership is ``E - E_min <= within + own error``; a loose class elsewhere used to
     widen the margin of every class (``within + max residual``) and admit a class the window does not contain."""
-    from impurityModel.ed.sector_solver import EXPANSION_ENERGY_FLOOR, _classes_in_window
+    from impurityModel.ed.sector_certify import EXPANSION_ENERGY_FLOOR, _classes_in_window
 
     verdict_of = {}
     for k, (energy, residual) in enumerate([(0.0, 1e-2), (0.2, 1e-9), (0.3, 0.4), (5e-4, 1e-9)]):
@@ -1252,7 +1256,7 @@ def test_a_per_label_solve_with_a_degraded_manifold_is_not_converged():
 def test_importance_describes_only_the_class_it_was_measured_on():
     """A class that shares no determinant with the winner's amplitudes is ranked by hash, not by a tie of zeros."""
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-    from impurityModel.ed.sector_solver import _covered_importance
+    from impurityModel.ed.sector_truncation import _covered_importance
 
     mine = ManyBodyState.from_keys([SlaterDeterminant.from_bytes(bytes([i])) for i in range(1, 5)])
     other = ManyBodyState.from_keys([SlaterDeterminant.from_bytes(bytes([i])) for i in range(10, 14)])
