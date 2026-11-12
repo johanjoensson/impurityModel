@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import config, groundstate
+from impurityModel.ed import config, groundstate, gs_ensemble
 from impurityModel.ed.cipsi_solver import _memory_growth_bound
 from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY
 
@@ -185,11 +185,11 @@ def test_a_walk_the_memory_guard_held_is_not_reported_memory_bound_after_the_ref
     from types import SimpleNamespace
 
     walk = {"cap_hit": True, "memory_bound": True, "retained": 120}
-    report = groundstate.refined_truncation_report(SimpleNamespace(truncation_report=None), walk)
+    report = gs_ensemble.refined_truncation_report(SimpleNamespace(truncation_report=None), walk)
     assert report["memory_bound"] is False and report["walk_memory_bound"] is True
     assert report["cap_hit"] is True
     refined = {"cap_hit": True, "memory_bound": True}
-    assert groundstate.refined_truncation_report(SimpleNamespace(truncation_report=refined), walk) is refined
+    assert gs_ensemble.refined_truncation_report(SimpleNamespace(truncation_report=refined), walk) is refined
 
 
 @pytest.mark.mpi

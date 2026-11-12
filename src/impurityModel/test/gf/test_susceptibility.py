@@ -442,7 +442,7 @@ def test_chi_solves_the_ground_state_under_the_basis_options_like_sigma(monkeypa
     hands ``calc_gs`` carries the options."""
     import dataclasses
 
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_calc
     from impurityModel.ed.model import Meshes
 
     from .test_selfenergy_end_to_end import _basis_and_solver, _siam_model
@@ -450,13 +450,13 @@ def test_chi_solves_the_ground_state_under_the_basis_options_like_sigma(monkeypa
     basis, solver = _basis_and_solver()
     basis = dataclasses.replace(basis, chain_restrict=True, e_pt2_tol=1e-7, de2_min=1e-10)
     seen = {}
-    real_calc_gs = groundstate.calc_gs
+    real_calc_gs = gs_calc.calc_gs
 
     def spy(*args, **kwargs):
         seen["spec"] = kwargs["spec"]
         return real_calc_gs(*args, **kwargs)
 
-    monkeypatch.setattr(groundstate, "calc_gs", spy)
+    monkeypatch.setattr(gs_calc, "calc_gs", spy)
     meshes = Meshes(iw=None, w=np.linspace(-3.0, 3.0, 13), delta=0.1)
     result = susceptibility.calc_susceptibility_workflow(
         _siam_model(), meshes, basis, solver, comm=MPI.COMM_WORLD, n_matsubara=0

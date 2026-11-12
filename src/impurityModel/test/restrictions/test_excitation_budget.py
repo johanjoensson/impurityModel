@@ -181,7 +181,7 @@ def _siam_with_baths():
 
 
 def _run_calc_gs(weighted_restrictions):
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     Hop, imp, bath, bs = _siam_with_baths()
     basis_setup = dict(

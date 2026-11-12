@@ -162,7 +162,7 @@ def _chain_siam():
 
 
 def _gs_basis(cost_budget, swm=1e-12, comm=None):
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     op, imp, bath, bs = _chain_siam()
     weighted = build_weighted_restrictions(

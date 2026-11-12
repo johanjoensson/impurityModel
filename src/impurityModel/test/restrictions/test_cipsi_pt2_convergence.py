@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import groundstate
+from impurityModel.ed import groundstate, gs_calc
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.manybody_basis import Basis
@@ -226,7 +226,7 @@ def test_calc_selfenergy_hands_the_basis_tolerance_to_the_ground_state(e_pt2_tol
         seen.update(kwargs)
         raise _Captured
 
-    monkeypatch.setattr(groundstate, "solve_charge_sector_ensemble", capture)
+    monkeypatch.setattr(gs_calc, "solve_charge_sector_ensemble", capture)
     args = as_calc_selfenergy_args(build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=500))
     args["basis"] = dataclasses.replace(args["basis"], e_pt2_tol=e_pt2_tol, de2_min=de2_min)
     with pytest.raises(_Captured):

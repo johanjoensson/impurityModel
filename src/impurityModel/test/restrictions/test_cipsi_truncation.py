@@ -9,7 +9,7 @@ from mpi4py import MPI
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.eigensolvers import Within
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_calc import calc_gs
 from impurityModel.ed.manybody_basis import (
     Basis,
     collective_amplitude_cutoff,

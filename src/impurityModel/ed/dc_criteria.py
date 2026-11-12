@@ -205,7 +205,7 @@ def _ctx_spec(ctx):
     Built at each solve (like :func:`_ctx_cap_policy`, which it carries) because the cap ladder moves
     ``ctx.truncation_threshold``. The weighted restrictions are the context's built list, passed beside it.
     """
-    from impurityModel.ed.groundstate import GroundStateSpec
+    from impurityModel.ed.gs_calc import GroundStateSpec
 
     return GroundStateSpec(
         tau=ctx.tau,
@@ -2277,7 +2277,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
        :func:`fixed_occupation_dc`'s pre-existing behaviour (not the caller's ``comm`` -- a latent,
        out-of-scope concern recorded in the campaign plan, not introduced here).
     """
-    from impurityModel.ed.groundstate import solve_charge_sector_ensemble
+    from impurityModel.ed.gs_ensemble import solve_charge_sector_ensemble
 
     h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.shift_solver, dtype=complex))
     # One evaluation for both settings of `mixed_valence`: with it off the entry's ensemble is the walk's

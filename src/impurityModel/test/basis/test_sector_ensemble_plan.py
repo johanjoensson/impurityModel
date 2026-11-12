@@ -126,7 +126,7 @@ def test_a_capped_winner_alone_is_a_one_member_ensemble_not_a_refusal():
 # --- the walk's extension hook, on the toy model of test_mixed_valence_is_off (collective) ---------------------
 from mpi4py import MPI  # noqa: E402
 
-from impurityModel.ed import groundstate  # noqa: E402
+from impurityModel.ed import groundstate, gs_ensemble  # noqa: E402
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator  # noqa: E402
 from impurityModel.test.support.comms import COMMS  # noqa: E402
 
@@ -190,7 +190,7 @@ def test_the_ensemble_weights_are_the_exact_grand_canonical_sector_weights_and_e
             kept.append((member.total, np.array(state.es)))
             return member.total
 
-    result = groundstate.solve_charge_sector_ensemble(h_op, imp, bath, N0, mixed_valence=True, visitor=Keep(), **kw)
+    result = gs_ensemble.solve_charge_sector_ensemble(h_op, imp, bath, N0, mixed_valence=True, visitor=Keep(), **kw)
     realised = result.realised
     assert result.visited == [m.total for m in result.members] == [m for m, _ in kept]
     assert sorted(result.visited) == expected
@@ -228,7 +228,7 @@ def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one
         pass
 
     monkeypatch.setattr(
-        groundstate,
+        gs_ensemble,
         "find_ground_state_sector",
         lambda *a, **k: SimpleNamespace(occupation=walked, solved=[]),
     )
@@ -237,9 +237,9 @@ def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one
         seen["top"], seen["bottom"] = attainable(16), attainable(5)
         raise Stop
 
-    monkeypatch.setattr(groundstate, "plan_ensemble", spy)
+    monkeypatch.setattr(gs_ensemble, "plan_ensemble", spy)
     with pytest.raises(Stop):
-        groundstate.solve_charge_sector_ensemble(
+        gs_ensemble.solve_charge_sector_ensemble(
             None, imp, ({}, {}), nominal, mixed_valence=True, visitor=None, tau=0.1, slaterWeightMin=0,
             frozen_occupations=SeedWindow({0}),
         )  # fmt: skip
@@ -248,7 +248,7 @@ def test_attainable_pins_a_window_group_at_the_walks_filling_not_the_nominal_one
 
 def test_the_ensemble_truncation_report_is_not_the_dominant_members_when_a_lighter_one_is_capped():
     """``gs_info['truncation']`` took the dominant member's report, hiding a cap-bound lighter member (review MV7)."""
-    from impurityModel.ed.groundstate import worst_truncation
+    from impurityModel.ed.gs_ensemble import worst_truncation
 
     capped, memory = {"cap": 10}, {"cap": 5, "memory_bound": True}
     assert worst_truncation([None]) is None
@@ -282,7 +282,7 @@ def test_the_switched_off_ensemble_is_solve_ground_states_state(comm, index):
             seen.append(np.array(state.es))
             return member.total
 
-    result = groundstate.solve_charge_sector_ensemble(
+    result = gs_ensemble.solve_charge_sector_ensemble(
         h_op, imp, bath, dict(N0), mixed_valence=False, visitor=Keep(), **kw
     )
     reference = groundstate.solve_ground_state(h_op, imp, bath, dict(N0), **kw)
@@ -308,13 +308,13 @@ def test_only_the_ensemble_asks_the_walk_to_solve_edge_sectors(comm, mixed_valen
         seen.append(kwargs.get("more_totals"))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(groundstate, "find_ground_state_sector", spy)
+    monkeypatch.setattr(gs_ensemble, "find_ground_state_sector", spy)
 
     class Keep:
         def visit(self, member, state):
             return member.total
 
-    groundstate.solve_charge_sector_ensemble(
+    gs_ensemble.solve_charge_sector_ensemble(
         h_op,
         imp,
         bath,

@@ -5,7 +5,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_calc import calc_gs
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.support.gs_oracle import exact_spectra, pinned_model
@@ -86,16 +86,16 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
     import gc
     import weakref
 
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_ensemble
 
     solvers = []
-    real = groundstate.refined_truncation_report
+    real = gs_ensemble.refined_truncation_report
 
     def spy(solver, walk_report):
         solvers.append(weakref.ref(solver))
         return real(solver, walk_report)
 
-    monkeypatch.setattr(groundstate, "refined_truncation_report", spy)
+    monkeypatch.setattr(gs_ensemble, "refined_truncation_report", spy)
     alive_at_hook, calls, widths = [], [], []
 
     def hook(member, basis, es, psis, truncation, convergence):
@@ -123,9 +123,9 @@ def test_the_hook_runs_after_the_solver_is_released(comm, index, n_members, tmp_
 @pytest.mark.mpi
 @pytest.mark.parametrize("comm", COMMS)
 def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tmp_path, monkeypatch, capsys):
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_ensemble
 
-    real_plan = groundstate.plan_ensemble
+    real_plan = gs_ensemble.plan_ensemble
     plans = []
 
     def recording(solved, tau, **kw):
@@ -135,8 +135,8 @@ def test_a_refused_auto_ensemble_keeps_the_dominant_member_and_names_it(comm, tm
     def refusing(member, truncation, convergence, comm):
         return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard"
 
-    monkeypatch.setattr(groundstate, "plan_ensemble", recording)
-    monkeypatch.setattr(groundstate, "member_refusal", refusing)
+    monkeypatch.setattr(gs_ensemble, "plan_ensemble", recording)
+    monkeypatch.setattr(gs_ensemble, "member_refusal", refusing)
     (_, _, _, _, info), _, _ = _run(3, comm, "auto", tmp_path)
     final = plans[-1]
     assert len(final.members) > 1 and "measured-memory guard" in info["ensemble"]["refused_reason"]
@@ -241,7 +241,7 @@ def test_only_a_bound_basis_or_a_current_large_residual_refuses_a_member(comm, s
     """H-MV11 as narrowed by the owner: a stale residual or a widened manifold warns, it does not refuse."""
     from types import SimpleNamespace
 
-    from impurityModel.ed.groundstate import member_refusal
+    from impurityModel.ed.gs_ensemble import member_refusal
 
     solver = _fake_member_state(**state).solver
     got = member_refusal(SimpleNamespace(total=2), solver.truncation_report, solver.convergence_report, comm)
@@ -278,15 +278,15 @@ def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(com
     still put it first, its hook result with it, and hand back its states."""
     import dataclasses
 
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_ensemble
 
-    real = groundstate.plan_ensemble
+    real = gs_ensemble.plan_ensemble
 
     def reversed_plan(solved, tau, **kw):
         plan = real(solved, tau, **kw)
         return plan if plan.needs else dataclasses.replace(plan, members=plan.members[::-1])
 
-    monkeypatch.setattr(groundstate, "plan_ensemble", reversed_plan)
+    monkeypatch.setattr(gs_ensemble, "plan_ensemble", reversed_plan)
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     hooks = []
     _, es, _, _, info = calc_gs(
@@ -303,15 +303,15 @@ def test_the_dominant_member_is_the_realised_lowest_whatever_the_plans_order(com
 
 def _failing_member(monkeypatch, total):
     """The thermal check refuses the member with ``total`` electrons (as rank 0 would broadcast it)."""
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_ensemble
 
-    real = groundstate.member_refusal
+    real = gs_ensemble.member_refusal
 
     def check(member, truncation, convergence, comm):
         verdict = real(member, truncation, convergence, comm)
         return f"the N_imp = {total} member's thermal solve is injected" if member.total == total else verdict
 
-    monkeypatch.setattr(groundstate, "member_refusal", check)
+    monkeypatch.setattr(gs_ensemble, "member_refusal", check)
 
 
 @pytest.mark.mpi
@@ -375,11 +375,11 @@ def test_an_ensemble_cut_to_its_winner_still_warns_about_a_near_neighbour(comm, 
 @pytest.mark.parametrize("index, n_members", [(20, 1), (3, 2)])
 def test_the_driver_gets_the_only_copy_of_the_thermal_states(comm, index, n_members, tmp_path, monkeypatch):
     """The raw block goes to the measure visitor alone; the driver works on converted ``states``, not on the block."""
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_ensemble
     from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
     taken, members, driven = [], [], []
-    real_take = groundstate.MemberState.take_psis
+    real_take = gs_ensemble.MemberState.take_psis
 
     def spy(self):
         members.append(self)
@@ -387,7 +387,7 @@ def test_the_driver_gets_the_only_copy_of_the_thermal_states(comm, index, n_memb
         taken.append(raw)
         return raw
 
-    monkeypatch.setattr(groundstate.MemberState, "take_psis", spy)
+    monkeypatch.setattr(gs_ensemble.MemberState, "take_psis", spy)
 
     class Driver:
         def visit(self, member, state):
@@ -489,14 +489,14 @@ def test_a_failing_member_prints_the_reports_gathered_so_far(comm, tmp_path, cap
 @pytest.mark.parametrize("comm", COMMS)
 def test_a_failing_second_solve_prints_the_first_members_reports(comm, tmp_path, capfd, monkeypatch):
     """A failure before member 2's visit (in its solve) still prints member 1's report and driver text."""
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_calc
 
     class Driver:
         def visit(self, member, state):
             print(f"DRIVER-TEXT {member.total}")
             return 0
 
-    real = groundstate._MeasureVisitor.visit
+    real = gs_calc._MeasureVisitor.visit
     seen = []
 
     def visit(self, member, state):
@@ -506,7 +506,7 @@ def test_a_failing_second_solve_prints_the_first_members_reports(comm, tmp_path,
             raise _Boom("between members")  # after member 1 is measured and driven, before member 2
         return out
 
-    monkeypatch.setattr(groundstate._MeasureVisitor, "visit", visit)
+    monkeypatch.setattr(gs_calc._MeasureVisitor, "visit", visit)
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     with pytest.raises(_Boom):
         calc_gs(
@@ -528,7 +528,7 @@ def test_a_failing_second_solve_prints_the_first_members_reports(comm, tmp_path,
 @pytest.mark.parametrize("comm", COMMS)
 def test_driver_text_survives_a_failing_report(comm, tmp_path, capfd, monkeypatch):
     """A failure after every member is done (in the report) must not lose what the drivers printed."""
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_calc
 
     class Driver:
         def visit(self, member, state):
@@ -538,7 +538,7 @@ def test_driver_text_survives_a_failing_report(comm, tmp_path, capfd, monkeypatc
     def broken(*args, **kwargs):
         raise _Boom("report broke")
 
-    monkeypatch.setattr(groundstate, "finalize_members", broken)
+    monkeypatch.setattr(gs_calc, "finalize_members", broken)
     h_op, setup, bs, rot, _, _ = _setup(3, comm, "on")
     with pytest.raises(_Boom):
         calc_gs(

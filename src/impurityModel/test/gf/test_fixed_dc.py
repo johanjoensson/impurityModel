@@ -580,11 +580,11 @@ def test_the_ensemble_observable_attains_a_target_the_single_sector_one_steps_ov
 def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monkeypatch, capsys):
     """Review #3: under auto a refusal flags the point (one aggregated note; a cap-bound verdict only if the cap
     caused it); it never raises."""
-    from impurityModel.ed import dc_criteria, groundstate
+    from impurityModel.ed import dc_criteria, gs_ensemble
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
-    real = groundstate.member_refusal
+    real = gs_ensemble.member_refusal
     refuse = {"on": False}
 
     def held(member, truncation, convergence, comm):
@@ -593,7 +593,7 @@ def test_a_refused_ensemble_at_a_trial_shift_is_a_flagged_point_under_auto(monke
             return f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard"
         return real(member, truncation, convergence, comm)
 
-    monkeypatch.setattr(groundstate, "member_refusal", held)
+    monkeypatch.setattr(gs_ensemble, "member_refusal", held)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     mus = [0.0, 1.5, 1.75]  # 1.5 and 1.75 sit on the crossing (n = 1.25 -> 1.98): two members
     free = [dc_criteria._evaluate_occupation_and_energy_at_mu(ctx, mu, False, 0)[0] for mu in mus]
@@ -2833,12 +2833,12 @@ def test_peak_and_gap_dc_warn_when_a_neighbour_sector_is_thermal_and_stay_silent
 
 def test_a_dc_trial_does_not_print_the_neighbour_gap_note(monkeypatch, capsys):
     """A refused trial keeps one member with a neighbour in the window: the note belongs to Sigma, not each trial."""
-    from impurityModel.ed import dc_criteria, groundstate
+    from impurityModel.ed import dc_criteria, gs_ensemble
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     basis = dataclasses.replace(kwargs["basis"], mixed_valence="auto")
     monkeypatch.setattr(
-        groundstate,
+        gs_ensemble,
         "member_refusal",
         lambda member, *_: f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard",
     )
@@ -2864,11 +2864,11 @@ def test_fixed_occupation_dc_under_auto_is_the_off_result_when_one_sector_is_pop
 
 def test_fixed_occupation_dc_under_auto_survives_a_refused_ensemble_and_records_it(monkeypatch):
     """A refusal at a trial shift is a flagged point: the search finishes and the record says how many."""
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import gs_ensemble
 
     kwargs, _ = common_kwargs(v=0.3, tau=5e-2, dc_scale=0.5)
     monkeypatch.setattr(
-        groundstate,
+        gs_ensemble,
         "member_refusal",
         lambda member, *_: f"the N_imp = {member.total} member's thermal solve is held by the measured-memory guard",
     )

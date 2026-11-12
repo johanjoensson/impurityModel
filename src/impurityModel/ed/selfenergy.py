@@ -31,12 +31,8 @@ from impurityModel.ed.greens_function import (
     get_greens_function_moments,
     save_Greens_function,
 )
-from impurityModel.ed.groundstate import (
-    GS_DE2_MIN,
-    GS_E_PT2_TOL,
-    GroundStateSpec,
-    calc_gs,
-)
+from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
+from impurityModel.ed.gs_calc import GroundStateSpec, calc_gs
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.memory_estimate import (

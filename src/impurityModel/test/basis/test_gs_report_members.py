@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pytest
 
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_calc import calc_gs
 from impurityModel.ed.gs_report import (
     ReportFiles,
     finalize_members,
@@ -195,7 +195,7 @@ def test_a_taped_failure_does_not_keep_the_states_alive():
 
 
 def test_driver_text_is_held_back_but_warnings_go_to_stderr_at_once(capsys):
-    from impurityModel.ed.groundstate import _HeldBack, _replay_driver_output
+    from impurityModel.ed.gs_calc import _HeldBack, _replay_driver_output
 
     buf, empty = _HeldBack(), _HeldBack()
     buf.write("plain line\nWARNING: unconverged\npartial")

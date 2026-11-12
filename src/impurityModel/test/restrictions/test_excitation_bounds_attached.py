@@ -5,7 +5,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_calc import calc_gs
 
 from .test_excitation_budget import _siam_with_baths
 

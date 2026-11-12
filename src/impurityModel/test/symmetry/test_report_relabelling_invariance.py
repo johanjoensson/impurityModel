@@ -11,7 +11,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_calc import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 #: old index -> new index

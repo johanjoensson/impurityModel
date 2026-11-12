@@ -3,12 +3,13 @@ import pytest
 from mpi4py import MPI
 
 import impurityModel.ed.product_state_representation as psr
-from impurityModel.ed import groundstate
+from impurityModel.ed import groundstate, gs_calc
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.eigensolvers import Lowest
-from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_sector, solve_sector
+from impurityModel.ed.groundstate import calc_energy, find_ground_state_sector, solve_sector
+from impurityModel.ed.gs_calc import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.test.support.comms import COMMS
 
@@ -417,7 +418,6 @@ class _Layout:
 
 
 def _capture_solve_kwargs(monkeypatch, **call):
-    from impurityModel.ed import groundstate
 
     seen = {}
 
@@ -426,15 +426,15 @@ def _capture_solve_kwargs(monkeypatch, **call):
         seen.update(kwargs)
         raise _Captured
 
-    monkeypatch.setattr(groundstate, "solve_charge_sector_ensemble", fake)
+    monkeypatch.setattr(gs_calc, "solve_charge_sector_ensemble", fake)
     with pytest.raises(_Captured):
-        groundstate.calc_gs(None, call.pop("basis_setup"), None, None, 0, **call)
+        gs_calc.calc_gs(None, call.pop("basis_setup"), None, None, 0, **call)
     return seen
 
 
 def test_calc_gs_with_a_spec_hands_solve_ground_state_the_same_keywords_as_the_legacy_dict(monkeypatch):
     """A1(a): plumbing only -- the spec's values reach the ground-state solve exactly as the dict keys did."""
-    from impurityModel.ed.groundstate import GroundStateSpec
+    from impurityModel.ed.gs_calc import GroundStateSpec
 
     common = {"impurity_orbitals": {0: [[0, 1]]}, "bath_states": ({}, {}), "N0": {0: 1}, "spin_layout": _Layout()}
     legacy = _capture_solve_kwargs(
@@ -466,7 +466,7 @@ def test_calc_gs_with_a_spec_hands_solve_ground_state_the_same_keywords_as_the_l
 
 
 def test_calc_gs_refuses_a_key_set_by_both_the_dict_and_the_spec(monkeypatch):
-    from impurityModel.ed.groundstate import GroundStateSpec
+    from impurityModel.ed.gs_calc import GroundStateSpec
 
     common = {"impurity_orbitals": {0: [[0, 1]]}, "bath_states": ({}, {}), "N0": {0: 1}, "spin_layout": _Layout()}
     with pytest.raises(ValueError, match="dense_cutoff"):
@@ -485,7 +485,7 @@ def test_every_dense_cutoff_default_has_one_owner():
 
     assert SolverOptions().dense_cutoff == config.DEFAULT_DENSE_CUTOFF == 500
     assert config.GS_DENSE_CUTOFF == 1000
-    assert groundstate.GroundStateSpec(tau=0.01).dense_cutoff == config.GS_DENSE_CUTOFF
+    assert gs_calc.GroundStateSpec(tau=0.01).dense_cutoff == config.GS_DENSE_CUTOFF
     for fn in (groundstate.find_ground_state_sector, groundstate.solve_ground_state):
         assert inspect.signature(fn).parameters["dense_cutoff"].default == config.GS_DENSE_CUTOFF
     text = inspect.getsource(__import__("impurityModel.inputformat.schema", fromlist=["x"]))
@@ -500,7 +500,7 @@ def test_the_spec_keywords_a_dc_call_site_hands_on_are_exactly_the_ones_its_call
     import inspect
 
     from impurityModel.ed import dc_criteria, groundstate
-    from impurityModel.ed.groundstate import GroundStateSpec
+    from impurityModel.ed.gs_calc import GroundStateSpec
 
     decided = set(GroundStateSpec(tau=0.01).solve_kwargs())
     tree = ast.parse(inspect.getsource(dc_criteria))

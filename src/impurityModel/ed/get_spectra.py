@@ -13,7 +13,8 @@ import numpy as np
 
 from impurityModel.ed import config, spectra
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, GroundStateSpec, calc_gs
+from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
+from impurityModel.ed.gs_calc import GroundStateSpec, calc_gs
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model

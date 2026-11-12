@@ -1,7 +1,7 @@
 """Consumers of the final-state cap flag: a transient report neither refuses a member nor hides a bound one."""
 
 from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
-from impurityModel.ed.groundstate import member_refusal, worst_truncation
+from impurityModel.ed.gs_ensemble import member_refusal, worst_truncation
 
 TRANSIENT = {"cap_hit": True, "cap_bound": False, "memory_bound": False, "residual_pt2": 0.0}
 BOUND = {"cap_hit": True, "cap_bound": True, "memory_bound": False, "residual_pt2": 1e-3}

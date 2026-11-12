@@ -154,7 +154,7 @@ def test_weighted_restriction_in_basis_expand():
 def test_calc_gs_weighted_sz_restriction():
     """calc_gs with a weighted S_z restriction keeps the whole ground state in-sector."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
     from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
     from impurityModel.ed.symmetries import sz_weighted_restriction
 

@@ -130,7 +130,7 @@ def test_calc_gs_accepts_the_seed_window_and_returns_the_full_deep_shell(tmp_pat
     ``test_seed_window_bounds_the_seed_of_the_deep_shell`` asserts."""
     import numpy as np
 
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     sb = _deep_p_plus_d_sb()
     basis_information = {
@@ -163,7 +163,7 @@ def test_hf_that_refills_the_deep_shell_is_reported(tmp_path, capsys):
     """Nominal p5 d3 against an energy that fills p6: the window is centred on HF's count, and says so."""
     import numpy as np
 
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     sb = _deep_p_plus_d_sb({0: 5, 1: 3})
     assert sb.seed_window is not None
@@ -198,7 +198,7 @@ def test_hard_frozen_is_empty_for_a_window_and_the_set_itself_otherwise():
 def test_hartree_fock_is_pinned_by_a_plain_freeze_and_not_by_a_window(tmp_path, monkeypatch, as_window):
     import numpy as np
 
-    from impurityModel.ed import groundstate
+    from impurityModel.ed import groundstate, gs_calc
 
     sb = _deep_p_plus_d_sb()
     groups = set(sb.seed_window)
@@ -223,7 +223,7 @@ def test_hartree_fock_is_pinned_by_a_plain_freeze_and_not_by_a_window(tmp_path, 
         "truncation_threshold": np.inf,
         "frozen_occupations": frozen,
     }
-    groundstate.calc_gs(
+    gs_calc.calc_gs(
         sb.h, basis_information, sb.block_structure, sb.rot_to_spherical, 0,
         report_files=ReportFiles(json=str(tmp_path / "gs.json")), shell_ls=sb.shell_ls,
     )  # fmt: skip

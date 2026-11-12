@@ -581,7 +581,7 @@ def test_bath_spin_pairs_and_consistency():
 def test_kondo_correlation_reported(capsys):
     """calc_gs on a SIAM with baths reports <S_imp.S_bath> (thermal line + per-state column)."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
     terms = {((o, "c"), (o, "a")): ed for o in (0, 1)}
@@ -662,7 +662,7 @@ def test_kondo_correlation_reported_polarized_bath(capsys):
     bath energies and hoppings). Before the collinear check this case was skipped entirely.
     """
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     ed, U = -2.0, 6.0
     ev = {0: -4.0, 1: -3.6}  # valence bath energy per spin (0 = dn, 1 = up)
@@ -1075,7 +1075,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
     import pytest
 
     from impurityModel.ed import atomic_physics
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
     from impurityModel.ed.symmetries import (
         classify_bath_occupation,
         group_orbitals_by_blocks,
@@ -1138,7 +1138,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
 def test_kondo_correlation_fallback_matches_fast_path(capsys):
     """A non-down-then-up bath ordering falls back to the layout's matched pairing and agrees."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
 
     ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
     diag = [(0, ed), (1, ed), (2, ev), (3, ev), (4, ec), (5, ec)]

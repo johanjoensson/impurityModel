@@ -11,12 +11,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.groundstate import (
-    SectorEnergy,
-    SectorRecord,
-    find_ground_state_sector,
-    sector_diagnostics,
-)
+from impurityModel.ed.groundstate import SectorEnergy, SectorRecord, find_ground_state_sector, sector_diagnostics
 from impurityModel.test.support.comms import COMMS
 
 IMPURITY = {0: [[0, 1, 2, 3]]}

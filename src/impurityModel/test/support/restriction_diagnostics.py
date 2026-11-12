@@ -97,7 +97,7 @@ def build_ground_state(
     """
     from impurityModel.ed import atomic_physics
     from impurityModel.ed.basis_restrictions import excitation_budget_restriction
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
     from impurityModel.ed.lie_algebra import tensors_to_operator
     from impurityModel.ed.solver_basis import prepare_solver_basis
     from impurityModel.test.support.real_workload import load_workload

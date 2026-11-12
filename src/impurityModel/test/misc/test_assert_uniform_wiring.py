@@ -5,12 +5,21 @@ import inspect
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import config, dc_criteria, get_spectra, groundstate, rixs, selfenergy, susceptibility
+from impurityModel.ed import (
+    config,
+    dc_criteria,
+    get_spectra,
+    groundstate,
+    gs_ensemble,
+    rixs,
+    selfenergy,
+    susceptibility,
+)
 
 # (function, the comm expression its collectives run on)
 ENTRIES = [
     (groundstate.solve_ground_state, "comm"),
-    (groundstate.solve_charge_sector_ensemble, "comm"),
+    (gs_ensemble.solve_charge_sector_ensemble, "comm"),
     (groundstate.find_ground_state_sector, "comm"),
     (groundstate.solve_sector, "comm"),
     (selfenergy.calc_selfenergy, "comm"),

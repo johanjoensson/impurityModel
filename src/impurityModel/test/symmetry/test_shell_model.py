@@ -276,7 +276,7 @@ def test_a_skipped_bath_less_shell_near_the_fermi_level_is_refused_by_the_dc_sea
 
 
 def _solve_p_plus_d(tmp_path, shell_ls):
-    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_calc import calc_gs
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     h0, rot = _p_plus_d_model()

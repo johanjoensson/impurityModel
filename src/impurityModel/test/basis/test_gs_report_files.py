@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.gs_calc import calc_gs
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.test.basis.test_calc_gs_ensemble import COMMS, _setup
 

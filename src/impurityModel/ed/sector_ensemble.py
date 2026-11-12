@@ -197,8 +197,8 @@ class MemberVisitor(Protocol):
     """What a driver does with one ensemble member (level 3 of ``solve_charge_sector_ensemble``).
 
     ``visit(member, state)`` runs once per member, in plan order, after the member's solver and Krylov store have
-    been dropped; ``state`` is a :class:`~impurityModel.ed.groundstate.MemberState` (raw ``psis``), or, for a driver
-    visitor passed to ``calc_gs``, a :class:`~impurityModel.ed.groundstate.DrivenState` (redistributed ``states``,
+    been dropped; ``state`` is a :class:`~impurityModel.ed.gs_ensemble.MemberState` (raw ``psis``), or, for a driver
+    visitor passed to ``calc_gs``, a :class:`~impurityModel.ed.gs_ensemble.DrivenState` (redistributed ``states``,
     no ``psis``). It is collective on the
     ensemble's communicator, on every rank, and its return value is collected in ``EnsembleResult.visited``.
     """
