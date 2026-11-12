@@ -3,8 +3,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state
-from impurityModel.ed.BlockLanczosCore import block_lanczos
-from impurityModel.ed.BlockLanczosCore import eigsh
+from impurityModel.ed.BlockLanczosCore import block_lanczos, eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp

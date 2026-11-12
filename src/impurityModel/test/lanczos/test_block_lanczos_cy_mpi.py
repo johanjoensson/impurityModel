@@ -4,8 +4,8 @@ from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosCore import (
     block_lanczos,
+    block_normalize,
 )
-from impurityModel.ed.BlockLanczosCore import block_normalize
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 

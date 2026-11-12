@@ -14,8 +14,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosCore import block_lanczos
-from impurityModel.ed.BlockLanczosCore import block_normalize
+from impurityModel.ed.BlockLanczosCore import block_lanczos, block_normalize
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.support.gf_branch_oracle import cached_oracle
