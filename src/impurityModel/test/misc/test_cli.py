@@ -422,3 +422,16 @@ def test_spectra_rixs_adaptive_tol_reaches_the_options():
     args = _parse(spectra.add_arguments, ["h0.pickle", "radial.dat", "--rixs-adaptive-tol", "1e-4"])
     assert args.rixs_adaptive_tol == 1e-4
     assert _parse(spectra.add_arguments, ["h0.pickle", "radial.dat"]).rixs_adaptive_tol is None
+
+
+def test_the_quiet_window_flag_overrides_the_record_and_leaving_lanczos_clears_it():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-growth-quiet", "32"])
+    assert args.gf_growth_quiet == 32 and _parse(selfenergy.add_arguments, ["h0.pickle"]).gf_growth_quiet is None
+    out = selfenergy.apply_solver_overrides(SolverOptions(gf_prune_tol=1e-3), args)
+    assert out.gf_growth_quiet == 32
+    bicg = selfenergy.apply_solver_overrides(
+        out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
+    )
+    assert bicg.gf_growth_quiet is None

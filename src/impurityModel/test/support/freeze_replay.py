@@ -205,7 +205,15 @@ def cap_policy(cap, gs_cap=None, gf_cap=None):
 
 
 def _solver_overrides(
-    gf_settle, gf_settle_ratio, prune_tol, first_shell_tol, refine_rounds, refine_tol, refine_swap, growth_tol=None
+    gf_settle,
+    gf_settle_ratio,
+    prune_tol,
+    first_shell_tol,
+    refine_rounds,
+    refine_tol,
+    refine_swap,
+    growth_tol=None,
+    growth_quiet=None,
 ):
     """``SolverOptions`` fields a TOML replay overrides: :func:`real_workload.build_options`'s rule, on built options.
 
@@ -223,6 +231,7 @@ def _solver_overrides(
     for key, value in (
         ("gf_first_shell_tol", first_shell_tol),
         ("gf_growth_tol", growth_tol),
+        ("gf_growth_quiet", growth_quiet),
         ("gf_refine_rounds", refine_rounds),
         ("gf_refine_tol", refine_tol),
         ("gf_refine_swap", refine_swap),
@@ -283,6 +292,7 @@ def _run(
     gs_cap=None,
     gf_cap=None,
     growth_tol=None,
+    growth_quiet=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
@@ -301,7 +311,8 @@ def _run(
     ``REFINE_MAX_SHIFTS`` / ``REFINE_WEIGHTED`` (the residual the recurrence-fed scoring solutions must reach, the
     number of scoring shifts per block, and whether each shift's scores are weighted by ``|G0^-1|^2``), identically
     on every rank. ``growth_tol`` (``gf_growth_tol``, needs pruning) stops the pruned growth pass at that looser
-    tolerance; the restart on the final support converges fully.
+    tolerance; the restart on the final support converges fully. ``growth_quiet`` (``gf_growth_quiet``, needs
+    pruning; ``0`` is off) ends it after that many consecutive blocks that admitted nothing.
     """
     if prune_rule is not None:
         from impurityModel.ed import gf_recurrence
@@ -351,6 +362,7 @@ def _run(
                 refine_tol,
                 refine_swap,
                 growth_tol,
+                growth_quiet,
             ),
         )
         w_mesh, swm_used = inputs[3].w, inputs[1].slater_weight_min
@@ -383,6 +395,7 @@ def _run(
                 gf_prune_tol=prune_tol,
                 gf_first_shell_tol=first_shell_tol,
                 gf_growth_tol=growth_tol,
+                gf_growth_quiet=growth_quiet,
                 cost_budget=cost_budget,
                 gf_refine_rounds=refine_rounds,
                 gf_refine_tol=refine_tol,
@@ -458,6 +471,7 @@ def main(argv=None):
     r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
     r.add_argument("--growth-tol", type=float, default=None, help="gf_growth_tol (needs --prune-tol)")
+    r.add_argument("--growth-quiet", type=int, default=None, help="gf_growth_quiet (0 off; needs --prune-tol)")
     r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="prune rule for the sweep")
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
@@ -503,6 +517,7 @@ def main(argv=None):
         a.gs_cap,
         a.gf_cap,
         a.growth_tol,
+        a.growth_quiet,
     )
     return 0
 

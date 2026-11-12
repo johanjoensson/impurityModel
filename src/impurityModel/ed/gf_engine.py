@@ -45,6 +45,7 @@ def _block_green_group(
     prune_tol=None,
     first_shell_tol=None,
     growth_tol=None,
+    growth_quiet=None,
     refine=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
@@ -142,6 +143,7 @@ def _block_green_group(
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
             growth_tol=growth_tol,
+            growth_quiet=growth_quiet,
             refine=refine,
         )
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
@@ -314,6 +316,7 @@ def lanczos_unit_kernel(
     prune_tol=None,
     first_shell_tol=None,
     growth_tol=None,
+    growth_quiet=None,
     refine=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
@@ -358,6 +361,9 @@ def lanczos_unit_kernel(
     growth_tol : float, optional
         The pruned growth pass's own looser convergence tolerance (the restart on the final P converges fully);
         ``None``: off.
+    growth_quiet : int, optional
+        The pruned growth ends after this many consecutive blocks that admitted nothing (then the same restart);
+        ``None``: off.
     """
 
     def kernel(split_basis, u, seeds):
@@ -385,6 +391,7 @@ def lanczos_unit_kernel(
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
             growth_tol=growth_tol,
+            growth_quiet=growth_quiet,
             refine=refine_for(unit) if refine_for is not None else refine,
         )
         if print_size and unit_rank0:

@@ -545,3 +545,41 @@ def test_the_options_written_to_an_archive_are_the_options_read_back(tmp_path):
     _, _, basis, solver, _ = load_selfenergy_archive(str(archive))
     assert (basis.dN, basis.chain_restrict, basis.mixed_valence, basis.cost_budget) == (3, False, "auto", 2.0)
     assert (solver.gf_settle, solver.gf_tol, solver.gf_refine_rounds) == (False, 1e-7, 0)
+
+
+def test_the_quiet_window_is_recorded_and_replayed(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_growth_quiet=32)
+    assert load_selfenergy_archive(str(archive))[3].gf_growth_quiet == 32
+    archive = tmp_path / "old.h5"
+    _write_synthetic_archive(str(archive))
+    assert load_selfenergy_archive(str(archive))[3].gf_growth_quiet is None
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (dict(gf_prune_tol=1e-3, gf_growth_quiet=-1), "non-negative integer"),
+        (dict(gf_prune_tol=1e-3, gf_growth_quiet=2.5), "non-negative integer"),
+        (dict(gf_prune_tol=0.0, gf_growth_quiet=8), "pruning is switched off"),
+        (dict(gf_method="bicgstab", gf_growth_quiet=8), "applies only to gf_method='lanczos'"),
+    ],
+)
+def test_the_quiet_window_refuses_what_would_be_silently_ignored(kwargs, match):
+    from impurityModel.ed.model import SolverOptions
+
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_quiet_window_resolves_against_pruning_and_its_default(monkeypatch):
+    from impurityModel.ed import options
+    from impurityModel.ed.model import SolverOptions
+
+    monkeypatch.setattr(options, "DEFAULT_GF_GROWTH_QUIET", 64)
+    assert SolverOptions().resolved_gf_growth_quiet == 64
+    assert SolverOptions(gf_growth_quiet=8).resolved_gf_growth_quiet == 8
+    assert SolverOptions(gf_growth_quiet=0).resolved_gf_growth_quiet is None
+    assert SolverOptions(gf_prune_tol=0.0).resolved_gf_growth_quiet is None
+    assert SolverOptions(gf_method="bicgstab").resolved_gf_growth_quiet is None
+    assert SolverOptions(gf_settle=True).resolved_gf_growth_quiet is None  # the settle replaces pruning

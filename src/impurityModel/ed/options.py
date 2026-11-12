@@ -128,6 +128,9 @@ class BasisOptions:
 #: not refined). ``0`` switches either off. An unset option is an absent archive attribute and reads back as unset, so a replay uses these defaults.
 DEFAULT_GF_PRUNE_TOL = 1e-3
 DEFAULT_GF_REFINE_ROUNDS = 3
+#: The quiet window of pruned growth (``gf_growth_quiet``) a run uses when the option is unset and pruning is on:
+#: the growth pass ends after this many consecutive blocks that admitted no determinant. ``None``: off.
+DEFAULT_GF_GROWTH_QUIET = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,13 @@ class SolverOptions:
         ``gf_tol``). The restart from the seeds on the final support, which pruning always needs, then converges
         ``G`` to the full tolerance, so a larger value ends the matrix-free growth earlier and the support it
         finds is the one that earlier tolerance saw. ``None`` (default): the growth converges fully. In ``(0, 1)``.
+    gf_growth_quiet : int or None
+        With pruned growth: end the growth pass once this many consecutive blocks admitted no determinant, then
+        run the usual restart from the seeds on the support found. The support is complete in practice long before
+        the Green's function converges on a metal-like unit, and every further growth block costs a full operator
+        application. A heuristic: a determinant that would clear the cut after a longer gap is lost, so a window
+        shorter than the longest gap between admissions trims the support. ``>= 1``; ``0``: off; ``None``
+        (default): :data:`DEFAULT_GF_GROWTH_QUIET` while pruning is on. Not with ``gf_prune_tol = 0``.
     gf_refine_rounds : int or None
         Swap refinement of a unit the determinant cap froze: up to this many rounds of scoring the retained and the
         discovered determinants on the discovered matrix and swapping the least important retained for the most
@@ -249,6 +259,7 @@ class SolverOptions:
     gf_prune_tol: Optional[float] = None
     gf_first_shell_tol: Optional[float] = None
     gf_growth_tol: Optional[float] = None
+    gf_growth_quiet: Optional[int] = None
     gf_refine_rounds: Optional[int] = None
     gf_refine_tol: Optional[float] = None
     gf_refine_swap: Optional[float] = None
@@ -332,6 +343,16 @@ class SolverOptions:
             raise ValueError(f"gf_refine_swap must be in (0, 0.5] (got {self.gf_refine_swap!r})")
         if self.gf_growth_tol is not None and not 0.0 < self.gf_growth_tol < 1.0:
             raise ValueError(f"gf_growth_tol must lie in (0, 1) (got {self.gf_growth_tol!r}); omit it for off")
+        if self.gf_growth_quiet is not None and (
+            isinstance(self.gf_growth_quiet, bool)
+            or not isinstance(self.gf_growth_quiet, int)
+            or self.gf_growth_quiet < 0
+        ):
+            raise ValueError(f"gf_growth_quiet must be a non-negative integer (got {self.gf_growth_quiet!r})")
+        if self.gf_growth_quiet and self.gf_method != "lanczos":
+            raise ValueError("gf_growth_quiet applies only to gf_method='lanczos'; remove it or switch gf_method")
+        if self.gf_growth_quiet and self.gf_prune_tol == 0.0:
+            raise ValueError("gf_growth_quiet ends the growth of pruned growth; pruning is switched off")
         if self.gf_growth_tol is not None and self.gf_prune_tol == 0.0:
             raise ValueError("gf_growth_tol shortens the growth of pruned growth; pruning is switched off")
         if self.gf_first_shell_tol is not None and self.gf_prune_tol == 0.0:
@@ -350,6 +371,16 @@ class SolverOptions:
                 "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off); "
                 "remove one of the two"
             )
+
+    @property
+    def resolved_gf_growth_quiet(self):
+        """The quiet window a run uses; ``None`` is off (``0``, no pruning, or an unset option while
+        :data:`DEFAULT_GF_GROWTH_QUIET` is ``None``)."""
+        if not self.resolved_gf_prune_tol:
+            return None
+        if self.gf_growth_quiet is not None:
+            return self.gf_growth_quiet or None
+        return DEFAULT_GF_GROWTH_QUIET
 
     @property
     def resolved_gf_prune_tol(self):
@@ -569,6 +600,7 @@ OPTION_SPECS = (
         unset="whole shell",
     ),
     _spec("gf_growth_tol", "solver", "float", "GF growth tolerance", token="gf_growth_tol", unset="full"),
+    _spec("gf_growth_quiet", "solver", "int", "GF growth quiet window", token="gf_growth_quiet", unset="default"),
     _spec(
         "gf_refine_rounds",
         "solver",
@@ -705,6 +737,12 @@ _CLI = {
         "--gf-growth-tol",
         "With pruning on: stop the matrix-free growth pass at this looser relative-change tolerance in (0, 1); "
         "the restart on the final support converges G fully (default: the growth converges fully).",
+    ),
+    "gf_growth_quiet": (
+        "--gf-growth-quiet",
+        "With pruning on: end the growth pass after this many consecutive blocks that admitted no determinant, then "
+        "restart on the support found (0 is off; default: see the option docs; a longer gap between admissions "
+        "than the window trims the support).",
     ),
     "gf_refine_rounds": (
         "--gf-refine-rounds",

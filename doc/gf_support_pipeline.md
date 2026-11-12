@@ -174,6 +174,17 @@ tolerance moves the support slightly (restart blocks change, dSigma up to 3.5e-7
 the other phases (about 110 s of the 2-orbital runs). These are not measurements of the LMO production workload,
 which is cap-bound locally.
 
+**The quiet window (`gf_growth_quiet`).** A tolerance-based stop still waits for the Green's-function monitor. On a
+metal-like unit the support is complete after tens of blocks while the monitor needs hundreds, and a growth block is a
+full operator application (about 135 ms against about 10 ms for a restart block on the 1-orbital, 10-bath metal in
+`retained` mode). `gf_growth_quiet = N` ends the growth pass once the last `N` blocks admitted no determinant, then
+runs the usual restart on the support found, so the returned `G` is again the exact block Lanczos of `P H P`. The test
+reads only the replicated per-step admission counts, so every rank leaves on the same block. It is a heuristic: a
+determinant that would clear the cut after a gap longer than the window is lost (the kernel tests pin one: at
+`gf_prune_tol = 0.225` a window of 1 trims 3 of 18 determinants, a window of 2 does not). It does not act on a frozen
+support (cap, memory guard), without pruning, or in scoring runs. The unit line marks it: `growth=48 blk/6.5 s (quiet)`.
+`0` switches it off.
+
 ### Swap refinement (`gf_refine_rounds`, default 3)
 
 For a unit the cap froze, up to `gf_refine_rounds` rounds of scoring the retained determinants (what their removal

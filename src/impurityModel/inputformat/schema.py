@@ -1092,6 +1092,15 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_growth_quiet",
+                Kind.COUNT,
+                None,
+                "With gf_prune_tol: end the growth pass once this many consecutive blocks admitted no determinant, "
+                "then restart from the seeds on the support found. A longer gap between admissions than the window "
+                "trims the support. 0 is off; absent takes the default. Not with gf_prune_tol = 0.",
+                minimum=0,
+            ),
+            Key(
                 "gf_refine_rounds",
                 Kind.COUNT,
                 None,

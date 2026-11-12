@@ -682,3 +682,11 @@ def test_the_growth_tolerance_key_reaches_the_solver_options(written):
     assert build(load_input(written(text))).solver.gf_growth_tol == 1e-5
     with pytest.raises(InputError, match="pruning is switched off"):
         build(load_input(written(SELFENERGY + "\n[solver]\ngf_prune_tol = 0\ngf_growth_tol = 1e-5\n")))
+
+
+def test_the_quiet_window_key_reaches_the_solver_options(written):
+    assert build(load_input(written(SELFENERGY))).solver.gf_growth_quiet is None
+    text = SELFENERGY + "\n[solver]\ngf_prune_tol = 1e-4\ngf_growth_quiet = 32\n"
+    assert build(load_input(written(text))).solver.gf_growth_quiet == 32
+    with pytest.raises(InputError, match="pruning is switched off"):
+        build(load_input(written(SELFENERGY + "\n[solver]\ngf_prune_tol = 0\ngf_growth_quiet = 8\n")))

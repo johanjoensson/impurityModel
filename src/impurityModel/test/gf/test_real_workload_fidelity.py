@@ -151,3 +151,12 @@ def test_the_archived_growth_tolerance_reaches_the_solver_and_an_explicit_argume
     assert build_options(workload)[3].gf_growth_tol == 1e-5
     assert build_options(workload, gf_growth_tol=1e-6)[3].gf_growth_tol == 1e-6
     assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_growth_tol is None
+
+
+def test_the_archived_quiet_window_reaches_the_solver_and_an_explicit_argument_beats_it(tmp_path):
+    archive = _archive(tmp_path / "q.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_growth_quiet=32)
+    workload = load_workload(archive)
+    assert workload["ignored_attrs"] == []
+    assert build_options(workload)[3].gf_growth_quiet == 32
+    assert build_options(workload, gf_growth_quiet=0)[3].gf_growth_quiet == 0
+    assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_growth_quiet is None

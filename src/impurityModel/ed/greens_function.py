@@ -620,6 +620,7 @@ def _gf_solve_units(
     gf_prune_tol=None,
     gf_first_shell_tol=None,
     gf_growth_tol=None,
+    gf_growth_quiet=None,
     gf_refine=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
@@ -680,6 +681,7 @@ def _gf_solve_units(
         prune_tol=gf_prune_tol,
         first_shell_tol=gf_first_shell_tol,
         growth_tol=gf_growth_tol,
+        growth_quiet=gf_growth_quiet,
         refine=gf_refine,
         unit_ids=None if subset is None else list(subset),
     )
@@ -935,6 +937,7 @@ def get_Greens_function(
     gf_prune_tol: Optional[float] = None,
     gf_first_shell_tol: Optional[float] = None,
     gf_growth_tol: Optional[float] = None,
+    gf_growth_quiet: Optional[int] = None,
     gf_refine=None,
     run_out: Optional[dict] = None,
 ):
@@ -973,7 +976,8 @@ def get_Greens_function(
     pruning, first shell whole; see :class:`SolverOptions`). Pruning replaces the
     support settle, so ``gf_settle=True`` or a ``gf_settle_ratio`` with it is an error; with ``"bicgstab"`` they are
     an error too. ``gf_growth_tol`` (``None``: off) is the looser tolerance the pruned growth pass stops at; the
-    restart on the final support then converges ``G`` fully.
+    restart on the final support then converges ``G`` fully. ``gf_growth_quiet`` (``None``: off) ends the growth pass
+    after that many consecutive blocks that admitted nothing, with the same restart.
 
     ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
     only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
@@ -995,10 +999,14 @@ def get_Greens_function(
     if gf_method != "lanczos" and (gf_settle is not None or gf_settle_ratio is not None):
         raise ValueError("gf_settle/gf_settle_ratio apply only to gf_method='lanczos'; remove them or switch gf_method")
     if gf_method != "lanczos" and (
-        gf_prune_tol is not None or gf_first_shell_tol is not None or gf_growth_tol is not None
+        gf_prune_tol is not None
+        or gf_first_shell_tol is not None
+        or gf_growth_tol is not None
+        or gf_growth_quiet is not None
     ):
         raise ValueError(
-            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol apply only to gf_method='lanczos'; remove them or switch"
+            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol/gf_growth_quiet apply only to gf_method='lanczos'; "
+            "remove them or switch"
         )
     if gf_method != "lanczos" and gf_refine is not None and gf_refine.rounds > 0:
         raise ValueError("gf_refine applies only to gf_method='lanczos'; remove it or switch gf_method")
@@ -1070,6 +1078,7 @@ def get_Greens_function(
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
         gf_growth_tol=gf_growth_tol,
+        gf_growth_quiet=gf_growth_quiet,
         gf_refine=gf_refine,
     )
     if run_out is not None:
@@ -1094,6 +1103,7 @@ def get_Greens_function(
                 gf_prune_tol=gf_prune_tol,
                 gf_first_shell_tol=gf_first_shell_tol,
                 gf_growth_tol=gf_growth_tol,
+                gf_growth_quiet=gf_growth_quiet,
                 gf_refine=gf_refine,
             ),
             lambda res: _gf_assemble(
