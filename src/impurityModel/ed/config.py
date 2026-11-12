@@ -126,8 +126,6 @@ GF_METHODS = ("lanczos", "bicgstab")
 #: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
 GF_ADMISSIONS = ("all", "outer")
 
-#: Accepted ``GF_SCHEDULER`` values (see that knob).
-GF_SCHEDULERS = ("static", "queue")
 
 #: Accepted ``GS_LOWEST_SOLVER`` values (see that knob).
 GS_LOWEST_SOLVERS = ("auto", "davidson", "trlm")
@@ -219,18 +217,6 @@ GF_GMRES_RESTART = Knob(
 
 # --- Green's function: work-unit decomposition ---------------------------------------------
 
-GF_EIGENSTATE_GROUP = Knob(
-    name="GF_EIGENSTATE_GROUP",
-    kind="int",
-    default=1,
-    minimum=1,
-    group="units",
-    doc="""Eigenstates stacked into one block-Lanczos work unit. Stacking shares the
-    matvec/Krylov build across eigenstates but grows the per-step reorthogonalization with the
-    block width, so the optimum is workload-dependent (doc/plans/calc_selfenergy_performance.md).
-    The default (1) gives each eigenstate its own unit and its own Krylov space.""",
-)
-
 APPLY_ROW_CHUNKS = Knob(
     name="APPLY_ROW_CHUNKS",
     kind="int",
@@ -267,35 +253,6 @@ ROUTING_HASH = Knob(
     every rank must agree (:func:`assert_uniform`). Any other value aborts the process.""",
 )
 
-GF_SCHEDULER = Knob(
-    name="GF_SCHEDULER",
-    kind="str",
-    default="queue",
-    group="units",
-    doc="""How Green's-function units are handed to the MPI colors. ``queue`` (default): equal-width
-    colors take the next unit, largest excited sector first, from a shared counter as they go idle
-    (:mod:`impurityModel.ed.work_queue`), so a wrong cost prediction costs at most the tail instead
-    of a whole color's backlog. ``static``: packed up front by predicted cost (LPT on
-    ``unit_cost_weights``), each color's rank count proportional to its packed cost. Measured on the
-    SrMnO3 self-energy, the queue cut the GF phase 1.32x at 64 ranks and matched ``static`` at 128
-    (doc/plans/gf_load_balancing.md). Read on rank 0 and broadcast.""",
-)
-
-GF_QUEUE_COLOR_MARGIN = Knob(
-    name="GF_QUEUE_COLOR_MARGIN",
-    kind="float",
-    default=2.0,
-    minimum=1.0,
-    group="units",
-    doc="""Queue colour-count bound: with ``GF_SCHEDULER=queue`` no colour may be narrower than
-    ``margin`` heaviest units' worth of ranks, i.e. the colour count is at most
-    ``floor(sum(w) / (margin * max(w)))`` over the unit cost weights (on top of the participation-ratio
-    bound). A queue colour runs whole units, so more colours than ``sum/max`` leaves the heaviest unit on a
-    colour narrower than its fair share and it alone sets the makespan -- measured on the LMO logs: 18 colours
-    of 13 ranks 3,128 s against 6-8 colours of 30-40 ranks 1,490 s (doc/plans/gf_load_balancing.md). The
-    margin absorbs the error of the predicted weights. Static packing ignores it.""",
-)
-
 GF_CSR_MEMORY_SAFETY = Knob(
     name="GF_CSR_MEMORY_SAFETY",
     kind="float",
@@ -316,18 +273,6 @@ GF_CSR_MEMORY_SAFETY = Knob(
     measured peak (measured/predicted 0.71-0.91 over the 76 frozen units of the 2026-10 runs,
     0.78-0.83 on the 36 first units of that job), so 0.9 of the share is ~0.72 of it in practice,
     the margin 0.75 was meant to give. Ignored when the guard is off (``GS_MEMORY_BUDGET_SAFETY=0``).""",
-)
-
-GF_PER_STATE_RESTRICT = Knob(
-    name="GF_PER_STATE_RESTRICT",
-    kind="bool",
-    default=None,  # falls back to the basis's chain_restrict flag
-    group="units",
-    doc="""Build the excited-sector occupation window per eigenstate rather than once for the
-    thermal ensemble. Unset, it follows the basis's ``chain_restrict`` flag. It only matters
-    when the bath classification is state-dependent (long chains, where distant sites clear the
-    coupling-distance filter); for a directly-hybridizing single bath shell the per-state and
-    ensemble windows are identical and this is a no-op.""",
 )
 
 # --- Green's function: block-Lanczos convergence monitor ------------------------------------
@@ -744,12 +689,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_RESIDUAL_CHECK,
     GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
-    GF_EIGENSTATE_GROUP,
     ROUTING_HASH,
-    GF_SCHEDULER,
-    GF_QUEUE_COLOR_MARGIN,
     GF_CSR_MEMORY_SAFETY,
-    GF_PER_STATE_RESTRICT,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
     IMPMOD_MATVEC_PROF,

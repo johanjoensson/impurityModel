@@ -134,7 +134,7 @@ Orthogonal switches on the default Lanczos path:
   `block_green_impl` which forms a CSR sector (`DistributedSparseMatrix`) and runs the same
   `lanczos_step` on `ndarray` blocks (`block_lanczos` on `ndarray` blocks). Rule of thumb: array kernel for small/dense sectors, sparse when
   the matrix cannot be formed. See `architecture_overview.md` ("which one to use").
-- **Eigenstate grouping** (`config.GF_EIGENSTATE_GROUP`) — stack several thermal eigenstates
+- **Eigenstate grouping** (`gf_units._EIGENSTATE_GROUP`) — stack several thermal eigenstates
   into one wide block recurrence sharing a Krylov space. (The former operator split,
   `GF_OPERATOR_SPLIT`, is retired: `doc/reviews/gf_review.md`, row S3.)
 - **Truncation capping** (`truncation_threshold`) — `_CappedBasisProxy` freezes basis growth

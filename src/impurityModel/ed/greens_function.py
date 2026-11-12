@@ -286,6 +286,11 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
 # Spectral side of a Green's-function work unit, in `get_Greens_function`'s `SIDES` order:
 # 0 = addition (a creation operator on the thermal state, inverse photoemission),
 # 1 = removal (an annihilation operator, photoemission).
+#: Build the excited-sector occupation window per eigenstate (True) or once for the thermal ensemble
+#: (False); ``None`` follows the basis's ``chain_restrict`` flag. Only matters when the bath
+#: classification is state-dependent (long chains). Tests patch it.
+_PER_STATE_RESTRICT = None
+
 _UNIT_SIDE_LABELS = ("create (addition)", "annihilate (removal)")
 _UNIT_SIDE_NAMES = ("addition", "removal")
 
@@ -1569,7 +1574,7 @@ def _gf_per_state_restrict(chain_restrict):
     ensemble window only through the state-dependent bath filled/empty classification, which is
     itself only produced under ``chain_restrict`` (and only for sites past the coupling-distance
     filter -- long chains); with ``chain_restrict`` off the two are identical, so per-state would
-    be pure overhead. :data:`config.GF_PER_STATE_RESTRICT` overrides the default either way.
+    be pure overhead. :data:`_PER_STATE_RESTRICT` overrides the default either way.
 
     The ensemble window is effectively the union over all thermal states' filled/empty bath
     classifications: a bath orbital counts as cleanly filled/empty only if the *thermal-average*
@@ -1578,7 +1583,7 @@ def _gf_per_state_restrict(chain_restrict):
     so its own window carries more restriction subsets -> a smaller excited basis and cheaper
     Lanczos. Each work unit uses the *union* of the per-state windows over the eigenstates it stacks
     (:func:`basis_restrictions.union_windows`) so the shared block Krylov space still contains every seed's
-    dynamics; at the default ``GF_EIGENSTATE_GROUP=1`` every unit is a single state, giving the full
+    dynamics; at the default ``_EIGENSTATE_GROUP = 1`` every unit is a single state, giving the full
     per-state tightening. The seed ``c_i|psi_e>`` is unchanged (an impurity operator preserves bath
     occupation, so the seed lies inside ``psi_e``'s own window), so only the excited-basis span
     tightens -- no seed is truncated.
@@ -1588,7 +1593,7 @@ def _gf_per_state_restrict(chain_restrict):
     the coupling-distance filter (long chains). For a directly-hybridizing single bath shell the
     per-state and ensemble windows are identical and this is a no-op.
     """
-    override = config.GF_PER_STATE_RESTRICT.get()
+    override = _PER_STATE_RESTRICT
     if override is None:
         return bool(chain_restrict)
     return override

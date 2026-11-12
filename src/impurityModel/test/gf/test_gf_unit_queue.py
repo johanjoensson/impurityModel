@@ -1,4 +1,4 @@
-"""``run_units_distributed`` under ``GF_SCHEDULER=queue``: ordering, both result paths, balance."""
+"""``run_units_distributed`` under ``_SCHEDULER = "queue"``: ordering, both result paths, balance."""
 
 import time
 
@@ -20,7 +20,7 @@ pytestmark = [
 
 @pytest.fixture(autouse=True)
 def _queue_scheduler(monkeypatch):
-    monkeypatch.setenv("GF_SCHEDULER", "queue")
+    monkeypatch.setattr("impurityModel.ed.gf_units._SCHEDULER", "queue")
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # memory never cuts colors
 
 
@@ -93,9 +93,9 @@ def test_a_long_unit_does_not_hold_back_the_short_ones():
 
 
 def test_an_unknown_scheduler_is_rejected_on_every_rank(monkeypatch):
-    monkeypatch.setenv("GF_SCHEDULER", "dynamic")
+    monkeypatch.setattr("impurityModel.ed.gf_units._SCHEDULER", "dynamic")
     basis, psi = _basis_and_seed()
-    with pytest.raises(ValueError, match="GF_SCHEDULER"):
+    with pytest.raises(ValueError, match="_SCHEDULER"):
         run_units_distributed(basis, [[psi]] * 2, np.ones(2), lambda b, u, s: u)
 
 
@@ -129,8 +129,9 @@ def test_queued_units_get_one_cap_whatever_color_ran_them(monkeypatch, scheduler
     queue sizes every color for the narrowest."""
     from impurityModel.ed import gf_units
 
-    monkeypatch.setenv("GF_SCHEDULER", scheduler)
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")  # two equal units: the default margin keeps one colour
+    monkeypatch.setattr("impurityModel.ed.gf_units._SCHEDULER", scheduler)
+    # two equal units: the default margin keeps one colour
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
 
     def budget(n_orb, width, reort, ranks, comm, safety=None, **kwargs):
         return 10**9 if safety is not None else 500 * int(ranks)  # color count unbounded; unit cap per width
@@ -214,7 +215,8 @@ def test_the_first_round_gives_color_c_the_cth_unit_of_the_order(monkeypatch):
     """The head of the queue (the heaviest units) lands on the same colors in every run, and no
     color waits for rank 0's first poke to start: color c runs position c of the dispatch order,
     at once, while rank 0 computes its own first unit without poking."""
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")  # the default margin would keep these few units on one colour
+    # the default margin would keep these few units on one colour
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
     comm = MPI.COMM_WORLD
     basis, psi = _basis_and_seed()
     n_units = 3 * comm.size

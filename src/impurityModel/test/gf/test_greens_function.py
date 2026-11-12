@@ -15,6 +15,7 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.test.support.gf_switches import gf_tuning
 
 
 def test_build_full_greens_function_2d():
@@ -264,9 +265,7 @@ def test_get_Greens_function_eigenstate_grouping():
             comm=MPI.COMM_SELF,
         )
         psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
-        old = os.environ.get("GF_EIGENSTATE_GROUP")
-        os.environ["GF_EIGENSTATE_GROUP"] = str(group)
-        try:
+        with gf_tuning(eigenstate_group=group):
             _, gs_real, _ = get_Greens_function(
                 matsubara_mesh=None,
                 omega_mesh=omega_mesh,
@@ -285,11 +284,6 @@ def test_get_Greens_function_eigenstate_grouping():
                 slaterWeightMin=0.0,
                 sparse=sparse,
             )
-        finally:
-            if old is None:
-                del os.environ["GF_EIGENSTATE_GROUP"]
-            else:
-                os.environ["GF_EIGENSTATE_GROUP"] = old
         return gs_real[0]
 
     for sparse in (False, True):
@@ -337,9 +331,7 @@ def test_get_Greens_function_eigenstate_grouping_with_bath():
             comm=MPI.COMM_SELF,
         )
         psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
-        old = os.environ.get("GF_EIGENSTATE_GROUP")
-        os.environ["GF_EIGENSTATE_GROUP"] = str(group)
-        try:
+        with gf_tuning(eigenstate_group=group):
             _, gs_real, _ = get_Greens_function(
                 matsubara_mesh=None,
                 omega_mesh=omega_mesh,
@@ -358,11 +350,6 @@ def test_get_Greens_function_eigenstate_grouping_with_bath():
                 slaterWeightMin=0.0,
                 sparse=True,
             )
-        finally:
-            if old is None:
-                del os.environ["GF_EIGENSTATE_GROUP"]
-            else:
-                os.environ["GF_EIGENSTATE_GROUP"] = old
         return gs_real[0]
 
     g1 = run(1)
@@ -399,16 +386,15 @@ def test_union_restrictions_semantics():
 
 
 def test_gf_per_state_restrict_gating(monkeypatch):
-    """Per-state windows default on exactly when ``chain_restrict`` is on; ``GF_PER_STATE_RESTRICT``
+    """Per-state windows default on exactly when ``chain_restrict`` is on; ``_PER_STATE_RESTRICT``
     overrides the default either way (the user-facing policy: tie per-state to chain_restrict)."""
     from impurityModel.ed.greens_function import _gf_per_state_restrict
 
-    monkeypatch.delenv("GF_PER_STATE_RESTRICT", raising=False)
     assert _gf_per_state_restrict(True) is True
     assert _gf_per_state_restrict(False) is False
-    monkeypatch.setenv("GF_PER_STATE_RESTRICT", "0")
+    monkeypatch.setattr("impurityModel.ed.greens_function._PER_STATE_RESTRICT", False)
     assert _gf_per_state_restrict(True) is False
-    monkeypatch.setenv("GF_PER_STATE_RESTRICT", "1")
+    monkeypatch.setattr("impurityModel.ed.greens_function._PER_STATE_RESTRICT", True)
     assert _gf_per_state_restrict(False) is True
 
 
@@ -449,9 +435,7 @@ def test_get_Greens_function_per_state_restrict_matches_ensemble():
             comm=MPI.COMM_SELF,
         )
         psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
-        old = os.environ.get("GF_PER_STATE_RESTRICT")
-        os.environ["GF_PER_STATE_RESTRICT"] = "1" if per_state else "0"
-        try:
+        with gf_tuning(per_state_restrict=per_state):
             _, gs_real, _ = get_Greens_function(
                 matsubara_mesh=None,
                 omega_mesh=omega_mesh,
@@ -470,11 +454,6 @@ def test_get_Greens_function_per_state_restrict_matches_ensemble():
                 slaterWeightMin=0.0,
                 sparse=True,
             )
-        finally:
-            if old is None:
-                del os.environ["GF_PER_STATE_RESTRICT"]
-            else:
-                os.environ["GF_PER_STATE_RESTRICT"] = old
         return gs_real[0]
 
     ensemble = run(False)

@@ -15,10 +15,10 @@ enumeration/chunking/seed-construction logic gap, not the restriction-applicatio
 which has its own dedicated coverage under restrictions/.
 """
 
-import os
 
 from impurityModel.ed.gf_units import enumerate_gf_units
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.test.support.gf_switches import gf_tuning
 
 
 def _det(occupied):
@@ -62,15 +62,8 @@ def test_enumerate_gf_units_grouped_mode_stacks_eigenstates_in_chunks():
     tOps = _transition_ops()
     ref = _direct_apply(tOps, psis)
 
-    old = os.environ.get("GF_EIGENSTATE_GROUP")
-    os.environ["GF_EIGENSTATE_GROUP"] = "2"
-    try:
+    with gf_tuning(eigenstate_group=2):
         units, unit_seeds, _ = enumerate_gf_units([(tOps, -0.1)], psis, [None], None, slaterWeightMin=0.0)
-    finally:
-        if old is None:
-            os.environ.pop("GF_EIGENSTATE_GROUP", None)
-        else:
-            os.environ["GF_EIGENSTATE_GROUP"] = old
 
     # group=2, n_psis=3 -> chunks (0, 1) and (2,).
     assert [u.chunk for u in units] == [(0, 1), (2,)]

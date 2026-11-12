@@ -7,7 +7,6 @@ now, with test_gf_bicgstab_driver.py itself importing back like any other consum
 """
 
 import itertools
-import os
 
 import numpy as np
 from mpi4py import MPI
@@ -155,7 +154,7 @@ def _hyb_hop():
     )
 
 
-def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None, extra=None):
+def _run_driver(gf_method, reort, comm=None, extra=None):
     state_bytes = [b"\xa0", b"\x50"]  # {0, 2} and {1, 3}
     basis = Basis(
         impurity_orbitals={0: [[0, 1]]},
@@ -174,35 +173,24 @@ def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None, extra=None):
             [ManyBodyState.from_states([p]) for p in psis] if owns_psis else [ManyBodyState(width=1) for _ in psis]
         )
         psis = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi_blocks)]
-    old_env = {}
-    for key, value in (monkeypatch_env or {}).items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
-    try:
-        gs_mat, gs_real, report = get_Greens_function(
-            matsubara_mesh=1j * np.pi * 0.5 * (2 * np.arange(12) + 1),
-            omega_mesh=np.linspace(-2.0, 2.0, 25),
-            psis=psis,
-            es=[-0.2, 0.3],
-            tau=1.0,
-            basis=basis,
-            hOp=_hyb_hop(),
-            delta=0.1,
-            blocks=[[0, 1]],
-            verbose=False,
-            verbose_extra=False,
-            reort=reort,
-            dN=1,
-            occ_cutoff=1e-6,
-            slaterWeightMin=0.0,
-            sparse=True,
-            gf_method=gf_method,
-            **(extra or {}),
-        )
-    finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    gs_mat, gs_real, report = get_Greens_function(
+        matsubara_mesh=1j * np.pi * 0.5 * (2 * np.arange(12) + 1),
+        omega_mesh=np.linspace(-2.0, 2.0, 25),
+        psis=psis,
+        es=[-0.2, 0.3],
+        tau=1.0,
+        basis=basis,
+        hOp=_hyb_hop(),
+        delta=0.1,
+        blocks=[[0, 1]],
+        verbose=False,
+        verbose_extra=False,
+        reort=reort,
+        dN=1,
+        occ_cutoff=1e-6,
+        slaterWeightMin=0.0,
+        sparse=True,
+        gf_method=gf_method,
+        **(extra or {}),
+    )
     return gs_mat, gs_real, report

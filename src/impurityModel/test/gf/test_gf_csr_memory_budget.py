@@ -70,7 +70,7 @@ def test_the_budgets_are_re_derived_before_every_unit(monkeypatch, scheduler):
     from impurityModel.ed.gf_units import run_units_distributed
     from impurityModel.test.gf.test_gf_unit_queue import _basis_and_seed
 
-    monkeypatch.setenv("GF_SCHEDULER", scheduler)
+    monkeypatch.setattr("impurityModel.ed.gf_units._SCHEDULER", scheduler)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # memory never cuts colours
     free = {"bytes": 64 * 2**30}
 

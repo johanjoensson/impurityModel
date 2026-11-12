@@ -39,3 +39,20 @@ def gf_switches(*, closure_freeze=None, matrix_mode=None):
         yield
     finally:
         gf_solvers._BICGSTAB_CLOSURE_FREEZE, gf_solvers._MATRIX_MODE = old
+
+
+@contextmanager
+def gf_tuning(*, eigenstate_group=None, per_state_restrict=None):
+    """Patch the unit-shape constants (``gf_units._EIGENSTATE_GROUP``, ``greens_function._PER_STATE_RESTRICT``)
+    for a block; ``None`` leaves one alone. Not user knobs."""
+    from impurityModel.ed import gf_units, greens_function
+
+    old = (gf_units._EIGENSTATE_GROUP, greens_function._PER_STATE_RESTRICT)
+    try:
+        if eigenstate_group is not None:
+            gf_units._EIGENSTATE_GROUP = int(eigenstate_group)
+        if per_state_restrict is not None:
+            greens_function._PER_STATE_RESTRICT = bool(per_state_restrict)
+        yield
+    finally:
+        gf_units._EIGENSTATE_GROUP, greens_function._PER_STATE_RESTRICT = old

@@ -11,6 +11,7 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.test.support.gf_switches import gf_tuning
 
 
 def _redistribute_as_width1(basis, psis):
@@ -231,7 +232,7 @@ def test_memory_budget_caps_unit_split_mpi(monkeypatch):
 
     # Generous budget: two equal units on >=2 ranks split into two colors, each smaller
     # than the full communicator.  (Margin 1: the queue's default margin of 2 keeps two units on one colour.)
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)
     run_units_distributed(basis, unit_seeds, unit_weights, kernel)
     assert all(size < comm.size for size in observed)
@@ -758,8 +759,8 @@ def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(
     from impurityModel.ed import memory_estimate as me
 
     comm = MPI.COMM_WORLD
-    monkeypatch.delenv("GF_SCHEDULER", raising=False)
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")  # two equal units: the default margin keeps one colour
+    # two equal units: the default margin keeps one colour
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # room for one color per unit
     monkeypatch.setattr(gf_units, "_QUEUE_SEED_HEADROOM_SHARE", share)
     if one_shot_price:
@@ -1394,9 +1395,7 @@ def test_calc_spectra_split_threshold_invariant_mpi():
         else:
             psis = [ManyBodyState(width=1), ManyBodyState(width=1)]
         psis = _redistribute_as_width1(basis, psis)
-        old = os.environ.get("GF_EIGENSTATE_GROUP")
-        os.environ["GF_EIGENSTATE_GROUP"] = str(group)
-        try:
+        with gf_tuning(eigenstate_group=group):
             gs = calc_spectra(
                 hOp,
                 tOps,
@@ -1413,11 +1412,6 @@ def test_calc_spectra_split_threshold_invariant_mpi():
                 {0: (1, 0)},
                 {0: (0, 1)},
             )
-        finally:
-            if old is None:
-                del os.environ["GF_EIGENSTATE_GROUP"]
-            else:
-                os.environ["GF_EIGENSTATE_GROUP"] = old
         return gs
 
     g_ref = run(1e9, 1)  # maximal split, one eigenstate per recurrence

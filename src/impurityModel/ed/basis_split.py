@@ -16,10 +16,16 @@ from typing import Optional
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_comm import graph_alltoall
+
+#: Queue colour-count bound: no colour may be narrower than this many heaviest units' worth of ranks
+#: (the colour count is at most ``floor(sum(w) / (margin * max(w)))``). A queue colour runs whole units,
+#: so more colours than ``sum/max`` leaves the heaviest unit on a colour narrower than its fair share:
+#: on the LMO logs 18 colours of 13 ranks took 3,128 s against 6-8 colours of 30-40 ranks, 1,490 s
+#: (doc/plans/gf_load_balancing.md). The margin absorbs the error of the predicted weights. Tests patch it.
+_QUEUE_COLOR_MARGIN = 2.0
 
 
 def _pack_units(
@@ -62,7 +68,7 @@ def _pack_units(
         (:mod:`~impurityModel.ed.work_queue`), where any color may run any unit and a
         mass-proportional width would bake the predicted costs back in. The color count and
         the LPT subgroups are the same either way. The color count is also bounded by
-        ``floor(sum(w) / (GF_QUEUE_COLOR_MARGIN * max(w)))``: a queue color narrower than the heaviest
+        ``floor(sum(w) / (_QUEUE_COLOR_MARGIN * max(w)))``: a queue color narrower than the heaviest
         unit's fair share makes that unit the makespan.
 
     Returns
@@ -92,7 +98,7 @@ def _pack_units(
         # weights) leaves the heaviest unit on a colour narrower than its fair share, and it sets the makespan.
         # max(1.0, .) also turns a NaN margin into 1; the epsilon keeps an exact integer sum/max (93 equal units)
         # from flooring to one colour fewer.
-        margin = max(1.0, float(config.GF_QUEUE_COLOR_MARGIN.get()))
+        margin = max(1.0, float(_QUEUE_COLOR_MARGIN))
         n_colors = min(n_colors, max(1, int(np.floor(1.0 / (margin * normalized.max()) + 1e-9))))
     if n_colors <= 1:
         return None, None

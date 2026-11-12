@@ -143,7 +143,7 @@ def test_equal_widths_ignore_bin_mass(comm_size, monkeypatch):
     # must not carry the predicted cost, so every color gets the same width (+1 for the first
     # comm_size % n_colors).  Margin 1 and a 4-colour cap on the mass call make the colour-count bound the
     # same on both sides: sum/max = 28/10 -> 2.
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
     weights = [10.0, 9.0, 8.0, 1.0]
     mass_groups, mass_procs = _pack_units(weights, comm_size, 5.0, 2)
     groups, procs = _pack_units(weights, comm_size, 5.0, equal_widths=True)
@@ -169,13 +169,12 @@ def _lmo_weights():
 def test_the_queue_colour_count_is_bounded_by_sum_over_max_with_margin(monkeypatch):
     w = _lmo_weights()
     assert 12.5 < w.sum() / w.max() < 12.7
-    monkeypatch.delenv("GF_QUEUE_COLOR_MARGIN", raising=False)
     groups, procs = _pack_units(w, 240, 1.0, equal_widths=True)
     assert len(groups) == 6 and procs.tolist() == [40] * 6  # floor(12.6 / (2 * 1))
     # Static packing is untouched by the queue's margin.
     static_groups, _ = _pack_units(w, 240, 1.0)
     assert len(static_groups) > 6
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
     assert len(_pack_units(w, 240, 1.0, equal_widths=True)[0]) == 12
 
 
@@ -185,9 +184,9 @@ def test_a_queue_of_the_bounded_colour_count_beats_the_participation_count(monke
     w = _lmo_weights()
     # Cost in rank-seconds is the weight (scaled); linear rank scaling: a colour of r ranks takes cost / r.
     # Margin 1 is the loosest the knob allows (it clamps there): sum/max colours, no allowance for weight error.
-    monkeypatch.setenv("GF_QUEUE_COLOR_MARGIN", "1")
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 1.0)
     old_groups, old_procs = _pack_units(w, 240, 1.0, equal_widths=True)
-    monkeypatch.delenv("GF_QUEUE_COLOR_MARGIN")
+    monkeypatch.setattr("impurityModel.ed.basis_split._QUEUE_COLOR_MARGIN", 2.0)
     new_groups, new_procs = _pack_units(w, 240, 1.0, equal_widths=True)
     order = queue_order(w)
     old = queue_makespan(w / old_procs[0], order, len(old_groups))

@@ -17,7 +17,7 @@ Factors
 ``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only). The sparse cells pin
              the support freeze off (``gf_switches``): their sectors close, and the freeze would hand them to the
              array kernel the other value of this factor already covers
-``group``    ``GF_EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
+``group``    ``gf_units._EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
 ``reort``    none / partial / full (lanczos only)
 ``mesh``     Matsubara only / real axis only / both
 ``model``    ``nb1`` (small sectors: the dense <500 array branch) / ``nb2`` (792-det
@@ -28,7 +28,6 @@ Factors
 import contextlib
 import io
 import itertools
-import os
 
 import numpy as np
 import pytest
@@ -39,7 +38,7 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.spectra import calc_spectra
 from impurityModel.test.support.gf_branch_oracle import cached_oracle, distribute
-from impurityModel.test.support.gf_switches import gf_switches
+from impurityModel.test.support.gf_switches import gf_switches, gf_tuning
 
 TAU = 0.3
 N_STATES = 3
@@ -104,21 +103,6 @@ FULL = [
 ]
 
 
-@contextlib.contextmanager
-def _env(**values):
-    old = {k: os.environ.get(k) for k in values}
-    try:
-        for k, v in values.items():
-            os.environ[k] = str(v)
-        yield
-    finally:
-        for k, v in old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-
 def _setup(model, comm):
     oracle, (hOp, imp, baths, _n_orb, _n0, blocks) = cached_oracle(model)
     idx, es = oracle.thermal_states(N_STATES)
@@ -147,7 +131,7 @@ def _run_cell(cell):
     iw = IW if cell["mesh"] in ("iw", "both") else None
     w = W if cell["mesh"] in ("w", "both") else None
     with (
-        _env(GF_EIGENSTATE_GROUP=cell["group"]),
+        gf_tuning(eigenstate_group=cell["group"]),
         gf_switches(closure_freeze=not cell.get("sparse")),
         contextlib.redirect_stdout(io.StringIO()),
     ):

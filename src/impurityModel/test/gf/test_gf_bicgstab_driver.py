@@ -30,7 +30,7 @@ from impurityModel.test.support.gf_oracles import (
     _seeds,
     _siam_6,
 )
-from impurityModel.test.support.gf_switches import set_gf_switches
+from impurityModel.test.support.gf_switches import gf_tuning, set_gf_switches
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +162,8 @@ def test_driver_matches_partial_lanczos():
 def test_driver_grouping_invariance():
     """Eigenstate grouping is a unit-shape knob only -- it gives the identical G."""
     _, r_ref, _ = _run_driver("bicgstab", None)
-    _, r_grouped, _ = _run_driver("bicgstab", None, monkeypatch_env={"GF_EIGENSTATE_GROUP": "2"})
+    with gf_tuning(eigenstate_group=2):
+        _, r_grouped, _ = _run_driver("bicgstab", None)
     np.testing.assert_allclose(r_grouped[0], r_ref[0], atol=1e-9)
 
 

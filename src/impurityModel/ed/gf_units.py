@@ -45,6 +45,19 @@ from impurityModel.ed.work_queue import UnitQueue, queue_order
 comm = MPI.COMM_WORLD
 rank = comm.rank
 
+#: How Green's-function units are handed to the MPI colors. ``"queue"``: equal-width colors take the
+#: next unit, largest excited sector first, as they go idle (:mod:`impurityModel.ed.work_queue`), so a
+#: wrong cost prediction costs at most the tail. ``"static"``: packed up front by predicted cost, each
+#: color's rank count proportional to its packed cost. The queue cut the GF phase 1.32x at 64 ranks on
+#: the SrMnO3 self-energy and matched ``static`` at 128 (doc/plans/gf_load_balancing.md). Tests patch it.
+_SCHEDULER = "queue"
+_SCHEDULERS = ("static", "queue")
+
+#: Eigenstates stacked into one block-Lanczos work unit. Stacking shares the matvec/Krylov build but
+#: grows the per-step reorthogonalization with the block width, so the optimum is workload-dependent
+#: (doc/plans/calc_selfenergy_performance.md). 1 gives each eigenstate its own unit. Tests patch it.
+_EIGENSTATE_GROUP = 1
+
 
 def gf_cap(basis):
     """The determinant cap a Green's-function unit basis built from ``basis`` runs under.
@@ -457,7 +470,7 @@ def enumerate_gf_units(
     """Enumerate the flat work units of a Green's-function calculation.
 
     Applies each operator group's transition operators to every thermal state (collective on
-    the full basis), then chunks the eigenstates into groups of ``GF_EIGENSTATE_GROUP`` -- each
+    the full basis), then chunks the eigenstates into groups of ``_EIGENSTATE_GROUP`` -- each
     chunk seeds one (possibly wide) block-Lanczos recurrence and is one work unit. This is the
     single global decomposition that is load-balanced across the full
     (operator group x eigenstate) cross-product -- important when there are many small symmetry
@@ -574,7 +587,7 @@ def run_units_distributed(
     rank 0 then never holds more than one color's results at a time instead of all units
     simultaneously (e.g. the caller accumulates into a preallocated output tensor).
 
-    Under ``GF_SCHEDULER=queue`` (the default) the colors are equal-width and take units heaviest-first (by
+    Under ``_SCHEDULER = "queue"`` (the default) the colors are equal-width and take units heaviest-first (by
     ``unit_weights``) from a shared counter as they go idle (:mod:`~impurityModel.ed.work_queue`)
     instead of running the ``static`` LPT assignment, so ``unit_weights`` only has to rank the units.
     Which color runs a unit then varies from run to run; with unequal color widths that can move a
@@ -646,10 +659,9 @@ def run_units_distributed(
             _restore_gf_memory_guard(basis, saved_guard)
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
-    # Rank 0's environment decides, so every rank takes the same branch (collective, unconditional).
-    scheduler = basis.comm.bcast(config.GF_SCHEDULER.get(), root=0)
-    if scheduler not in config.GF_SCHEDULERS:
-        raise ValueError(f"GF_SCHEDULER={scheduler!r}; expected one of {config.GF_SCHEDULERS}")
+    scheduler = _SCHEDULER
+    if scheduler not in _SCHEDULERS:
+        raise ValueError(f"_SCHEDULER={scheduler!r}; expected one of {_SCHEDULERS}")
     equal_widths = scheduler == "queue"
     # Every color's unit basis inherits the same truncation_threshold, so colors multiply
     # per-rank memory: each rank's share of a capped unit basis is threshold/(ranks/n_colors).
@@ -1099,6 +1111,6 @@ def _gf_eigenstate_group():
     Krylov space). Stacking shares the matvec/Krylov build across eigenstates but grows the
     per-step reorthogonalization with the block width, so the optimum is workload-dependent
     (see ``doc/plans/calc_selfenergy_performance.md``). Override with
-    :data:`config.GF_EIGENSTATE_GROUP`.
+    :data:`_EIGENSTATE_GROUP`.
     """
-    return config.GF_EIGENSTATE_GROUP.get()
+    return max(1, int(_EIGENSTATE_GROUP))

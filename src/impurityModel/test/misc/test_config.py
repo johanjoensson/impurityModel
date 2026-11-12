@@ -26,10 +26,10 @@ def test_env_override_is_read_lazily(monkeypatch):
     The whole point of the registry: import-time constants silently voided a slicing test
     once, because a caller that had already imported the module could not change them.
     """
-    monkeypatch.delenv("GF_EIGENSTATE_GROUP", raising=False)
-    assert config.GF_EIGENSTATE_GROUP.get() == 1
-    monkeypatch.setenv("GF_EIGENSTATE_GROUP", "3")
-    assert config.GF_EIGENSTATE_GROUP.get() == 3
+    monkeypatch.delenv("APPLY_ROW_CHUNKS", raising=False)
+    assert config.APPLY_ROW_CHUNKS.get() == 4
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "3")
+    assert config.APPLY_ROW_CHUNKS.get() == 3
 
 
 def test_parsers_and_clamps(monkeypatch):
@@ -37,8 +37,8 @@ def test_parsers_and_clamps(monkeypatch):
     monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-6")
     assert config.GF_BICGSTAB_ATOL.get() == pytest.approx(1e-6)
 
-    monkeypatch.setenv("GF_EIGENSTATE_GROUP", "0")  # minimum=1
-    assert config.GF_EIGENSTATE_GROUP.get() == 1
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "0")  # minimum=1
+    assert config.APPLY_ROW_CHUNKS.get() == 1
 
     monkeypatch.setenv("GF_SECTOR_CACHE_DIR", "/tmp/sectors")
     assert config.GF_SECTOR_CACHE_DIR.get() == "/tmp/sectors"
