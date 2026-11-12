@@ -687,6 +687,12 @@ def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, 
                 deflate_tol=deflate_tol,
             )
         if status != "max_iter" or len(alphas) - start >= n_dim:
+            if status == "max_iter" and sum(widths) >= n_dim:
+                # The block columns span the whole operator: the Krylov space is H's, the continued fraction is
+                # exact, whether or not the last residual fell under the breakdown floor (at reort off it is
+                # rounding noise that lands either side of it). ``widths`` and ``n_dim`` are replicated, so every
+                # rank reaches the same verdict.
+                status = "invariant_subspace"
             break
         budget = min(2 * budget, n_dim - (len(alphas) - start))
     return alphas, betas, widths, status, last_q

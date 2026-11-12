@@ -216,3 +216,42 @@ def test_the_retained_mode_stores_p_rows_only(comm, monkeypatch):
     made.clear()
     run_chain(comm, kernel=block_Green_discovered, matrix_mode="discovered", cap=2500)
     assert made and all(m.keep_frontier for m in made)
+
+
+def test_a_recurrence_that_fills_the_space_is_exact_not_truncated():
+    """A frozen continuation whose block columns span the whole operator has H's own Krylov space: its continued
+    fraction is exact. At reort off the last residual is rounding noise that falls either side of the breakdown
+    floor, so about a quarter of these runs used to leave on ``"max_iter"`` and warn "did not reach the tolerance"
+    (the 7-determinant addition unit of the NiO 5-bath run). Swept over random operators because which side a
+    given matrix lands on depends on the build's rounding (release -ffast-math, debug, ASan)."""
+    from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+    from impurityModel.ed.gf_recurrence import DEFLATE_TOL_SEEDS, _continue_on_array_kernel
+
+    rng = np.random.default_rng(0)
+    n = 7
+    statuses = []
+    for _ in range(200):
+        h = np.diag(-38.0 + 0.3 * rng.standard_normal(n)).astype(complex)
+        for i in range(n - 1):
+            h[i, i + 1] = h[i + 1, i] = 0.05 * rng.standard_normal()
+        h[0, n - 1] = h[n - 1, 0] = 0.03
+        x = np.zeros((n, 1), dtype=complex)
+        x[0, 0] = 1.0
+        alphas, betas, widths, status, _ = _continue_on_array_kernel(
+            DistributedSparseMatrix.from_dense(h),
+            None,
+            lambda *a, **k: False,
+            np.zeros((0, 1, 1), dtype=complex),
+            np.zeros((0, 1, 1), dtype=complex),
+            [],
+            [None, x],
+            DEFLATE_TOL_SEEDS,
+            "test",
+        )
+        statuses.append(status)
+        assert sum(widths) == n
+        a = alphas[:n, 0, 0].real
+        b = np.abs(betas[: n - 1, 0, 0])
+        t = np.diag(a) + np.diag(b, 1) + np.diag(b, -1)
+        assert np.allclose(np.linalg.eigvalsh(t), np.linalg.eigvalsh(h), atol=1e-9)
+    assert set(statuses) == {"invariant_subspace"}
