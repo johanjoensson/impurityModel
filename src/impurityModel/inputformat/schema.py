@@ -1129,7 +1129,7 @@ _TABLE_LIST += [
                 Kind.DIMENSIONLESS,
                 None,
                 "Convergence tolerance of the block-Lanczos Green's function (relative change of G) on "
-                "every evaluation axis. Absent takes the GF_TOL environment knob, else "
+                "every evaluation axis. Absent takes "
                 "max(slater_weight_min^2, 1e-9). Only valid with gf_method = 'lanczos'.",
                 minimum=0.0,
             ),
@@ -1137,7 +1137,7 @@ _TABLE_LIST += [
                 "gf_real_tol",
                 Kind.DIMENSIONLESS,
                 None,
-                "The same tolerance on the real-frequency axis only. Absent takes GF_REAL_TOL, else "
+                "The same tolerance on the real-frequency axis only. Absent takes "
                 "the gf_tol value. When only the Matsubara self-energy drives the DMFT loop, a looser "
                 "real-axis tolerance shortens every Green's-function unit without changing the "
                 "Matsubara accuracy. Only valid with gf_method = 'lanczos'.",

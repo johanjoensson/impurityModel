@@ -156,11 +156,11 @@ class SolverOptions:
         more accurate, and the error bound reports what was left out.
     gf_tol : float or None
         Convergence tolerance of the block-Lanczos Green's function (relative change of ``G``
-        between checks) on every evaluation axis. ``None`` (default): the ``GF_TOL`` knob, else
+        between checks) on every evaluation axis. ``None`` (default):
         ``max(slaterWeightMin**2, 1e-9)``. ``gf_method="lanczos"`` only.
     gf_real_tol : float or None
-        The same tolerance on the real-frequency axis only; ``None`` (default): ``GF_REAL_TOL``,
-        else the ``gf_tol`` value. A looser real-axis tolerance shortens the recurrence without
+        The same tolerance on the real-frequency axis only; ``None`` (default):
+        the ``gf_tol`` value. A looser real-axis tolerance shortens the recurrence without
         touching the Matsubara accuracy. In RSPt the real-axis self-energy still feeds the next
         bath fit, so loosen it moderately (e.g. ``1e-6``) rather than drop it.
         ``gf_method="lanczos"`` only.

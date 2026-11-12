@@ -18,8 +18,7 @@ Usage::
 Environment knobs: ``WORKLOAD_H5`` (required), ``GF_METHOD`` (default lanczos),
 ``REORT`` / ``CAP`` (default: the archive's production settings; ``CAP`` accepts a
 number or ``none``), ``N_IW`` / ``N_W`` (mesh subsampling; ``0`` drops the axis,
-unset keeps the full mesh), ``GF_MIN_WEIGHT`` (``SolverOptions.gf_min_weight``; the
-block-Lanczos tolerances are the ``GF_TOL`` / ``GF_REAL_TOL`` knobs and need no hook here),
+unset keeps the full mesh), ``GF_MIN_WEIGHT`` (``SolverOptions.gf_min_weight``),
 ``BENCH_OUT`` (``.npz`` dump path), ``VERBOSITY``, and
 ``PHASES=1``, which prints where the wall clock went (see :func:`_phase_timers`).
 """
@@ -171,7 +170,6 @@ def test_real_workload_selfenergy():
             f"\n[real-workload] {workload['label']} ({os.path.basename(os.path.dirname(h5_path))}) "
             f"gf_method={gf_method} cap={cap} "
             f"N_IW={os.environ.get('N_IW', 'full')} N_W={os.environ.get('N_W', 'full')} "
-            f"GF_TOL={os.environ.get('GF_TOL', 'default')} GF_REAL_TOL={os.environ.get('GF_REAL_TOL', 'default')} "
             f"GF_MIN_WEIGHT={os.environ.get('GF_MIN_WEIGHT', 'off')}"
         )
         print(f"[real-workload] wall {wall:.1f} s, peak RSS per rank: {[format_bytes(p) for p in peaks]}")

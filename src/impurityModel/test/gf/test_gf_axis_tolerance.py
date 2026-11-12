@@ -31,12 +31,6 @@ _DELTA = 0.2
 _TAU = 0.002
 
 
-@pytest.fixture(autouse=True)
-def _hermetic_knobs(monkeypatch):
-    for name in ("GF_TOL", "GF_REAL_TOL"):
-        monkeypatch.delenv(name, raising=False)
-
-
 def _matsubara(n, tau=_TAU):
     return 1j * (2 * np.arange(n) + 1) * np.pi * tau
 
@@ -193,12 +187,10 @@ def test_the_driver_hands_every_unit_the_requested_axis_tolerances(monkeypatch):
     assert all(t == [1e-7, 1e-4] for t in _monitor_tolerances(monkeypatch, gf_tol=1e-7, gf_real_tol=1e-4))
 
 
-def test_the_knobs_apply_when_the_options_are_unset_and_an_explicit_option_wins(monkeypatch):
+def test_unset_options_take_the_default_and_an_explicit_option_wins(monkeypatch):
     floor = _gf_rel_tol(0.0)
     assert all(t == [floor, floor] for t in _monitor_tolerances(monkeypatch))
-    assert all(t == [floor, 1e-5] for t in _monitor_tolerances(monkeypatch, env={"GF_REAL_TOL": "1e-5"}))
-    explicit = _monitor_tolerances(monkeypatch, env={"GF_REAL_TOL": "1e-5"}, gf_real_tol=1e-3)
-    assert all(t == [floor, 1e-3] for t in explicit)
+    assert all(t == [floor, 1e-3] for t in _monitor_tolerances(monkeypatch, gf_real_tol=1e-3))
 
 
 def test_the_driver_refuses_a_tolerance_on_the_per_frequency_kernel():

@@ -230,14 +230,14 @@ def add_arguments(parser):
         default=None,
         help=(
             "Block-Lanczos Green's-function convergence tolerance (relative change of G) on every axis "
-            "(default: the GF_TOL knob, else max(slater_weight_min^2, 1e-9), or the archive's)."
+            "(default: max(slater_weight_min^2, 1e-9), or the archive's)."
         ),
     )
     parser.add_argument(
         "--gf-real-tol",
         type=float,
         default=None,
-        help="The same tolerance on the real-frequency axis only (default: GF_REAL_TOL, else --gf-tol's value).",
+        help="The same tolerance on the real-frequency axis only (default: --gf-tol's value).",
     )
     parser.add_argument(
         "--gf-min-weight",

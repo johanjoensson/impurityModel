@@ -507,13 +507,8 @@ def _gf_lanczos_plan(
         raise ValueError(f"gf_admission='outer' needs gf_method='bicgstab' (got {gf_method!r})")
     if gf_method != "lanczos" and (gf_tol is not None or gf_real_tol is not None):
         raise ValueError(f"gf_tol/gf_real_tol are block-Lanczos tolerances; gf_method={gf_method!r} ignores them")
-    # Explicit arguments win over the knobs. Resolved (and validated) here, before any collective,
-    # so a bad value fails on every rank at once.
-    axis_tols = _gf_axis_tols(
-        slaterWeightMin,
-        config.GF_TOL.get() if gf_tol is None else gf_tol,
-        config.GF_REAL_TOL.get() if gf_real_tol is None else gf_real_tol,
-    )
+    # Resolved (and validated) here, before any collective, so a bad value fails on every rank at once.
+    axis_tols = _gf_axis_tols(slaterWeightMin, gf_tol, gf_real_tol)
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -946,7 +941,7 @@ def get_Greens_function(
     diagnostics report. An explicit argument wins over the matching environment knob.
 
     ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
-    ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
+    ``G``) on every axis / on the real axis only (``None``:
     ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
     They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
 

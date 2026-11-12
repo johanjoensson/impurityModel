@@ -484,31 +484,6 @@ GF_PER_STATE_RESTRICT = Knob(
 
 # --- Green's function: block-Lanczos convergence monitor ------------------------------------
 
-GF_TOL = Knob(
-    name="GF_TOL",
-    kind="float",
-    default=None,  # unset: max(slaterWeightMin**2, 1e-9) -- gf_convergence._gf_rel_tol
-    group="convergence",
-    doc="""Relative-change tolerance of the block-Lanczos Green's function on every evaluation
-    axis (``SolverOptions.gf_tol``; an explicit option wins). Unset keeps the default
-    ``max(slaterWeightMin**2, 1e-9)``. The monitor stops a work unit once two consecutive checks
-    move ``G`` by less than this, relative to ``max|G|`` on the axis.""",
-)
-
-GF_REAL_TOL = Knob(
-    name="GF_REAL_TOL",
-    kind="float",
-    default=None,  # unset: the same tolerance as the Matsubara axis (GF_TOL / its default)
-    group="convergence",
-    doc="""Relative-change tolerance on the **real-frequency** axis only
-    (``SolverOptions.gf_real_tol``; an explicit option wins). Unset uses the ``GF_TOL`` value.
-    The real axis at broadening ``delta`` sets the Lanczos depth of a production self-energy
-    run, and a looser real-axis tolerance shortens every unit without touching the Matsubara
-    accuracy. Loosen it, never drop it: RSPt builds the next bath fit's hybridization from the
-    real-axis self-energy (``G0^-1 = G^-1 + sig_real``), so its error enters the DMFT loop.
-    ``1e-6`` measured ~7e-6 relative error at 1.6-1.8x fewer blocks.""",
-)
-
 # --- RIXS: shift-recycling solver tiers -----------------------------------------------------
 
 GF_SECTOR_DENSE_MAX = Knob(
@@ -1060,8 +1035,6 @@ KNOBS: dict[str, Knob] = _register(
     GF_QUEUE_COLOR_MARGIN,
     GF_CSR_MEMORY_SAFETY,
     GF_PER_STATE_RESTRICT,
-    GF_TOL,
-    GF_REAL_TOL,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
     IMPMOD_MATVEC_PROF,
