@@ -35,15 +35,14 @@ def test_entry_asserts_uniform_knobs_on_its_own_comm(func, comm_expr):
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs two ranks to disagree")
 def test_solve_ground_state_raises_on_every_rank_when_a_knob_differs(monkeypatch):
-    """Before this check, GS_SECTOR_CERTIFY=0 on one rank deadlocked the solve."""
+    """Before this check, GS_CERTIFY_MAX_SEED=1 on one rank deadlocked the solve."""
     from impurityModel.test.support import gs_oracle
 
     comm = MPI.COMM_WORLD
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     if comm.rank == 1:
-        monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
+        monkeypatch.setenv("GS_CERTIFY_MAX_SEED", "1")
     h_op, imp, bath, N0, _n_orb, _n_val, _params = gs_oracle.pinned_model(1, 3, False)
-    with pytest.raises(config.NonUniformKnobError, match="GS_SECTOR_CERTIFY"):
+    with pytest.raises(config.NonUniformKnobError, match="GS_CERTIFY_MAX_SEED"):
         groundstate.solve_ground_state(h_op, imp, bath, dict(N0), tau=0.05, slaterWeightMin=1e-12, comm=comm, verbose=0)
 
 
@@ -55,11 +54,10 @@ def test_a_bare_sector_solve_raises_on_every_rank_when_a_knob_differs(monkeypatc
     from impurityModel.test.support import gs_oracle
 
     comm = MPI.COMM_WORLD
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     if comm.rank == 1:
-        monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
+        monkeypatch.setenv("GS_CERTIFY_MAX_SEED", "1")
     h_op, imp, bath, N0, _n_orb, _n_val, _params = gs_oracle.pinned_model(1, 3, False)
-    with pytest.raises(config.NonUniformKnobError, match="GS_SECTOR_CERTIFY"):
+    with pytest.raises(config.NonUniformKnobError, match="GS_CERTIFY_MAX_SEED"):
         groundstate.solve_sector(
             h_op, imp, bath, dict(N0), tau=0.05, chain_restrict=False, dense_cutoff=1000, manifold=Lowest(),
             slaterWeightMin=1e-12, comm=comm, verbose=False,

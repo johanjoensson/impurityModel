@@ -296,7 +296,7 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
             two_min = min(abs(lab[0]) for lab in needed)
             needed = [lab for lab in needed if lab[0] == two_min]
         orbit_of = {}
-        if config.GS_CERTIFY_LABEL_SYMMETRY.get() and len(needed) > 1:
+        if label_symmetries.CERTIFY_LABEL_SYMMETRY and len(needed) > 1:
             generators = label_symmetries.symmetry_generators(
                 h_op,
                 list(layout.imp_pairs) if sz_ok else index_imp,
@@ -493,7 +493,7 @@ def _expand_job(
     solver.stop_at_cap = capped
     at_cap = [False]
     # The penalty holds the expansion in its class, so the faster solver that stays in its start's
-    # symmetry sector is the right one there (GS_LOWEST_SOLVER=auto). A whole-label job has no
+    # symmetry sector is the right one there (``eigensolvers._LOWEST_SOLVER = "auto"``). A whole-label job has no
     # penalty: it is a plain expansion inside the hard label, where spin and orbital traps remain
     # and only Lanczos growing the generic start vector escapes them.
     solver.davidson = job.seed_class is not None
@@ -1922,8 +1922,8 @@ def solve_certified(
         cause = (
             "the selection or a truncation broke it (a bug: orbit closure is on)"
             if orbits is not None
-            else "the selection or a truncation broke it (orbit-closed selection is off here: GS_ORBIT_CLOSURE=0, or "
-            "no symmetry orbits were built)"
+            else "the selection or a truncation broke it (orbit-closed selection is off here: "
+            "groundstate._ORBIT_CLOSURE is False, or no symmetry orbits were built)"
         )
         print(
             f"ERROR: the thermal manifold splits the {spins} multiplet(s) of its lowest level by "

@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from impurityModel.ed import config
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.basis_transcription import comm_support_filter
@@ -306,19 +305,26 @@ def sharpen_manifolds(blk, es, layout, casimirs, tol, comm=None, redistribute=No
     return blk, info
 
 
+#: Rotate the degenerate ground manifold to the basis that diagonalises the conserved and the impurity
+#: symmetry labels inside it (``2 S_z``, then ``S^2``, ``L^2`` -- or ``J^2`` when ``2 S_z`` is not
+#: conserved), so every reported state is one vector with sharp quantum numbers. Energies and observables
+#: summed over the manifold are untouched. False returns the solver's own vectors. Tests patch it.
+_SHARPEN_MANIFOLDS = True
+
+
 def sharpen_for_report(
     Hop, ground_state_basis, es, blk, rot_to_spherical, spin_layout=None, shell_ls=None, slater_weight_min=None
 ):
     """:func:`sharpen_manifolds` for one member, with the layout and Casimirs resolved as the report does. Collective.
 
-    Returns ``(blk, ManifoldBasis)``. Honours the ``GS_SHARPEN_MANIFOLDS`` knob; a failure while building the
+    Returns ``(blk, ManifoldBasis)``. Honours :data:`_SHARPEN_MANIFOLDS`; a failure while building the
     operators (replicated inputs, so it raises on every rank alike) leaves the block as the solver returned it.
     """
     comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
     es = np.asarray(es, dtype=float)
     # The tolerance decides whether the rotation broadcast below happens: take it from rank 0's energies.
     tol = manifold_tol(comm.bcast(es, root=0) if comm is not None else es, slater_weight_min)
-    enabled = config.GS_SHARPEN_MANIFOLDS.get()
+    enabled = _SHARPEN_MANIFOLDS
     try:
         layout = spin_layout
         if layout is None and enabled:

@@ -31,6 +31,12 @@ from impurityModel.ed.symmetries import PARITY_TERM_TOL, bath_chains, impurity_t
 #: the size of the breaking term (a bath level fitted 1e-3 apart is caught by six orders).
 SYMMETRY_TOL = 1e-10
 
+#: Expand one hard label per orbit of the label symmetries (signed orbital permutations -- the spin flip,
+#: transpositions of impurity orbitals carrying their bath chains -- verified on the whole operator and on
+#: the basis restrictions). The partner labels reuse the representative's verdicts. False expands every
+#: label. Tests patch it.
+CERTIFY_LABEL_SYMMETRY = True
+
 
 @dataclass(frozen=True)
 class SignedPermutation:

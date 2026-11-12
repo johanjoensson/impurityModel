@@ -29,7 +29,7 @@ from math import comb
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config, label_symmetries
+from impurityModel.ed import label_symmetries
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 from impurityModel.ed.mpi_root import on_root
 from impurityModel.ed.spin_pairs import _spin_symmetric, bath_spin_pairs, impurity_spin_pairs
@@ -401,7 +401,7 @@ def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
         pairs = list(layout.pairs) if sz_ok else index_imp + index_bath
         notes = []
         generators = []
-        if config.GS_CERTIFY_LABEL_SYMMETRY.get():
+        if label_symmetries.CERTIFY_LABEL_SYMMETRY:
             generators = label_symmetries.symmetry_generators(
                 h_op,
                 list(layout.imp_pairs) if sz_ok else index_imp,

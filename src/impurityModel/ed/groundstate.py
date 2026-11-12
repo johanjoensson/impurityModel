@@ -9,7 +9,7 @@ from typing import NamedTuple, Optional
 
 import numpy as np
 
-from impurityModel.ed import config, solver_trace
+from impurityModel.ed import config, memory_estimate, solver_trace
 from impurityModel.ed.basis_generation import SeedWindow
 from impurityModel.ed.basis_restrictions import (
     build_excited_restrictions,
@@ -241,9 +241,18 @@ class SectorSolve(NamedTuple):
     solver: CIPSISolver
 
 
+#: A ``Within`` (thermal) ground-state solve selects and truncates whole symmetry orbits of determinants
+#: (:mod:`impurityModel.ed.orbits`): the closure of the detected symmetries of H and, with total spin
+#: conserved, every spin arrangement of a pair-occupation pattern at |2Sz| up to the seed's. The thermal
+#: states then keep every symmetry of H under a binding cap, at the cost of some energy; per-determinant
+#: selection splits a degenerate multiplet there. False selects and truncates determinant by determinant.
+#: Tests patch it.
+_ORBIT_CLOSURE = True
+
+
 def _orbits_for(h_op, basis, manifold, spin_layout):
     """The symmetry orbits a ``Within`` solve selects and truncates by (collective), or ``None``."""
-    if isinstance(manifold, Lowest) or not config.GS_ORBIT_CLOSURE.get():
+    if isinstance(manifold, Lowest) or not _ORBIT_CLOSURE:
         return None
     orbits = build_orbits(h_op, basis, spin_layout=spin_layout)
     if orbits is not None:
@@ -404,7 +413,7 @@ def solve_sector(
             memory_budget_bytes=expand_memory_budget(comm),
             memory_policy=_memory_policy(truncation_threshold),
         )
-        if config.GS_SECTOR_CERTIFY.get():
+        if memory_estimate.SECTOR_CERTIFY:
             store = plan_store
             max_seed = config.GS_CERTIFY_MAX_SEED.get()
 

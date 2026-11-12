@@ -207,6 +207,14 @@ DEFAULT_TRUNCATION_THRESHOLD = 1_000_000
 #: at plan time; this margin is what stands in for it.
 DEFAULT_MEMORY_SAFETY = 0.5
 
+#: Certify every sector solve (:mod:`impurityModel.ed.sector_solver`): split the seed by the hard
+#: symmetry labels ``H`` conserves, expand every symmetry class inside the seed window, keep the lowest.
+#: A single expansion from the seed's lowest state never leaves that state's class, and on bath-fitted
+#: impurities that class is routinely the wrong one (NiO 10-bath: every d5-d9 sector converged on an
+#: excited level, up to 0.17 high). False restores the single expansion. Read here (it prices the
+#: ranking cap) and by :mod:`impurityModel.ed.groundstate`. Tests patch it.
+SECTOR_CERTIFY = True
+
 
 @dataclass(frozen=True)
 class CapPolicy:
@@ -1498,7 +1506,7 @@ def resolve_cap_policy(
 
 def _ranking_sentence(policy):
     """The ranking-cap wording of the ``determinant cap:`` line; empty when certification or ranking is off."""
-    if not config.GS_SECTOR_CERTIFY.get() or not math.isfinite(float(policy.gs)):
+    if not SECTOR_CERTIFY or not math.isfinite(float(policy.gs)):
         return ""
     try:
         ranking = config.effective_ranking_cap(float(policy.gs))

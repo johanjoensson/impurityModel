@@ -107,7 +107,7 @@ def test_a_serial_lowest_solve_on_rank_0_returns_each_rank_its_rows(solver, monk
 
     from impurityModel.ed.eigensolvers import solve_lowest
 
-    monkeypatch.setenv("GS_LOWEST_SOLVER", solver)
+    monkeypatch.setattr("impurityModel.ed.eigensolvers._LOWEST_SOLVER", solver)
     comm = MPI.COMM_WORLD
     n = 40
     h = _hermitian(n, 5)

@@ -147,7 +147,6 @@ def test_a_cubic_d6_level_keeps_all_fifteen_states_when_its_classes_are_ranked_u
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     monkeypatch.setenv("GS_RANKING_CAP", str(ranking_cap))
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True)
     pass_1 = []

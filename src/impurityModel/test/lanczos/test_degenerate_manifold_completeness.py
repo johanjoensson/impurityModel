@@ -344,8 +344,8 @@ def _lowest_solve(system, *, warm, calls=None, monkeypatch=None, tol=1e-11):
 def test_lowest_returns_one_pair_of_a_degenerate_level_in_one_narrow_solve(system, warm, monkeypatch):
     """A 5-fold ground level: the energy is exact, one eigensolve runs, and its block is at most two wide.
 
-    The Lanczos path (``GS_LOWEST_SOLVER=trlm``); Davidson is the next test."""
-    monkeypatch.setenv("GS_LOWEST_SOLVER", "trlm")
+    The Lanczos path (``eigensolvers._LOWEST_SOLVER = "trlm"``); Davidson is the next test."""
+    monkeypatch.setattr("impurityModel.ed.eigensolvers._LOWEST_SOLVER", "trlm")
     calls = []
     eig = _lowest_solve(system, warm=warm, calls=calls, monkeypatch=monkeypatch)
     assert eig.certified
@@ -358,7 +358,7 @@ def test_lowest_returns_one_pair_of_a_degenerate_level_in_one_narrow_solve(syste
 @pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
 def test_davidson_returns_one_exact_pair_of_a_degenerate_level_without_lanczos(system, warm, monkeypatch):
     """The Davidson ``Lowest`` solver on the same 5-fold level: certified, exact, and no Lanczos fallback."""
-    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidson")
+    monkeypatch.setattr("impurityModel.ed.eigensolvers._LOWEST_SOLVER", "davidson")
     calls = []
     eig = _lowest_solve(system, warm=warm, calls=calls, monkeypatch=monkeypatch)
     assert eig.certified
@@ -369,9 +369,9 @@ def test_davidson_returns_one_exact_pair_of_a_degenerate_level_without_lanczos(s
 
 @pytest.mark.mpi
 def test_an_unknown_lowest_solver_is_rejected_not_read_as_lanczos(system, monkeypatch):
-    """``GS_LOWEST_SOLVER`` outside ``auto``/``davidson``/``trlm`` raises; a typo once meant Lanczos."""
-    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidsn")
-    with pytest.raises(ValueError, match="GS_LOWEST_SOLVER='davidsn'"):
+    """``_LOWEST_SOLVER`` outside ``auto``/``davidson``/``trlm`` raises; a typo once meant Lanczos."""
+    monkeypatch.setattr("impurityModel.ed.eigensolvers._LOWEST_SOLVER", "davidsn")
+    with pytest.raises(ValueError, match="_LOWEST_SOLVER='davidsn'"):
         _lowest_solve(system, warm=True, calls=[], monkeypatch=monkeypatch)
 
 
@@ -382,7 +382,7 @@ def test_davidson_from_an_exact_eigenvector_stops_at_roundoff_without_lanczos(sy
     Unfloored, no iteration could reach ``tol=0``, the correction lay in the space already and was
     renormalized into noise, and the solve ran ``DAVIDSON_MAX_ITER`` iterations before Lanczos took over.
     """
-    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidson")
+    monkeypatch.setattr("impurityModel.ed.eigensolvers._LOWEST_SOLVER", "davidson")
     calls = []
     eig = _lowest_solve(system, warm=True, calls=calls, monkeypatch=monkeypatch, tol=0.0)
     assert eig.certified
@@ -395,7 +395,7 @@ def test_a_davidson_that_does_not_converge_hands_over_to_lanczos(system, monkeyp
     """Out of iterations, Davidson's best vector seeds one Lanczos solve, which certifies the exact pair."""
     from impurityModel.ed import eigensolvers
 
-    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidson")
+    monkeypatch.setattr("impurityModel.ed.eigensolvers._LOWEST_SOLVER", "davidson")
     monkeypatch.setattr(eigensolvers, "DAVIDSON_MAX_ITER", 1)
     calls = []
     eig = _lowest_solve(system, warm=False, calls=calls, monkeypatch=monkeypatch)

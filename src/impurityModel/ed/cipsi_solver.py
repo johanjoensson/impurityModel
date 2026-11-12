@@ -466,7 +466,7 @@ class CIPSISolver:
         self.refiner_stopped = False
         #: Wider degeneracy tolerance for :meth:`truncate` (a certified manifold's error bar); ``None``: roundoff.
         self.group_tol = None
-        #: ``Lowest`` solves by Davidson under ``GS_LOWEST_SOLVER=auto`` (a certified class expansion
+        #: ``Lowest`` solves by Davidson under ``eigensolvers._LOWEST_SOLVER = "auto"`` (a certified class expansion
         #: sets it: :func:`eigensolvers.davidson_lowest` stays in its start's symmetry sector).
         self.davidson = False
         #: ``Lowest`` solves go sparse (Lanczos from the generic start vector, on rank 0 below

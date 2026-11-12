@@ -31,7 +31,7 @@ EXPAND = dict(dense_cutoff=1000, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12)
 
 @pytest.fixture(autouse=True)
 def _certifier_defaults(monkeypatch):
-    for knob in ("GS_SECTOR_CERTIFY", "GS_CERTIFY_WINDOW", "GS_CERTIFY_WINDOW_FACTOR", "GS_CERTIFY_LABEL_SYMMETRY"):
+    for knob in ("GS_CERTIFY_WINDOW", "GS_CERTIFY_WINDOW_FACTOR"):
         monkeypatch.delenv(knob, raising=False)
 
 
@@ -153,9 +153,9 @@ def _spectrum(h_op):
 @pytest.mark.parametrize("comm", COMMS)
 def test_mirrored_labels_are_not_expanded_and_reach_the_same_answer(comm, monkeypatch):
     exact = float(_spectrum(_hamiltonian())[0])
-    monkeypatch.setenv("GS_CERTIFY_LABEL_SYMMETRY", "0")
+    monkeypatch.setattr("impurityModel.ed.label_symmetries.CERTIFY_LABEL_SYMMETRY", False)
     e_all, plan_all, verdicts_all = _certified(comm)
-    monkeypatch.delenv("GS_CERTIFY_LABEL_SYMMETRY")
+    monkeypatch.setattr("impurityModel.ed.label_symmetries.CERTIFY_LABEL_SYMMETRY", True)
     e_dedup, plan, verdicts = _certified(comm)
 
     mirrors = [job for job in plan.jobs if job.image_of is not None]
@@ -243,7 +243,7 @@ def test_a_spin_polarized_bath_certifies_by_s_z_and_still_mirrors(monkeypatch):
     assert "spin: S_z" in describe_plan(plan)
     es, *_ = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
     assert float(np.min(np.real(es))) == pytest.approx(exact, abs=1e-8)
-    monkeypatch.setenv("GS_CERTIFY_LABEL_SYMMETRY", "0")
+    monkeypatch.setattr("impurityModel.ed.label_symmetries.CERTIFY_LABEL_SYMMETRY", False)
     plan_all = certification_plan(h_op, _seed(h_op, None))
     assert len(plan_all.jobs) == len(plan.jobs) and all(job.image_of is None for job in plan_all.jobs)
     print(f"jobs: {len(plan.jobs)}, expanded: {len(plan.jobs) - len(mirrors)}")

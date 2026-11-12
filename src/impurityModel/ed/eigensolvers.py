@@ -19,7 +19,6 @@ import numpy as np
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed.average import energy_cut
 from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
 from impurityModel.ed.degeneracy import degenerate_groups
@@ -31,6 +30,15 @@ from impurityModel.ed.trlm import STATUS_CONVERGED, Window, _deflate, trlm
 _U64 = (1 << 64) - 1
 #: Salt separating the imaginary part's hash stream from the real part's (the splitmix64 "golden
 #: gamma" of a second stream), shared by every hash-seeded start block.
+#: Solver for a ``Lowest`` eigenpair above the dense size. ``"auto"``: Davidson with the diagonal
+#: preconditioner inside a certified class expansion, thick-restart Lanczos everywhere else (Davidson needed
+#: 2-4x fewer matrix-vector products on the NiO 10-bath d6 cycles, but it stays in the symmetry sector of its
+#: start's lowest Ritz vector, which a class expansion intends and a plain expansion must not). ``"davidson"``
+#: / ``"trlm"`` force one. Davidson falls back to Lanczos when it does not converge; thermal (``Within``)
+#: solves always use Lanczos. Tests patch it.
+_LOWEST_SOLVER = "auto"
+_LOWEST_SOLVERS = ("auto", "davidson", "trlm")
+
 _IMAG_STREAM_SALT = 0xD1B54A32D192ED03
 #: Well-spread odd multiplier deriving a column's salt from (round, column): the 64-bit PCG LCG constant.
 _SALT_MULTIPLIER = 0x5851F42D4C957F2D
@@ -751,7 +759,7 @@ def solve_lowest(
     n_global : int
         Dimension of the operator (bounds the Krylov depth).
     davidson : bool
-        Try :func:`davidson_lowest` first (under ``GS_LOWEST_SOLVER=auto``).
+        Try :func:`davidson_lowest` first (under ``_LOWEST_SOLVER = "auto"``).
     serial : bool
         Solve on rank 0 alone (:func:`_lowest_on_root`): for a basis so small that every distributed
         iteration is collective latency.
@@ -787,9 +795,9 @@ def solve_lowest(
         q0, _ = block_normalize(start_block(with_warm), mpi, comm, 0.0)
     except ValueError:  # BlockBreakdown, rank-symmetric: decided by the replicated TSQR factor
         q0, _ = block_normalize(start_block(False), mpi, comm, 0.0)
-    choice = config.GS_LOWEST_SOLVER.get()
-    if choice not in config.GS_LOWEST_SOLVERS:  # a typo would otherwise silently mean Lanczos
-        raise ValueError(f"GS_LOWEST_SOLVER={choice!r}; expected one of {config.GS_LOWEST_SOLVERS}")
+    choice = _LOWEST_SOLVER
+    if choice not in _LOWEST_SOLVERS:  # a typo would otherwise silently mean Lanczos
+        raise ValueError(f"_LOWEST_SOLVER={choice!r}; expected one of {_LOWEST_SOLVERS}")
     if (choice == "davidson" or (choice == "auto" and davidson)) and n_global > 1:
         theta, x, converged = davidson_lowest(h_op, comm, q0, tol=tol)
         if converged:

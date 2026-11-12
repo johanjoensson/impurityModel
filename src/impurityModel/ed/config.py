@@ -127,9 +127,6 @@ GF_METHODS = ("lanczos", "bicgstab")
 GF_ADMISSIONS = ("all", "outer")
 
 
-#: Accepted ``GS_LOWEST_SOLVER`` values (see that knob).
-GS_LOWEST_SOLVERS = ("auto", "davidson", "trlm")
-
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
@@ -368,50 +365,6 @@ GS_MAX_BLOCK_WIDTH = Knob(
     becomes the default rather than an opt-in override.""",
 )
 
-GS_SECTOR_CERTIFY = Knob(
-    name="GS_SECTOR_CERTIFY",
-    kind="bool",
-    default=True,
-    group="groundstate",
-    doc="""Certify every sector solve (`sector_solver`): split the seed by the hard symmetry labels
-    ``H`` is detected to conserve (``2 S_z``, the occupation parities), partition each label's seed
-    into the classes of ``P H P`` and ``P H Q H P`` (no symmetry assumed), expand every class inside
-    the seed window, and keep the lowest. A single expansion from the seed's lowest state never
-    leaves that state's symmetry class, and on bath-fitted impurities the seed's class is routinely
-    the wrong one -- on the NiO 10-bath archive every sector from d5 to d9 converged on an excited
-    level, up to 0.17 high. ``0`` restores the single expansion.""",
-)
-
-GS_SHARPEN_MANIFOLDS = Knob(
-    name="GS_SHARPEN_MANIFOLDS",
-    kind="bool",
-    default=True,
-    group="groundstate",
-    doc="""Rotate the degenerate ground manifold to the basis that diagonalises the conserved and the
-    impurity symmetry labels inside it (``2 S_z``, then ``S^2``, ``L^2`` -- or ``J^2`` when ``2 S_z``
-    is not conserved), so every reported state is one vector with sharp quantum numbers and the
-    states ``calc_gs`` returns are those same vectors. The solver returns an arbitrary orthonormal
-    basis of a degenerate manifold, which the report would otherwise have to describe state by
-    state. Energies are untouched and any observable summed over the whole manifold is unchanged.
-    ``0`` returns the solver's own vectors.""",
-)
-
-GS_LOWEST_SOLVER = Knob(
-    name="GS_LOWEST_SOLVER",
-    kind="str",
-    default="auto",
-    group="groundstate",
-    doc="""Solver for a ``Lowest`` eigenpair above the dense size (every CIPSI cycle of an expansion).
-    ``auto`` (default): Davidson with the diagonal preconditioner inside a certified class expansion,
-    thick-restart Lanczos everywhere else. Davidson needed 2-4x fewer matrix-vector products than
-    Lanczos on the NiO 10-bath d6 cycles, with a quarter of the stored vectors, and cut the certified
-    d5 sector from 1423 s to 375 s; but it stays in the symmetry sector of its start's lowest Ritz
-    vector, which a class expansion intends and a plain expansion must not (its only defence against
-    its seed's trap is Lanczos growing every sector of the generic start vector). ``davidson`` /
-    ``trlm`` force one everywhere. Davidson falls back to Lanczos when it does not converge; thermal
-    (``Within``) solves always use Lanczos, which certifies the manifold complete.""",
-)
-
 GS_CERTIFY_MAX_SEED = Knob(
     name="GS_CERTIFY_MAX_SEED",
     kind="int",
@@ -461,33 +414,6 @@ GS_CERTIFY_WINDOW_FACTOR = Knob(
     window when `GS_CERTIFY_WINDOW` is unset. Hybridization lowers a seed state by about sigma^2 / Delta,
     which reaches sigma as the charge-transfer gap Delta closes; three times the largest sigma
     covers every crossover that a single hybridization shell can drive, with margin.""",
-)
-
-GS_ORBIT_CLOSURE = Knob(
-    name="GS_ORBIT_CLOSURE",
-    kind="bool",
-    default=True,
-    group="groundstate",
-    doc="""A `Within` (thermal) ground-state solve selects and truncates whole symmetry orbits of determinants
-    (`orbits`): the closure of the detected symmetries of H and, with total spin conserved, every spin arrangement
-    of a pair-occupation pattern at |2Sz| up to the seed's. The thermal states then keep every symmetry of H under a
-    binding cap, at the cost of some energy; per-determinant selection splits a degenerate multiplet there.
-    ``0`` selects and truncates determinant by determinant.""",
-)
-
-GS_CERTIFY_LABEL_SYMMETRY = Knob(
-    name="GS_CERTIFY_LABEL_SYMMETRY",
-    kind="bool",
-    default=True,
-    group="groundstate",
-    doc="""Expand one hard label per orbit of the label symmetries (`label_symmetries`): signed
-    orbital permutations -- the spin flip, and transpositions of impurity orbitals carrying their
-    bath chains -- verified on the whole operator and on the basis restrictions, which map one
-    label's problem unitarily onto another's. The partner labels reuse the representative's
-    verdicts, and their thermal states are mapped from its determinants. On the NiO linked-chain
-    iteration 1 a t2g swap made two of four labels in two sectors bit-identical repeats. The
-    swap is built from the run's spin layout (`spin_pairs.spin_layout`), so a spin-polarized run
-    whose impurity is grouped per spin finds it too. ``0`` expands every label.""",
 )
 
 GS_SELECTION_CHUNK = Knob(
@@ -697,15 +623,10 @@ KNOBS: dict[str, Knob] = _register(
     GF_KRYLOV_RECYCLE_MAX_BYTES,
     GF_RIXS_WIN_CHUNK,
     GS_MAX_BLOCK_WIDTH,
-    GS_SECTOR_CERTIFY,
-    GS_SHARPEN_MANIFOLDS,
-    GS_LOWEST_SOLVER,
     GS_CERTIFY_MAX_SEED,
     GS_RANKING_CAP,
     GS_CERTIFY_WINDOW,
     GS_CERTIFY_WINDOW_FACTOR,
-    GS_CERTIFY_LABEL_SYMMETRY,
-    GS_ORBIT_CLOSURE,
     GS_SELECTION_CHUNK,
     GS_MATVEC_EXCHANGE_BYTES,
     APPLY_ROW_CHUNKS,

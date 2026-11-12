@@ -5,7 +5,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 
-KNOB = "GS_SECTOR_CERTIFY"  # a bool knob that gates collectives
+KNOB = "GS_CERTIFY_MAX_SEED"  # an int knob that gates collectives
 
 
 def test_serial_comm_none_passes(monkeypatch):

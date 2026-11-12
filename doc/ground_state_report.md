@@ -37,7 +37,7 @@ lies. The report is assembled on rank 0 only; other ranks hold an empty model.
 Degenerate states are reported per manifold and, when the spin layout verifies
 $[H,S_z]=0$, in a basis that diagonalises $S_z$ (and $S^2$, $L^2$) inside each manifold, so
 a member row is one state. These rotated states are what `calc_gs` returns to the drivers
-(`GS_SHARPEN_MANIFOLDS=0` restores the raw solver vectors).
+(`gs_report._SHARPEN_MANIFOLDS = False` restores the raw solver vectors).
 
 ## The thermal ground state
 

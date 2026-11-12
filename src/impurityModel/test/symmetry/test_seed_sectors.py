@@ -34,7 +34,6 @@ BATH_STATES: tuple[dict, dict] = ({0: [list(range(N_IMP, N_ORB))]}, {0: []})
 def _certifier_defaults(monkeypatch):
     """The certifier on (its default) and the window knobs cleared, so a value in the developer's
     environment cannot leak in."""
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     monkeypatch.delenv("GS_CERTIFY_WINDOW", raising=False)
     monkeypatch.delenv("GS_CERTIFY_WINDOW_FACTOR", raising=False)
 
@@ -111,7 +110,7 @@ def _plan(h_op):
 def test_a_single_expansion_is_trapped_in_the_seed_ground_multiplet(monkeypatch):
     """The failure this module exists for, pinned so a fixture change cannot quietly remove it."""
     h_op = _hamiltonian()
-    monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
+    monkeypatch.setattr("impurityModel.ed.memory_estimate.SECTOR_CERTIFY", False)
     assert _sector_energy(h_op) - _exact_ground_energy(h_op) > 0.1
 
 

@@ -117,9 +117,8 @@ def _solve_sector(h_op, comm, manifold):
 @pytest.mark.parametrize("comm", COMMS)
 def test_solve_sector_certifies_by_default_and_the_switch_restores_a_single_expansion(comm, monkeypatch):
     exact = _exact_ground_energy(_hamiltonian())
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     certified, _result = _solve_sector(_hamiltonian(), comm, Lowest())
-    monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
+    monkeypatch.setattr("impurityModel.ed.memory_estimate.SECTOR_CERTIFY", False)
     single, _result = _solve_sector(_hamiltonian(), comm, Lowest())
     assert abs(certified - exact) < 1e-8
     assert single > exact + 1e-3
@@ -131,7 +130,6 @@ def test_the_certified_thermal_manifold_holds_the_whole_ground_multiplet(comm, m
     ground multiplet comes back complete, whatever row the winning class expanded."""
     from impurityModel.ed.eigensolvers import Within
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     h_op = _hamiltonian(mu=-5.0)  # a triplet ground level: its rows span three S_z
     exact = np.sort(np.real(_exact_spectrum(h_op)))
     multiplicity = int(np.sum(exact - exact[0] < 1e-8))
@@ -194,7 +192,6 @@ def test_a_second_shift_through_the_store_expands_fewer_classes_and_finds_the_sa
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     expansions = {"n": 0}
     real = CIPSISolver.expand
 
@@ -245,7 +242,6 @@ def test_the_store_is_reused_only_at_its_own_accuracy(comm, monkeypatch):
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     expansions = {"n": 0}
     real = CIPSISolver.expand
 
@@ -289,7 +285,6 @@ def test_a_sector_too_large_to_certify_is_counted_as_uncertified(comm, monkeypat
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
 
     def solve(store):
         solve_sector(
@@ -384,7 +379,6 @@ def test_a_spin_and_orbitally_degenerate_thermal_level_comes_back_whole(monkeypa
     from impurityModel.ed.manybody_basis import Basis
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     n_imp_el, n_orb = 7, 20
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     dets = [
@@ -427,7 +421,6 @@ def test_a_thermal_manifold_short_of_its_level_is_reported(monkeypatch, capsys):
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     seen = {}
     real = sector_solver.manifold_deficit
 
@@ -519,7 +512,6 @@ def test_a_class_held_by_the_cap_marks_the_sector_solve_cap_bound(monkeypatch):
         )  # fmt: skip
         return es, psis, sb, solver, [*verdicts, loser]
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     monkeypatch.setattr(groundstate, "solve_certified", with_a_capped_loser)
     _e0, result = _solve_sector(_hamiltonian(), None, Lowest())
     report = result.solver.truncation_report
@@ -532,7 +524,6 @@ def test_a_tangent_violation_replaces_the_stored_record_and_is_a_full_certificat
     from impurityModel.ed import groundstate
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     store = SectorPlanStore()
 
     def solve(shift):
@@ -619,7 +610,6 @@ def test_the_ground_state_certifies_its_winning_sector_once(monkeypatch):
     from impurityModel.ed import sector_solver
     from impurityModel.ed.groundstate import solve_ground_state
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     calls = {"n": 0}
     real = sector_solver._expand_job
 
@@ -799,7 +789,6 @@ def _union_size_at_the_window_solve(monkeypatch, cap, capsys=None):
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     sizes = []
     real = sector_solver.CIPSISolver
 
@@ -915,7 +904,6 @@ def test_a_closed_shell_seed_is_widened_so_the_other_symmetry_class_is_expanded(
     from impurityModel.ed import groundstate, sector_solver
     from impurityModel.test.support import gs_oracle
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     h_op, imp, bath, _N0, n_orb, n_val, _ = gs_oracle.pinned_model(11, 77)
     plans = []
     real = sector_solver.certification_plan
@@ -951,7 +939,6 @@ def test_a_closed_shell_seed_whose_widening_is_too_big_is_counted_as_uncertified
     from impurityModel.ed import groundstate, sector_solver
     from impurityModel.test.support import gs_oracle
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     monkeypatch.setenv("GS_CERTIFY_MAX_SEED", "5")
     h_op, imp, bath, _N0, _n_orb, _n_val, _ = gs_oracle.pinned_model(11, 77)
     store = sector_solver.SectorPlanStore()
@@ -1111,7 +1098,6 @@ def test_solve_sector_counts_the_plan_stores_active_orbitals(comm, monkeypatch):
     from impurityModel.ed import groundstate
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     seen = []
     real = groundstate.solve_certified
 
@@ -1163,7 +1149,6 @@ def test_an_uncertified_ground_state_sector_is_announced_once_at_every_verbosity
     from impurityModel.ed.groundstate import solve_ground_state
     from impurityModel.ed.sector_solver import SectorPlanStore
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     store = SectorPlanStore()
 
     def solve():
@@ -1193,7 +1178,6 @@ def test_a_cubic_d6_level_split_across_labels_stays_whole_under_a_cap_below_the_
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True)
     result = solve_sector(
         h_op,
@@ -1230,7 +1214,6 @@ def test_a_spin_orbit_window_is_split_by_parity_blocks_when_the_union_exceeds_th
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True, soc=0.15)
     result = solve_sector(
         h_op, imp, baths, {0: 6}, tau=0, chain_restrict=False, dense_cutoff=1000, manifold=Within(1e-6),
@@ -1289,7 +1272,6 @@ def test_the_per_label_window_does_not_depend_on_the_rank_count(monkeypatch):
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1, real_cubic=True)
 
     def run(comm):

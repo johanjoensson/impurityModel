@@ -176,8 +176,7 @@ def _capped_cubic_d7(monkeypatch, cap, closure, comm=None):
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
-    monkeypatch.setenv("GS_ORBIT_CLOSURE", "1" if closure else "0")
+    monkeypatch.setattr("impurityModel.ed.groundstate._ORBIT_CLOSURE", bool(closure))
     if not closure:
         # The control is the old behaviour: a level is grouped at roundoff only, so per-determinant scoring bites.
         # (S2b groups a certified manifold at its certification error bar, which alone rescues the level.)
@@ -269,8 +268,7 @@ def test_an_unconverged_window_missing_copies_is_not_reported_as_a_split(monkeyp
 
     real = cipsi_solver.solve_window
     monkeypatch.setattr(cipsi_solver, "solve_window", lambda *a, **k: real(*a, **{**k, "max_restarts": 0}))
-    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
-    monkeypatch.setenv("GS_ORBIT_CLOSURE", "1")
+    monkeypatch.setattr("impurityModel.ed.groundstate._ORBIT_CLOSURE", True)
     comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
     _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
     result = solve_sector(
