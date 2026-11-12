@@ -184,8 +184,7 @@ def _active_shift(model, sb, n_imp):
     the rule the fitter and the interface use). A deep bath-less shell has an occupation its energy
     pins, so a shift on it moves nothing the criterion measures. ``shift_input`` is diagonal in the
     caller's input basis (the DC matrix lives there), ``shift_solver`` in the solver basis (``sb.h`` lives
-    there); ``prepare_solver_basis`` keeps a rotation only if it maps every orbital into one shell, so both
-    are diagonal and select the same shells.
+    there). The solver works in the caller's basis, so the two are the same matrix.
     """
     if sb.active_impurity_indices is None:
         identity = np.identity(n_imp)
@@ -935,7 +934,7 @@ def _prepare_sector_context(
     shift_input, shift_solver, active_indices = _active_shift(model, sb, dc_guess.shape[0])
 
     max_occ_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
-    # One-body matrix in the *solver* basis (h0_solve, i.e. after any symmetry rotation), so the
+    # One-body matrix in the *solver* basis (h0_solve), so the
     # energetic filling _per_group_occupation performs sees the same on-site energies that defined
     # the derived groups.
     h_solver_matrix = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0]
@@ -2145,8 +2144,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
     # observable on the same sector/basis the downstream selfenergy solve will use, or "fixed"
     # does not mean what it says). The mu shift is a uniform impurity shift (-mu * P, the projector onto the
     # hybridising shells; the identity on a single shell),
-    # which commutes with the impurity block and hence with any rotation prepare_solver_basis
-    # applies, so the layout derived once here at the guess dc is valid for every trial mu.
+    # which commutes with the impurity block, so the layout derived once here at the guess dc is valid for every trial mu.
     sb = prepare_solver_basis(
         h0_op,
         model.dc,

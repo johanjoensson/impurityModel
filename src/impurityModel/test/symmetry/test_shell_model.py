@@ -342,49 +342,6 @@ def test_a_shell_keyed_nominal_occupation_is_not_read_as_group_keyed_when_the_ke
     assert got == {0: 8, 1: 2}
 
 
-def _rotating_d_model():
-    """A d shell with a crystal-field mixing of orbitals 0 and 1: the symmetry-adapted rotation is not the identity."""
-    from impurityModel.ed.lie_algebra import tensors_to_operator
-
-    h = np.zeros((12, 12), dtype=complex)
-    for i in range(10):
-        h[i, i] = 1.0 + 0.1 * (i % 5)
-    h[0, 1] = h[1, 0] = 0.05
-    h[5, 6] = h[6, 5] = 0.05
-    h[10, 10], h[11, 11] = -1.0, 2.0
-    h[0, 10] = h[10, 0] = h[5, 11] = h[11, 5] = 0.3
-    return tensors_to_operator(h).to_dict()
-
-
-@pytest.mark.mpi
-@pytest.mark.skipif(__import__("mpi4py.MPI").MPI.COMM_WORLD.size == 1, reason="needs a second rank to disagree")
-def test_every_rank_solves_in_rank_zeros_rotation(monkeypatch):
-    """H-MS7: the rotation is a rank-local eigh; a rank whose eigh disagrees must still take rank 0's basis."""
-    from mpi4py import MPI
-
-    from impurityModel.ed import solver_basis
-
-    comm = MPI.COMM_WORLD
-    if comm.rank != 0:
-        # Stand-in for a degenerate block whose eigenvectors came out differently on this rank's BLAS.
-        monkeypatch.setattr(
-            solver_basis,
-            "impurity_symmetry_rotation",
-            lambda op, imp, n_orb=None, h0_matrix=None, rot_to_spherical=None: (
-                np.eye(n_orb, dtype=complex),
-                np.eye(len(imp), dtype=complex),
-            ),
-        )
-    sb = solver_basis.prepare_solver_basis(
-        _rotating_d_model(), {}, {}, {0: list(range(10))}, 8, rot_to_spherical=np.eye(10), verbosity=0, comm=comm
-    )
-    root = comm.bcast(sb.rotation_full, root=0)
-    assert not np.allclose(root, np.eye(root.shape[0])), "the model must rotate, or the test is vacuous"
-    assert np.array_equal(sb.rotation_full, root)
-    assert np.array_equal(sb.u_imp, comm.bcast(sb.u_imp, root=0))
-    assert sb.block_structure == comm.bcast(sb.block_structure, root=0)
-
-
 def test_the_shell_refusal_names_the_coupling_that_joined_the_shells():
     """H-MS6: a direct p-d impurity element joins the group just as a shared bath does; the message said 'a bath
     component hops to more than one shell' in both cases. It now names the element or the bath."""
@@ -397,7 +354,7 @@ def test_the_shell_refusal_names_the_coupling_that_joined_the_shells():
         prepare_solver_basis(
             h0, {}, {}, {0: list(range(16))}, {0: 2, 1: 8}, rot_to_spherical=rot, verbosity=0, shell_ls=(1, 2)
         )
-    assert "input-basis impurity element h[0, 6] = 1e-05 couples shells 0 and 1" in str(direct.value)
+    assert "impurity element h[0, 6] = 1e-05 couples shells 0 and 1" in str(direct.value)
 
     h0, rot = _p_plus_d_model(couple_p=True)
     with pytest.raises(ValueError, match=r"spans shells|straddle") as bath:
@@ -414,3 +371,30 @@ def test_impurity_shell_rhos_refuses_a_sub_shell_block():
 
     with pytest.raises(ValueError, match="not a spin-doubled l-shell"):
         list(impurity_shell_rhos(np.eye(4, dtype=complex), np.eye(4, dtype=complex)))
+
+
+@pytest.mark.mpi
+def test_the_solver_works_in_the_basis_it_is_given():
+    """The solver does not rotate: a crystal-field mixing of orbitals 0 and 1 stays in the operator and the blocks."""
+    from mpi4py import MPI
+
+    from impurityModel.ed import solver_basis
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+
+    h = np.zeros((12, 12), dtype=complex)
+    for i in range(10):
+        h[i, i] = 1.0 + 0.1 * (i % 5)
+    h[0, 1] = h[1, 0] = 0.05
+    h[5, 6] = h[6, 5] = 0.05
+    h[10, 10], h[11, 11] = -1.0, 2.0
+    h[0, 10] = h[10, 0] = h[5, 11] = h[11, 5] = 0.3
+    op = tensors_to_operator(h).to_dict()
+    sb = solver_basis.prepare_solver_basis(
+        op, {}, {}, {0: list(range(10))}, 8, rot_to_spherical=np.eye(10), verbosity=0, comm=MPI.COMM_WORLD
+    )
+    assert sb.rot_to_spherical is not None and np.allclose(sb.rot_to_spherical, np.eye(10))
+    from impurityModel.ed.lie_algebra import extract_tensors
+
+    assert np.allclose(extract_tensors(sb.h, two_body=False)[0], h)
+    # orbitals 0 and 1 are coupled in the supplied basis, so they share a block
+    assert any({0, 1} <= set(block) for blocks in sb.impurity_orbitals.values() for block in blocks)

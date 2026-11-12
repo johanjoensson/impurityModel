@@ -126,7 +126,7 @@ class ImpurityModel:
     produced by :func:`operator_algebra.matrixToIOp` and the readers in
     :mod:`impurityModel.ed.hamiltonian_io`); the interacting Hamiltonian ``h0 + U(u4)`` is
     assembled inside the solver. Every array is in the caller's input (correlated) basis;
-    results are rotated back to it.
+    results are returned in it.
 
     Attributes
     ----------
@@ -1787,7 +1787,7 @@ class SpectraOptions:
     radial : tuple or None
         ``(radial_mesh, Ri, Rj)`` for the NIXS radial integral. ``None`` skips NIXS.
     auto_block_structure : bool
-        Derive the block structure (and the symmetry-adapted solver basis) from the
+        Derive the block structure from the
         hybridization-dressed impurity matrix instead of the hand-coded one.
     XAS_projectors, RIXS_projectors : object or None
         Optional transition projectors; ``None`` computes the full polarization tensor.

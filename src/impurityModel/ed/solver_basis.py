@@ -15,27 +15,18 @@ from impurityModel.ed.symmetries import (
     extract_tensors,
     group_orbitals_by_blocks,
     impurity_block_structure,
-    impurity_symmetry_rotation,
-    rotate_hamiltonian,
 )
 from impurityModel.ed.utils import format_index_ranges
-
-# Adaptive symmetry-adapted-basis rotation (calc_selfenergy): drop rotated operator terms below
-# this magnitude (eV; removes rotation round-off fill), and rotate into the symmetry-adapted
-# basis only if it keeps the operator term count within this factor of the input basis.
-_ROTATION_TRIM_TOL = 1e-8
-_MAX_ROTATION_FILL = 2.0
 
 
 @dataclass(frozen=True)
 class SolverBasis:
     """Solver-basis Hamiltonian and derived orbital/block layout for a self-energy run.
 
-    Produced by :func:`_prepare_solver_basis`: the (optionally symmetry-adapted) solver
-    Hamiltonian ``h`` and the matching non-interacting operator ``h0_solve``, the impurity/bath
-    orbital grouping and block structure derived from it, the per-group occupation windows, and
-    the rotations (``rotation_full`` full-space, ``u_imp`` impurity block) that carry results
-    back to the caller's input basis.
+    Produced by :func:`prepare_solver_basis`: the solver Hamiltonian ``h`` (in the basis the caller
+    supplied: the solver never rotates it) and the matching non-interacting operator ``h0_solve``, the
+    impurity/bath orbital grouping and block structure derived from it, and the per-group occupation
+    windows.
     """
 
     h: object
@@ -45,8 +36,6 @@ class SolverBasis:
     impurity_orbitals: dict
     bath_states: tuple
     nominal_occ: dict
-    rotation_full: "np.ndarray"
-    u_imp: "np.ndarray"
     rot_to_spherical: "np.ndarray"
     total_impurity_orbitals: dict
     sum_bath_states: dict
@@ -137,24 +126,21 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None, impurity_shell
 _ROUNDOFF = 1e-12
 
 
-def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices, h_input_matrix, input_shell_of):
+def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices):
     """Name what couples two shells inside one orbital group: a direct impurity element, a shared bath, or both.
 
     Used only to word the refusal (review H-MS6). Any element above the block-structure threshold joins a group,
-    so a direct p-d element of 1e-5 refuses exactly as a bath hopping to both shells does. The direct element is
-    looked up in the caller's input basis, since the symmetry rotation can carry it onto a bath (a 1e-5 p-d element
-    became a 7.5e-7 hopping from one bath to both shells); the bath is looked up in the solver basis.
+    so a direct p-d element of 1e-5 refuses exactly as a bath hopping to both shells does.
     """
     h = np.asarray(h_matrix)
-    h_in = np.asarray(h_input_matrix)
     imp = sorted(impurity_indices)
-    shells = {shell_of[o] for o in group_orbitals}  # the group's shells; the rotation keeps every orbital in one
+    shells = {shell_of[o] for o in group_orbitals}  # the shells the group's orbitals belong to
     direct = max(
         (
-            (abs(h_in[a, b]), a, b)
+            (abs(h[a, b]), a, b)
             for a in imp
             for b in imp
-            if a < b and input_shell_of[a] != input_shell_of[b] and {input_shell_of[a], input_shell_of[b]} <= shells
+            if a < b and shell_of[a] != shell_of[b] and {shell_of[a], shell_of[b]} <= shells
         ),
         default=(0.0, None, None),
     )
@@ -167,8 +153,8 @@ def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices, h_inpu
     if direct[0] > _ROUNDOFF:
         a, b = direct[1], direct[2]
         parts.append(
-            f"the input-basis impurity element h[{a}, {b}] = {direct[0]:.3g} couples shells {input_shell_of[a]} and "
-            f"{input_shell_of[b]} directly"
+            f"the impurity element h[{a}, {b}] = {direct[0]:.3g} couples shells {shell_of[a]} and "
+            f"{shell_of[b]} directly"
         )
     if shared:
         weakest, b = max(shared)
@@ -192,23 +178,17 @@ def prepare_solver_basis(
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
-    Assembles the interacting Hamiltonian ``H = h0 - DC + U(u4)`` in the caller's input basis, then
-    adaptively rotates into the impurity-diagonalising basis when that does not densify the
-    Coulomb tensor (fill ratio ``<= _MAX_ROTATION_FILL``; the input basis is kept otherwise).
-    Derives the bath valence/conduction split, the Green's-function block structure, and the
-    per-group impurity/bath orbital grouping and occupation windows -- all in whichever basis is
-    solved in. Returns a :class:`SolverBasis`.
+    Assembles the interacting Hamiltonian ``H = h0 - DC + U(u4)`` in the caller's basis and solves in
+    that basis: the solver does not rotate the impurity. Derives the bath valence/conduction split, the
+    Green's-function block structure, and the per-group impurity/bath orbital grouping and occupation
+    windows. Returns a :class:`SolverBasis`.
 
     ``rank`` gates the report only: every rank computes the identical layout, so without the gate the
-    legend prints once per rank. When ``comm`` is given, three broadcasts from rank 0 run
-    unconditionally on every rank of it: the symmetry rotation, the decision to solve in it, and the
-    resolved :attr:`SolverBasis.spin_layout`. Rank-local eigenvectors of a degenerate block, or a fill
-    ratio on the threshold, cannot then put the ranks in different bases. Without a ``comm``, all three
-    are rank-local.
+    legend prints once per rank. When ``comm`` is given, the resolved :attr:`SolverBasis.spin_layout` is
+    broadcast from rank 0 on every rank of it.
 
     ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) marks a multi-shell impurity.
-    The symmetry-adapted rotation is then kept only if it maps every orbital into a single shell (otherwise
-    the input basis is solved in), every orbital group must lie in one shell, and ``nominal_occ`` may be keyed
+    Every orbital group must lie in one shell, and ``nominal_occ`` may be keyed
     by shell. ``None`` (or one shell) is the single-shell path, unchanged.
 
     ``interaction_merges_blocks=False`` takes the one-body Green's-function blocks as authoritative: an
@@ -234,66 +214,23 @@ def prepare_solver_basis(
     h_input_matrix = extract_tensors(h_input, two_body=False)[0]
     n_spin_orbitals = h_input_matrix.shape[0]
 
-    # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
-    # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
-    # express the Coulomb interaction more densely. h0 and u4 are in the caller's "correlated"
-    # input basis (NOT assumed spherical); the fill test below is measured *relative to that
-    # input basis*, so we rotate only when it does not densify the operator (fill <= threshold)
-    # and keep the input basis otherwise (e.g. a j,m_j eigenbasis under spin-orbit coupling
-    # densifies the Coulomb tensor). Every output is rotated back to the input basis B before
-    # returning; nothing here presumes a spherical-harmonic input.
-    rotation_full, u_imp = impurity_symmetry_rotation(
-        h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix, rot_to_spherical=rot_to_spherical
-    )
-    if comm is not None:
-        # The rotation comes from a rank-local eigh, and in a degenerate block its eigenvectors depend on the
-        # BLAS build. Every rank must solve in one basis, so they all take rank 0's (review H-MS7).
-        rotation_full, u_imp = comm.bcast((rotation_full, u_imp), root=0)
-    h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
-    n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
-    fill_ratio = len(h_rotated) / max(n_terms_input, 1)
-
-    rotate = fill_ratio <= _MAX_ROTATION_FILL
+    # The solver works in the basis it is given. Choosing a good basis (block structure against Coulomb
+    # sparsity) is the caller's job: rspt2spectra picks the fit basis and the interface hands the
+    # solver everything in it. Nothing here rotates the impurity.
+    h = h_input
+    h0_solve = h0_input
+    h_matrix = h_input_matrix
     multishell = shell_ls is not None and len(resolve_shell_ls(rot_to_spherical, shell_ls)) > 1
-    input_rot_to_spherical = rot_to_spherical  # the caller's, before any rotation (for the H-MS6 message)
-    if rotate and multishell:
-        # A rotation that mixes shells would make "the occupation of shell a" meaningless: keep the input basis.
-        try:
-            shell_index_of_orbitals(u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex), shell_ls)
-        except ValueError:
-            rotate = False
-    if comm is not None:
-        # The fill ratio and the shell test both sit on a threshold; one decision for every rank.
-        rotate = bool(comm.bcast(bool(rotate), root=0))
-    if rotate:
-        h = h_rotated
-        h0_solve = rotate_hamiltonian(h0_input, rotation_full, tol=_ROTATION_TRIM_TOL)
-        # Observable rotation for the solve (spherical -> S): compose the caller's input rotation
-        # R_in (spherical -> B) with W^dag (B -> S). On the impurity block, R = u_imp^dag @ R_in.
-        rot_to_spherical = u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex)
-    else:
-        # Stay in the input basis; make the output rotation below a no-op.
-        h = h_input
-        h0_solve = h0_input
-        rotation_full = np.eye(n_spin_orbitals, dtype=complex)
-        u_imp = np.eye(len(impurity_indices), dtype=complex)
-
-    # One-body matrix of the solver-basis Hamiltonian, extracted once and shared by the
-    # classification/grouping helpers below (each would otherwise re-walk the full operator
-    # and allocate its own dense n_orb x n_orb copy).
-    h_matrix = extract_tensors(h, n_orb=n_spin_orbitals, two_body=False)[0] if rotate else h_input_matrix
 
     # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
     # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
-    # conduction (initially empty). The bath one-body diagonal is unchanged by the impurity-only
-    # rotation, so this is consistent whether measured in the input or solver basis.
+    # conduction (initially empty).
     valence_flat, conduction_flat = classify_bath_occupation(
         h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix
     )
 
     # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
-    # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
-    # Derived from h *after* any rotation, so the blocks label the sectors of the solver basis.
+    # in the basis we solve in (this fixes bath-mediated coupling).
     block_structure = impurity_block_structure(
         h,
         impurity_indices,
@@ -331,18 +268,13 @@ def prepare_solver_basis(
     if multishell:
         local = shell_index_of_orbitals(rot_to_spherical, shell_ls)
         impurity_shell_index = {int(o): int(a) for o, a in zip(impurity_indices, local)}
-        input_shell_index = {
-            int(o): int(a) for o, a in zip(impurity_indices, shell_index_of_orbitals(input_rot_to_spherical, shell_ls))
-        }
         for k, blocks in impurity_orbitals.items():
             shells = {impurity_shell_index[o] for block in blocks for o in block}
             if len(shells) > 1:
                 orbs = [o for block in blocks for o in block]
                 raise ValueError(
                     f"impurity orbital group {k} spans shells {sorted(shells)}: "
-                    + _shell_coupling(
-                        h_matrix, orbs, impurity_shell_index, impurity_indices, h_input_matrix, input_shell_index
-                    )
+                    + _shell_coupling(h_matrix, orbs, impurity_shell_index, impurity_indices)
                     + ", so no per-shell occupation window can be set (review H-MS6)."
                 )
     nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix, impurity_shell_index)
@@ -359,11 +291,7 @@ def prepare_solver_basis(
         # occupation search, the basis-generation windows, the frozen-shell notes). Printed
         # once, here, where the grouping is derived -- without this legend an integer key says
         # nothing about which orbitals it stands for.
-        basis_note = "symmetry-adapted basis" if rotate else "input basis"
-        print(
-            f"Block structure: {len(block_structure.blocks)} blocks, "
-            f"solving in the {basis_note} (operator fill {fill_ratio:.1f}x)"
-        )
+        print(f"Block structure: {len(block_structure.blocks)} blocks, solving in the basis supplied by the caller")
         print("Impurity orbital groups:")
         print(f"  {'group':>5}  {'orbitals':<20} {'imp':>4} {'val':>4} {'con':>4}" f" {'nominal':>7}")
         for i in sorted(impurity_orbitals):
@@ -401,8 +329,6 @@ def prepare_solver_basis(
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         nominal_occ=nominal_occ,
-        rotation_full=rotation_full,
-        u_imp=u_imp,
         rot_to_spherical=rot_to_spherical,
         total_impurity_orbitals=total_impurity_orbitals,
         sum_bath_states=sum_bath_states,

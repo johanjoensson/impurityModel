@@ -54,14 +54,12 @@ from impurityModel.ed.ManyBodyUtils import (
     inner_multi,
     support_stats,
 )
-from impurityModel.ed.selfenergy import _MAX_ROTATION_FILL, _ROTATION_TRIM_TOL, _per_group_occupation
+from impurityModel.ed.selfenergy import _per_group_occupation
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,
     extract_tensors,
     group_orbitals_by_blocks,
     impurity_block_structure,
-    impurity_symmetry_rotation,
-    rotate_hamiltonian,
 )
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 
@@ -151,15 +149,9 @@ def nio_workload():
     h_input_matrix = extract_tensors(h_input, two_body=False)[0]
     n_orb = h_input_matrix.shape[0]
 
-    rotation_full, _u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_orb, h0_matrix=h_input_matrix)
-    h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
-    n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
-    if len(h_rotated) / max(n_terms_input, 1) <= _MAX_ROTATION_FILL:
-        h = h_rotated
-        h_matrix = extract_tensors(h, n_orb=n_orb, two_body=False)[0]
-    else:
-        h = h_input
-        h_matrix = h_input_matrix
+    # the solver works in the basis it is given: no rotation
+    h = h_input
+    h_matrix = h_input_matrix
 
     valence_flat, conduction_flat = classify_bath_occupation(h, impurity_indices, n_orb=n_orb, h0_matrix=h_matrix)
     block_structure = impurity_block_structure(h, impurity_indices, h0_matrix=h_matrix)

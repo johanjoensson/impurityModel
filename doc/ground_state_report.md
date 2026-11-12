@@ -79,7 +79,7 @@ manifold, keyed by a plain integer. `solver_basis.prepare_solver_basis` prints t
 legend once, where the grouping is derived:
 
 ```text
-Block structure: 10 blocks, solving in the symmetry-adapted basis (operator fill 1.3x)
+Block structure: 10 blocks, solving in the basis supplied by the caller
 Impurity orbital groups:
   group  orbitals              imp  val  con nominal
       0  0-1,3,5-6,8             6    4    0       6

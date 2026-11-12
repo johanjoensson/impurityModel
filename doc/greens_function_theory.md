@@ -53,11 +53,11 @@ of the ED impurity solver of Caffarel and Krauth [4]. Two consequences worth int
   (section 6) must be built from the **fitted**
   $\Delta$, not the input mesh data, so that solver and reference describe the same model.
 
-The impurity one-body block may be rotated to a symmetry-adapted basis before solving
-(`impurity_symmetry_rotation`): diagonalizing $h^{\mathrm{corr}}$ collapses the Green's-function
-block structure to its finest form (e.g. ten $1{\times}1$ blocks for cubic $e_g/t_{2g}$), but
-is applied only when it does not densify $U$ (spin-orbit-coupled $j,m_j$ bases would). All
-outputs are rotated back to the caller's basis.
+The self-energy solver does not rotate the impurity: it solves in the basis it is given and
+returns every result in that basis. A basis that block-diagonalizes $\Delta$ and $h^{\mathrm{corr}}$
+without densifying $U$ (e.g. ten $1{\times}1$ blocks for cubic $e_g/t_{2g}$) is chosen by the
+caller (rspt2spectra's fit basis, handed over by the interface). Spin-orbit-coupled $j,m_j$
+bases densify $U$, which is why that choice is budgeted on the caller's side.
 
 ### 1.2 The finite-temperature Green's function
 

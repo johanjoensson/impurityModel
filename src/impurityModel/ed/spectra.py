@@ -26,7 +26,6 @@ from impurityModel.ed.symmetries import (
     conserved_subset_charges,
     definite_conserved_charges,
     extract_tensors,
-    rotate_hamiltonian,
     transition_sector_restrictions,
 )
 
@@ -49,25 +48,6 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
 
-# Adaptive-rotation gate, mirroring selfenergy: rotate the correlated shell into its
-# symmetry-adapted basis only when doing so keeps the operator roughly as sparse (a d-shell
-# with SOC densifies the Coulomb term ~8x and must stay in spherical harmonics). See the
-# "symmetry-rotation-densifies-coulomb" note.
-_ROTATION_TRIM_TOL = 1e-8
-_MAX_ROTATION_FILL = 2.0
-
-
-def _rotate_op(tOp, rotation):
-    """Rotate a one-body transition operator into the symmetry-adapted basis (U† T U).
-
-    Accepts a ``ManyBodyOperator`` or the ``{process: amplitude}`` dict the
-    :mod:`transition_operators` builders return; always returns an operator.
-    """
-    if not isinstance(tOp, ManyBodyOperator):
-        tOp = ManyBodyOperator(tOp)
-    return rotate_hamiltonian(tOp, rotation, tol=_ROTATION_TRIM_TOL)
-
-
 def _shell_orbitals(nBaths, l):
     """Sorted global spin-orbital indices of impurity shell ``l`` (spin-up then spin-down m's)."""
     return sorted(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
@@ -78,7 +58,7 @@ def _pes_ips_equivalence_groups(nBaths, l, block_structure):
 
     ``photoemission_operators`` / ``inverse_photoemission_operators`` emit one operator per
     ``(s, m)`` in the order ``for s in 0,1: for m in -l..l``. ``block_structure`` is the impurity
-    block structure of shell ``l`` in the symmetry-adapted basis (local indices into the sorted
+    block structure of shell ``l`` in the basis of the Hamiltonian (local indices into the sorted
     shell). Operators whose orbital lands in the same ``identical_blocks`` class get the same
     label, so :func:`calc_spectra` computes one representative per class.
     """
@@ -149,7 +129,6 @@ def simulate_spectra(
     occ_cutoff,
     slaterWeightMin,
     verbose,
-    rotation=None,
     correlated_block_structure=None,
     pes=True,
     xps=True,
@@ -220,20 +199,15 @@ def simulate_spectra(
         Angular momentum : number of bath states.
     RIXS_projectors : dict
         dict of dicts representing the projections to apply for the calculation of the RIXS spectra
-    rotation : np.ndarray, optional
-        Full-space single-particle unitary rotating the correlated shell into its symmetry-adapted
-        basis. When given, ``hOp`` and ``psis`` are assumed already expressed in that basis, so the
-        one-body transition operators (dipole/NIXS/RIXS) are rotated to match; the scalar spectra
-        are basis-invariant and need no un-rotation. ``None`` keeps the spherical-harmonics basis.
     l_valence : int
         Angular momentum of the valence (correlated) shell: the one PES/IPS probe, the one a
-        dipole transition ends on, and the one the symmetry rotation acts on.
+        dipole transition ends on.
     l_core : int or None
         Angular momentum of the core shell. Required by XPS, XAS and RIXS; ``None`` for a
         model with no core shell, which then supports only PES/IPS and NIXS.
     correlated_block_structure : BlockStructure, optional
-        Impurity block structure of the correlated shell in the symmetry-adapted basis. When given
-        (with ``rotation``), degenerate PES/IPS operators of that shell are deduplicated (B2a).
+        Impurity block structure of the correlated shell in the basis of ``hOp``. When given,
+        degenerate PES/IPS operators of that shell are deduplicated (B2a).
 
     Returns
     -------
@@ -249,13 +223,8 @@ def simulate_spectra(
 
     datasets = {}
 
-    # One-body transition operators must be rotated into the same basis as hOp/psis; PES/IPS are
-    # bare ladder operators whose integer indices already refer to the rotated orbitals, so they
-    # are left as-is and instead deduplicated via the shell's symmetry-equivalence classes.
     def _prep_one_body(tOp_dicts):
-        if rotation is None:
-            return [ManyBodyOperator(t) for t in tOp_dicts]
-        return [_rotate_op(t, rotation) for t in tOp_dicts]
+        return [ManyBodyOperator(t) for t in tOp_dicts]
 
     if (xps or xas or rixs) and l_core is None:
         raise ValueError(
@@ -263,7 +232,7 @@ def simulate_spectra(
             "(l_core is None). Disable them, or build a model with a core shell."
         )
 
-    if rotation is not None and correlated_block_structure is not None:
+    if correlated_block_structure is not None:
         correlated_groups = _pes_ips_equivalence_groups(nBaths, l_valence, correlated_block_structure)
     else:
         correlated_groups = None

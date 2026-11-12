@@ -23,8 +23,6 @@ from impurityModel.ed.sector_ensemble import resolve_mixed_valence
 from impurityModel.ed.symmetries import (
     extract_tensors,
     impurity_block_structure,
-    impurity_symmetry_rotation,
-    rotate_hamiltonian,
 )
 from impurityModel.ed.utils import V_RESULT, Reporter
 
@@ -237,8 +235,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
 
     Extracted verbatim from the historical ``get_spectra.main``: builds the many-body ground
-    state, derives (or keeps) the block structure, optionally rotates the correlated shell into
-    a symmetry-adapted basis, writes ``output_filename`` and calls
+    state, derives (or keeps) the block structure, writes ``output_filename`` and calls
     :func:`impurityModel.ed.spectra.simulate_spectra`.
 
     Parameters
@@ -337,65 +334,29 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     # the manual structure (e.g. SOC / crystal field splits each shell into sub-blocks) and
     # fixes bath-mediated coupling. Pass auto_block_structure=False to keep the hand-coded one.
     #
-    # Adaptive symmetry-adapted solver basis: rotate the correlated 3d shell into the basis that
-    # diagonalises its one-body block, IF that keeps the Coulomb term roughly as sparse (the
-    # fill-ratio gate; a d-shell with SOC densifies ~8x and stays spherical). The scalar XAS /
-    # PES / NIXS / RIXS spectra are basis-invariant, so simulate_spectra just rotates the one-body
-    # transition operators to match and deduplicates the now-degenerate PES/IPS operators (B2a).
-    # Which shell is which is carried by the model, because from_shells was told. Only a
-    # model built some other way (an archive, a bare matrix) falls back to reading the roles
-    # off the bath counts.
+    # The solver works in the basis the model is given; nothing here rotates it. Choosing a good basis
+    # is the caller's job (rspt2spectra / the interface). Which shell is which is carried by the model,
+    # because from_shells was told. Only a model built some other way (an archive, a bare matrix) falls
+    # back to reading the roles off the bath counts.
     if model.valence_l is not None:
         l_valence, l_core = model.valence_l, model.core_l
     else:
         l_valence, l_core = _resolve_shell_roles(nBaths)
 
-    rotation = None
     correlated_block_structure = None
     if spectra_options.auto_block_structure:
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
         h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
         block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
         report(f"Auto-derived block structure: {len(block_structure.blocks)} blocks", level=V_RESULT)
-
         if l_valence in impurity_orbitals:
             d_indices = sorted(orb for block in impurity_orbitals[l_valence] for orb in block)
-            W, u_imp = impurity_symmetry_rotation(
-                hOp,
-                d_indices,
-                n_orb=n_spin_orbitals,
-                h0_matrix=h_matrix,
-                rot_to_spherical=rot_to_spherical.get(l_valence),
+            correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
+            report(
+                f"{len(correlated_block_structure.inequivalent_blocks)} inequivalent PES/IPS classes "
+                f"for the l={l_valence} shell.",
+                level=V_RESULT,
             )
-            if comm is not None:
-                # A rank-local eigh: in a degenerate block the eigenvectors depend on the BLAS build, so every rank
-                # takes rank 0's (as solver_basis does).
-                W, u_imp = comm.bcast((W, u_imp), root=0)
-            h_rotated = rotate_hamiltonian(hOp, W, tol=spectra._ROTATION_TRIM_TOL)
-            fill_ratio = len(h_rotated) / max(1, len(hOp))
-            if fill_ratio <= spectra._MAX_ROTATION_FILL:
-                rotation = W
-                hOp = h_rotated
-                h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
-                block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
-                correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
-                # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
-                # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
-                rot_to_spherical[l_valence] = u_imp.conj().T @ np.asarray(rot_to_spherical[l_valence], dtype=complex)
-                n_classes = len(correlated_block_structure.inequivalent_blocks)
-                report(
-                    f"Rotated the l={l_valence} shell into symmetry-adapted basis "
-                    f"(fill {fill_ratio:.2f}x); "
-                    f"{n_classes} inequivalent PES/IPS classes.",
-                    level=V_RESULT,
-                )
-            else:
-                report(
-                    f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x"
-                    f" > {spectra._MAX_ROTATION_FILL}).",
-                    level=V_RESULT,
-                )
-                correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
     # Measure how many physical processes the Hamiltonian contains.
     report(f"Hamiltonian contains {len(hOp)} terms.", level=V_RESULT)
     # Many body basis for the ground state
@@ -462,7 +423,6 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
             basis.occ_cutoff,
             basis.slater_weight_min,
             verbosity >= 1,
-            rotation=rotation,
             correlated_block_structure=correlated_block_structure,
             l_valence=l_valence,
             l_core=l_core,

@@ -695,9 +695,8 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     convention used by the tooling that assembled h0, so such a Hamiltonian
     reproduces its valence/conduction split without the caller passing it.
 
-    The on-site energies are basis-independent for the bath here: the symmetry-adapted rotation
-    (:func:`impurity_symmetry_rotation`) acts only on the impurity block, leaving the bath diagonal
-    unchanged, so this may be called on either the input or the solver-basis Hamiltonian.
+    The bath on-site energies are the diagonal of the bath block; an impurity-only basis change
+    (such as :func:`impurity_symmetry_rotation`) leaves them unchanged.
 
     Parameters
     ----------
@@ -901,8 +900,8 @@ def impurity_block_structure(
     invariant — it carries higher symmetry than the one-body part, so ``U`` never couples
     orbitals that the one-body + hybridization symmetry keeps separate.
 
-    In a symmetry-adapted single-particle basis (impurity one-body block diagonalised; see
-    :func:`impurity_symmetry_rotation`) ``M`` is diagonal and this yields the maximally-split
+    In a symmetry-adapted single-particle basis (impurity one-body block diagonalised, as
+    the caller supplies it or :func:`impurity_symmetry_rotation` constructs it) ``M`` is diagonal and this yields the maximally-split
     structure — for a cubic d-shell, ten ``1x1`` blocks with the ``eg`` and ``t2g`` orbitals
     detected as *identical* (one inequivalent Green's function per irrep and spin).
 

@@ -58,8 +58,6 @@ from impurityModel.ed.sigma import (  # noqa: F401
 )
 from impurityModel.ed.sigma_estimators import make_estimator
 from impurityModel.ed.solver_basis import (  # noqa: F401
-    _MAX_ROTATION_FILL,
-    _ROTATION_TRIM_TOL,
     _per_group_occupation,
     prepare_solver_basis,
 )
@@ -663,9 +661,6 @@ def calc_selfenergy(
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
     nominal_occ = sb.nominal_occ
-    rotation_full = sb.rotation_full
-    u_imp = sb.u_imp
-    rot_to_spherical = sb.rot_to_spherical
     total_impurity_orbitals = sb.total_impurity_orbitals
     sum_bath_states = sb.sum_bath_states
     # Resolve the basis cap: None means "as many determinants as fit in RAM". Collective on comm
@@ -1009,38 +1004,30 @@ def calc_selfenergy(
         note=retry_note,
     )
 
-    # Rotate every result from the solver basis S back to the caller's input basis B
-    # (O_B = W O_S W^dag; impurity block u_imp). When the adaptive test kept the input basis,
-    # W and u_imp are identity and these are no-ops. The density matrix is full-space (rotate
-    # with W); the self-energies / Green's functions are impurity-only (rotate with u_imp).
-    thermal_rho = rotation_full @ thermal_rho @ rotation_full.conj().T
-
-    def _to_input_basis(block_list):
-        """Reassemble per-inequivalent-block matrices (basis S) and rotate to input basis B."""
+    # The solver basis is the caller's basis: results need no rotation, only reassembly from the blocks.
+    def _reassemble(block_list):
+        """Reassemble per-inequivalent-block matrices into the full impurity matrix."""
         if block_list is None:
             return None
-        full_s = build_full_greens_function(block_list, block_structure)
-        if full_s.ndim == 3:  # (n_omega, n_imp, n_imp)
-            return np.einsum("ij,wjk,lk->wil", u_imp, full_s, u_imp.conj())
-        return u_imp @ full_s @ u_imp.conj().T
+        return build_full_greens_function(block_list, block_structure)
 
-    sigma_full = _to_input_basis(sigma)
-    sigma_real_full = _to_input_basis(sigma_real)
-    gs_matsubara_full = _to_input_basis(gs_matsubara)
-    gs_realaxis_full = _to_input_basis(gs_realaxis)
+    sigma_full = _reassemble(sigma)
+    sigma_real_full = _reassemble(sigma_real)
+    gs_matsubara_full = _reassemble(gs_matsubara)
+    gs_realaxis_full = _reassemble(gs_realaxis)
 
     # High-frequency self-energy moments Sigma_1, Sigma_2 from the spectral moments M, replicated after the
     # reduction (so the conversion and block-symmetrisation below are identical on all ranks: pure numpy).
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
     sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
 
-    def _moment_to_input_basis(full_s):
-        """Symmetry-match a full solver-basis moment matrix against the GF blocks, then rotate to B."""
-        return _to_input_basis([full_s[np.ix_(block, block)] for block in inequivalent_blocks])
+    def _reassemble_moment(full_s):
+        """Match a full moment matrix against the GF blocks."""
+        return _reassemble([full_s[np.ix_(block, block)] for block in inequivalent_blocks])
 
-    sigma_static = _moment_to_input_basis(sigma_inf_s)
-    sigma_moment_1 = _moment_to_input_basis(sigma_1_s)
-    sigma_moment_2 = _moment_to_input_basis(sigma_2_s)
+    sigma_static = _reassemble_moment(sigma_inf_s)
+    sigma_moment_1 = _reassemble_moment(sigma_1_s)
+    sigma_moment_2 = _reassemble_moment(sigma_2_s)
 
     # Predicted-vs-measured peak feedback for re-calibrating the byte model on
     # production-size runs (doc/plans/truncation_reliability.md). Collective on comm,
