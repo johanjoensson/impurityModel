@@ -82,7 +82,7 @@ def written(tmp_path):
 def test_a_toml_run_builds_the_same_model_as_the_command_line_it_replaces(written):
     """The migration is only lossless if this holds, so it is asserted term by term.
 
-    The right-hand side is the equivalent of ``scripts/run_Ni_NiO_50p10bath.sh`` with the
+    The right-hand side is the equivalent of the former ``run_Ni_NiO_50p10bath.sh`` script with the
     spectra sub-command's own defaults written out as literals -- deliberately frozen here
     rather than read back from the schema, so a change to a default cannot move both sides
     together and keep the test green.

@@ -1,5 +1,4 @@
 # Ni in NiO -- L2,3 XAS/RIXS from a crystal-field parametrisation.
-# Replaces scripts/run_Ni_NiO_CF.sh.
 #
 # Run with:   mpirun -n <ranks> impurityModel run examples/NiO_CF_spectra.toml
 

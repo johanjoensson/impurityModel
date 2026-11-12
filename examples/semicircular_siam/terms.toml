@@ -1,0 +1,44 @@
+# The same model as selfenergy.toml, with the interaction written as an explicit matrix
+# element instead of a Kanamori parameter -- the two build the identical Hamiltonian.
+#
+# Run with:   mpirun -n <ranks> impurityModel run examples/semicircular_siam/terms.toml
+#
+# [interaction.terms] takes physicists' <pq|V|rs> (electron 1: p -> r, electron 2: q -> s),
+# H_U = 1/2 sum <pq|V|rs> c+_p c+_q c_s c_r. `spatial` elements are between spatial orbitals and
+# are expanded over spin, so [0, 0, 0, 0, U] is U n_up n_dn. Elements that break spin symmetry go
+# in `spin_orbital` (spin-orbital s*n + p, spin down first), e.g. a spin-dependent repulsion.
+
+[format]
+version = [1, 0]
+
+[units]
+energy = "Ry"
+
+[hamiltonian.file]
+path = "semicircular_star.h0"
+spin = "degenerate"
+
+[[shell]]
+n_orbitals = 1
+role = "valence"
+nominal_occupation = 1
+
+[interaction.terms]
+spatial = [[0, 0, 0, 0, 0.5]]
+
+[double_counting.nominal]
+
+[temperature]
+tau = 0.0002
+
+[selfenergy]
+cluster = "semicircular-terms"
+
+[selfenergy.real_axis]
+enabled = true
+mesh = { min = -1.5, max = 1.5, n = 601 }
+broadening = 0.02
+
+[selfenergy.matsubara]
+enabled = false
+n_points = 0

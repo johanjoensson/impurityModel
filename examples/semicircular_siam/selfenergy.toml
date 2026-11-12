@@ -1,0 +1,54 @@
+# Single-impurity Anderson model with a semicircular hybridization -- a test bed and a
+# teaching model. The bath is a 14-level star fit of Delta(w) = 2V^2/D^2 (w - sqrt(w^2 - D^2))
+# (V = 1 Ry, half bandwidth D = 0.5 Ry; semicircular_fit.ipynb in impmod_checks).
+#
+# Run with:   mpirun -n <ranks> impurityModel run examples/semicircular_siam/selfenergy.toml
+#
+# The .h0 file is SPINLESS: one impurity orbital and 14 bath levels, no spin index. `spin =
+# "degenerate"` copies it to both spins, so the model has 2 impurity spin-orbitals and 28 bath
+# spin-orbitals. The interaction is then the single-band Hubbard U n_up n_dn.
+#
+# Things to try:
+#   * Change U, and watch the Hubbard bands at +-U/2 split off from the Kondo resonance.
+#   * Replace [interaction.kanamori] with the equivalent explicit matrix element (terms.toml):
+#       [interaction.terms]
+#       spatial = [[0, 0, 0, 0, 0.5]]
+#   * Remove [double_counting.nominal] to leave particle-hole symmetry: the impurity level then
+#     sits at 0 instead of -U/2 and the occupation drops below 1.
+
+[format]
+version = [1, 0]
+
+[units]
+energy = "Ry"   # the .h0 file is in Ry too; every energy below is converted from Ry
+
+[hamiltonian.file]
+path = "semicircular_star.h0"
+spin = "degenerate"
+
+[[shell]]
+n_orbitals = 1
+role = "valence"
+nominal_occupation = 1
+
+[interaction.kanamori]
+U = 0.5         # one orbital: U n_up n_dn. J, U_prime and J_pair have nothing to act on.
+
+[double_counting.nominal]
+# FLL at the nominal occupation N = 1: dc = U (N - 1/2) = U/2. It shifts the impurity level
+# from 0 to -U/2, the particle-hole symmetric point of this (symmetric) bath.
+
+[temperature]
+tau = 0.0002    # k_B T in Ry
+
+[selfenergy]
+cluster = "semicircular"
+
+[selfenergy.real_axis]
+enabled = true
+mesh = { min = -1.5, max = 1.5, n = 601 }
+broadening = 0.02
+
+[selfenergy.matsubara]
+enabled = false
+n_points = 0

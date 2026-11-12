@@ -68,6 +68,53 @@ relative_files = true
 # matches however the path is recorded (cwd differs under `mpiexec bash -c`).
 omit = ["*/impurityModel/test/*"]
 
+[tool.pytest.ini_options]
+testpaths = ["src/impurityModel"]
+# `-m "not benchmark and not branch_matrix_full"` keeps performance benchmarks (and the full
+# GF branch-matrix product, whose pairwise covering array already runs in the gate) out of
+# standard/CI runs; run them explicitly with `pytest -m benchmark` (a command-line -m overrides
+# this default).
+#
+# `-rf` names every failure in the short summary: the runs that need it most are the ones
+# nobody is watching (a flake under `mpiexec -n 2` was once carried across three sessions
+# undiagnosed because the log only said "1 failed"). The non-root rank files
+# (`.pytest_mpi_rank*.out`) get the summary too. `X` names every XPASS for the same reason: a
+# `strict=False` xfail exists so that a cell which starts passing surfaces.
+addopts = '-m "not benchmark and not branch_matrix_full" -rfX'
+filterwarnings = [
+    "error",
+    # pytest's own _pytest.pathlib.find_prefixed leaves an os.scandir iterator unclosed; under
+    # our forced gc.collect() teardown it is finalized at a nondeterministic time, turning this
+    # ResourceWarning into a hard error even though every test passed. Scoped to this message.
+    "ignore:unclosed scandir iterator:ResourceWarning",
+]
+markers = [
+    "mpi: marker for MPI tests",
+    "benchmark: performance/timing benchmark; skipped by default, run with -m benchmark",
+    "branch_matrix_full: full cartesian GF branch matrix (test_gf_branch_matrix.py); skipped by default, run with -m branch_matrix_full",
+]
+
+[tool.mypy]
+namespace_packages = true
+allow_redefinition = true
+# The bodies of untyped functions are deliberately unchecked (this is not a typed code base);
+# the note mypy prints for every annotated local inside one is noise, not a finding.
+disable_error_code = ["annotation-unchecked"]
+
+[[tool.mypy.overrides]]
+module = ["matplotlib.*", "h5py.*", "scipy.*", "mpi4py.*", "sympy.*"]
+ignore_missing_imports = true
+
+# Compiled Cython/C++ extension modules ship no type stubs or py.typed marker, so mypy cannot
+# analyze them. Treat them like the third-party libraries above.
+[[tool.mypy.overrides]]
+module = [
+    "impurityModel.ed.BiCGSTAB", "impurityModel.ed.BlockLanczos", "impurityModel.ed.BlockLanczosArray",
+    "impurityModel.ed.BlockLanczosCore", "impurityModel.ed.SparseScatter", "impurityModel.ed.GMRES",
+    "impurityModel.ed.ManyBodyUtils", "impurityModel.ed.TSQR",
+]
+ignore_missing_imports = true
+
 [tool.black]
 line-length = 120
 # Pin the target so Black's output is deterministic regardless of the running

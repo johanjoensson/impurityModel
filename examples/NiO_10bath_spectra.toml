@@ -1,5 +1,4 @@
 # Ni in NiO -- L2,3 spectra from a fitted bath: 10 valence bath states.
-# Replaces scripts/run_Ni_NiO_Xbath.sh (default bath count).
 #
 # Run with:   mpirun -n <ranks> impurityModel run examples/NiO_10bath_spectra.toml
 

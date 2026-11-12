@@ -91,9 +91,6 @@ test-only stub in `test/gf/test_gf_operator_families.py` checks two things:
 | `"lanczos"` *(default)* | `get_Greens_function` | `_block_green_group` → `block_green_impl` (array) / `block_Green_sparse` (state) | One block-Lanczos recurrence per unit builds a continued fraction serving the **whole frequency mesh** at once. The workhorse. |
 | `"bicgstab"` | `_get_greens_function_bicgstab` | `block_Green_bicgstab` | One linear solve **per frequency point**, basis rebuilt-and-discarded each point. Wins on memory (the live basis never exceeds one point's support) at a time cost. |
 
-`"sliced"` and `"cipsi"` are retired (`config.RETIRED_GF_METHODS`: rejected with the reason,
-replayed as `"lanczos"` from an old archive).
-
 ### Basis growth of the per-frequency kernel: `gf_admission`
 
 Each per-frequency solve grows its basis from the seeds. `gf_admission` chooses how:

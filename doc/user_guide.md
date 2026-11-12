@@ -151,8 +151,8 @@ Ry` removes the need for the by-hand conversion; passing an implausibly small `-
 the `eV` default (below 1 eV, where no real transition-metal 2p core level lies) still prints a
 warning suggesting `--unit Ry`.
 
-Run it under MPI for anything nontrivial. A worked NiO L-edge invocation (from
-`scripts/run_Ni_NiO_Xbath.sh`):
+Run it under MPI for anything nontrivial. A worked NiO L-edge invocation (the same run as
+`examples/NiO_10bath_spectra.toml`):
 
 ```bash
 h0_filename=h0/h0_NiO_10bath.pickle

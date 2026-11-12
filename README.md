@@ -74,35 +74,25 @@ mpiexec -n 2 python -m pytest --with-mpi
 ```
 (replace 2 with however many MPI ranks you want to use; CI runs the suite serially, with 1 rank, and with 2 ranks).
 
-Performance benchmarks (timing/profiling, not correctness) are marked `benchmark` and skipped by default. Run them explicitly with `pytest -m benchmark`. The self-energy benchmark additionally requires `RUN_SELFENERGY_BENCH=1` (and accepts `SELFENERGY_BENCH_*` env vars to size the workload).
+Performance benchmarks (timing/profiling, not correctness) are marked `benchmark` and skipped by default. Run them explicitly with `pytest -m benchmark`.
 
 
 # First X-ray spectra simulations
 
-- To perform a simulation, first create a directory somewhere on your computer.
-Move to that directory and then execute one of the example scripts in the `scripts` folder. E.g. type:
+- To perform a simulation, move to a directory in the repository root and run one of the input
+files in `examples/`, e.g.
 ```bash
-path/to/folder/impurityModel/scripts/run_Ni_NiO_Xbath.sh
+mpirun -n 4 impurityModel run examples/NiO_10bath_spectra.toml
 ```
-This will start a simulation with 10 bath states and one MPI rank.
-To have e.g. 20 bath states instead of 10, instead type:
-```bash
-path/to/folder/impurityModel/scripts/run_Ni_NiO_Xbath.sh 20
-```
-To have e.g. 20 bath states and 3 MPI ranks, instead type:
-```bash
-path/to/folder/impurityModel/scripts/run_Ni_NiO_Xbath.sh 20 3
-```
-These examples will read an non-interacting Hamiltonian from file.
+This reads a non-interacting Hamiltonian from file (`h0/h0_NiO_10bath.pickle`).
 
-A simpler non-interacting Hamiltonian can instead be constructed from crystal-field parameters.
-This is done for NiO by typing:
+A simpler non-interacting Hamiltonian can instead be constructed from crystal-field parameters:
 ```bash
-path/to/folder/impurityModel/scripts/run_Ni_NiO_CF.sh
+mpirun -n 4 impurityModel run examples/NiO_CF_spectra.toml
 ```
 (similar crystal-field examples exist for MnO, FeO and CoO in the same folder).
 
-The example scripts wrap the command-line interface. You can also call it directly:
+The input files wrap the command-line interface. You can also call it directly:
 ```bash
 impurityModel spectra h0/h0_NiO_10bath.pickle radialOrbitals/Ni3d.dat --nBaths 0 10 --nValBaths 0 10
 ```

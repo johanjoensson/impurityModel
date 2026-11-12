@@ -1,5 +1,4 @@
 # Ni in NiO -- L2,3 spectra from a fitted bath: 50 valence + 10 conduction bath states.
-# Replaces scripts/run_Ni_NiO_50p10bath.sh.
 #
 # Run with:   mpirun -n <ranks> impurityModel run examples/NiO_50p10bath_spectra.toml
 

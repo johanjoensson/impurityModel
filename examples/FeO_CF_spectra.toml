@@ -1,5 +1,4 @@
 # Fe in FeO -- L2,3 XAS/RIXS from a crystal-field parametrisation.
-# Replaces scripts/run_Fe_FeO_CF.sh.
 #
 # Run with:   mpirun -n <ranks> impurityModel run examples/FeO_CF_spectra.toml
 
