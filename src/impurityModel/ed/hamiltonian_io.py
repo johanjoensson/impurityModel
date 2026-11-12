@@ -274,7 +274,8 @@ def labelled_shell_uop(l, u4):
             (labels[j], "c"),
             (labels[k2], "a"),
             (labels[k1], "a"),
-        ): u4[i, j, k1, k2] / 2
+        ): u4[i, j, k1, k2]
+        / 2
         for i, j, k1, k2 in zip(*np.nonzero(np.abs(u4) > 1e-10))
     }
 

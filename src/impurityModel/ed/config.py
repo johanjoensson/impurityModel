@@ -136,6 +136,7 @@ GS_LOWEST_SOLVERS = ("auto", "davidson", "trlm")
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
 
+
 def effective_ranking_cap(cap):
     """The cap pass 1 of a certification ranks under, or ``None`` (rank at the full cap).
 

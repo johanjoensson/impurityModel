@@ -40,6 +40,7 @@ __all__ = [
 #: (warn and ignore). See :func:`impurityModel.inputformat.reader.load_input`.
 SPEC_VERSION = (1, 0)
 
+
 class _Unset:
     """Sentinel for "no default"; distinct from ``None``, which is a meaningful default."""
 
