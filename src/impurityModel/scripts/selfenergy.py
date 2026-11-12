@@ -134,7 +134,7 @@ def add_arguments(parser):
         help=(
             "Basis-growth policy of the per-frequency kernel (needs --gf-method bicgstab): 'all' admits "
             "everything the solver produces, 'outer' admits only what scores above --gf-admit-tol and "
-            "reports a measured error bound. Default: the GF_BICGSTAB_ADMISSION knob, else 'all' (or the "
+            "reports a measured error bound. Default: 'all' (or the "
             "archive's, with --from-archive)."
         ),
     )
@@ -159,8 +159,8 @@ def add_arguments(parser):
         type=float,
         default=None,
         help=(
-            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: the "
-            "GF_SETTLE_RATIO knob, or the archive's)."
+            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: 3, "
+            "or the archive's)."
         ),
     )
     parser.add_argument(

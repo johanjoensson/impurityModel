@@ -191,158 +191,6 @@ GF_BICGSTAB_RESIDUAL_CHECK = Knob(
     either way.""",
 )
 
-GF_BICGSTAB_ADMISSION = Knob(
-    name="GF_BICGSTAB_ADMISSION",
-    kind="str",
-    default="all",
-    group="bicgstab",
-    doc="""How a per-frequency point's basis grows. ``all`` (default): every determinant the solver
-    produces is admitted (``slaterWeightMin`` aside), up to the cap. ``outer``: solve on a frozen
-    basis, measure the residual outside it, admit only the determinants that score above
-    ``GF_BICGSTAB_ADMIT_TOL_*`` (at most the cap allows), and re-solve -- importance-ranked
-    admission between frozen solves, never inside the BiCGSTAB recurrence (dropping rows between
-    steps breaks its recursive residual).""",
-)
-
-GF_BICGSTAB_ADMIT_SCORER = Knob(
-    name="GF_BICGSTAB_ADMIT_SCORER",
-    kind="str",
-    default="amplitude",
-    group="bicgstab",
-    doc="""Importance score of an outside determinant D under ``outer`` admission, per column j and
-    maximised over the block: ``amplitude`` is ``|b_Dj| / ||Y_j||`` (boundary residual over seed
-    norm); ``jacobi`` is ``|b_Dj| / (||X_j|| |z - H_DD|)`` (the first-order correction it would
-    receive, so near-resonant determinants rank first). ``jacobi`` only means something where
-    ``H_DD`` is a configuration energy, i.e. a star bath.""",
-)
-
-GF_BICGSTAB_ADMIT_TOL_AMP = Knob(
-    name="GF_BICGSTAB_ADMIT_TOL_AMP",
-    kind="float",
-    default=1e-4,
-    minimum=0.0,
-    group="bicgstab",
-    doc="Admission threshold of the ``amplitude`` scorer (dimensionless: relative to the seed norm).",
-)
-
-GF_BICGSTAB_ADMIT_TOL_JACOBI = Knob(
-    name="GF_BICGSTAB_ADMIT_TOL_JACOBI",
-    kind="float",
-    default=1e-4,
-    minimum=0.0,
-    group="bicgstab",
-    doc="Admission threshold of the ``jacobi`` scorer (dimensionless: relative to the iterate norm).",
-)
-
-GF_BICGSTAB_ADMIT_ROUNDS = Knob(
-    name="GF_BICGSTAB_ADMIT_ROUNDS",
-    kind="int",
-    default=20,
-    minimum=0,
-    group="bicgstab",
-    doc="""Solve-measure-admit rounds per point before the final solve. Each round reaches
-    ``GF_BICGSTAB_ADMIT_SHELLS`` H-shells beyond the current basis, so this bounds the depth the
-    admission can reach; the retired per-frequency CIPSI was round-limited at 8 shells.""",
-)
-
-GF_BICGSTAB_ADMIT_SHELLS = Knob(
-    name="GF_BICGSTAB_ADMIT_SHELLS",
-    kind="int",
-    default=2,
-    minimum=1,
-    group="bicgstab",
-    doc="""H-shells admitted per round. The first is scored on the measured boundary residual; each
-    further one on the residual of the Jacobi-extended correction of the shell before it, so a
-    round reaches the boundary of the boundary without a solve in between.""",
-)
-
-GF_BICGSTAB_ADMIT_CARRY_TOL = Knob(
-    name="GF_BICGSTAB_ADMIT_CARRY_TOL",
-    kind="float",
-    default=1e-3,
-    minimum=0.0,
-    group="bicgstab",
-    doc="""Under ``outer`` admission a point starts from its seeds, their first H-shell and the
-    determinants of the warm-start guess with ``|x0_D| / ||x0|| >= this``, re-scored at the new z so
-    the set can shrink -- not from the whole extrapolation support, which only ever grows along the
-    sweep.""",
-)
-
-GF_BICGSTAB_ADMIT_EN_TOL = Knob(
-    name="GF_BICGSTAB_ADMIT_EN_TOL",
-    kind="float",
-    default=0.0,
-    minimum=0.0,
-    group="bicgstab",
-    doc="""Stop admitting when the Epstein-Nesbet estimate of the remaining G error,
-    ``sum_D b_Di* b_Dj / (z - H_DD)``, is below this fraction of ``max_j |G_jj|``. 0 (default)
-    disables it. An estimate, not a bound: it is reported and never added to G.""",
-)
-
-GF_LANCZOS_ADMIT_TOL = Knob(
-    name="GF_LANCZOS_ADMIT_TOL",
-    kind="float",
-    default=0.0,
-    minimum=0.0,
-    group="bicgstab",
-    doc="""Importance pruning of the block-Lanczos recurrence's growth (the ``gf_prune_tol`` solver option beats it).
-    A step's new determinants are admitted only if their largest amplitude on the normalised step block exceeds
-    this; a row the cut defers is not banned -- it stays in the discovered frontier and enters a later step when a
-    stronger path reaches it -- and after the growth the recurrence restarts from the seeds on the final support,
-    so the result is the exact Lanczos of what was kept. ``GF_PRUNE_RULE=mass`` reads it as a fraction of the
-    step's frontier weight instead. The decision is taken once, on the step's summed output, so it works with
-    ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support settle (which is off while it is set). 0 (default) is off.
-    Only the low-level Green's-function calls read this knob: a ``SolverOptions`` run resolves
-    ``gf_prune_tol`` itself (1e-3 unless set, 0 off), so for it the knob has no effect.""",
-)
-
-GF_PRUNE_RULE = Knob(
-    name="GF_PRUNE_RULE",
-    kind="str",
-    default="eta",
-    group="bicgstab",
-    doc="""The cut rule of the block-Lanczos recurrence's importance pruning (``GF_LANCZOS_ADMIT_TOL`` > 0), on the
-    discovered-key matrix, where a row the cut defers stays in the frontier and can enter a later step. ``eta``
-    (default): admit a new row if its largest amplitude on the normalised step block exceeds the tolerance.
-    ``mass``: the tolerance is a fraction tau of the step's frontier weight ``||w_F||^2``; keep the heaviest rows
-    until what is left out weighs at most ``tau ||w_F||^2`` (the first shell: ``GF_ADMIT_FIRST_SHELL_TOL`` as the
-    same fraction, 0 keeping it whole). A harness knob for the sweep that chooses the shipped rule.""",
-)
-
-GF_ADMIT_FIRST_SHELL_TOL = Knob(
-    name="GF_ADMIT_FIRST_SHELL_TOL",
-    kind="float",
-    default=0.0,
-    minimum=0.0,
-    group="bicgstab",
-    doc="""Importance-pruned admission (``GF_BICGSTAB_ADMISSION=outer``, ``GF_LANCZOS_ADMIT_TOL``; the
-    ``gf_first_shell_tol`` solver option beats it) keeps
-    the seeds' first H-shell whole by default (0): that is what keeps the moments of G through
-    ``H^2``, hence the ``Sigma`` tail, exact. A determinant reached from the seeds by a coupling
-    ``V`` still enters that shell, however small ``V`` is, so a bath level hybridized at 1e-5 puts
-    its whole hole-space in the start set. Above 0, first-shell rows with amplitude below this
-    (relative to the seed norm) are pruned like any other: the ``H^2`` moment then errs by at most
-    the summed squared amplitudes of what was dropped.""",
-)
-
-GF_SETTLE_RATIO = Knob(
-    name="GF_SETTLE_RATIO",
-    kind="float",
-    default=3.0,
-    group="bicgstab",
-    doc="""The support settle of a sparse block-Lanczos Green's-function unit, as a multiple of ``slaterWeightMin``: the
-    unit stops admitting new determinants once, over 16 blocks, the largest amplitude the normalised next block
-    carries on a determinant the step reached for the first time stays at or below ``ratio x slaterWeightMin``
-    and is not growing. ``1`` settles when every excluded determinant would have been pruned from the next block
-    anyway; larger values settle sooner and drop amplitude up to ``ratio x slaterWeightMin`` per determinant;
-    ``0`` is closure only (no new determinant at all). A multiple of the cutoff, not a fraction of the seed norm
-    (``gf_admit_tol``). The default 3 keeps a margin below the measured cliff: on the NiO 10-bath linked
-    chain (iterations 1 and 28 at ``slater_min`` 1e-8 and 1e-10) ratio 3 changed Sigma by at most 9.3e-9 of the
-    causality guard's headroom, ratio 5 by 8.7e-9, ratio 10 by up to 7e-4 and ratio 30 by up to 6e-2; ratio 3 costs
-    43-55 s per iteration there against 270-303 s unsettled (``doc/plans/gf_support_freeze_redesign.md``).
-    Overridden by the ``gf_settle_ratio`` solver option.""",
-)
-
 GF_SUPPORT_TRACE = Knob(
     name="GF_SUPPORT_TRACE",
     kind="bool",
@@ -907,47 +755,6 @@ DC_ALLOW_MEMORY_BOUND = Knob(
 )
 
 
-DC_DE2_MIN = Knob(
-    name="DC_DE2_MIN",
-    kind="float",
-    default=None,  # unset = GS_DE2_MIN (0: no floor)
-    minimum=0.0,
-    group="double-counting",
-    doc="""Per-determinant Epstein-Nesbet PT2 floor for the double-counting search's **charge-sector
-    solves** (`dc_criteria`'s `solve_sector` calls). Unset uses the solver's own
-    `BasisOptions.de2_min` (TOML `[many_body_basis].de2_min`), else :data:`groundstate.GS_DE2_MIN`,
-    which is 0: no floor. The double-counting line's / criterion table's own `de2_min` beats it.
-    The solves are converged by `DC_E_PT2_TOL` instead; a floor bounds each candidate it refuses
-    but not their sum, so it is a way to *loosen* a solve, not to converge one.
-
-    The notes below predate that change: they were measured when this floor, at 1e-8, was the only
-    selection criterion.
-
-    **Why this is separable, and when to loosen it.** Matching `GS_DE2_MIN` buys *parity* -- the DC
-    determined on the same variational space as the self-energy run that consumes it -- not
-    accuracy; `groundstate`'s own note records the measurement, on `nio_5peeled`: moving these
-    sector energies from `1e-6` to `1e-8` shifts the gap centre 0.3 meV, i.e. ~2.7 meV in `mu`
-    after the `1 / |chi|` amplification, **at 4x the cost**, while raising the determinant cap from
-    2,000 to 8,000 shifts it ~54 meV. Truncation drift dominates; the PT2 floor does not.
-
-    Weigh 2.7 meV against the tolerance the search itself already admits. On the SrMnO3 gap-DC the
-    record reports `chi = -0.4537` with *"dc determined to +- 5.51e-02 by the search tolerance
-    alone"* -- so at `1e-8` the sector energies are converged roughly **20x finer than the search
-    resolves**, for 4x the time and a proportionally larger basis.
-
-    **And on that workload the parity argument does not apply**, because parity is not achieved:
-    the production ground state was PT2-converged at 200,565 determinants (`candidates=0`), while
-    the DC's N-1 sector was *memory-bound* at 2,745,510 with 1.6 of PT2 importance discarded. What
-    sets that sector's space is the memory guard, not this threshold. Loosening it there costs
-    little that was being bought, and shrinks a basis whose size is the reason the search needs
-    64 ranks per node (`doc/plans/dc_smo_memory.md`, round 9).
-
-    Keep the default when the DC's answer is the deliverable and cost is not binding; raise it to
-    `1e-6` when the search is what stands between you and a self-energy. It loosens the search's
-    sector walk with it (the walk is the search's own sector solves), not the production ground
-    state.""",
-)
-
 DC_GAP_LEVER_MIN = Knob(
     name="DC_GAP_LEVER_MIN",
     kind="float",
@@ -962,28 +769,6 @@ DC_GAP_LEVER_MIN = Knob(
     of the impurity, and the shift it asks for is far outside what the solves at the guess say
     anything about. On the NiO 10-bath archive the lever is 0.02 (impurity-like edges give 0.5-1),
     and the search ran 22 evaluations without converging. `0` searches anyway.""",
-)
-
-DC_E_PT2_TOL = Knob(
-    name="DC_E_PT2_TOL",
-    kind="float",
-    default=None,  # unset = GS_E_PT2_TOL, the production ground state's own tolerance
-    minimum=0.0,
-    group="double-counting",
-    doc="""Residual Epstein-Nesbet PT2 energy the double-counting search's **charge-sector solves**
-    are converged to (`CIPSISolver.expand`'s `e_pt2_tol`). Unset uses the solver's own
-    `BasisOptions.e_pt2_tol` (the RSPt solver line's `e_pt2 X`), else
-    :data:`groundstate.GS_E_PT2_TOL` (1e-8): the tolerance the production ground state is
-    converged to, so the DC is determined on a space converged as far as the self-energy run's.
-    The double-counting line's own `e_pt2 X` beats this knob. The `occupation` criterion takes
-    none of these overrides, only the solver's tolerance: it solves on the production path.
-
-    This, not `DC_DE2_MIN`, is the accuracy control: `DC_DE2_MIN` bounds each candidate left out,
-    this bounds their sum -- the quantity the energy error follows (measured on a SIAM against
-    exact diagonalization: the residual predicts the error to 2%). Loosen it, e.g. to `1e-5`, when
-    the search is what stands between you and a self-energy; the sector energies are then
-    variational upper bounds with at most that much PT2 energy left out, and a solve that stops
-    short of it (cap, memory guard) warns with its residual.""",
 )
 
 # --- Self-energy: causality tolerance --------------------------------------------------------
@@ -1015,18 +800,6 @@ SIGMA_CAUSALITY_TOL = Knob(
 KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ATOL,
     GF_BICGSTAB_RESIDUAL_CHECK,
-    GF_BICGSTAB_ADMISSION,
-    GF_BICGSTAB_ADMIT_SCORER,
-    GF_BICGSTAB_ADMIT_TOL_AMP,
-    GF_BICGSTAB_ADMIT_TOL_JACOBI,
-    GF_BICGSTAB_ADMIT_ROUNDS,
-    GF_BICGSTAB_ADMIT_SHELLS,
-    GF_BICGSTAB_ADMIT_CARRY_TOL,
-    GF_BICGSTAB_ADMIT_EN_TOL,
-    GF_LANCZOS_ADMIT_TOL,
-    GF_PRUNE_RULE,
-    GF_ADMIT_FIRST_SHELL_TOL,
-    GF_SETTLE_RATIO,
     GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,
@@ -1057,9 +830,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_NUM_WANTED,
     GS_MEMORY_BUDGET_SAFETY,
     DC_ALLOW_MEMORY_BOUND,
-    DC_DE2_MIN,
     DC_GAP_LEVER_MIN,
-    DC_E_PT2_TOL,
     DC_DIAGNOSTICS,
     SIGMA_CAUSALITY_TOL,
 )

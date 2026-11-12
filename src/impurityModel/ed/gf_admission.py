@@ -21,16 +21,47 @@ Every decision below is taken on allreduced quantities, so all ranks of the comm
 identically; ``Basis.add_states`` is collective when distributed and is called unconditionally.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, matvec_cut_after_sum
 from impurityModel.ed.gf_primitives import _allreduced_col_norms2, _CappedBasisProxy, residual_blocks
 from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 
+#: Admission threshold when ``gf_admit_tol`` is unset (relative to the seed norm / iterate norm).
+DEFAULT_ADMIT_TOL = 1e-4
+
 SCORERS = ("amplitude", "jacobi")
+
+
+@dataclass(frozen=True)
+class AdmissionTuning:
+    """The measured constants of the outer admission, settled at their defaults.
+
+    ``scorer`` ranks the candidate rows (``"amplitude"``: the next block's amplitude; ``"jacobi"``: the
+    Jacobi-corrected iterate); ``rounds`` bounds the admission rounds and ``shells`` the H-shells added per round;
+    ``carry_tol`` keeps the warm-start determinants above that fraction of the carried norm; ``en_tol > 0`` stops
+    early once the Epstein-Nesbet estimate of the remaining error is below ``en_tol * max|G_jj|``; ``shell_tol``
+    cuts the seeds' first shell (0: kept whole).
+    """
+
+    scorer: str = "amplitude"
+    rounds: int = 20
+    shells: int = 2
+    carry_tol: float = 1e-3
+    en_tol: float = 0.0
+    shell_tol: float = 0.0
+
+    def __post_init__(self):
+        if self.scorer not in SCORERS:
+            raise ValueError(f"scorer={self.scorer!r}: expected one of {SCORERS}")
+
+
+#: The tuning a point is solved with unless its caller passes one; the benchmark harness swaps it.
+_TUNING = AdmissionTuning()
 
 
 def _inverse_norms(norms2):
@@ -94,7 +125,7 @@ def start_set(A_op, seeds_block, seeds, x0, carry_tol, comm, n_ops, shell_tol=0.
     determinant that mattered at the previous frequency but not this one is dropped).
 
     The first shell is kept whole unless ``shell_tol`` > 0, which drops its rows with amplitude below
-    ``shell_tol * ||seed_j||`` (``GF_ADMIT_FIRST_SHELL_TOL``).
+    ``shell_tol * ||seed_j||`` (0: the first shell is kept whole).
 
     With ``basis`` distributed , the seeds and the shell are summed
     over the ranks first (routed by owner on ``basis``, whose content is irrelevant), so the keys, the
@@ -137,6 +168,7 @@ def solve_point_outer(
     solver,
     excited_weighted_restrictions=None,
     eta_override=None,
+    tuning=None,
 ):
     r"""Solve ``(z - H) X = seeds`` at one frequency on an importance-admitted basis.
 
@@ -158,8 +190,9 @@ def solve_point_outer(
     solver : callable
         ``gf_solvers.solve_shifted_block`` (passed in: this module sits below it).
     eta_override : float, optional
-        Admission threshold of the selected scorer; ``None`` reads its ``GF_BICGSTAB_ADMIT_TOL_*``
-        knob. An explicit value wins over the environment.
+        Admission threshold of the selected scorer; ``None``: :data:`DEFAULT_ADMIT_TOL`.
+    tuning : AdmissionTuning, optional
+        The scorer and the round / shell / carry / estimate constants.
 
     Returns
     -------
@@ -176,16 +209,10 @@ def solve_point_outer(
         Frozen at the final ``P``: the object whose ``retained_mask`` / ``retained_size`` the
         caller's bound and statistics read.
     """
-    scorer = config.GF_BICGSTAB_ADMIT_SCORER.get()
-    if scorer not in SCORERS:
-        raise ValueError(f"GF_BICGSTAB_ADMIT_SCORER={scorer!r}: expected one of {SCORERS}")
-    eta = eta_override
-    if eta is None:
-        eta = (config.GF_BICGSTAB_ADMIT_TOL_AMP if scorer == "amplitude" else config.GF_BICGSTAB_ADMIT_TOL_JACOBI).get()
-    rounds = config.GF_BICGSTAB_ADMIT_ROUNDS.get()
-    shells = config.GF_BICGSTAB_ADMIT_SHELLS.get()
-    carry_tol = config.GF_BICGSTAB_ADMIT_CARRY_TOL.get()
-    en_tol = config.GF_BICGSTAB_ADMIT_EN_TOL.get()
+    tuning = _TUNING if tuning is None else tuning
+    scorer = tuning.scorer
+    eta = DEFAULT_ADMIT_TOL if eta_override is None else eta_override
+    rounds, shells, carry_tol, en_tol = tuning.rounds, tuning.shells, tuning.carry_tol, tuning.en_tol
     # Intermediate solves only need to resolve what the threshold can see; the last one goes to atol.
     loose = max(atol, 0.1 * eta)
 
@@ -199,7 +226,7 @@ def solve_point_outer(
         carry_tol,
         comm,
         n_ops,
-        config.GF_ADMIT_FIRST_SHELL_TOL.get(),
+        tuning.shell_tol,
         basis=tmp_basis,
     )
     tmp_basis.clear()

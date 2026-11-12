@@ -49,6 +49,12 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
 
+#: Support-settle threshold, a multiple of ``slaterWeightMin`` (``SolverOptions.gf_settle_ratio``).
+DEFAULT_SETTLE_RATIO = 3.0
+
+#: Cut rule of the importance pruning: ``"eta"`` (amplitude) or ``"mass"`` (a fraction of the step's frontier weight).
+_PRUNE_RULE = "eta"
+
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
 _FORWARDED = {
     "cap": "cap",
@@ -79,7 +85,7 @@ class DiscoveredSupport:
 
     def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, rule="eta"):
         if rule not in ("eta", "mass"):
-            raise ValueError(f"GF_PRUNE_RULE must be 'eta' or 'mass', got {rule!r}")
+            raise ValueError(f"the prune rule must be 'eta' or 'mass', got {rule!r}")
         self.matrix = matrix
         self.decisions = decisions
         self.comm = matrix.comm
@@ -123,7 +129,7 @@ class DiscoveredSupport:
 
     def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
         if self.prunes:
-            raise ValueError("the support freeze and importance pruning (GF_LANCZOS_ADMIT_TOL) are exclusive")
+            raise ValueError("the support freeze and importance pruning (gf_prune_tol) are exclusive")
         self.decisions.enable_support_freeze(window, ratio, slater_weight_min, log=log, trace=trace)
 
     def settle_verdict(self):
@@ -1031,11 +1037,11 @@ def block_Green_discovered(
     ``"discovered"`` mode for: without one it takes the cheaper ``"retained"`` mode (the frozen phase then runs on
     the array kernel over ``P H P``). ``matrix_mode`` picks the matvec: the discovered-key matrix, the operator
     applied each step with the ``P H P`` matrix built at the freeze (``"retained"``), or the operator applied
-    every block (``"none"``). ``prune_tol`` / ``first_shell_tol`` (``None``: the knobs) are the pruned growth's
+    every block (``"none"``). ``prune_tol`` / ``first_shell_tol`` (``None``: off / whole) are the pruned growth's
     cut and its first-shell cut. ``refine`` (a :class:`~impurityModel.ed.gf_refinement.RefineSpec` with ``rounds > 0``)
     swaps the least important retained determinants of a unit the cap froze for the most important discovered ones
     (``"discovered"`` mode only; the record lands in ``cap_info["refine"]``). The determinant cap is
-    ``basis.truncation_threshold``; ``GF_LANCZOS_ADMIT_TOL > 0`` turns on importance pruning. ``growth_tol``
+    ``basis.truncation_threshold``; ``prune_tol > 0`` turns on importance pruning. ``growth_tol``
     (pruned growth only; ``None``: off) is the relative-change tolerance of the growth pass's own convergence
     monitor: the pass stops once G has moved less than that on the evaluation meshes, and the restart on the
     final P (always run after such a stop) converges G to the full tolerance.
@@ -1075,10 +1081,10 @@ def block_Green_discovered(
     converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
     cap = getattr(basis, "truncation_threshold", np.inf)
     cap = cap if np.isfinite(cap) else 2**62
-    # An explicit option beats the knob (an explicit 0 would be refused by the options, so ``None`` is unspecified).
-    prune_tol = config.GF_LANCZOS_ADMIT_TOL.get() if prune_tol is None else float(prune_tol)
+    # Unspecified (``None``) is no pruning and a whole first shell.
+    prune_tol = 0.0 if prune_tol is None else float(prune_tol)
     if first_shell_tol is None:
-        first_shell_tol = config.GF_ADMIT_FIRST_SHELL_TOL.get()
+        first_shell_tol = 0.0
     if memory_budget is None:
         memory_budget = getattr(basis, "gf_memory_budget", None)
         memory_policy = getattr(basis, "gf_memory_policy", None) or "tighten"
@@ -1118,14 +1124,14 @@ def block_Green_discovered(
         memory_budget=memory_budget,
         memory_policy=memory_policy,
         eta=prune_tol if prune_tol > 0.0 else None,
-        rule=config.GF_PRUNE_RULE.get(),
+        rule=_PRUNE_RULE,
         first_shell_tol=first_shell_tol if prune_tol > 0.0 else 0.0,
         mode=matrix_mode,
     )
     if support_settle and not resolved_reort and not support.prunes:
         support.enable_support_freeze(
             SETTLE_WINDOW,
-            config.GF_SETTLE_RATIO.get() if settle_ratio is None else settle_ratio,
+            DEFAULT_SETTLE_RATIO if settle_ratio is None else settle_ratio,
             slaterWeightMin,
             log=verbose and rank == 0,
             trace=config.GF_SUPPORT_TRACE.get() and rank == 0,

@@ -537,7 +537,7 @@ def block_Green_sparse(
     with a finite cap).
 
     ``support_settle`` / ``settle_ratio``: the support settle (:class:`gf_primitives.FreezeRule`) -- on by
-    default, and ``settle_ratio`` (a multiple of ``slaterWeightMin``; ``None``: the ``GF_SETTLE_RATIO`` knob)
+    default, and ``settle_ratio`` (a multiple of ``slaterWeightMin``; ``None``: 3)
     is how far below the cutoff-scaled amplitude the frontier must stay. When the cap, the memory guard or the
     settle freezes the support, the recurrence carries on on the frozen ``P H P`` (the array kernel over its
     matrix in the ``"retained"`` mode) -- exact on ``P``.
@@ -553,7 +553,7 @@ def block_Green_sparse(
     ManyBodyState block-Lanczos kernel (``BlockLanczos.block_lanczos``), which this GF no longer runs.
 
     ``prune_tol`` / ``first_shell_tol``: importance-pruned growth (see :func:`gf_recurrence.block_Green_discovered`);
-    ``None``: the ``GF_LANCZOS_ADMIT_TOL`` / ``GF_ADMIT_FIRST_SHELL_TOL`` knobs.
+    ``None``: no pruning, first shell kept whole.
 
     ``growth_tol``: with pruned growth, the growth pass stops at this looser relative-change tolerance and the
     restart on the final P converges G fully (see :func:`gf_recurrence.block_Green_discovered`); ``None``: off.
@@ -911,8 +911,7 @@ def block_Green_bicgstab(
     max_iter : int, optional
         Per-point iteration bound; defaults to :data:`_GF_BICGSTAB_MAX_ITER`.
     admission : {"all", "outer"}, optional
-        Basis-growth policy; ``None`` takes :data:`config.GF_BICGSTAB_ADMISSION`. An explicit value
-        wins over the environment knob. ``"outer"`` also switches the measured error bound on
+        Basis-growth policy; ``None`` is ``"all"``. ``"outer"`` also switches the measured error bound on
         unless :data:`config.GF_BICGSTAB_RESIDUAL_CHECK` forces it off.
     admit_tol : float, optional
         Admission threshold of ``"outer"``; ``None`` takes the knob of the selected scorer.
@@ -941,10 +940,8 @@ def block_Green_bicgstab(
     max_iter = _GF_BICGSTAB_MAX_ITER if max_iter is None else max_iter
     warm_history = _GF_BICGSTAB_WARM_HISTORY
     if admission is None:
-        admission = config.GF_BICGSTAB_ADMISSION.get()
-        if admission not in config.GF_ADMISSIONS:
-            raise ValueError(f"GF_BICGSTAB_ADMISSION={admission!r}: expected one of {config.GF_ADMISSIONS}")
-    elif admission not in config.GF_ADMISSIONS:
+        admission = "all"
+    if admission not in config.GF_ADMISSIONS:
         raise ValueError(f"admission={admission!r}: expected one of {config.GF_ADMISSIONS}")
     # Unset, the measured error bound follows the policy: outer admission trades basis size for an
     # error, and an error nobody can read is not a trade. 1/0 in the environment force it.

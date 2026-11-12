@@ -934,9 +934,9 @@ def get_Greens_function(
     representation only).
 
     ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
-    (``None``, the default: ``GF_BICGSTAB_ADMISSION``, else ``"all"``). ``"outer"`` solves on a
+    (``None``, the default: ``"all"``). ``"outer"`` solves on a
     frozen basis, scores the residual outside it and admits only what clears
-    ``gf_admit_tol`` (``None``: ``GF_BICGSTAB_ADMIT_TOL_AMP``), and repeats; see
+    ``gf_admit_tol`` (``None``: 1e-4), and repeats; see
     :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
     diagnostics report. An explicit argument wins over the matching environment knob.
 
@@ -946,12 +946,12 @@ def get_Greens_function(
     They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
 
     ``gf_settle`` / ``gf_settle_ratio`` control the support settle of the ``"lanczos"`` kernel's sparse units
-    (``None``: on, and the ``GF_SETTLE_RATIO`` knob; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
+    (``None``: on, ratio 3; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
     error.
 
     ``gf_refine`` (a :class:`gf_refinement.RefineSpec`, ``None``: off) swap-refines the units the cap froze.
-    ``gf_prune_tol`` / ``gf_first_shell_tol`` turn on importance-pruned growth of the sparse units (``None``: the
-    ``GF_LANCZOS_ADMIT_TOL`` / ``GF_ADMIT_FIRST_SHELL_TOL`` knobs; see :class:`SolverOptions`). Pruning replaces the
+    ``gf_prune_tol`` / ``gf_first_shell_tol`` turn on importance-pruned growth of the sparse units (``None``: no
+    pruning, first shell whole; see :class:`SolverOptions`). Pruning replaces the
     support settle, so ``gf_settle=True`` or a ``gf_settle_ratio`` with it is an error; with ``"bicgstab"`` they are
     an error too. ``gf_growth_tol`` (``None``: off) is the looser tolerance the pruned growth pass stops at; the
     restart on the final support then converges ``G`` fully.

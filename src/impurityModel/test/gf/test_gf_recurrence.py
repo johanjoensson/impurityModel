@@ -27,8 +27,6 @@ def _hermetic_knobs(monkeypatch):
     for name in (
         "GF_SUPPORT_TRACE",
         "GF_SUPPORT_FREEZE",
-        "GF_SETTLE_RATIO",
-        "GF_LANCZOS_ADMIT_TOL",
         "APPLY_ROW_CHUNKS",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -88,8 +86,7 @@ def test_importance_pruning_without_the_ban_admits_at_least_what_the_banned_rule
     """The sparse kernel bans every row a step did not admit; here a deferred row stays in the frontier and
     re-enters when a stronger path reaches it, so the retained set is a superset in size and G no farther from
     the exact one."""
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "2e-2")
-    sparse, matrix = _both(comm)
+    sparse, matrix = _both(comm, prune_tol=2e-2)
     exact = _exact_sector_g(seed=3)
     assert matrix[3]["retained_size"] >= sparse[3]["retained_size"]
     # Both errors are ~4e-8 (pruned, approximate); which rank owns which row reorders the sums and moves them by

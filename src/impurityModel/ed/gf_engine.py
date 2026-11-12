@@ -349,7 +349,7 @@ def lanczos_unit_kernel(
         :func:`gf_convergence._gf_eval_meshes`); ``None`` leaves it on the Ritz-band fallback.
     support_settle, settle_ratio
         The support settle (:func:`gf_solvers.block_Green_sparse`): on/off and its threshold as a multiple of
-        ``slaterWeightMin`` (``None``: the ``GF_SETTLE_RATIO`` knob).
+        ``slaterWeightMin`` (``None``: 3).
     unit_ids : list of int, optional
         The global unit number of each entry of ``units`` (a subset re-solve), used for the unit's log label and
         trace note; ``None``: the position.

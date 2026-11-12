@@ -20,7 +20,7 @@ from impurityModel.test.support.gf_switches import set_gf_switches
 
 @pytest.fixture(autouse=True)
 def _shipped_defaults(monkeypatch):
-    for knob in ("GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL", "GF_SUPPORT_FREEZE"):
+    for knob in ("GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "GF_SUPPORT_FREEZE"):
         monkeypatch.delenv(knob, raising=False)
 
 

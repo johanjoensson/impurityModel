@@ -20,7 +20,9 @@ def _restore_what_the_rig_sets(monkeypatch):
     from impurityModel.ed import gf_solvers
 
     monkeypatch.setenv("SIGMA_CAUSALITY_TOL", "1e9")  # the rig's own value; the undo removes it again
-    monkeypatch.setenv("GF_PRUNE_RULE", "eta")
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", "eta")
     monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", gf_solvers._MATRIX_MODE)
 
 

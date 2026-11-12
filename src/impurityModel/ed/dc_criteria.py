@@ -554,15 +554,15 @@ class _SectorContext:
     sector_at: dict | None = None
     #: Epstein-Nesbet PT2 admission floor for :meth:`sector_solve`'s CIPSI expansions. Resolved by
     #: :func:`_prepare_sector_context` from, in order, the criterion's own ``de2_min`` argument
-    #: (the RSPt double-counting line or the TOML criterion table), the ``DC_DE2_MIN`` environment
-    #: knob, ``basis.de2_min``, and finally :data:`groundstate.GS_DE2_MIN` (0: no floor) -- so by
-    #: default the search runs at the floor the self-energy run's ground state does. It is not the
+    #: (the RSPt double-counting line or the TOML criterion table), ``basis.de2_min``, and finally
+    #: :data:`groundstate.GS_DE2_MIN` (0: no floor) -- so by default the
+    #: search runs at the floor the self-energy run's ground state does. It is not the
     #: accuracy control (``e_pt2_tol`` is); a floor only loosens a solve.
     #: ``None`` resolves in :meth:`__post_init__`; `groundstate` is imported lazily throughout
     #: this module (circular import), so the fallback cannot be a module-level default here.
     de2_min: float | None = None
     #: Residual Epstein-Nesbet PT2 energy the sector solves converge to -- the accuracy control,
-    #: where ``de2_min`` is only an optional floor. Resolved from the ``DC_E_PT2_TOL`` knob, else
+    #: where ``de2_min`` is only an optional floor. Resolved from ``basis.e_pt2_tol``, else
     #: :data:`groundstate.GS_E_PT2_TOL`, the tolerance of the production ground state.
     e_pt2_tol: float | None = None
     #: Each sector's certification (:class:`sector_solver.SectorPlanStore`): certified once per
@@ -713,8 +713,8 @@ class _SectorContext:
             # against another sector's, and the residual truncation error does not cancel in a
             # difference. It is then amplified by 1 / |chi| on its way into `dc` -- a factor of 9 on
             # the workload this was measured on.
-            # Resolved once in `_prepare_sector_context` (RSPt line > DC_DE2_MIN > GS_DE2_MIN,
-            # DC_E_PT2_TOL > GS_E_PT2_TOL), so every sector of a search shares one convergence
+            # Resolved once in `_prepare_sector_context` (RSPt line > basis.de2_min > GS_DE2_MIN,
+            # RSPt line > basis.e_pt2_tol > GS_E_PT2_TOL), so every sector of a search shares one convergence
             # criterion and the record can report it.
             plan_store=self.plan_store,
             shift=mu,
@@ -845,42 +845,33 @@ def _bool_or_none(x):
     return None if x is None else bool(x)
 
 
-def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None, *, honour_dc_knob=True):
+def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None):
     """The PT2 admission floor a double-counting sector solve should use.
 
     Precedence: the criterion's own argument (which the RSPt double-counting line and the TOML
-    criterion table supply) beats the ``DC_DE2_MIN`` environment knob, which beats the solver's
-    own ``BasisOptions.de2_min`` (the floor the production ground state runs at), which beats
-    :data:`groundstate.GS_DE2_MIN`. Input files are the intended way to set this; the knob stays
-    for experiments and for sweeping a value without editing an input.
-
-    ``honour_dc_knob=False`` is the production-path criterion (``fixed_occupation_dc``): it must find the
-    state the self-energy finds, so the opt-in rough-DC knob does not reach it. One precedence, one
-    function (P5); that switch is the only difference between the DC paths.
+    criterion table supply) beats the solver's own ``BasisOptions.de2_min`` (the floor the
+    production ground state runs at), which beats :data:`groundstate.GS_DE2_MIN`. One precedence,
+    one function (P5); ``fixed_occupation_dc`` passes no argument, so it finds the state the
+    self-energy finds.
     """
     from impurityModel.ed.groundstate import GS_DE2_MIN
 
     if de2_min is not None:
         return float(de2_min)
-    knob = config.DC_DE2_MIN.get() if honour_dc_knob else None
-    if knob is not None:  # 0 is a setting (no floor), not 'unset'
-        return knob
     return GS_DE2_MIN if basis_de2_min is None else float(basis_de2_min)
 
 
-def _resolve_dc_e_pt2_tol(e_pt2_tol, basis_e_pt2_tol, *, honour_dc_knob=True):
+def _resolve_dc_e_pt2_tol(e_pt2_tol, basis_e_pt2_tol):
     """The residual PT2 energy a double-counting ground-state solve converges to.
 
     Precedence: the criterion's own argument (the RSPt double-counting line's ``e_pt2 X``), then
-    the ``DC_E_PT2_TOL`` environment knob, then the solver's own ``BasisOptions.e_pt2_tol`` (the
-    solver line's ``e_pt2 X``) -- so by default the double counting is measured on a space
-    converged as far as the self-energy run's ground state -- and finally
-    :data:`groundstate.GS_E_PT2_TOL`. ``honour_dc_knob=False`` as in :func:`_resolve_dc_de2_min`.
+    the solver's own ``BasisOptions.e_pt2_tol`` (the solver line's ``e_pt2 X``) -- so by default
+    the double counting is measured on a space converged as far as the self-energy run's ground
+    state -- and finally :data:`groundstate.GS_E_PT2_TOL`.
     """
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
-    knob = config.DC_E_PT2_TOL.get() if honour_dc_knob else None
-    for value in (e_pt2_tol, knob, basis_e_pt2_tol):
+    for value in (e_pt2_tol, basis_e_pt2_tol):
         if value is not None:
             return float(value)
     return GS_E_PT2_TOL
@@ -1105,7 +1096,7 @@ def fixed_peak_dc(
         module docstring). Set ``True`` to accept whichever charge state the search lands on.
     de2_min : float, optional
         Per-determinant Epstein-Nesbet PT2 floor for the charge-sector CIPSI expansions. ``None``
-        (the default) falls back to the ``DC_DE2_MIN`` environment knob, then to
+        (the default) falls back to
         ``basis.de2_min``, then to :data:`groundstate.GS_DE2_MIN` (0: no floor). Supplied from the
         RSPt double-counting line as ``de2_min X``. The solves are *converged* to the
         ``e_pt2_tol`` residual PT2 energy (below); a floor above that loosens them, and the
@@ -1113,7 +1104,7 @@ def fixed_peak_dc(
         lowering the determinant cap, which truncates the basis itself.
     e_pt2_tol : float, optional
         Residual PT2 energy the charge-sector solves converge to. ``None`` (the default) falls
-        back to the ``DC_E_PT2_TOL`` environment knob, then to ``basis.e_pt2_tol``, then to
+        back to ``basis.e_pt2_tol``, then to
         :data:`groundstate.GS_E_PT2_TOL`. Supplied from the RSPt double-counting line as
         ``e_pt2 X``; loosen it (e.g. ``1e-5``) when the search, not its accuracy, is the cost.
     Returns
@@ -1713,7 +1704,7 @@ def fixed_gap_dc(
         quietly stopped being written.
     de2_min : float, optional
         Per-determinant Epstein-Nesbet PT2 floor for the charge-sector CIPSI expansions. ``None``
-        (the default) falls back to the ``DC_DE2_MIN`` environment knob, then to
+        (the default) falls back to
         ``basis.de2_min``, then to :data:`groundstate.GS_DE2_MIN` (0: no floor). Supplied from the
         RSPt double-counting line as ``de2_min X``. The solves are *converged* to the
         ``e_pt2_tol`` residual PT2 energy (below); a floor above that loosens them, and the
@@ -1721,7 +1712,7 @@ def fixed_gap_dc(
         lowering the determinant cap, which truncates the basis itself.
     e_pt2_tol : float, optional
         Residual PT2 energy the charge-sector solves converge to. ``None`` (the default) falls
-        back to the ``DC_E_PT2_TOL`` environment knob, then to ``basis.e_pt2_tol``, then to
+        back to ``basis.e_pt2_tol``, then to
         :data:`groundstate.GS_E_PT2_TOL`. Supplied from the RSPt double-counting line as
         ``e_pt2 X``; loosen it (e.g. ``1e-5``) when the search, not its accuracy, is the cost.
     Returns
@@ -2067,8 +2058,8 @@ class _OccupationContext:
     #: Residual PT2 energy the ground-state determinations converge to: the solver's own
     #: ``BasisOptions.e_pt2_tol`` (else :data:`groundstate.GS_E_PT2_TOL`) and nothing else. This
     #: criterion solves on the production ground-state path, so it takes the self-energy run's
-    #: tolerance rather than an override -- neither the double-counting line nor ``DC_E_PT2_TOL``
-    #: reaches it, for the same reason ``de2_min`` does not.
+    #: tolerance rather than an override -- the double-counting line
+    #: does not reach it, for the same reason ``de2_min`` does not.
     e_pt2_tol: float
     #: The per-determinant PT2 floor of the same solves, from ``BasisOptions.de2_min`` (else
     #: :data:`groundstate.GS_DE2_MIN`) and nothing else, for the same parity reason.
@@ -2242,8 +2233,8 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         shift_solver=shift_solver,
         total_impurity_orbitals=total_impurity_orbitals,
         n0=n0,
-        e_pt2_tol=_resolve_dc_e_pt2_tol(None, basis.e_pt2_tol, honour_dc_knob=False),
-        de2_min=_resolve_dc_de2_min(None, basis.de2_min, honour_dc_knob=False),
+        e_pt2_tol=_resolve_dc_e_pt2_tol(None, basis.e_pt2_tol),
+        de2_min=_resolve_dc_de2_min(None, basis.de2_min),
         mixed_valence=mixed_valence,
     )
 

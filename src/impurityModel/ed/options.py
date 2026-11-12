@@ -86,7 +86,7 @@ class BasisOptions:
         *summed* PT2 contribution of every determinant left out, which is what the energy error
         follows; see ``doc/plans/cipsi_pt2_convergence.md``). ``None`` uses
         :data:`groundstate.GS_E_PT2_TOL` (``1e-8``). The double-counting search's charge-sector
-        solves inherit it unless the double-counting line or ``DC_E_PT2_TOL`` sets their own.
+        solves inherit it unless the double-counting line sets their own.
     de2_min : float or None
         Optional per-determinant Epstein-Nesbet PT2 floor for the same expansion. It *loosens* a
         solve -- it bounds each refused determinant, not their sum -- and an expansion it stops
@@ -146,13 +146,11 @@ class SolverOptions:
         Basis-growth policy of the per-frequency ``"bicgstab"`` kernel: ``"all"`` admits everything
         the solver produces, ``"outer"`` admits only determinants whose residual scores above
         ``gf_admit_tol`` (:mod:`impurityModel.ed.gf_admission`), solving on a frozen basis between
-        rounds, and records a measured error bound. ``None`` (default) is "not specified": the
-        ``GF_BICGSTAB_ADMISSION`` environment knob decides, else ``"all"`` -- so an existing run and
-        a run that selects the policy by environment behave as before. ``"outer"`` needs
+        rounds, and records a measured error bound. ``None`` (default) is ``"all"``. ``"outer"`` needs
         ``gf_method="bicgstab"``.
     gf_admit_tol : float or None
         Admission threshold of ``gf_admission="outer"``, relative to the seed norm (amplitude
-        scorer). ``None`` takes ``GF_BICGSTAB_ADMIT_TOL_AMP`` (1e-4); tighter admits more and is
+        scorer). ``None`` takes 1e-4; tighter admits more and is
         more accurate, and the error bound reports what was left out.
     gf_tol : float or None
         Convergence tolerance of the block-Lanczos Green's function (relative change of ``G``
@@ -186,7 +184,7 @@ class SolverOptions:
         carries on a determinant reached for the first time stays at or below ``ratio x slater_weight_min`` and
         is not growing. ``1`` settles when every excluded determinant would have been pruned from the next
         block anyway, larger settles sooner, ``0`` is closure only (no new determinant at all). ``None``
-        (default): the ``GF_SETTLE_RATIO`` knob. Needs the settle on; ``gf_method="lanczos"`` only.
+        (default): 3. Needs the settle on; ``gf_method="lanczos"`` only.
     gf_settle_retry : bool or None
         If the real-axis self-energy fails the causality check and the support settle can plausibly be blamed (the
         block has settled units, none held by the cap or the memory guard, and they did not already run closure-only),
@@ -196,7 +194,7 @@ class SolverOptions:
         unit). Needs the settle on; ``gf_method="lanczos"`` only.
     gf_prune_tol : float or None
         Importance-pruned growth of the sparse block-Lanczos Green's function: a step admits a new determinant only
-        if its largest amplitude on the normalised step block exceeds this (``GF_PRUNE_RULE=mass`` reads it as a
+        if its largest amplitude on the normalised step block exceeds this (the ``mass`` prune rule reads it as a
         fraction of the step's frontier weight instead), so a capped unit reaches a greater H-depth where the
         amplitude is. A deferred determinant is not banned: it re-enters when a stronger path reaches it. ``None``
         (default): :data:`DEFAULT_GF_PRUNE_TOL` (1e-3) for ``gf_method="lanczos"``, or off when a settle option
@@ -204,8 +202,8 @@ class SolverOptions:
         ``gf_settle_ratio`` and ``gf_settle_retry`` are refused with an explicit value.
     gf_first_shell_tol : float or None
         With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
-        moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``: the
-        ``GF_ADMIT_FIRST_SHELL_TOL`` knob. Needs ``gf_prune_tol``.
+        moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``:
+        0 by default. Needs ``gf_prune_tol``.
     gf_growth_tol : float or None
         With pruned growth: the relative-change tolerance the growth pass converges to (looser than the full
         ``gf_tol``). The restart from the seeds on the final support, which pruning always needs, then converges
@@ -348,7 +346,7 @@ class SolverOptions:
 
     @property
     def resolved_gf_prune_tol(self):
-        """The pruned-growth tolerance a run uses; ``None`` leaves the choice to the ``GF_LANCZOS_ADMIT_TOL`` knob.
+        """The pruned-growth tolerance a run uses; ``None`` leaves pruning off.
 
         An unset ``gf_prune_tol`` is :data:`DEFAULT_GF_PRUNE_TOL` for ``gf_method="lanczos"``, except where the
         options ask for the support settle (``gf_settle`` on, ``gf_settle_ratio``, ``gf_settle_retry``), which

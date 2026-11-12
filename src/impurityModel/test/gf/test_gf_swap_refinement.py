@@ -15,8 +15,6 @@ from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _dense_G_on, _se
 @pytest.fixture(autouse=True)
 def _knobs(monkeypatch):
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
-    for name in ("GF_LANCZOS_ADMIT_TOL", "GF_ADMIT_FIRST_SHELL_TOL", "GF_PRUNE_RULE"):
-        monkeypatch.delenv(name, raising=False)
 
 
 def _mesh():

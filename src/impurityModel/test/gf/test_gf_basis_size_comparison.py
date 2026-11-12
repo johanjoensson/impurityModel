@@ -45,15 +45,7 @@ def small():
 def _hermetic_knobs(monkeypatch):
     # The harness sets every knob it depends on; an exported one would leak into the cells it does not set.
     for name in (
-        "GF_BICGSTAB_ADMISSION",
-        "GF_BICGSTAB_ADMIT_TOL_AMP",
-        "GF_BICGSTAB_ADMIT_SCORER",
-        "GF_BICGSTAB_ADMIT_ROUNDS",
-        "GF_BICGSTAB_ADMIT_SHELLS",
-        "GF_BICGSTAB_ADMIT_EN_TOL",
         "GF_BICGSTAB_WARM_HISTORY",
-        "GF_LANCZOS_ADMIT_TOL",
-        "GF_ADMIT_FIRST_SHELL_TOL",
         "APPLY_ROW_CHUNKS",
     ):
         monkeypatch.delenv(name, raising=False)

@@ -24,6 +24,7 @@ import io
 import os
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 
 import numpy as np
 from mpi4py import MPI
@@ -40,13 +41,17 @@ BICGSTAB_ATOL = "1e-11"
 @contextmanager
 def env(**values):
     """Set environment variables for the duration, restoring what was there (knobs are read lazily)."""
-    from impurityModel.ed import gf_solvers
+    from impurityModel.ed import gf_admission, gf_solvers
 
     # The warm-start history is a module constant now, not a knob: ``GF_BICGSTAB_WARM_HISTORY`` here sets it.
     warm = values.pop("GF_BICGSTAB_WARM_HISTORY", None)
     old_warm = gf_solvers._GF_BICGSTAB_WARM_HISTORY
+    shell_tol = values.pop("ADMIT_SHELL_TOL", None)
+    old_tuning = gf_admission._TUNING
     old = {k: os.environ.get(k) for k in values}
     try:
+        if shell_tol is not None:
+            gf_admission._TUNING = replace(old_tuning, shell_tol=float(shell_tol))
         if warm is not None:
             gf_solvers._GF_BICGSTAB_WARM_HISTORY = int(warm)
         for k, v in values.items():
@@ -54,6 +59,7 @@ def env(**values):
         yield
     finally:
         gf_solvers._GF_BICGSTAB_WARM_HISTORY = old_warm
+        gf_admission._TUNING = old_tuning
         for k, v in old.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -98,31 +104,34 @@ class Mesh:
 
 
 def _knobs(method, cap, eta, shell_tol=0.0):
-    """Environment and driver arguments that realize ``method`` at ``cap`` / threshold ``eta``."""
+    """Environment, ``get_Greens_function`` options and driver arguments that realize ``method`` at ``cap`` /
+    threshold ``eta``."""
     base = {"GF_BICGSTAB_ATOL": BICGSTAB_ATOL, "GF_BICGSTAB_RESIDUAL_CHECK": 0}
-    if shell_tol:
-        base["GF_ADMIT_FIRST_SHELL_TOL"] = repr(float(shell_tol))
+    shell = {"gf_first_shell_tol": float(shell_tol)} if shell_tol else {}
+    outer_shell = {"ADMIT_SHELL_TOL": float(shell_tol)} if shell_tol else {}
     if method == "lanczos-cap":
-        return dict(gf_method="lanczos", reort=True, slater=0.0, env=base)
+        return dict(gf_method="lanczos", reort=True, slater=0.0, env=base, options={})
     if method == "lanczos-pruned":
         return dict(
             gf_method="lanczos",
             reort=True,
             slater=0.0,
-            env={**base, "GF_LANCZOS_ADMIT_TOL": repr(float(eta)), "APPLY_ROW_CHUNKS": 1},
+            env={**base, "APPLY_ROW_CHUNKS": 1},
+            options={"gf_prune_tol": float(eta), **shell},
         )
     cold = {**base, "GF_BICGSTAB_WARM_HISTORY": 0}
     if method == "bicgstab-cap":
-        return dict(gf_method="bicgstab", reort=None, slater=0.0, env=cold)
+        return dict(gf_method="bicgstab", reort=None, slater=0.0, env=cold, options={})
     if method == "bicgstab-outer":
         return dict(
             gf_method="bicgstab",
             reort=None,
             slater=0.0,
-            env={**cold, "GF_BICGSTAB_ADMISSION": "outer", "GF_BICGSTAB_ADMIT_TOL_AMP": repr(float(eta))},
+            env={**cold, **outer_shell},
+            options={"gf_admission": "outer", "gf_admit_tol": float(eta)},
         )
     if method == "bicgstab-swm":
-        return dict(gf_method="bicgstab", reort=None, slater=float(eta), env=cold)
+        return dict(gf_method="bicgstab", reort=None, slater=float(eta), env=cold, options={})
     raise ValueError(f"unknown method {method!r}; expected one of {METHODS}")
 
 
@@ -198,7 +207,7 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
     ``cap`` is the determinant budget (a finite value always: see ``NON_BINDING``); ``eta`` the
     admission threshold of the pruned methods or the ``slaterWeightMin`` of ``bicgstab-swm``;
     ``shell_tol`` > 0 lets the pruned methods drop weak rows of the seeds' first H-shell too
-    (``GF_ADMIT_FIRST_SHELL_TOL``; 0 keeps it whole, which is what holds the ``Sigma`` tail exact).
+    (``gf_first_shell_tol``; 0 keeps it whole, which is what holds the ``Sigma`` tail exact).
     """
     spec = _knobs(method, cap, eta, shell_tol)
     per_point = spec["gf_method"] == "bicgstab"
@@ -225,6 +234,7 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
             slaterWeightMin=spec["slater"],
             sparse=True,
             gf_method=spec["gf_method"],
+            **spec["options"],
         )
     wall = time.perf_counter() - t0
     notes = trace.of_kind("gf_unit_basis")

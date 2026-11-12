@@ -456,7 +456,7 @@ def _start_keys(comm, seeds_block, shell_tol):
 @pytest.mark.mpi
 @_multirank
 def test_the_admission_start_set_cuts_the_summed_shell():
-    """GF_BICGSTAB_ADMISSION=outer with GF_ADMIT_FIRST_SHELL_TOL: the shared image of ``|A> + |B>``
+    """admission="outer" with a first-shell tolerance: the shared image of ``|A> + |B>``
     gets 0.5 / sqrt(2) = 0.35 of the seed norm from each rank and 0.71 in total, so a 0.5 cut keeps
     it only on the sum."""
     comm = MPI.COMM_WORLD

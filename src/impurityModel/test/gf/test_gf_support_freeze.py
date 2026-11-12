@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import config, gf_primitives, gf_recurrence
+from impurityModel.ed import gf_primitives, gf_recurrence
 from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.gf_primitives import FreezeRule
 from impurityModel.ed.greens_function import calc_G
@@ -51,7 +51,6 @@ def _hermetic_knobs(monkeypatch):
     for name in (
         "GF_SUPPORT_TRACE",
         "GF_SUPPORT_FREEZE",
-        "GF_SETTLE_RATIO",
         "GF_FROZEN_CSR",
         "APPLY_ROW_CHUNKS",
         "MATVEC_PRUNE",
@@ -444,11 +443,8 @@ def test_a_half_finished_record_is_dropped_by_the_next_step_and_never_decides():
     assert policy.support_trace == [] and not policy.frozen
 
 
-def test_the_default_ratio_is_the_knob_and_an_explicit_one_wins(monkeypatch):
-    assert config.GF_SETTLE_RATIO.get() == 3.0
+def test_the_default_ratio_is_3_and_an_explicit_one_wins():
     info = run_chain(op=chain_operator(seed=5), slater_min=1e-4)[3]
     assert info["settle_verdict"]["ratio"] == 3.0
-    monkeypatch.setenv("GF_SETTLE_RATIO", "3")
-    assert run_chain(op=chain_operator(seed=5), slater_min=1e-4)[3]["settle_verdict"]["ratio"] == 3.0
     explicit = run_chain(op=chain_operator(seed=5), slater_min=1e-4, settle_ratio=0.5)[3]
     assert explicit["settle_verdict"]["ratio"] == 0.5

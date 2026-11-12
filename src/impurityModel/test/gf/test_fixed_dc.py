@@ -2650,34 +2650,6 @@ def test_a_user_cap_is_never_memory_bound(monkeypatch, capfd):
         assert "WARNING determinant cap" in err
 
 
-@pytest.fixture(autouse=True)
-def _clear_dc_de2_min(monkeypatch):
-    """`DC_DE2_MIN` is read lazily from the environment, so a stray export in the shell that runs
-    the suite would otherwise change what these tests measure (the trap recorded for every knob
-    promoted from a literal)."""
-    monkeypatch.delenv("DC_DE2_MIN", raising=False)
-
-
-def test_dc_de2_min_defaults_to_the_ground_state_threshold():
-    """Unset, the double-counting sector solves must use exactly `GS_DE2_MIN` -- adding the knob
-    must not move any existing answer."""
-    from impurityModel.ed import config
-    from impurityModel.ed.groundstate import GS_DE2_MIN
-
-    assert config.DC_DE2_MIN.get() is None
-    assert (config.DC_DE2_MIN.get() or GS_DE2_MIN) == GS_DE2_MIN
-
-
-def test_dc_de2_min_overrides_when_set(monkeypatch):
-    from impurityModel.ed import config
-    from impurityModel.ed.groundstate import GS_DE2_MIN
-
-    monkeypatch.setenv("DC_DE2_MIN", "1e-6")
-    resolved = config.DC_DE2_MIN.get() or GS_DE2_MIN
-    assert resolved == 1e-6
-    assert resolved > GS_DE2_MIN, "the knob exists to LOOSEN the floor"
-
-
 def test_dc_sector_solve_reads_the_resolved_threshold_not_a_constant():
     """Pin the call site: the sector solve must use the context's resolved `de2_min`, never a
     hard-coded constant. Asserted against the source because the defect this guards against is a
@@ -2692,66 +2664,38 @@ def test_dc_sector_solve_reads_the_resolved_threshold_not_a_constant():
     assert "de2_min=GS_DE2_MIN," not in src, "the unconditional constant must be gone"
 
 
-def test_dc_de2_min_precedence_argument_beats_knob_beats_default(monkeypatch):
-    """RSPt line > DC_DE2_MIN > GS_DE2_MIN. Input files are the intended way to set this, so the
-    explicit argument has to win over the environment."""
+def test_dc_de2_min_precedence_argument_beats_solver_floor_beats_default():
+    """RSPt line > the solver's BasisOptions.de2_min > GS_DE2_MIN. 0 is a setting (no floor)."""
     from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
     from impurityModel.ed.groundstate import GS_DE2_MIN
 
-    monkeypatch.delenv("DC_DE2_MIN", raising=False)
     assert _resolve_dc_de2_min() == GS_DE2_MIN
     assert _resolve_dc_de2_min(1e-5) == 1e-5
-
-    monkeypatch.setenv("DC_DE2_MIN", "1e-6")
-    assert _resolve_dc_de2_min() == 1e-6
-    assert _resolve_dc_de2_min(1e-5) == 1e-5, "the explicit argument must beat the environment"
-
-
-def test_dc_de2_min_zero_is_a_setting_not_unset(monkeypatch):
-    """DC_DE2_MIN=0 means no floor; it must beat the solver's floor like any other value (review GS9)."""
-    from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
-
-    monkeypatch.setenv("DC_DE2_MIN", "0")
-    assert _resolve_dc_de2_min(None, 1e-9) == 0.0
-
-
-def test_dc_de2_min_inherits_the_solver_floor_below_the_knob(monkeypatch):
-    """With nothing set on the DC side, the search runs at the production ground state's floor."""
-    from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
-
-    monkeypatch.delenv("DC_DE2_MIN", raising=False)
     assert _resolve_dc_de2_min(None, 1e-9) == 1e-9
     assert _resolve_dc_de2_min(1e-5, 1e-9) == 1e-5
-    monkeypatch.setenv("DC_DE2_MIN", "1e-6")
-    assert _resolve_dc_de2_min(None, 1e-9) == 1e-6
+    assert _resolve_dc_de2_min(0.0, 1e-9) == 0.0
 
 
-def test_dc_e_pt2_tol_precedence_line_beats_knob_beats_solver_line_beats_default(monkeypatch):
-    """DC line > DC_E_PT2_TOL > the solver's BasisOptions.e_pt2_tol > GS_E_PT2_TOL. With nothing
-    set on the DC side the search inherits the solver line's tolerance: parity with the ground
-    state the self-energy run will find."""
+def test_dc_e_pt2_tol_precedence_line_beats_solver_line_beats_default():
+    """DC line > the solver's BasisOptions.e_pt2_tol > GS_E_PT2_TOL. With nothing set on the DC
+    side the search inherits the solver line's tolerance: parity with the ground state the
+    self-energy run will find."""
     from impurityModel.ed.dc_criteria import _resolve_dc_e_pt2_tol
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
-    monkeypatch.delenv("DC_E_PT2_TOL", raising=False)
     assert _resolve_dc_e_pt2_tol(None, None) == GS_E_PT2_TOL
     assert _resolve_dc_e_pt2_tol(None, 1e-6) == 1e-6
     assert _resolve_dc_e_pt2_tol(1e-5, 1e-6) == 1e-5
 
-    monkeypatch.setenv("DC_E_PT2_TOL", "1e-7")
-    assert _resolve_dc_e_pt2_tol(None, 1e-6) == 1e-7
-    assert _resolve_dc_e_pt2_tol(1e-5, 1e-6) == 1e-5, "the double-counting line must beat the environment"
-
 
 @pytest.mark.parametrize("criterion", ["fixed_gap_dc", "fixed_peak_dc"])
-def test_the_energy_difference_criteria_carry_e_pt2_tol_to_their_sector_solves(criterion, monkeypatch):
+def test_the_energy_difference_criteria_carry_e_pt2_tol_to_their_sector_solves(criterion):
     """The argument reaches the context, and the context reaches every sector solve."""
     import dataclasses
     import inspect
 
     from impurityModel.ed import dc_criteria
 
-    monkeypatch.delenv("DC_E_PT2_TOL", raising=False)
     assert "e_pt2_tol" in inspect.signature(getattr(dc_criteria, criterion)).parameters
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6)
@@ -2765,25 +2709,23 @@ def test_the_energy_difference_criteria_carry_e_pt2_tol_to_their_sector_solves(c
     assert "e_pt2_tol=ctx.e_pt2_tol," in inspect.getsource(dc_criteria._ctx_spec)
 
 
-def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override(monkeypatch):
+def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override():
     """It solves on the production ground-state path, so neither the double-counting line nor
-    DC_E_PT2_TOL may loosen it -- only the solver line's own tolerance, which calc_gs uses too."""
+    anything else may loosen it -- only the solver line's own tolerance, which calc_gs uses too."""
     import dataclasses
     import inspect
 
     from impurityModel.ed import dc_criteria
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
-    monkeypatch.setenv("DC_E_PT2_TOL", "1e-3")
     assert "e_pt2_tol" not in inspect.signature(dc_criteria.fixed_occupation_dc).parameters
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
     assert ctx.e_pt2_tol == GS_E_PT2_TOL
-    monkeypatch.setenv("DC_DE2_MIN", "1e-3")
     basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6, de2_min=1e-9)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     assert ctx.e_pt2_tol == 1e-6
-    assert ctx.de2_min == 1e-9, "the DC knob must not reach the production-path criterion"
+    assert ctx.de2_min == 1e-9
     src = inspect.getsource(dc_criteria._evaluate_occupation_and_energy_at_mu)
     assert "_ctx_spec(ctx)" in src
     spec_src = inspect.getsource(dc_criteria._ctx_spec)
@@ -2818,7 +2760,7 @@ def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
     A loose floor on this tiny fixture must not move `dc` outside the search's own tolerance --
     the fixture's sectors are small enough to be PT2-converged either way, so this pins the
     plumbing rather than the physics. The physics claim (that loosening is cheap) is measured on
-    real workloads and recorded in `DC_DE2_MIN`'s docstring, not asserted here.
+    real workloads and recorded in the `de2_min` docstring, not asserted here.
     """
     kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
     report_default, report_loose = {}, {}
@@ -2832,23 +2774,6 @@ def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
     assert report_default["de2_min"] == GS_DE2_MIN, "unset must reproduce the historical floor"
     assert report_loose["de2_min"] == 1e-5, "the criterion's argument must reach the context"
     np.testing.assert_allclose(np.diag(dc_default).real, np.diag(dc_loose).real, atol=5e-3)
-
-
-def test_the_dc_tolerance_resolvers_differ_only_in_the_dc_knob(monkeypatch):
-    """P5: one precedence for every DC path; the production-path criterion switches the opt-in knob off."""
-    from impurityModel.ed import dc_criteria
-    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
-
-    assert dc_criteria._resolve_dc_e_pt2_tol(None, None) == GS_E_PT2_TOL
-    assert dc_criteria._resolve_dc_de2_min(None, None) == GS_DE2_MIN
-    monkeypatch.setenv("DC_E_PT2_TOL", "1e-3")
-    monkeypatch.setenv("DC_DE2_MIN", "1e-4")
-    assert dc_criteria._resolve_dc_e_pt2_tol(None, 1e-6) == 1e-3
-    assert dc_criteria._resolve_dc_e_pt2_tol(5e-5, 1e-6) == 5e-5
-    assert dc_criteria._resolve_dc_e_pt2_tol(None, 1e-6, honour_dc_knob=False) == 1e-6
-    assert dc_criteria._resolve_dc_de2_min(None, 1e-9) == 1e-4
-    assert dc_criteria._resolve_dc_de2_min(None, 1e-9, honour_dc_knob=False) == 1e-9
-    assert dc_criteria._resolve_dc_e_pt2_tol(None, None, honour_dc_knob=False) == GS_E_PT2_TOL
 
 
 @pytest.mark.parametrize("which", ["occupation", "gap"])

@@ -24,15 +24,7 @@ from impurityModel.ed.selfenergy import calc_selfenergy
 from impurityModel.test.gf.test_selfenergy_end_to_end import _basis_and_solver, _meshes, _siam_model
 from impurityModel.test.support.gf_oracles import _run_driver
 
-KNOBS = (
-    "GF_BICGSTAB_ADMISSION",
-    "GF_BICGSTAB_ADMIT_TOL_AMP",
-    "GF_BICGSTAB_ADMIT_TOL_JACOBI",
-    "GF_BICGSTAB_ADMIT_SCORER",
-    "GF_BICGSTAB_RESIDUAL_CHECK",
-    "GF_BICGSTAB_WARM_HISTORY",
-    "GF_ADMIT_FIRST_SHELL_TOL",
-)
+KNOBS = ("GF_BICGSTAB_RESIDUAL_CHECK", "GF_BICGSTAB_WARM_HISTORY")
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +36,7 @@ def _hermetic_knobs(monkeypatch):
 # --- the options ------------------------------------------------------------------------------------
 
 
-def test_the_defaults_leave_the_policy_unspecified_so_the_environment_still_decides():
+def test_the_defaults_leave_the_policy_unspecified():
     options = SolverOptions()
     assert (options.gf_method, options.gf_admission, options.gf_admit_tol) == ("lanczos", None, None)
 
@@ -104,26 +96,18 @@ def test_outer_by_argument_records_each_point_and_reports_the_error_bound(monkey
     assert "truncation_error_bound" in diagnostics
 
 
-def test_an_explicit_argument_beats_the_environment_in_both_directions(monkeypatch):
-    points, _ = _driver(monkeypatch, env={"GF_BICGSTAB_ADMISSION": "all"}, gf_admission="outer")
-    assert all("admission" in p for p in points)
-    points, _ = _driver(monkeypatch, env={"GF_BICGSTAB_ADMISSION": "outer"}, gf_admission="all")
+def test_all_is_the_explicit_form_of_the_default(monkeypatch):
+    points, _ = _driver(monkeypatch, gf_admission="all")
     assert all("admission" not in p for p in points)
 
 
-def test_the_environment_alone_still_selects_outer_for_the_benchmarks_that_use_it(monkeypatch):
-    points, diagnostics = _driver(monkeypatch, env={"GF_BICGSTAB_ADMISSION": "outer"})
-    assert all("admission" in p for p in points) and "truncation_error_bound" in diagnostics
-
-
-def test_the_tolerance_argument_beats_the_environment_threshold(monkeypatch):
+def test_the_tolerance_argument_sets_the_threshold(monkeypatch):
     """On SIAM-6, whose start set is smaller than its closure: a threshold above every score admits nothing
-    beyond the start set whatever the environment says, and the environment's own tiny one admits."""
+    beyond the start set, and a tiny one admits."""
     from impurityModel.ed.gf_solvers import block_Green_bicgstab
     from impurityModel.ed.greens_function import _gf_signed_axes
     from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _seed_basis, _seeds, _siam_6
 
-    monkeypatch.setenv("GF_BICGSTAB_ADMIT_TOL_AMP", "1e-12")
     z_axes = _gf_signed_axes(None, OMEGA[:4], 0, DELTA)
 
     def rounds(**kwargs):
@@ -133,7 +117,7 @@ def test_the_tolerance_argument_beats_the_environment_threshold(monkeypatch):
         return [p["admission"]["rounds"] for p in stats["points"]]
 
     assert all(r == 0 for r in rounds(admit_tol=1e6))
-    assert any(r > 0 for r in rounds())
+    assert any(r > 0 for r in rounds(admit_tol=1e-12))
 
 
 def test_the_environment_can_force_the_error_bound_either_way(monkeypatch):

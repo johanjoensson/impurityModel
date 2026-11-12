@@ -1,4 +1,4 @@
-"""Importance-ranked per-point basis admission (``GF_BICGSTAB_ADMISSION=outer``).
+"""Importance-ranked per-point basis admission (``admission="outer"``).
 
 The contract under test (``gf_admission``): a point is solved by an outer loop of *frozen-basis*
 solves -- measure the residual outside ``P``, admit what scores above the threshold, re-solve -- so
@@ -12,14 +12,14 @@ is. Everything is checked against the dense resolvent on the closed SIAM-6 secto
   admits nothing beyond the start set;
 * the start set always holds the seeds and their first H-shell (the ``Sigma`` tail's moments);
 * the cap is never exceeded and reports ``budget``;
-* ``all`` -- the default -- is bit-identical to the unset knob.
+* ``all`` -- the default -- is bit-identical to leaving the option unset.
 """
 
 import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.gf_admission import solve_point_outer
+from impurityModel.ed.gf_admission import AdmissionTuning, solve_point_outer
 from impurityModel.ed.gf_solvers import block_Green_bicgstab, solve_shifted_block
 from impurityModel.ed.greens_function import _gf_signed_axes
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
@@ -43,29 +43,10 @@ CLOSURE = 18  # two 9-determinant sectors: what the two seed columns reach
 def _hermetic_knobs(monkeypatch):
     # The sparse per-point solve, which this file covers; the frozen path has test_gf_bicgstab_frozen.py.
     set_gf_switches(monkeypatch, closure_freeze="0")
-    for name in (
-        "GF_BICGSTAB_ADMISSION",
-        "GF_BICGSTAB_ADMIT_SCORER",
-        "GF_BICGSTAB_ADMIT_TOL_AMP",
-        "GF_BICGSTAB_ADMIT_TOL_JACOBI",
-        "GF_BICGSTAB_ADMIT_ROUNDS",
-        "GF_BICGSTAB_ADMIT_SHELLS",
-        "GF_BICGSTAB_ADMIT_CARRY_TOL",
-        "GF_BICGSTAB_ADMIT_EN_TOL",
-        "GF_ADMIT_FIRST_SHELL_TOL",
-        "GF_BICGSTAB_WARM_HISTORY",
-    ):
-        monkeypatch.delenv(name, raising=False)
 
 
-def _outer_point(monkeypatch, cap=np.inf, eta=1e-4, scorer="amplitude", comm=None, z=Z, **knobs):
+def _outer_point(monkeypatch, cap=np.inf, eta=1e-4, scorer="amplitude", comm=None, z=Z, **tuning):
     """One ``solve_point_outer`` on SIAM-6: ``(G, record, proxy, basis, A_op, seeds)``."""
-    monkeypatch.setenv("GF_BICGSTAB_ADMIT_SCORER", scorer)
-    monkeypatch.setenv(
-        "GF_BICGSTAB_ADMIT_TOL_AMP" if scorer == "amplitude" else "GF_BICGSTAB_ADMIT_TOL_JACOBI", repr(eta)
-    )
-    for name, value in knobs.items():
-        monkeypatch.setenv(f"GF_BICGSTAB_ADMIT_{name}", str(value))
     basis = _seed_basis(cap=cap, comm=comm)
     # redistribute_psis SUMS per-rank contributions: only rank 0 provides amplitudes.
     owns = comm is None or comm.rank == 0
@@ -75,7 +56,21 @@ def _outer_point(monkeypatch, cap=np.inf, eta=1e-4, scorer="amplitude", comm=Non
     A_op = z - hOp
     x0 = [ManyBodyState(width=1) for _ in seeds]
     X, seeds, info, record, proxy = solve_point_outer(
-        A_op, hOp, z, seeds, x0, basis, cap, 0.0, ATOL, 500, comm, len(seeds), solve_shifted_block
+        A_op,
+        hOp,
+        z,
+        seeds,
+        x0,
+        basis,
+        cap,
+        0.0,
+        ATOL,
+        500,
+        comm,
+        len(seeds),
+        solve_shifted_block,
+        eta_override=eta,
+        tuning=AdmissionTuning(scorer=scorer, **tuning),
     )
     gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
     if comm is not None:
@@ -133,11 +128,10 @@ def test_the_cap_is_never_exceeded_and_reports_budget(monkeypatch, cap):
 
 @pytest.mark.parametrize("shell_tol", [0.3, 0.6])
 def test_a_relaxed_first_shell_shrinks_the_start_set_and_stays_exact(monkeypatch, shell_tol):
-    """``GF_ADMIT_FIRST_SHELL_TOL`` prunes weak first-shell rows; the answer is still the exact PHP
+    """``shell_tol`` prunes weak first-shell rows; the answer is still the exact PHP
     resolvent on whatever was kept."""
     _G, strict, *_ = _outer_point(monkeypatch, eta=1e6)
-    monkeypatch.setenv("GF_ADMIT_FIRST_SHELL_TOL", str(shell_tol))
-    G, record, proxy, *_ = _outer_point(monkeypatch, eta=1e6)
+    G, record, proxy, *_ = _outer_point(monkeypatch, eta=1e6, shell_tol=shell_tol)
     assert record["start_size"] < strict["start_size"]
     np.testing.assert_allclose(G, _dense_G_on(_retained(proxy), [Z])[0], atol=1e-9)
 
@@ -149,13 +143,13 @@ def test_the_jacobi_scorer_gives_the_same_contract(monkeypatch):
 
 def test_one_shell_per_round_reaches_the_same_closure_in_more_rounds(monkeypatch):
     _G, two, *_ = _outer_point(monkeypatch, eta=0.0)
-    _G, one, *_ = _outer_point(monkeypatch, eta=0.0, SHELLS=1)
+    _G, one, *_ = _outer_point(monkeypatch, eta=0.0, shells=1)
     assert one["final_size"] == two["final_size"] == CLOSURE
     assert one["rounds"] >= two["rounds"]
 
 
 def test_the_estimate_stops_admission_early_without_changing_the_contract(monkeypatch):
-    G, record, proxy, *_ = _outer_point(monkeypatch, eta=0.0, EN_TOL=0.5)
+    G, record, proxy, *_ = _outer_point(monkeypatch, eta=0.0, en_tol=0.5)
     assert record["exit_reason"] == "estimate"
     np.testing.assert_allclose(G, _dense_G_on(_retained(proxy), [Z])[0], atol=1e-9)
 
@@ -163,23 +157,21 @@ def test_the_estimate_stops_admission_early_without_changing_the_contract(monkey
 # --- the driver ---------------------------------------------------------------------------------
 
 
-def _driver(monkeypatch, **env):
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
+def _driver(monkeypatch, **options):
     z_axes = _gf_signed_axes(None, OMEGA, 0, DELTA)
-    G, stats = block_Green_bicgstab(_siam_6(), _seeds(), _seed_basis(), [0.0], 2, z_axes, atol=ATOL)
+    G, stats = block_Green_bicgstab(_siam_6(), _seeds(), _seed_basis(), [0.0], 2, z_axes, atol=ATOL, **options)
     return G[0][0], stats, z_axes[0]
 
 
-def test_all_is_bit_identical_to_the_unset_knob(monkeypatch):
+def test_all_is_bit_identical_to_the_unset_option(monkeypatch):
     G0, s0, _ = _driver(monkeypatch)
-    G1, s1, _ = _driver(monkeypatch, GF_BICGSTAB_ADMISSION="all")
+    G1, s1, _ = _driver(monkeypatch, admission="all")
     assert np.array_equal(G0, G1)
     assert [p["solve_size"] for p in s0["points"]] == [p["solve_size"] for p in s1["points"]]
 
 
 def test_the_driver_under_outer_matches_the_dense_resolvent_and_records_each_point(monkeypatch):
-    G, stats, z = _driver(monkeypatch, GF_BICGSTAB_ADMISSION="outer", GF_BICGSTAB_ADMIT_TOL_AMP="0")
+    G, stats, z = _driver(monkeypatch, admission="outer", admit_tol=0.0)
     np.testing.assert_allclose(G, _dense_G_on(_n3_sector_dets(), z), atol=1e-9)
     assert stats["n_unconverged"] == 0 and len(stats["points"]) == len(z)
     for p in stats["points"]:
@@ -189,18 +181,20 @@ def test_the_driver_under_outer_matches_the_dense_resolvent_and_records_each_poi
 
 def test_a_cold_point_starts_from_the_seeds_and_their_shell_not_the_whole_warm_support(monkeypatch):
     """The warm-start guess contributes only the determinants that still matter at this z."""
-    _G, stats, _z = _driver(monkeypatch, GF_BICGSTAB_ADMISSION="outer", GF_BICGSTAB_ADMIT_TOL_AMP="1e-2")
-    _G, warm_all, _z = _driver(monkeypatch, GF_BICGSTAB_ADMISSION="all")
+    _G, stats, _z = _driver(monkeypatch, admission="outer", admit_tol=1e-2)
+    _G, warm_all, _z = _driver(monkeypatch, admission="all")
     assert max(p["rebuild_size"] for p in stats["points"]) <= max(p["rebuild_size"] for p in warm_all["points"])
 
 
-@pytest.mark.parametrize("name,value", [("GF_BICGSTAB_ADMISSION", "inner"), ("GF_BICGSTAB_ADMIT_SCORER", "residual")])
-def test_an_unknown_policy_raises_rather_than_falling_back(monkeypatch, name, value):
-    monkeypatch.setenv("GF_BICGSTAB_ADMISSION", "outer")
-    monkeypatch.setenv(name, value)
+def test_an_unknown_policy_raises_rather_than_falling_back():
     z_axes = _gf_signed_axes(None, OMEGA[:2], 0, DELTA)
-    with pytest.raises(ValueError, match=name):
-        block_Green_bicgstab(_siam_6(), _seeds(), _seed_basis(), [0.0], 2, z_axes, atol=ATOL)
+    with pytest.raises(ValueError, match="admission"):
+        block_Green_bicgstab(_siam_6(), _seeds(), _seed_basis(), [0.0], 2, z_axes, atol=ATOL, admission="inner")
+
+
+def test_an_unknown_scorer_raises():
+    with pytest.raises(ValueError, match="scorer"):
+        AdmissionTuning(scorer="residual")
 
 
 # --- MPI ----------------------------------------------------------------------------------------

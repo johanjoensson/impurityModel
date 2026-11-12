@@ -295,7 +295,7 @@ def run(
     only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
 
     ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
-    the settle) and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on
+    the settle) and ``prune_rule`` (``eta`` or ``mass``) sets ``gf_recurrence._PRUNE_RULE``, identically on
     every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze;
     ``refine_stop_rtol`` / ``refine_max_shifts`` / ``refine_weighted`` set ``gf_refinement.REFINE_STOP_RTOL`` /
     ``REFINE_MAX_SHIFTS`` / ``REFINE_WEIGHTED`` (the residual the recurrence-fed scoring solutions must reach, the
@@ -304,7 +304,9 @@ def run(
     tolerance; the restart on the final support converges fully.
     """
     if prune_rule is not None:
-        os.environ["GF_PRUNE_RULE"] = prune_rule
+        from impurityModel.ed import gf_recurrence
+
+        gf_recurrence._PRUNE_RULE = prune_rule
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
     from impurityModel.test.support import real_workload as rw
 
@@ -440,7 +442,7 @@ def main(argv=None):
     r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
     r.add_argument("--growth-tol", type=float, default=None, help="gf_growth_tol (needs --prune-tol)")
-    r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="GF_PRUNE_RULE for the sweep")
+    r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="prune rule for the sweep")
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
     g = sub.add_parser("grade")

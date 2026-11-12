@@ -730,7 +730,7 @@ def _solver_options_from(SolverOptions, table):
         dense_cutoff=table["dense_cutoff"],
         sparse_green=table["sparse_green"],
         gf_method=table["gf_method"],
-        # "auto" -> None: not specified, so the GF_BICGSTAB_ADMISSION knob decides (else "all").
+        # "auto" -> None: not specified, which is "all".
         gf_admission=None if table["gf_admission"] == "auto" else table["gf_admission"],
         gf_admit_tol=table["gf_admit_tol"],
         # "auto" -> None (on); "on" / "off" are explicit.

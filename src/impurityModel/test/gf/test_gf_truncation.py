@@ -24,7 +24,7 @@ OMEGA = np.linspace(-8.0, 8.0, 41)
 def _shipped_defaults(monkeypatch):
     """The knobs these tests set per case are read lazily from the environment: start each test
     from the shipped defaults, whatever the shell exports."""
-    for knob in ("GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL"):
+    for knob in ("GF_FROZEN_CSR", "APPLY_ROW_CHUNKS"):
         monkeypatch.delenv(knob, raising=False)
 
 
@@ -466,11 +466,10 @@ def test_the_frozen_matrix_matches_the_operator_applied_every_block_to_rounding(
 
 
 def test_frozen_csr_under_importance_pruning(monkeypatch):
-    """A unit the cap froze under ``GF_LANCZOS_ADMIT_TOL`` continues on the frozen ``P H P`` matrix, exact on its
+    """A unit the cap froze under ``prune_tol`` continues on the frozen ``P H P`` matrix, exact on its
     retained set."""
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "0.05")
-    g, info = _run_capped(12)
+    g, info = _run_capped(12, prune_tol=0.05)
     assert info["cap_hit"] and info["csr_fallback"]
     _assert_php_oracle(g, info)
 

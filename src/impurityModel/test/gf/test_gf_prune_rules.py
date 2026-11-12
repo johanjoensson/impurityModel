@@ -7,6 +7,7 @@ with the mass rule and the records.
 import numpy as np
 import pytest
 
+from impurityModel.ed import gf_recurrence
 from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -18,20 +19,17 @@ from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _dense_G_on, _se
 @pytest.fixture(autouse=True)
 def _knobs(monkeypatch):
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
-    for name in ("GF_LANCZOS_ADMIT_TOL", "GF_ADMIT_FIRST_SHELL_TOL", "GF_PRUNE_RULE"):
-        monkeypatch.delenv(name, raising=False)
 
 
 def _run(monkeypatch, tol, rule="eta", shell_tol=None, cap=np.inf, comm=None):
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", repr(tol))
-    monkeypatch.setenv("GF_PRUNE_RULE", rule)
-    if shell_tol is not None:
-        monkeypatch.setenv("GF_ADMIT_FIRST_SHELL_TOL", repr(shell_tol))
+    monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", rule)
     basis = _seed_basis(cap=cap, comm=comm)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
     info = {}
-    alphas, betas, r = block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=info)
+    alphas, betas, r = block_Green_sparse(
+        _siam_6(), seeds, basis, DELTA, verbose=False, cap_info=info, prune_tol=tol, first_shell_tol=shell_tol
+    )
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info
 
 
@@ -113,7 +111,7 @@ def test_the_shell_mask_is_the_first_shell_the_guard_kept(monkeypatch, comm, rul
 
 
 def test_an_unknown_rule_is_refused(monkeypatch):
-    with pytest.raises(ValueError, match="GF_PRUNE_RULE"):
+    with pytest.raises(ValueError, match="prune rule"):
         _run(monkeypatch, 0.1, "bogus")
 
 
@@ -126,7 +124,6 @@ def test_the_k_over_p_ratio_is_reported_under_pruning_only(monkeypatch, comm):
     kept = len(_retained(pruned, comm))
     assert pruned["proxy"].retained_size == kept
     assert pruned["k_over_p"] >= 1.0
-    monkeypatch.delenv("GF_LANCZOS_ADMIT_TOL")
     basis = _seed_basis(cap=np.inf, comm=comm)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
@@ -136,10 +133,9 @@ def test_the_k_over_p_ratio_is_reported_under_pruning_only(monkeypatch, comm):
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_the_option_beats_the_knob_and_pruning_switches_the_settle_off(monkeypatch, comm):
-    """``prune_tol=0.3`` prunes although the knob says 1e-9; without it the knob decides; with the settle asked for
-    it still does not settle (the recurrence prunes instead)."""
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "1e-9")
+def test_pruning_switches_the_settle_off(monkeypatch, comm):
+    """``prune_tol=1e-9`` and ``prune_tol=0.3`` both prune; with the settle asked for it still does not settle (the
+    recurrence prunes instead)."""
     basis = _seed_basis(cap=np.inf, comm=comm)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
@@ -147,7 +143,7 @@ def test_the_option_beats_the_knob_and_pruning_switches_the_settle_off(monkeypat
 
     set_gf_switches(monkeypatch, matrix_mode="discovered")
     knob, opt = {}, {}
-    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=knob)
+    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=knob, prune_tol=1e-9)
     block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=opt, prune_tol=0.3, support_settle=True)
     assert knob["proxy"].depth_histogram()[:4] == [5, 6, 3, 1]
     assert opt["proxy"].depth_histogram()[:4] != [5, 6, 3, 1]
@@ -181,10 +177,9 @@ def test_every_matrix_mode_reports_its_pruned_growth(monkeypatch, capfd, mode):
     (a log with no pruned-growth line read as 'the flag was dropped')."""
     from impurityModel.ed import gf_solvers
 
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "1e-3")
     monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", mode)
     basis = _seed_basis(cap=np.inf, comm=None)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full, len(full))
-    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=True, cap_info={})
+    block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=True, cap_info={}, prune_tol=1e-3)
     assert "GF pruned growth" in capfd.readouterr().out

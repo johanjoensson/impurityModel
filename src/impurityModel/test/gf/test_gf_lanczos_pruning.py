@@ -1,4 +1,4 @@
-"""Importance-pruned block-Lanczos growth (``GF_LANCZOS_ADMIT_TOL``): the comparator for ``outer``.
+"""Importance-pruned block-Lanczos growth (``prune_tol``): the comparator for ``outer``.
 
 The recurrence on the discovered-key matrix admits a step's new determinants only above an amplitude threshold;
 a deferred row stays in the frontier and can enter later, so the recurrence restarts from the seeds on the final
@@ -36,18 +36,24 @@ CLOSURE = 18
 @pytest.fixture(autouse=True)
 def _knobs(monkeypatch):
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
-    monkeypatch.delenv("GF_LANCZOS_ADMIT_TOL", raising=False)
-    monkeypatch.delenv("GF_ADMIT_FIRST_SHELL_TOL", raising=False)
 
 
-def _run(monkeypatch, eta, cap=np.inf, reort=None, comm=None, slater=0.0):
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", repr(eta))
+def _run(monkeypatch, eta, cap=np.inf, reort=None, comm=None, slater=0.0, shell_tol=None):
     basis = _seed_basis(cap=cap, comm=comm)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
     info = {}
     alphas, betas, r = block_Green_sparse(
-        _siam_6(), seeds, basis, DELTA, reort=reort, verbose=False, cap_info=info, slaterWeightMin=slater
+        _siam_6(),
+        seeds,
+        basis,
+        DELTA,
+        reort=reort,
+        verbose=False,
+        cap_info=info,
+        slaterWeightMin=slater,
+        prune_tol=eta,
+        first_shell_tol=shell_tol,
     )
     z = OMEGA + 1j * DELTA
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info, z
@@ -109,8 +115,7 @@ def test_the_seeds_and_their_first_shell_are_never_pruned(monkeypatch):
 @pytest.mark.parametrize("shell_tol", [0.3, 0.6])
 def test_a_relaxed_first_shell_prunes_it_and_stays_exact(monkeypatch, shell_tol):
     _G, strict, _z = _run(monkeypatch, 1e6)
-    monkeypatch.setenv("GF_ADMIT_FIRST_SHELL_TOL", str(shell_tol))
-    G, info, z = _run(monkeypatch, 1e6)
+    G, info, z = _run(monkeypatch, 1e6, shell_tol=shell_tol)
     assert len(_retained(info)) < len(_retained(strict))
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
 
@@ -224,7 +229,6 @@ def _run_growth(monkeypatch, eta, growth_tol, reort=None, comm=None):
     from impurityModel.ed.gf_convergence import EvalMeshes
 
     monkeypatch.setattr(gf_convergence, "_GF_CHECK_EVERY", 1)
-    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", repr(eta))
     basis = _seed_basis(comm=comm)
     full = _seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
@@ -240,6 +244,7 @@ def _run_growth(monkeypatch, eta, growth_tol, reort=None, comm=None):
         cap_info=info,
         eval_meshes=EvalMeshes([z], [1e-9]),
         growth_tol=growth_tol,
+        prune_tol=eta,
     )
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info, z
 
