@@ -388,8 +388,8 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
     assert solved_counts == [len(WIN)]
 
 
-def test_rixs_tensor_adaptive_env_knob(monkeypatch):
-    """GF_RIXS_ADAPTIVE_TOL enables the sampler without a code change."""
+def test_rixs_tensor_adaptive_tolerance_enables_the_sampler(monkeypatch):
+    """``adaptive_wIn_tol`` (``SpectraOptions.rixs_adaptive_tol``) enables the sampler."""
     op = _model()
     psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
@@ -401,7 +401,6 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
         return real_flat(*args, **kwargs)
 
     monkeypatch.setattr(rixs, "_rixs_map_flat", counting_flat)
-    monkeypatch.setenv("GF_RIXS_ADAPTIVE_TOL", "1e-8")
     spectra.calc_tensor_map(
         op,
         tin,
@@ -418,6 +417,7 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
         slaterWeightMin=0.0,
         l_core=1,
         l_valence=2,
+        adaptive_wIn_tol=1e-8,
     )
     assert sum(solved_counts) < len(WIN_ADAPTIVE)
 

@@ -785,6 +785,7 @@ def _build_spectra_options(resolved, notes):
         xas=resolved.tables["spectroscopy.xas"]["enabled"],
         rixs=rixs["enabled"],
         nixs=nixs["enabled"],
+        rixs_adaptive_tol=rixs["adaptive_tol"],
     )
 
 

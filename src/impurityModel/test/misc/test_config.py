@@ -61,9 +61,9 @@ def test_derived_knobs_return_none_when_unset(monkeypatch):
 
 
 def test_empty_string_counts_as_unset_for_non_str(monkeypatch):
-    """`GF_RIXS_ADAPTIVE_TOL=` disables the sampler rather than raising on float("")."""
-    monkeypatch.setenv("GF_RIXS_ADAPTIVE_TOL", "")
-    assert config.GF_RIXS_ADAPTIVE_TOL.get() is None
+    """`GF_BICGSTAB_ATOL=` falls back to the default rather than raising on float("")."""
+    monkeypatch.setenv("GF_BICGSTAB_ATOL", "")
+    assert config.GF_BICGSTAB_ATOL.get() == config.GF_BICGSTAB_ATOL.default
 
 
 def test_registry_is_keyed_by_name_and_grouped():

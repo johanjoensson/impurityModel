@@ -426,6 +426,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
             correlated_block_structure=correlated_block_structure,
             l_valence=l_valence,
             l_core=l_core,
+            rixs_adaptive_tol=spectra_options.rixs_adaptive_tol,
             **switches,
         )
 

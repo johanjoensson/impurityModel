@@ -56,7 +56,6 @@ persist across a shell session the way a memory budget or a solver tolerance doe
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
 | `GF_RIXS_WIN_CHUNK` | int | *derived* | Incoming-energy points per RIXS work unit. A unit is (eigenstate x contiguous wIn-chunk); contiguity preserves the warm-start locality of consecutive points, and a unit is atomic (the engine never reorders within one). Unset, the default targets ~3 units per rank so the packing has slack to balance without fragmenting the warm-start chains; a serial run gets one unit per eigenstate (maximal locality). |
-| `GF_RIXS_ADAPTIVE_TOL` | float | *derived* | Stop tolerance of the greedy adaptive wIn sampler (set-valued AAA): solve only the incoming energies the rational interpolant cannot yet predict to within this tolerance. Unset/empty disables it (dense sweep). Measured on NiO L3: 28 of 121 solves at 1e-4 relative error. |
 
 ## Ground-state block-Lanczos width, matvec exchange and CIPSI selection sizing
 

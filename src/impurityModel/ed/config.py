@@ -96,7 +96,7 @@ class Knob:
         """The knob's current value: the parsed environment variable, else the default.
 
         Read lazily -- every call re-reads ``os.environ``. An empty string counts as unset
-        for the non-string knobs, so ``GF_RIXS_ADAPTIVE_TOL=`` disables the sampler rather
+        for the non-string knobs, so ``GF_BICGSTAB_ATOL=`` takes the default rather
         than raising.
         """
         raw = os.environ.get(self.name)
@@ -396,18 +396,6 @@ GF_RIXS_WIN_CHUNK = Knob(
     is atomic (the engine never reorders within one). Unset, the default targets ~3 units per
     rank so the packing has slack to balance without fragmenting the warm-start chains; a
     serial run gets one unit per eigenstate (maximal locality).""",
-)
-
-GF_RIXS_ADAPTIVE_TOL = Knob(
-    name="GF_RIXS_ADAPTIVE_TOL",
-    kind="float",
-    default=None,  # unset = the adaptive sampler is off, the wIn grid is swept densely
-    minimum=0.0,
-    group="rixs-sampling",
-    doc="""Stop tolerance of the greedy adaptive wIn sampler (set-valued AAA): solve only the
-    incoming energies the rational interpolant cannot yet predict to within this tolerance.
-    Unset/empty disables it (dense sweep). Measured on NiO L3: 28 of 121 solves at 1e-4
-    relative error.""",
 )
 
 # --- Ground state: block-Lanczos width -------------------------------------------------------
@@ -767,7 +755,6 @@ KNOBS: dict[str, Knob] = _register(
     IMPMOD_MATVEC_PROF,
     GF_KRYLOV_RECYCLE_MAX_BYTES,
     GF_RIXS_WIN_CHUNK,
-    GF_RIXS_ADAPTIVE_TOL,
     GS_MAX_BLOCK_WIDTH,
     GS_SECTOR_CERTIFY,
     GS_SHARPEN_MANIFOLDS,

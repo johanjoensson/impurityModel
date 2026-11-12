@@ -1258,6 +1258,14 @@ _TABLE_LIST += [
                 "shared core_hole_broadening.",
                 minimum=0.0,
             ),
+            Key(
+                "adaptive_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "Sample the incoming-energy grid adaptively: solve only as many points as it takes for "
+                "the rest to be interpolated to this relative tolerance. Absent solves the whole grid.",
+                minimum=0.0,
+            ),
         ),
     ),
     Table(

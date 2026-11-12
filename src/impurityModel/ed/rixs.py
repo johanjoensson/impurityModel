@@ -61,11 +61,6 @@ def _rixs_win_chunk(n_eigen: int, n_win: int, comm_size: int) -> int:
     return max(1, min(n_win, ceil(n_eigen * n_win / (3 * comm_size))))
 
 
-def _rixs_adaptive_tol():
-    """Adaptive-wIn stop tolerance (:data:`config.GF_RIXS_ADAPTIVE_TOL`); unset/empty disables."""
-    return config.GF_RIXS_ADAPTIVE_TOL.get()
-
-
 def _rixs_adaptive_batch():
     """New wIn solves per adaptive round."""
     return 1
@@ -1009,8 +1004,7 @@ def calc_tensor_map(
     adaptive_wIn_tol : float, optional
         Enable greedy adaptive sampling of the ``wIns`` grid (:func:`_rixs_map_adaptive`):
         only the AAA-selected support frequencies are actually solved, the rest are
-        rational-reconstructed to this relative tolerance. ``None`` (default) reads
-        ``GF_RIXS_ADAPTIVE_TOL`` from the environment; unset there too means dense.
+        rational-reconstructed to this relative tolerance. ``None`` (default) solves the whole grid.
         Grids shorter than ``_RIXS_ADAPTIVE_MIN_GRID`` are always solved densely.
     **kwargs
         The remaining parameters match :func:`calc_map`.
@@ -1109,7 +1103,7 @@ def calc_tensor_map(
             occ_cutoff=occ_cutoff,
         )
 
-    tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()
+    tol = adaptive_wIn_tol
     if tol is not None and len(wIns) >= _RIXS_ADAPTIVE_MIN_GRID:
         gs = _rixs_map_adaptive(map_fn, wIns, basis.comm, tol, verbose)
     else:

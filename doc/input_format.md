@@ -465,6 +465,7 @@ Resonant inelastic x-ray scattering, on the shared w_loss mesh.
 | `enabled` | bool | `False` | Compute it. THE ONLY SWITCH: a non-positive broadening and an empty incoming mesh used to disable RIXS as side effects, which meant two independent switches with no stated precedence and a broadening doubling as a feature flag. Both are now validation errors instead. |
 | `w_in` | mesh | `{'min': -10.0, 'max': 20.0, 'n': 50}` | Incoming photon energies. |
 | `final_state_broadening` | energy | `0.05` | HWHM of the FINAL state. The intermediate-state half of the lineshape is the shared core_hole_broadening. |
+| `adaptive_tol` | dimensionless | `None` | Sample the incoming-energy grid adaptively: solve only as many points as it takes for the rest to be interpolated to this relative tolerance. Absent solves the whole grid. |
 
 ## `[spectroscopy.xas]`
 

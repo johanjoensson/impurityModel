@@ -139,6 +139,7 @@ def simulate_spectra(
     *,
     l_valence,
     l_core=None,
+    rixs_adaptive_tol=None,
 ):
     """
     Simulate various spectra.
@@ -494,6 +495,7 @@ def simulate_spectra(
                 l_core=l_core,
                 l_valence=l_valence,
                 occ_cutoff=occ_cutoff,
+                adaptive_wIn_tol=rixs_adaptive_tol,
             )
             if rank == 0:
                 print(f"shape(C) = {np.shape(C)}")
