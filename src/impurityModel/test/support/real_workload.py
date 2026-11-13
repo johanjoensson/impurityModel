@@ -173,6 +173,15 @@ def load_workload(h5_path, cluster=None, iteration=None):
         w_mesh = np.asarray(g["Real frequency mesh"])
         rot_to_spherical = np.asarray(g["Rot to spherical"])
         impurity_indices = [int(i) for i in np.asarray(g["Impurity orbitals"])]
+        # The bath split the interface classified on its star levels; the live run solved with it, so the
+        # replay must too (the on-site-energy sign rule disagrees for a conduction chain end). Older archives
+        # carry neither dataset, and an empty one is stored as float: both leave the split to the solver.
+        bath_split = None
+        if "Valence orbitals" in g and "Conduction orbitals" in g:
+            valence = [int(i) for i in np.asarray(g["Valence orbitals"]).ravel()]
+            conduction = [int(i) for i in np.asarray(g["Conduction orbitals"]).ravel()]
+            if valence or conduction:
+                bath_split = ({0: valence}, {0: conduction})
 
     # The interface hands calc_selfenergy the Hamiltonian as a second-quantized operator.
     h0 = {}
@@ -235,6 +244,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "w_mesh": w_mesh,
         "rot_to_spherical": rot_to_spherical,
         "impurity_orbitals": {0: impurity_indices},
+        "bath_split": bath_split,
         "nominal_occ": {0: int(attrs["nominal occupation"])},
         "mixed_valence": _attr(attrs, "mv"),
         "tau": float(attrs["tau"]),
@@ -307,6 +317,7 @@ def build_options(
         u4=atomic_physics.getUop_from_rspt_u4(workload["u4"]),
         impurity_orbitals=workload["impurity_orbitals"],
         rot_to_spherical=workload["rot_to_spherical"],
+        bath_states=workload.get("bath_split"),
     )
     meshes = Meshes(iw=1j * iw if iw is not None else None, w=w, delta=workload["delta"])
     basis_kwargs = dict(
