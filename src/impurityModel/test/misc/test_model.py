@@ -572,11 +572,11 @@ def test_the_quiet_window_refuses_what_would_be_silently_ignored(kwargs, match):
         SolverOptions(**kwargs)
 
 
-def test_the_quiet_window_resolves_against_pruning_and_its_default(monkeypatch):
+def test_the_quiet_window_resolves_against_pruning_and_its_default():
     from impurityModel.ed import options
     from impurityModel.ed.model import SolverOptions
 
-    monkeypatch.setattr(options, "DEFAULT_GF_GROWTH_QUIET", 64)
+    assert options.DEFAULT_GF_GROWTH_QUIET == 64
     assert SolverOptions().resolved_gf_growth_quiet == 64
     assert SolverOptions(gf_growth_quiet=8).resolved_gf_growth_quiet == 8
     assert SolverOptions(gf_growth_quiet=0).resolved_gf_growth_quiet is None

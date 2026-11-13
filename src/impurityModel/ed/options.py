@@ -129,8 +129,9 @@ class BasisOptions:
 DEFAULT_GF_PRUNE_TOL = 1e-3
 DEFAULT_GF_REFINE_ROUNDS = 3
 #: The quiet window of pruned growth (``gf_growth_quiet``) a run uses when the option is unset and pruning is on:
-#: the growth pass ends after this many consecutive blocks that admitted no determinant. ``None``: off.
-DEFAULT_GF_GROWTH_QUIET = None
+#: the growth pass ends after this many consecutive blocks that admitted no determinant. ``None``: off. Measured on a
+#: metal-like unit: 474 -> 48 growth blocks at the same support (window 16); 64 keeps the NiO supports that trickle.
+DEFAULT_GF_GROWTH_QUIET = 64
 #: The admission rule of pruned growth (``gf_prune_rule``) a run uses when the option is unset.
 DEFAULT_GF_PRUNE_RULE = "amplitude"
 
@@ -220,7 +221,7 @@ class SolverOptions:
         the Green's function converges on a metal-like unit, and every further growth block costs a full operator
         application. A heuristic: a determinant that would clear the cut after a longer gap is lost, so a window
         shorter than the longest gap between admissions trims the support. ``>= 1``; ``0``: off; ``None``
-        (default): :data:`DEFAULT_GF_GROWTH_QUIET` while pruning is on. Not with ``gf_prune_tol = 0``.
+        (default): :data:`DEFAULT_GF_GROWTH_QUIET` (64) while pruning is on. Not with ``gf_prune_tol = 0``.
     gf_prune_rule : {"amplitude", "accumulated"} or None
         With pruned growth: when a frontier determinant is admitted. ``"amplitude"``: one block's amplitude
         squared clears ``gf_prune_tol**2``. ``"accumulated"``: the amplitudes squared summed over the blocks that

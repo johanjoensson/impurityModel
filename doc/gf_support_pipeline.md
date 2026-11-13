@@ -183,7 +183,7 @@ reads only the replicated per-step admission counts, so every rank leaves on the
 determinant that would clear the cut after a gap longer than the window is lost (the kernel tests pin one: at
 `gf_prune_tol = 0.225` a window of 1 trims 3 of 18 determinants, a window of 2 does not). It does not act on a frozen
 support (cap, memory guard), without pruning, or in scoring runs. The unit line marks it: `growth=48 blk/6.5 s (quiet)`.
-`0` switches it off.
+`0` switches it off. On by default with a window of 64 blocks while pruning is on.
 
 **The admission rule (`gf_prune_rule`).** `amplitude` (the current default) admits a frontier determinant when one
 block's amplitude squared clears `gf_prune_tol**2`. `accumulated` admits it when its amplitude squared *summed over the
