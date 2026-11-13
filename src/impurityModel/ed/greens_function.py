@@ -1009,7 +1009,8 @@ def get_Greens_function(
         or gf_prune_rule is not None
     ):
         raise ValueError(
-            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol/gf_growth_quiet/gf_prune_rule apply only to gf_method='lanczos'; "
+            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol/gf_growth_quiet/gf_prune_rule apply only to "
+            "gf_method='lanczos'; "
             "remove them or switch"
         )
     if gf_method != "lanczos" and gf_refine is not None and gf_refine.rounds > 0:

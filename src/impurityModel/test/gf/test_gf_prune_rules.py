@@ -21,7 +21,7 @@ def _knobs(monkeypatch):
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
 
 
-def _run(monkeypatch, tol, rule="eta", shell_tol=None, cap=np.inf, comm=None):
+def _run(monkeypatch, tol, rule="amplitude", shell_tol=None, cap=np.inf, comm=None):
     monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", rule)
     basis = _seed_basis(cap=cap, comm=comm)
     full = _seeds()
@@ -76,7 +76,7 @@ def test_the_rules_admit_at_different_depths(monkeypatch, comm):
     """With no ban every rule ends on the closure on this small fixture; what differs is the depth each row enters
     at, which is what the histogram records."""
     hist = {}
-    for rule, tol in (("eta", 0.3), ("mass", 0.1), ("mass", 0.3)):
+    for rule, tol in (("amplitude", 0.3), ("mass", 0.1), ("mass", 0.3)):
         _G, info = _run(monkeypatch, tol, rule, comm=comm)
         counts = info["proxy"].depth_histogram()
         hist[(rule, tol)] = tuple(counts[: max(i for i, c in enumerate(counts) if c) + 1])
@@ -85,7 +85,7 @@ def test_the_rules_admit_at_different_depths(monkeypatch, comm):
 
 
 @pytest.mark.parametrize("comm", COMMS)
-@pytest.mark.parametrize("rule,tol", [("eta", 0.2), ("mass", 1e-2)])
+@pytest.mark.parametrize("rule,tol", [("amplitude", 0.2), ("mass", 1e-2)])
 def test_the_depth_histogram_counts_what_each_step_admitted(monkeypatch, comm, rule, tol):
     _G, info = _run(monkeypatch, tol, rule, comm=comm)
     support = info["proxy"]
@@ -97,14 +97,14 @@ def test_the_depth_histogram_counts_what_each_step_admitted(monkeypatch, comm, r
 
 
 @pytest.mark.parametrize("comm", COMMS)
-@pytest.mark.parametrize("rule", ["eta", "mass"])
+@pytest.mark.parametrize("rule", ["amplitude", "mass"])
 def test_the_shell_mask_is_the_first_shell_the_guard_kept(monkeypatch, comm, rule):
     shell, seeds = _shell()
-    _G, info = _run(monkeypatch, 1e6 if rule == "eta" else 0.5, rule, comm=comm)
+    _G, info = _run(monkeypatch, 1e6 if rule == "amplitude" else 0.5, rule, comm=comm)
     whole = _gather(list(info["proxy"].shell_mask.keys()), comm)
     assert set(whole) == shell - seeds
     _G, info = _run(
-        monkeypatch, 1e6 if rule == "eta" else 0.5, rule, shell_tol=0.6 if rule == "eta" else 0.3, comm=comm
+        monkeypatch, 1e6 if rule == "amplitude" else 0.5, rule, shell_tol=0.6 if rule == "amplitude" else 0.3, comm=comm
     )
     relaxed = set(_gather(list(info["proxy"].shell_mask.keys()), comm))
     assert relaxed < shell - seeds, "a relaxed first shell is pruned, and the mask says so"
@@ -120,7 +120,7 @@ def test_the_k_over_p_ratio_is_reported_under_pruning_only(monkeypatch, comm):
     from impurityModel.test.support.gf_switches import set_gf_switches
 
     set_gf_switches(monkeypatch, matrix_mode="discovered")
-    _G, pruned = _run(monkeypatch, 0.3, "eta", comm=comm)
+    _G, pruned = _run(monkeypatch, 0.3, "amplitude", comm=comm)
     kept = len(_retained(pruned, comm))
     assert pruned["proxy"].retained_size == kept
     assert pruned["k_over_p"] >= 1.0
@@ -151,7 +151,7 @@ def test_pruning_switches_the_settle_off(monkeypatch, comm):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("rule,tol", [("eta", 0.225), ("eta", 0.05), ("mass", 0.1), ("mass", 1e-3)])
+@pytest.mark.parametrize("rule,tol", [("amplitude", 0.225), ("amplitude", 0.05), ("mass", 0.1), ("mass", 1e-3)])
 @pytest.mark.parametrize("cap", [np.inf, 14])
 def test_the_pruned_set_and_depths_do_not_depend_on_the_rank_count(monkeypatch, rule, tol, cap):
     """The cut and the cap overflow are decided on allreduced scores: the kept set, the depth histogram and G are

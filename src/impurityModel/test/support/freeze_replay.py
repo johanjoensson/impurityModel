@@ -305,7 +305,7 @@ def _run(
     only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
 
     ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
-    the settle) and ``prune_rule`` (``eta``, ``accumulated`` or ``mass``) sets
+    the settle) and ``prune_rule`` (``amplitude``, ``accumulated`` or ``mass``) sets
     ``gf_recurrence._PRUNE_RULE``, identically on
     every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze;
     ``refine_stop_rtol`` / ``refine_max_shifts`` / ``refine_weighted`` set ``gf_refinement.REFINE_STOP_RTOL`` /
@@ -474,7 +474,7 @@ def main(argv=None):
     r.add_argument("--growth-tol", type=float, default=None, help="gf_growth_tol (needs --prune-tol)")
     r.add_argument("--growth-quiet", type=int, default=None, help="gf_growth_quiet (0 off; needs --prune-tol)")
     r.add_argument(
-        "--prune-rule", default=None, choices=["eta", "accumulated", "mass"], help="prune rule for the sweep"
+        "--prune-rule", default=None, choices=["amplitude", "accumulated", "mass"], help="prune rule for the sweep"
     )
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)

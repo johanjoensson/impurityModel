@@ -609,11 +609,11 @@ def test_the_prune_rule_refuses_what_would_be_silently_ignored(kwargs, match):
         SolverOptions(**kwargs)
 
 
-def test_the_prune_rule_resolves_to_the_kernel_names():
+def test_the_prune_rule_resolves_to_its_public_name():
     from impurityModel.ed.model import SolverOptions
 
     assert SolverOptions().resolved_gf_prune_rule is None  # unset: the kernel default (and the rig switch) apply
-    assert SolverOptions(gf_prune_rule="amplitude").resolved_gf_prune_rule == "eta"
+    assert SolverOptions(gf_prune_rule="amplitude").resolved_gf_prune_rule == "amplitude"
     assert SolverOptions(gf_prune_rule="accumulated").resolved_gf_prune_rule == "accumulated"
     assert SolverOptions(gf_prune_tol=0.0).resolved_gf_prune_rule is None
     assert SolverOptions(gf_method="bicgstab").resolved_gf_prune_rule is None

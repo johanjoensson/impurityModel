@@ -22,7 +22,7 @@ def _restore_what_the_rig_sets(monkeypatch):
     monkeypatch.setattr(selfenergy, "DEFAULT_CAUSALITY_TOL", selfenergy.DEFAULT_CAUSALITY_TOL)  # the rig sets 1e9
     from impurityModel.ed import gf_recurrence
 
-    monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", "eta")
+    monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", "amplitude")
     monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", gf_solvers._MATRIX_MODE)
 
 

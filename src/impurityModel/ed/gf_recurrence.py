@@ -52,11 +52,14 @@ from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
 #: Support-settle threshold, a multiple of ``slaterWeightMin`` (``SolverOptions.gf_settle_ratio``).
 DEFAULT_SETTLE_RATIO = 3.0
 
-#: Cut rule of the importance pruning: ``"eta"`` (amplitude: a row is admitted when one block's largest column
+#: Cut rule of the importance pruning: ``"amplitude"`` (a row is admitted when one block's largest column
 #: ``|amp|^2`` exceeds ``eta^2``), ``"accumulated"`` (the same quantity summed over the blocks that reach the row) or
 #: ``"mass"`` (a fraction of the step's frontier weight; rig only).
-_PRUNE_RULE = "eta"
-_PRUNE_RULES = ("eta", "accumulated", "mass")
+_PRUNE_RULE = "amplitude"
+_PRUNE_RULES = ("amplitude", "accumulated", "mass")
+#: The rules a caller may name (``prune_rule``, ``SolverOptions.gf_prune_rule``); ``"mass"`` is reached only through
+#: the module switch above.
+_PUBLIC_PRUNE_RULES = ("amplitude", "accumulated")
 
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
 _FORWARDED = {
@@ -86,7 +89,7 @@ class DiscoveredSupport:
     #: longer fit at the freeze continues matrix-free).
     mode_ran = None
 
-    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, rule="eta"):
+    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, rule="amplitude"):
         if rule not in _PRUNE_RULES:
             raise ValueError(f"the prune rule must be one of {_PRUNE_RULES}, got {rule!r}")
         self.matrix = matrix
@@ -115,7 +118,8 @@ class DiscoveredSupport:
         """Add ``norms2`` to the running weight of the K ``slots`` and return their totals (rank-local)."""
         n_k = self.matrix.n_k_local
         if len(self._acc) < n_k:
-            grown = np.zeros(n_k)
+            # Capacity doubling: K grows by a few slots almost every step, a copy per step would be O(K * steps).
+            grown = np.zeros(max(n_k, 2 * len(self._acc)))
             grown[: len(self._acc)] = self._acc
             self._acc = grown
         self._acc[slots] += norms2
@@ -386,8 +390,8 @@ class _KeyWeights:
         if len(self.store) and len(ids):
             pos = self.applied.find_rows_in(self.store)[ids]
             found = pos < len(self.store)
-            weights = np.asarray(self.store)[:, 0].real.copy()
-            prior[found] = weights[pos[found]]
+            # Fancy indexing copies only the matched entries, and the buffer view dies before the store is mutated.
+            prior[found] = np.asarray(self.store)[pos[found], 0].real
         self._pending = (ids, np.asarray(norms2, dtype=float), prior)
         return prior + self._pending[1]
 
@@ -499,7 +503,7 @@ class _Admission:
         _allreduce(d.comm if d.comm is not None and d.comm.size > 1 else None, buf, MPI.MAX)
         if d.memory_budget is None or buf[0] <= _WEIGHT_STORE_SHARE * d.memory_budget:
             return
-        sup.rule, sup.weights = "eta", None
+        sup.rule, sup.weights = "amplitude", None
         sup.rule_fallback = True
         if d.comm is None or d.comm.rank == 0:
             print(
@@ -976,7 +980,7 @@ def start_discovered(
     eta=None,
     first_shell_tol=0.0,
     mode="discovered",
-    rule="eta",
+    rule="amplitude",
 ):
     """The matrix, the support and the seed block on ``P0 = basis``.
 
@@ -1170,8 +1174,9 @@ def block_Green_discovered(
     (pruned growth only; ``None``: off) is the relative-change tolerance of the growth pass's own convergence
     monitor: the pass stops once G has moved less than that on the evaluation meshes, and the restart on the
     final P (always run after such a stop) converges G to the full tolerance. ``growth_quiet`` (pruned growth only;
-    ``None``: off) ends the growth pass once that many consecutive blocks admitted nothing, with the same restart. ``prune_rule`` (``None``: ``_PRUNE_RULE``)
-    names the admission rule of the pruned growth: ``"eta"`` admits a frontier row when one block's amplitude
+    ``None``: off) ends the growth pass once that many consecutive blocks admitted nothing, with the same restart.
+    ``prune_rule`` (``None``: ``_PRUNE_RULE``)
+    names the admission rule of the pruned growth: ``"amplitude"`` admits a frontier row when one block's amplitude
     squared clears ``eta^2``, ``"accumulated"`` when the sum over the blocks that reach it does.
     """
     comm = basis.comm
@@ -1244,6 +1249,8 @@ def block_Green_discovered(
                 f"budgets {format_bytes(report['budget_discovered'])} / {format_bytes(report['budget_retained'])}.",
                 flush=True,
             )
+    if prune_rule is not None and prune_rule not in _PUBLIC_PRUNE_RULES:
+        raise ValueError(f"prune_rule must be one of {_PUBLIC_PRUNE_RULES} or None, got {prune_rule!r}")
     matrix, support, q0 = start_discovered(
         hOp,
         basis,

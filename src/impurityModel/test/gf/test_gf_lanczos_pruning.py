@@ -401,7 +401,7 @@ def test_the_accumulated_rule_admits_rows_the_amplitude_rule_never_does_and_stay
     reached again and again: their summed weight crosses eta^2 and they are admitted. G is the exact resolvent of the
     support either rule ends on."""
     comm = MPI.COMM_WORLD
-    G_amp, amp, z = _run_rule(monkeypatch, "eta", 0.45, comm=comm)
+    G_amp, amp, z = _run_rule(monkeypatch, "amplitude", 0.45, comm=comm)
     G_acc, acc, _z = _run_rule(monkeypatch, "accumulated", 0.45, comm=comm)
     assert len(_retained(amp, comm)) == 9
     assert len(_retained(acc, comm)) == 18
@@ -469,6 +469,6 @@ def test_a_deferred_weight_store_over_its_budget_share_hands_the_unit_to_the_amp
     monkeypatch.setattr(gf_recurrence, "_WEIGHT_STORE_SHARE", 1e-12)
     G, info, z = _run_rule(monkeypatch, "accumulated", 0.45, mode=mode)
     assert "finishes on the amplitude rule" in capsys.readouterr().out
-    _G_amp, amp, _z = _run_rule(monkeypatch, "eta", 0.45, mode=mode)
+    _G_amp, amp, _z = _run_rule(monkeypatch, "amplitude", 0.45, mode=mode)
     assert _retained(info) == _retained(amp)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
