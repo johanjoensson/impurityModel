@@ -162,6 +162,31 @@ def _shell_coupling(h_matrix, group_orbitals, shell_of, impurity_indices):
     return " and ".join(parts) if parts else "the block structure joins orbitals of different shells"
 
 
+def _flatten_bath_split(bath_split, impurity_indices, n_orb):
+    """Flatten a supplied ``(valence, conduction)`` split into two sorted lists and check its coverage."""
+
+    def flat(part):
+        out = []
+        for value in part.values() if hasattr(part, "values") else [part]:
+            for item in value:
+                if hasattr(item, "__iter__"):
+                    out.extend(int(o) for o in item)
+                else:
+                    out.append(int(item))
+        return out
+
+    valence, conduction = flat(bath_split[0]), flat(bath_split[1])
+    both = valence + conduction
+    bath = set(range(n_orb)) - set(impurity_indices)
+    if len(set(both)) != len(both) or set(both) != bath:
+        raise ValueError(
+            "bath_split must list every non-impurity orbital exactly once; "
+            f"repeated {sorted({o for o in both if both.count(o) > 1})}, "
+            f"missing {sorted(bath - set(both))}, not bath orbitals {sorted(set(both) - bath)}"
+        )
+    return sorted(valence), sorted(conduction)
+
+
 def prepare_solver_basis(
     h0,
     dc,
@@ -175,6 +200,7 @@ def prepare_solver_basis(
     comm=None,
     shell_ls=None,
     interaction_merges_blocks=True,
+    bath_split=None,
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
@@ -193,6 +219,13 @@ def prepare_solver_basis(
 
     ``interaction_merges_blocks=False`` takes the one-body Green's-function blocks as authoritative: an
     interaction coupling two of them is neglected (and reported on rank 0) instead of merging them.
+
+    ``bath_split`` is the caller's ``(valence, conduction)`` bath classification, in either shape
+    ``ImpurityModel.bath_states`` takes (a dict of flat index lists, or of lists of index lists). When given
+    it is used as is -- the caller classified on the levels it fitted, which the on-site energy of a chain
+    site need not reflect. ``None`` derives the split from the sign of each bath on-site energy
+    (:func:`classify_bath_occupation`). A split that does not cover the non-impurity orbitals exactly once
+    raises ``ValueError``.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
@@ -225,9 +258,25 @@ def prepare_solver_basis(
     # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
     # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
     # conduction (initially empty).
-    valence_flat, conduction_flat = classify_bath_occupation(
+    sign_valence, sign_conduction = classify_bath_occupation(
         h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix
     )
+    if bath_split is None:
+        valence_flat, conduction_flat = sign_valence, sign_conduction
+    else:
+        valence_flat, conduction_flat = _flatten_bath_split(bath_split, impurity_indices, n_spin_orbitals)
+        if rank == 0 and verbosity > 0:
+            differ = sorted(set(valence_flat) ^ set(sign_valence))
+            if differ:
+                print(
+                    "Bath split supplied by the caller differs from the on-site-energy sign rule for orbitals "
+                    + format_index_ranges(differ)
+                    + " (on-site energies "
+                    + ", ".join(f"{h_matrix[o, o].real:.4f}" for o in differ[:8])
+                    + (", ..." if len(differ) > 8 else "")
+                    + "); the supplied split is used.",
+                    flush=True,
+                )
 
     # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
     # in the basis we solve in (this fixes bath-mediated coupling).
