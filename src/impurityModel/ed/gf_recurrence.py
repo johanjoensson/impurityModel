@@ -394,16 +394,17 @@ class _KeyWeights:
     def commit(self, admitted):
         """Fold the step into the store: the deferred rows keep their total, the ``admitted`` ones leave."""
         pending, self._pending = self._pending, None
-        if pending is None or self.applied is None:
+        applied, self.applied = self.applied, None  # do not keep the step's block alive into the next matvec
+        if pending is None or applied is None:
             return
         ids, norms2, prior = pending
-        delta = np.zeros(len(self.applied))
+        delta = np.zeros(len(applied))
         delta[ids] = norms2
         admitted = np.asarray(admitted, dtype=np.int64)
         if len(admitted):
             # ``ids`` ascend (flatnonzero, then masks) and ``admitted`` is a subset of them in the same order.
             delta[admitted] = -prior[np.searchsorted(ids, admitted)]
-        inc = ManyBodyState.from_keys_and_amps(self.applied, delta)
+        inc = ManyBodyState.from_keys_and_amps(applied, delta)
         inc.prune_rows(0.0)
         self.store += inc
         self.store.prune_rows(0.0)

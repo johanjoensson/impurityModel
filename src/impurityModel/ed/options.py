@@ -405,11 +405,11 @@ class SolverOptions:
     @property
     def resolved_gf_prune_rule(self):
         """The admission rule a run uses, under the kernel's names (``"eta"`` or ``"accumulated"``); ``None``
-        without pruning."""
-        if not self.resolved_gf_prune_tol:
+        without pruning or while the option is unset (the kernel then uses its module default, which the replay rig
+        may switch)."""
+        if not self.resolved_gf_prune_tol or self.gf_prune_rule is None:
             return None
-        rule = self.gf_prune_rule or DEFAULT_GF_PRUNE_RULE
-        return "eta" if rule == "amplitude" else rule
+        return "eta" if self.gf_prune_rule == "amplitude" else self.gf_prune_rule
 
     @property
     def resolved_gf_prune_tol(self):
