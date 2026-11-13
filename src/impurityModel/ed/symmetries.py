@@ -691,9 +691,10 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     The bath orbitals are all spin-orbitals of ``op`` that are **not** impurity orbitals; each is
     classified by its one-body on-site energy ``h[o, o]``: baths below the Fermi level
     (``h[o, o] < 0``) sit filled in the nominal configuration (**valence**, initially occupied),
-    the rest are empty (**conduction**, initially empty). This is the same Fermi-level-zero
-    convention used by the tooling that assembled h0, so such a Hamiltonian
-    reproduces its valence/conduction split without the caller passing it.
+    the rest are empty (**conduction**, initially empty). This is only the fallback for a
+    model that carries no split: the tooling that assembled h0 classifies on its star levels, which a
+    chain site's on-site energy need not reflect, so a supplied split (``bath_split`` of
+    :func:`solver_basis.prepare_solver_basis`) always wins.
 
     The bath on-site energies are the diagonal of the bath block; an impurity-only basis change
     (such as :func:`impurity_symmetry_rotation`) leaves them unchanged.

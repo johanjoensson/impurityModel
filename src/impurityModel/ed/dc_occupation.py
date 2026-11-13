@@ -452,7 +452,7 @@ def fixed_occupation_dc(
     fixed at the input ``model.impurity_orbitals``/``model.bath_states``: at every trial ``mu``
     it derives the same solver-basis layout :func:`calc_selfenergy` uses
     (:func:`solver_basis.prepare_solver_basis` -- the impurity/bath grouping, the bath valence/
-    conduction split from the sign of the bath on-site energy rather than the hybridization fit,
+    conduction split from ``model.bath_states`` (the sign of the bath on-site energy when it is ``None``),
     and any symmetry-adapted rotation), then determines the ground-state sector by calling
     :func:`groundstate.find_ground_state_sector` itself -- the identical HF-seed-then-walk search
     :func:`groundstate.calc_gs` uses for the selfenergy/spectra solve, not a cheaper

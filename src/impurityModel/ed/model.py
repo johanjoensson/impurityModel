@@ -150,9 +150,10 @@ class ImpurityModel:
         orbitals expressed in the input basis). An identity when the input basis already is spherical.
     bath_states : tuple or None
         Explicit ``(valence_baths, conduction_baths)`` layout (each a
-        ``dict[group, list[list[int]]]``), used by the spectra driver where the multi-shell
-        bath partition is built up-front. ``None`` in the self-energy path, where the solver
-        derives the bath orbitals and their valence/conduction split from ``h0``.
+        ``dict[group, list[list[int]]]`` or ``dict[group, list[int]]``). Every solver driver
+        (self-energy, double counting, susceptibility) classifies the bath by it when given, so a
+        split fitted on the star levels is honoured as is. ``None`` leaves the solver to derive
+        the split from the sign of each bath on-site energy (:func:`classify_bath_occupation`).
     n_spin_orbitals : int, optional
         Total number of spin-orbitals (impurity + bath). Derived from ``h0`` when not given.
     valence_l, core_l : int or None, optional
@@ -789,8 +790,9 @@ class ImpurityModel:
             Rotation ``R`` with ``O_input = R O_spherical R^dagger`` (observable reporting).
         bath_valence_conduction : tuple of sequence, optional
             ``(valence_indices, conduction_indices)`` classifying the bath spin-orbitals; when
-            given it populates :attr:`bath_states`. The self-energy path re-derives its own split
-            from ``h0`` and ignores this; the double-counting and spectra paths require it.
+            given it populates :attr:`bath_states`, and every solver path uses it instead of deriving
+            a split from the sign of the bath on-site energy (which misreads a conduction chain end whose
+            on-site energy is negative).
         shell_ls : tuple of int, optional
             ``l`` of each spherical column block of an ndarray ``rot_to_spherical`` (multi-shell
             impurity); ``None`` is a single shell inferred from the column count.
