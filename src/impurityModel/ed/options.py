@@ -404,8 +404,8 @@ class SolverOptions:
 
     @property
     def resolved_gf_prune_rule(self):
-        """The admission rule a run uses (``"amplitude"`` or ``"accumulated"``); ``None`` without pruning or while the option
-        is unset (the kernel then uses its module default, which the replay rig may switch)."""
+        """The admission rule a run uses (``"amplitude"`` or ``"accumulated"``); ``None`` without pruning or
+        while the option is unset (the kernel then uses its module default, which the replay rig may switch)."""
         if not self.resolved_gf_prune_tol or self.gf_prune_rule is None:
             return None
         return self.gf_prune_rule
