@@ -106,6 +106,10 @@ class DiscoveredSupport:
         self.shell_keys = None
         #: Accumulated frontier weight per K slot (rule ``"accumulated"``; grown with the matrix's K).
         self._acc = np.zeros(0)
+        #: Key-based weight store of the matrix-free modes (``None``: the K-slot array above); and whether the unit
+        #: gave the accumulated rule up for lack of memory.
+        self.weights = None
+        self.rule_fallback = False
 
     def accumulate(self, slots, norms2):
         """Add ``norms2`` to the running weight of the K ``slots`` and return their totals (rank-local)."""
@@ -349,6 +353,62 @@ def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_t
     return alpha, x_next, beta, k
 
 
+#: Share of the memory budget the deferred-weight store of a matrix-free unit may take before the unit gives the
+#: accumulated rule up (and finishes on the amplitude rule).
+_WEIGHT_STORE_SHARE = 0.25
+
+
+class _KeyWeights:
+    """Accumulated frontier weight by determinant key, for the matvec modes whose frontier ids (row numbers of the
+    applied block) change from step to step.
+
+    A width-1 :class:`ManyBodyState` whose amplitude is the weight; rows are owned by one rank after the apply's
+    redistribution, so the store is rank-local and needs no communication. Per step :meth:`totals` reads each
+    frontier row's prior weight and :meth:`commit` folds the step in, zeroing (so dropping) the rows admitted."""
+
+    def __init__(self):
+        self.store = ManyBodyState.from_keys([])
+        self.applied = None
+        self._pending = None
+
+    def begin(self, applied):
+        """The step's applied block, whose rows the ids of :meth:`totals` number."""
+        self.applied = applied
+        self._pending = None
+
+    def nbytes(self):
+        return int(self.store.memory_bytes())
+
+    def totals(self, ids, norms2):
+        """Weight of the frontier rows ``ids`` after adding this step's ``norms2``."""
+        ids = np.asarray(ids, dtype=np.int64)
+        prior = np.zeros(len(ids))
+        if len(self.store) and len(ids):
+            pos = self.applied.find_rows_in(self.store)[ids]
+            found = pos < len(self.store)
+            weights = np.asarray(self.store)[:, 0].real.copy()
+            prior[found] = weights[pos[found]]
+        self._pending = (ids, np.asarray(norms2, dtype=float), prior)
+        return prior + self._pending[1]
+
+    def commit(self, admitted):
+        """Fold the step into the store: the deferred rows keep their total, the ``admitted`` ones leave."""
+        pending, self._pending = self._pending, None
+        if pending is None or self.applied is None:
+            return
+        ids, norms2, prior = pending
+        delta = np.zeros(len(self.applied))
+        delta[ids] = norms2
+        admitted = np.asarray(admitted, dtype=np.int64)
+        if len(admitted):
+            # ``ids`` ascend (flatnonzero, then masks) and ``admitted`` is a subset of them in the same order.
+            delta[admitted] = -prior[np.searchsorted(ids, admitted)]
+        inc = ManyBodyState.from_keys_and_amps(self.applied, delta)
+        inc.prune_rows(0.0)
+        self.store += inc
+        self.store.prune_rows(0.0)
+
+
 class _Admission:
     """The admission decision of one step on dense frontier rows. Collective; replicated verdicts."""
 
@@ -364,6 +424,8 @@ class _Admission:
         before = self.d.global_count
         admitted = self._decide(f_ids, wf, hq2, keys_of)
         sup = self.support
+        if sup.weights is not None:
+            sup.weights.commit(admitted)
         sup.step_counts.append(int(self.d.global_count - before))
         if sup._shell_pending:
             sup._shell_pending = False
@@ -408,13 +470,15 @@ class _Admission:
         first_shell = not sup._shell_admitted and int(d.allreduce_sum(len(slots))) > 0
         sup._shell_admitted = sup._shell_admitted or first_shell
         sup._shell_pending = first_shell
+        if sup.rule == "accumulated" and sup.weights is not None:
+            self._check_weight_store()
         if sup.rule == "mass":
             weight = (np.abs(rows) ** 2).sum(axis=1) if len(slots) else np.zeros(0)
             fraction = sup._shell_tol if first_shell else sup._eta
             budget = fraction * float(d.allreduce_sum(float(weight.sum())))
             sel = weight > collective_mass_cutoff(weight, budget, d.comm)
         elif sup.rule == "accumulated":
-            totals = sup.accumulate(slots, norms2)
+            totals = sup.weights.totals(slots, norms2) if sup.weights is not None else sup.accumulate(slots, norms2)
             sel = (norms2 if first_shell else totals) > (sup._shell_tol2 if first_shell else sup._eta2)
             norms2 = totals
         else:
@@ -425,6 +489,24 @@ class _Admission:
             d.global_count += n_new
             return slots
         return self._top_and_freeze(keys_of, slots, norms2)
+
+    def _check_weight_store(self):
+        """Collective: one fixed-shape MAX of the deferred-weight store's bytes; above its share of the memory
+        budget the unit drops the store and finishes on the amplitude rule (the verdict is replicated)."""
+        sup, d = self.support, self.d
+        buf = np.array([float(sup.weights.nbytes())])
+        _allreduce(d.comm if d.comm is not None and d.comm.size > 1 else None, buf, MPI.MAX)
+        if d.memory_budget is None or buf[0] <= _WEIGHT_STORE_SHARE * d.memory_budget:
+            return
+        sup.rule, sup.weights = "eta", None
+        sup.rule_fallback = True
+        if d.comm is None or d.comm.rank == 0:
+            print(
+                f"GF accumulated rule: the deferred-weight store reached {format_bytes(buf[0])}/rank, over "
+                f"{_WEIGHT_STORE_SHARE:.0%} of the {format_bytes(d.memory_budget)} memory budget; "
+                "this unit finishes on the amplitude rule.",
+                flush=True,
+            )
 
     def _counted_support(self, keys_of, slots, norms2, rows):
         d = self.d
@@ -561,7 +643,7 @@ class _ApplyEngine:
 
     def __init__(self, matrix, admission, hop, basis, retained):
         if admission.support.rule == "accumulated":
-            raise NotImplementedError("the accumulated rule needs frontier ids that are stable across steps")
+            admission.support.weights = _KeyWeights()
         self.matrix = matrix
         self.admission = admission
         self.hop = hop
@@ -656,6 +738,8 @@ class _ApplyEngine:
         if d.frozen:
             return w_p
         f_ids = np.flatnonzero(~in_p)
+        if admission.support.weights is not None:
+            admission.support.weights.begin(applied)
         hq2 = float(np.vdot(amps, amps).real) if d.support_freeze else 0.0
         with stage("decide"):
             ids = admission.decide(f_ids, amps[f_ids], hq2, lambda sel: [applied.key_at(int(i)) for i in sel])

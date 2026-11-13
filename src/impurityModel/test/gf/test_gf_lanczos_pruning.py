@@ -386,11 +386,11 @@ def test_distributed_quiet_stop_is_the_same_block_on_every_rank_and_the_exact_PH
     np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)
 
 
-def _run_rule(monkeypatch, rule, eta, cap=np.inf, comm=None):
+def _run_rule(monkeypatch, rule, eta, cap=np.inf, comm=None, mode="discovered"):
     from impurityModel.ed import gf_recurrence
     from impurityModel.test.support.gf_switches import set_gf_switches
 
-    set_gf_switches(monkeypatch, matrix_mode="discovered")
+    set_gf_switches(monkeypatch, matrix_mode=mode)
     monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", rule)
     return _run_quiet(monkeypatch, eta, None, cap=cap, comm=comm)
 
@@ -440,3 +440,35 @@ def test_an_unknown_prune_rule_is_refused():
 
     with pytest.raises(ValueError, match="prune rule"):
         DiscoveredSupport(_KSlots(1), None, eta=0.5, rule="nope")
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+@pytest.mark.parametrize("eta", [0.45, 0.7])
+def test_every_matrix_mode_admits_the_same_support_under_the_accumulated_rule(monkeypatch, mode, eta):
+    """The matrix-free modes keep the weight by determinant key (their frontier row numbers change each step), the
+    discovered mode by K slot: same supports, at every rank count (an empty rank appears at three)."""
+    comm = MPI.COMM_WORLD
+    G_ref, ref, z = _run_rule(monkeypatch, "accumulated", eta, comm=comm, mode="discovered")
+    G, info, _z = _run_rule(monkeypatch, "accumulated", eta, comm=comm, mode=mode)
+    assert info["engine"] == mode
+    assert _retained(info, comm) == _retained(ref, comm)
+    np.testing.assert_allclose(G, G_ref, atol=1e-9)
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)
+
+
+@pytest.mark.parametrize("mode", ["retained", "none"])
+def test_a_deferred_weight_store_over_its_budget_share_hands_the_unit_to_the_amplitude_rule(monkeypatch, mode, capsys):
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence.SupportDecisions, "over_memory_budget", lambda self: False)
+    real_start = gf_recurrence.start_discovered
+    monkeypatch.setattr(
+        gf_recurrence, "start_discovered", lambda *a, **kw: real_start(*a, **{**kw, "memory_budget": 1e12})
+    )
+    monkeypatch.setattr(gf_recurrence, "_WEIGHT_STORE_SHARE", 1e-12)
+    G, info, z = _run_rule(monkeypatch, "accumulated", 0.45, mode=mode)
+    assert "finishes on the amplitude rule" in capsys.readouterr().out
+    _G_amp, amp, _z = _run_rule(monkeypatch, "eta", 0.45, mode=mode)
+    assert _retained(info) == _retained(amp)
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
