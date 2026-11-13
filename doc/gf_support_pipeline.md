@@ -194,6 +194,21 @@ accumulated totals. The weights are a float per K slot in the discovered matrix 
 (whose frontier rows are renumbered each block), a key-indexed table on the owning rank; when that table exceeds a
 quarter of the unit's memory budget the unit drops it and finishes on the `amplitude` rule, with one log line.
 
+**Validation and the default.** Uncapped synthetic metal (`write_metal(n_orb=1, n_b=10)`, `-n 3`, `gf_prune_tol = 1e-3`,
+`freeze_replay run`, four units with |P| 89k-177k): the unpruned-growth reference and the arms `amplitude` + quiet 64,
+`accumulated` + quiet 64 and `accumulated` + quiet 16 return identical supports on every unit and `dSigma = 0` on both
+axes. The reference growth pass runs 458-557 blocks; with the quiet window it ends after 45-64 blocks (`accumulated`,
+window 16: 48/64/56/48 on the large units, 45/51 on the small), a growth wall of 4-11 s per unit. On NiO 5-bath it.8
+(supports that trickle in; prototype run) a 16-block window with the `amplitude` rule lost up to 260 determinants
+(`dSigma` 2.9e-4) and a 64-block window lost 2 (7.7e-7); with `accumulated` and a 64-block window the pass stopped at
+340-528 blocks instead of 676-875 at `dSigma` 1e-7.
+
+Not measured locally: cap-bound arms (capped metal, NiO it.1 under a GF cap) and the wider-space support-size check
+(`write_metal(n_orb=2, n_b=4)`); both need runs the local machine cannot do cheaply. The rule for flipping the default
+is that `accumulated` is causal wherever `amplitude` is, with `dSigma` to the uncapped reference no worse, and no
+support blow-up in the wider space. Without those arms it is not met, so `gf_prune_rule` defaults to `amplitude` and the
+quiet window stays at 64.
+
 ### Swap refinement (`gf_refine_rounds`, default 3)
 
 For a unit the cap froze, up to `gf_refine_rounds` rounds of scoring the retained determinants (what their removal
