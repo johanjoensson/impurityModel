@@ -655,6 +655,7 @@ def calc_selfenergy(
         comm=comm,
         shell_ls=model.shell_ls,
         interaction_merges_blocks=basis.interaction_merges_blocks,
+        bath_split=model.bath_states,
     )
     h = sb.h
     h0_solve = sb.h0_solve

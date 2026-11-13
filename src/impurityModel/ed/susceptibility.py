@@ -549,6 +549,7 @@ def calc_susceptibility_workflow(
         comm=comm,
         shell_ls=model.shell_ls,
         interaction_merges_blocks=basis.interaction_merges_blocks,
+        bath_split=model.bath_states,
     )
     # Sized on the ground-state path alone, like every driver (see selfenergy.py).
     cap_policy, _ = resolve_cap_policy(

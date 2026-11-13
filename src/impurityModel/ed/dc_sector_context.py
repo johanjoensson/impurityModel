@@ -894,9 +894,9 @@ def _prepare_sector_context(
     # so a malformed value raises on every rank before any collective, but it no longer reaches the basis layer.
     resolve_mixed_valence(basis.mixed_valence, driver_default="on")
 
-    # Derive the same solver-basis layout calc_selfenergy uses (root cause 3 of the original
-    # DC<->GS mismatch: the fit valence/conduction split model.bath_states carries is not
-    # necessarily the split calc_selfenergy re-derives from the sign of the bath on-site energy).
+    # Derive the same solver-basis layout calc_selfenergy uses. Both pass model.bath_states, so the
+    # fit valence/conduction split decides here and there (root cause 3 of the original DC<->GS
+    # mismatch was the self-energy path re-deriving it from the sign of the bath on-site energy).
     sb = prepare_solver_basis(
         model.h0,
         model.dc,
@@ -909,6 +909,7 @@ def _prepare_sector_context(
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
         interaction_merges_blocks=basis.interaction_merges_blocks,
+        bath_split=model.bath_states,
     )
     _check_active_shells(sb, rank, verbosity, comm if comm is not None else MPI.COMM_WORLD)
     impurity_orbitals = sb.impurity_orbitals

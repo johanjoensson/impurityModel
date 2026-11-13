@@ -173,6 +173,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0, ca
         comm=comm if comm is not None else MPI.COMM_WORLD,
         shell_ls=model.shell_ls,
         interaction_merges_blocks=basis.interaction_merges_blocks,
+        bath_split=model.bath_states,
     )
     _check_active_shells(
         sb,

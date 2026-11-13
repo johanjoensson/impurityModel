@@ -58,3 +58,24 @@ def test_a_negative_onsite_site_declared_conduction_stays_conduction(shape):
 def test_an_invalid_split_raises(split):
     with pytest.raises(ValueError, match="bath_split"):
         _build(split)
+
+
+def test_every_driver_hands_the_model_split_to_prepare_solver_basis():
+    """DC, self-energy and susceptibility must classify the bath the same way: all pass ``model.bath_states``."""
+    import ast
+    import pathlib
+
+    import impurityModel.ed as ed_pkg
+
+    callers = ("selfenergy.py", "dc_occupation.py", "dc_sector_context.py", "susceptibility.py")
+    root = pathlib.Path(ed_pkg.__file__).parent
+    for name in callers:
+        calls = [
+            n
+            for n in ast.walk(ast.parse((root / name).read_text()))
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "prepare_solver_basis"
+        ]
+        assert calls, name
+        for call in calls:
+            kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
+            assert kw.get("bath_split") == "model.bath_states", name
