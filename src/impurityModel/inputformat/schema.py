@@ -1101,6 +1101,18 @@ _TABLE_LIST += [
                 minimum=0,
             ),
             Key(
+                "gf_prune_rule",
+                Kind.AUTO_ENUM,
+                "auto",
+                "With gf_prune_tol: when a frontier determinant is admitted. 'amplitude': one block's amplitude "
+                "clears gf_prune_tol. 'accumulated': its weight (amplitude squared) summed over the blocks that "
+                "reach it clears gf_prune_tol squared, so the support is found earlier in the growth. 'auto' takes "
+                "the default. Not with gf_prune_tol = 0.",
+                # Mirrors config.GF_PRUNE_RULES (this module is a leaf and cannot import it);
+                # test_gf_prune_rule_choices_match_the_registry pins the two together.
+                choices=("auto", "amplitude", "accumulated"),
+            ),
+            Key(
                 "gf_refine_rounds",
                 Kind.COUNT,
                 None,

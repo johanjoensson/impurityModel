@@ -435,3 +435,17 @@ def test_the_quiet_window_flag_overrides_the_record_and_leaving_lanczos_clears_i
         out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
     )
     assert bicg.gf_growth_quiet is None
+
+
+def test_the_prune_rule_flag_overrides_the_record_and_leaving_lanczos_clears_it():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-prune-rule", "accumulated"])
+    assert args.gf_prune_rule == "accumulated"
+    assert _parse(selfenergy.add_arguments, ["h0.pickle"]).gf_prune_rule is None
+    out = selfenergy.apply_solver_overrides(SolverOptions(gf_prune_tol=1e-3), args)
+    assert out.gf_prune_rule == "accumulated"
+    bicg = selfenergy.apply_solver_overrides(
+        out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
+    )
+    assert bicg.gf_prune_rule is None

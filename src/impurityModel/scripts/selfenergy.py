@@ -228,7 +228,7 @@ def apply_solver_overrides(solver, args):
         or overrides.get("gf_settle_ratio") is not None
         or overrides.get("gf_settle_retry") is True
     ):
-        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol", "gf_growth_quiet"):
+        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol", "gf_growth_quiet", "gf_prune_rule"):
             overrides.setdefault(name, None)
     # ...and so does leaving the block-Lanczos kernel for the pruning and refinement fields.
     if leaves_lanczos:
@@ -237,6 +237,7 @@ def apply_solver_overrides(solver, args):
             "gf_first_shell_tol",
             "gf_growth_tol",
             "gf_growth_quiet",
+            "gf_prune_rule",
             "gf_refine_rounds",
             "gf_refine_tol",
             "gf_refine_swap",

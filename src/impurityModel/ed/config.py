@@ -126,6 +126,11 @@ GF_METHODS = ("lanczos", "bicgstab")
 #: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
 GF_ADMISSIONS = ("all", "outer")
 
+#: Accepted ``SolverOptions.gf_prune_rule`` values, the admission rule of the pruned growth: ``"amplitude"`` admits a
+#: determinant when one block's amplitude clears ``gf_prune_tol``, ``"accumulated"`` when its weight summed over the
+#: blocks that reach it does.
+GF_PRUNE_RULES = ("amplitude", "accumulated")
+
 
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).

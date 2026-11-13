@@ -131,6 +131,8 @@ DEFAULT_GF_REFINE_ROUNDS = 3
 #: The quiet window of pruned growth (``gf_growth_quiet``) a run uses when the option is unset and pruning is on:
 #: the growth pass ends after this many consecutive blocks that admitted no determinant. ``None``: off.
 DEFAULT_GF_GROWTH_QUIET = None
+#: The admission rule of pruned growth (``gf_prune_rule``) a run uses when the option is unset.
+DEFAULT_GF_PRUNE_RULE = "amplitude"
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,12 @@ class SolverOptions:
         application. A heuristic: a determinant that would clear the cut after a longer gap is lost, so a window
         shorter than the longest gap between admissions trims the support. ``>= 1``; ``0``: off; ``None``
         (default): :data:`DEFAULT_GF_GROWTH_QUIET` while pruning is on. Not with ``gf_prune_tol = 0``.
+    gf_prune_rule : {"amplitude", "accumulated"} or None
+        With pruned growth: when a frontier determinant is admitted. ``"amplitude"``: one block's amplitude
+        squared clears ``gf_prune_tol**2``. ``"accumulated"``: the amplitudes squared summed over the blocks that
+        reach it do, so a determinant reached many times below the cut still enters, and the support is found
+        earlier in the growth (which the quiet window exploits). ``None`` (default): :data:`DEFAULT_GF_PRUNE_RULE`.
+        Not with ``gf_prune_tol = 0``; ``gf_method="lanczos"`` only.
     gf_refine_rounds : int or None
         Swap refinement of a unit the determinant cap froze: up to this many rounds of scoring the retained and the
         discovered determinants on the discovered matrix and swapping the least important retained for the most
@@ -260,6 +268,7 @@ class SolverOptions:
     gf_first_shell_tol: Optional[float] = None
     gf_growth_tol: Optional[float] = None
     gf_growth_quiet: Optional[int] = None
+    gf_prune_rule: Optional[str] = None
     gf_refine_rounds: Optional[int] = None
     gf_refine_tol: Optional[float] = None
     gf_refine_swap: Optional[float] = None
@@ -353,6 +362,16 @@ class SolverOptions:
             raise ValueError("gf_growth_quiet applies only to gf_method='lanczos'; remove it or switch gf_method")
         if self.gf_growth_quiet and self.gf_prune_tol == 0.0:
             raise ValueError("gf_growth_quiet ends the growth of pruned growth; pruning is switched off")
+        if self.gf_prune_rule is not None:
+            if self.gf_prune_rule not in config.GF_PRUNE_RULES:
+                raise ValueError(
+                    f"gf_prune_rule {self.gf_prune_rule!r}: expected one of "
+                    f"{', '.join(map(repr, config.GF_PRUNE_RULES))}"
+                )
+            if self.gf_method != "lanczos":
+                raise ValueError("gf_prune_rule applies only to gf_method='lanczos'; remove it or switch gf_method")
+            if self.gf_prune_tol == 0.0:
+                raise ValueError("gf_prune_rule is the admission rule of pruned growth; pruning is switched off")
         if self.gf_growth_tol is not None and self.gf_prune_tol == 0.0:
             raise ValueError("gf_growth_tol shortens the growth of pruned growth; pruning is switched off")
         if self.gf_first_shell_tol is not None and self.gf_prune_tol == 0.0:
@@ -381,6 +400,15 @@ class SolverOptions:
         if self.gf_growth_quiet is not None:
             return self.gf_growth_quiet or None
         return DEFAULT_GF_GROWTH_QUIET
+
+    @property
+    def resolved_gf_prune_rule(self):
+        """The admission rule a run uses, under the kernel's names (``"eta"`` or ``"accumulated"``); ``None``
+        without pruning."""
+        if not self.resolved_gf_prune_tol:
+            return None
+        rule = self.gf_prune_rule or DEFAULT_GF_PRUNE_RULE
+        return "eta" if rule == "amplitude" else rule
 
     @property
     def resolved_gf_prune_tol(self):
@@ -602,6 +630,16 @@ OPTION_SPECS = (
     _spec("gf_growth_tol", "solver", "float", "GF growth tolerance", token="gf_growth_tol", unset="full"),
     _spec("gf_growth_quiet", "solver", "int", "GF growth quiet window", token="gf_growth_quiet", unset="default"),
     _spec(
+        "gf_prune_rule",
+        "solver",
+        "enum",
+        "GF pruned growth admission rule",
+        token="gf_prune_rule",
+        choices=config.GF_PRUNE_RULES,
+        auto_none="auto",
+        unset="auto",
+    ),
+    _spec(
         "gf_refine_rounds",
         "solver",
         "int",
@@ -743,6 +781,11 @@ _CLI = {
         "With pruning on: end the growth pass after this many consecutive blocks that admitted no determinant, then "
         "restart on the support found (0 is off; default: see the option docs; a longer gap between admissions "
         "than the window trims the support).",
+    ),
+    "gf_prune_rule": (
+        "--gf-prune-rule",
+        "With pruning on: when a frontier determinant is admitted. 'amplitude': one block's amplitude clears the "
+        "cut; 'accumulated': its weight summed over the blocks that reach it does (default: see the option docs).",
     ),
     "gf_refine_rounds": (
         "--gf-refine-rounds",

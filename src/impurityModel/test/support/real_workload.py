@@ -63,6 +63,7 @@ _CONSUMED_ATTRS = frozenset(
         "gf_first_shell_tol",
         "gf_growth_tol",
         "gf_growth_quiet",
+        "gf_prune_rule",
         "gf_refine_rounds",
         "gf_refine_tol",
         "gf_refine_swap",
@@ -220,6 +221,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "gf_first_shell_tol": _optional(attrs, "gf_first_shell_tol", float),
         "gf_growth_tol": _optional(attrs, "gf_growth_tol", float),
         "gf_growth_quiet": _optional(attrs, "gf_growth_quiet", int),
+        "gf_prune_rule": _optional(attrs, "gf_prune_rule", str),
         "gf_refine_rounds": _optional(attrs, "gf_refine_rounds", int),
         "gf_refine_tol": _optional(attrs, "gf_refine_tol", float),
         "gf_refine_swap": _optional(attrs, "gf_refine_swap", float),
@@ -274,6 +276,7 @@ def build_options(
     gf_first_shell_tol=None,
     gf_growth_tol=None,
     gf_growth_quiet=None,
+    gf_prune_rule=None,
     cost_budget=None,
     gf_refine_rounds=None,
     gf_refine_tol=None,
@@ -346,6 +349,7 @@ def build_options(
         "gf_first_shell_tol",
         "gf_growth_tol",
         "gf_growth_quiet",
+        "gf_prune_rule",
         "gf_refine_rounds",
         "gf_refine_tol",
         "gf_refine_swap",
@@ -376,12 +380,15 @@ def build_options(
         solver_kwargs.pop("gf_first_shell_tol", None)
         solver_kwargs.pop("gf_growth_tol", None)
         solver_kwargs.pop("gf_growth_quiet", None)
+        solver_kwargs.pop("gf_prune_rule", None)
     if gf_first_shell_tol is not None:
         solver_kwargs["gf_first_shell_tol"] = gf_first_shell_tol
     if gf_growth_tol is not None:
         solver_kwargs["gf_growth_tol"] = gf_growth_tol
     if gf_growth_quiet is not None:
         solver_kwargs["gf_growth_quiet"] = gf_growth_quiet
+    if gf_prune_rule is not None:
+        solver_kwargs["gf_prune_rule"] = gf_prune_rule
     for key, value in (
         ("gf_refine_rounds", gf_refine_rounds),
         ("gf_refine_tol", gf_refine_tol),
@@ -410,6 +417,7 @@ def run_selfenergy(
     gf_first_shell_tol=None,
     gf_growth_tol=None,
     gf_growth_quiet=None,
+    gf_prune_rule=None,
     cost_budget=None,
     gf_refine_rounds=None,
     gf_refine_tol=None,
@@ -468,6 +476,7 @@ def run_selfenergy(
         gf_first_shell_tol=gf_first_shell_tol,
         gf_growth_tol=gf_growth_tol,
         gf_growth_quiet=gf_growth_quiet,
+        gf_prune_rule=gf_prune_rule,
         cost_budget=cost_budget,
         gf_refine_rounds=gf_refine_rounds,
         gf_refine_tol=gf_refine_tol,

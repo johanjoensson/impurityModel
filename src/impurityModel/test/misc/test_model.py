@@ -583,3 +583,37 @@ def test_the_quiet_window_resolves_against_pruning_and_its_default(monkeypatch):
     assert SolverOptions(gf_prune_tol=0.0).resolved_gf_growth_quiet is None
     assert SolverOptions(gf_method="bicgstab").resolved_gf_growth_quiet is None
     assert SolverOptions(gf_settle=True).resolved_gf_growth_quiet is None  # the settle replaces pruning
+
+
+def test_the_prune_rule_is_recorded_and_replayed(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_prune_rule="accumulated")
+    assert load_selfenergy_archive(str(archive))[3].gf_prune_rule == "accumulated"
+    archive = tmp_path / "old.h5"
+    _write_synthetic_archive(str(archive))
+    assert load_selfenergy_archive(str(archive))[3].gf_prune_rule is None
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (dict(gf_prune_tol=1e-3, gf_prune_rule="mass"), "expected one of"),
+        (dict(gf_prune_tol=0.0, gf_prune_rule="accumulated"), "pruning is switched off"),
+        (dict(gf_method="bicgstab", gf_prune_rule="accumulated"), "applies only to gf_method='lanczos'"),
+    ],
+)
+def test_the_prune_rule_refuses_what_would_be_silently_ignored(kwargs, match):
+    from impurityModel.ed.model import SolverOptions
+
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_prune_rule_resolves_to_the_kernel_names():
+    from impurityModel.ed.model import SolverOptions
+
+    assert SolverOptions().resolved_gf_prune_rule == "eta"
+    assert SolverOptions(gf_prune_rule="amplitude").resolved_gf_prune_rule == "eta"
+    assert SolverOptions(gf_prune_rule="accumulated").resolved_gf_prune_rule == "accumulated"
+    assert SolverOptions(gf_prune_tol=0.0).resolved_gf_prune_rule is None
+    assert SolverOptions(gf_method="bicgstab").resolved_gf_prune_rule is None

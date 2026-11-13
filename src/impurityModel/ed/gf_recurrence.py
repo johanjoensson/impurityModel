@@ -642,7 +642,7 @@ class _ApplyEngine:
     their ids are row numbers of the applied block."""
 
     def __init__(self, matrix, admission, hop, basis, retained):
-        if admission.support.rule == "accumulated":
+        if admission.support.rule == "accumulated" and admission.support.prunes:
             admission.support.weights = _KeyWeights()
         self.matrix = matrix
         self.admission = admission
@@ -1149,6 +1149,7 @@ def block_Green_discovered(
     refine=None,
     growth_tol=None,
     growth_quiet=None,
+    prune_rule=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
@@ -1168,7 +1169,9 @@ def block_Green_discovered(
     (pruned growth only; ``None``: off) is the relative-change tolerance of the growth pass's own convergence
     monitor: the pass stops once G has moved less than that on the evaluation meshes, and the restart on the
     final P (always run after such a stop) converges G to the full tolerance. ``growth_quiet`` (pruned growth only;
-    ``None``: off) ends the growth pass once that many consecutive blocks admitted nothing, with the same restart.
+    ``None``: off) ends the growth pass once that many consecutive blocks admitted nothing, with the same restart. ``prune_rule`` (``None``: ``_PRUNE_RULE``)
+    names the admission rule of the pruned growth: ``"eta"`` admits a frontier row when one block's amplitude
+    squared clears ``eta^2``, ``"accumulated"`` when the sum over the blocks that reach it does.
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
@@ -1248,7 +1251,7 @@ def block_Green_discovered(
         memory_budget=memory_budget,
         memory_policy=memory_policy,
         eta=prune_tol if prune_tol > 0.0 else None,
-        rule=_PRUNE_RULE,
+        rule=_PRUNE_RULE if prune_rule is None else prune_rule,
         first_shell_tol=first_shell_tol if prune_tol > 0.0 else 0.0,
         mode=matrix_mode,
     )

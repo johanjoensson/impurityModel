@@ -271,3 +271,20 @@ def test_the_quiet_window_reaches_every_unit_kernel_call(monkeypatch):
     assert seen and set(seen) == {7}
     with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
         _run_driver("bicgstab", None, extra={"gf_growth_quiet": 7})
+
+
+def test_the_prune_rule_reaches_every_unit_kernel_call(monkeypatch):
+    from impurityModel.ed import gf_engine
+
+    seen = []
+    real = gf_engine.block_Green_sparse
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("prune_rule"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
+    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_prune_rule": "accumulated"})
+    assert seen and set(seen) == {"accumulated"}
+    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
+        _run_driver("bicgstab", None, extra={"gf_prune_rule": "accumulated"})

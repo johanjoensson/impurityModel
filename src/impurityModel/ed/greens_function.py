@@ -621,6 +621,7 @@ def _gf_solve_units(
     gf_first_shell_tol=None,
     gf_growth_tol=None,
     gf_growth_quiet=None,
+    gf_prune_rule=None,
     gf_refine=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
@@ -682,6 +683,7 @@ def _gf_solve_units(
         first_shell_tol=gf_first_shell_tol,
         growth_tol=gf_growth_tol,
         growth_quiet=gf_growth_quiet,
+        prune_rule=gf_prune_rule,
         refine=gf_refine,
         unit_ids=None if subset is None else list(subset),
     )
@@ -938,6 +940,7 @@ def get_Greens_function(
     gf_first_shell_tol: Optional[float] = None,
     gf_growth_tol: Optional[float] = None,
     gf_growth_quiet: Optional[int] = None,
+    gf_prune_rule: Optional[str] = None,
     gf_refine=None,
     run_out: Optional[dict] = None,
 ):
@@ -1003,9 +1006,10 @@ def get_Greens_function(
         or gf_first_shell_tol is not None
         or gf_growth_tol is not None
         or gf_growth_quiet is not None
+        or gf_prune_rule is not None
     ):
         raise ValueError(
-            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol/gf_growth_quiet apply only to gf_method='lanczos'; "
+            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol/gf_growth_quiet/gf_prune_rule apply only to gf_method='lanczos'; "
             "remove them or switch"
         )
     if gf_method != "lanczos" and gf_refine is not None and gf_refine.rounds > 0:
@@ -1079,6 +1083,7 @@ def get_Greens_function(
         gf_first_shell_tol=gf_first_shell_tol,
         gf_growth_tol=gf_growth_tol,
         gf_growth_quiet=gf_growth_quiet,
+        gf_prune_rule=gf_prune_rule,
         gf_refine=gf_refine,
     )
     if run_out is not None:
@@ -1104,6 +1109,7 @@ def get_Greens_function(
                 gf_first_shell_tol=gf_first_shell_tol,
                 gf_growth_tol=gf_growth_tol,
                 gf_growth_quiet=gf_growth_quiet,
+                gf_prune_rule=gf_prune_rule,
                 gf_refine=gf_refine,
             ),
             lambda res: _gf_assemble(

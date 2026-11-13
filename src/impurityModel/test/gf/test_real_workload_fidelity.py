@@ -160,3 +160,12 @@ def test_the_archived_quiet_window_reaches_the_solver_and_an_explicit_argument_b
     assert build_options(workload)[3].gf_growth_quiet == 32
     assert build_options(workload, gf_growth_quiet=0)[3].gf_growth_quiet == 0
     assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_growth_quiet is None
+
+
+def test_the_archived_prune_rule_reaches_the_solver_and_an_explicit_argument_beats_it(tmp_path):
+    archive = _archive(tmp_path / "r.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_prune_rule="accumulated")
+    workload = load_workload(archive)
+    assert workload["ignored_attrs"] == []
+    assert build_options(workload)[3].gf_prune_rule == "accumulated"
+    assert build_options(workload, gf_prune_rule="amplitude")[3].gf_prune_rule == "amplitude"
+    assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_prune_rule is None

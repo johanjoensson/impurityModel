@@ -620,6 +620,7 @@ def calc_selfenergy(
     gf_first_shell_tol = solver.gf_first_shell_tol
     gf_growth_tol = solver.gf_growth_tol
     gf_growth_quiet = solver.resolved_gf_growth_quiet
+    gf_prune_rule = solver.resolved_gf_prune_rule
     gf_refine_rounds = solver.resolved_gf_refine_rounds
     gf_refine = (
         RefineSpec(
@@ -850,6 +851,7 @@ def calc_selfenergy(
             gf_first_shell_tol=gf_first_shell_tol,
             gf_growth_tol=gf_growth_tol,
             gf_growth_quiet=gf_growth_quiet,
+            gf_prune_rule=gf_prune_rule,
             gf_refine=gf_refine,
             gf_tol=gf_tol,
             gf_real_tol=gf_real_tol,

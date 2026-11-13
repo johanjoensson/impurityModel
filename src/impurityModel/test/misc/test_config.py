@@ -148,3 +148,11 @@ def test_sigma_method_choices_match_the_estimator_registry():
         assert sigma_estimators.make_estimator(name).name == name
     with pytest.raises(ValueError, match="sigma_method"):
         sigma_estimators.make_estimator("improved")
+
+
+def test_gf_prune_rule_choices_match_the_registry():
+    """The TOML schema's ``auto`` plus exactly :data:`config.GF_PRUNE_RULES` (the CLI reads the registry itself)."""
+    from impurityModel.inputformat.schema import TABLES
+
+    key = next(k for k in TABLES["solver"].keys if k.name == "gf_prune_rule")
+    assert tuple(key.choices) == ("auto",) + config.GF_PRUNE_RULES

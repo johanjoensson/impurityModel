@@ -528,6 +528,7 @@ def block_Green_sparse(
     refine=None,
     growth_tol=None,
     growth_quiet=None,
+    prune_rule=None,
 ):
     """
     Calculate one block of the Greens function: the block-Lanczos recurrence on the determinants the seeds
@@ -560,6 +561,8 @@ def block_Green_sparse(
     restart on the final P converges G fully (see :func:`gf_recurrence.block_Green_discovered`); ``None``: off.
     ``growth_quiet``: with pruned growth, the growth pass also ends after that many consecutive blocks that admitted
     nothing, with the same restart; ``None``: off.
+    ``prune_rule``: the cut rule of the pruned growth, ``"eta"`` (a block's amplitude) or ``"accumulated"`` (the weight
+    summed over the blocks that reach a determinant); ``None``: the module default (``"eta"``).
 
     ``refine``: a :class:`gf_refinement.RefineSpec` with ``rounds > 0`` swap-refines a unit the cap froze; it needs
     the discovered matrix, so ``"auto"`` keeps that mode when it fits.
@@ -594,6 +597,7 @@ def block_Green_sparse(
         refine=refine,
         growth_tol=growth_tol,
         growth_quiet=growth_quiet,
+        prune_rule=prune_rule,
     )
 
 

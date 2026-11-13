@@ -185,6 +185,15 @@ determinant that would clear the cut after a gap longer than the window is lost 
 support (cap, memory guard), without pruning, or in scoring runs. The unit line marks it: `growth=48 blk/6.5 s (quiet)`.
 `0` switches it off.
 
+**The admission rule (`gf_prune_rule`).** `amplitude` (the current default) admits a frontier determinant when one
+block's amplitude squared clears `gf_prune_tol**2`. `accumulated` admits it when its amplitude squared *summed over the
+blocks that reach it* does, so a determinant reached again and again below the cut still enters and the support is
+found earlier in the growth, which is what lets a short quiet window end the pass without trimming it. The first
+shell keeps its own cut (`gf_first_shell_tol`) on its single block. At the cap the candidates are ranked on the
+accumulated totals. The weights are a float per K slot in the discovered matrix mode and, in the matrix-free modes
+(whose frontier rows are renumbered each block), a key-indexed table on the owning rank; when that table exceeds a
+quarter of the unit's memory budget the unit drops it and finishes on the `amplitude` rule, with one log line.
+
 ### Swap refinement (`gf_refine_rounds`, default 3)
 
 For a unit the cap froze, up to `gf_refine_rounds` rounds of scoring the retained determinants (what their removal
