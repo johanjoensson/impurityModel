@@ -247,7 +247,7 @@ def test_a_silent_header_is_unknown_rather_than_false(written):
 
 
 def test_an_absolute_energy_reference_is_refused_for_a_green_function_run(written, tmp_path):
-    """The bath split is taken from sign(h[o,o]), so an offset zero re-partitions the bath."""
+    """The bath split is taken from the bath levels below zero, so an offset zero re-partitions the bath."""
     h0 = _h0_with(tmp_path, "absolute.h0", energy_reference="absolute")
     with pytest.raises(InputError, match="Fermi-referenced"):
         build(load_input(written(SELFENERGY, h0=h0)))

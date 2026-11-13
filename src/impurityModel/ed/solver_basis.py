@@ -222,9 +222,8 @@ def prepare_solver_basis(
 
     ``bath_split`` is the caller's ``(valence, conduction)`` bath classification, in either shape
     ``ImpurityModel.bath_states`` takes (a dict of flat index lists, or of lists of index lists). When given
-    it is used as is -- the caller classified on the levels it fitted, which the on-site energy of a chain
-    site need not reflect. ``None`` derives the split from the sign of each bath on-site energy
-    (:func:`classify_bath_occupation`). A split that does not cover the non-impurity orbitals exactly once
+    it is used as is -- the caller classified on the levels it fitted. ``None`` derives the split from
+    the occupations of the filled bath block (:func:`classify_bath_occupation`). A split that does not cover the non-impurity orbitals exactly once
     raises ``ValueError``.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
@@ -242,7 +241,7 @@ def prepare_solver_basis(
 
     # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
     # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
-    # orbitals and their valence/conduction split are derived below, not passed in.
+    # orbitals are its complement; their valence/conduction split is ``bath_split`` or derived below.
     impurity_indices = sorted(o for orbs in impurity_orbitals.values() for o in orbs)
     h_input_matrix = extract_tensors(h_input, two_body=False)[0]
     n_spin_orbitals = h_input_matrix.shape[0]
@@ -255,28 +254,24 @@ def prepare_solver_basis(
     h_matrix = h_input_matrix
     multishell = shell_ls is not None and len(resolve_shell_ls(rot_to_spherical, shell_ls)) > 1
 
-    # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
-    # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
-    # conduction (initially empty).
-    sign_valence, sign_conduction = classify_bath_occupation(
-        h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix
+    # Derive the bath orbitals (complement of the impurity set) and their initial occupation: the caller's
+    # split when there is one, else the filled-bath density matrix (a bath orbital at least half filled is
+    # valence, initially occupied; the rest are conduction, initially empty).
+    say = (lambda msg: print(msg, flush=True)) if rank == 0 and verbosity > 0 else None
+    derived_valence, derived_conduction = classify_bath_occupation(
+        h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix, report=say if bath_split is None else None
     )
     if bath_split is None:
-        valence_flat, conduction_flat = sign_valence, sign_conduction
+        valence_flat, conduction_flat = derived_valence, derived_conduction
     else:
         valence_flat, conduction_flat = _flatten_bath_split(bath_split, impurity_indices, n_spin_orbitals)
-        if rank == 0 and verbosity > 0:
-            differ = sorted(set(valence_flat) ^ set(sign_valence))
-            if differ:
-                print(
-                    "Bath split supplied by the caller differs from the on-site-energy sign rule for orbitals "
-                    + format_index_ranges(differ)
-                    + " (on-site energies "
-                    + ", ".join(f"{h_matrix[o, o].real:.4f}" for o in differ[:8])
-                    + (", ..." if len(differ) > 8 else "")
-                    + "); the supplied split is used.",
-                    flush=True,
-                )
+        differ = sorted(set(valence_flat) ^ set(derived_valence))
+        if differ and say is not None:
+            say(
+                "Bath split supplied by the caller differs from the filled-bath occupation rule for orbitals "
+                + format_index_ranges(differ)
+                + "; the supplied split is used."
+            )
 
     # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
     # in the basis we solve in (this fixes bath-mediated coupling).

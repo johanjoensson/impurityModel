@@ -40,7 +40,7 @@ collective, identical on every rank.
    precisely how the bath discretization placed that one manifold, not on a gap. The 150-total
    mismatch is therefore not evidence the grand-canonical fill is wrong; it reflects that the
    per-orbital valence/conduction classification (:func:`symmetries.classify_bath_occupation`,
-   which looks only at the sign of each bath orbital's own diagonal energy) is a coarse
+   which fills the bath block alone, without the impurity) is a coarse
    bookkeeping device for seeding the many-body basis, not a claim about the true hybridized
    single-particle spectrum. The resulting ``n0 = 8.6252`` (a fractional, hybridization-driven
    impurity occupation) is consistent with published covalent d-occupations for NiO.

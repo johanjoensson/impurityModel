@@ -399,7 +399,7 @@ _TABLE_LIST += [
                 None,
                 "Cross-check against the header. 'absolute' is refused for any double-counting "
                 "scheme, sector walk or Fermi-centred mesh: the bath valence/conduction split "
-                "is taken from sign(h[o,o]) and the DFT reference filling from mu_chem = 0, so "
+                "is taken from the bath levels below zero and the DFT reference filling from mu_chem = 0, so "
                 "an offset zero silently re-partitions the bath into a different model.",
                 choices=("fermi", "absolute"),
             ),

@@ -685,43 +685,79 @@ def _nearest_impurity_orbital(h, imp, bath):
     return {b: int(sources[b]) for b in bath if np.isfinite(dist[b]) and sources[b] >= 0}
 
 
-def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
+# A bath orbital is nominally filled when the filled-bath density matrix puts at least half an electron on
+# it; the slack keeps a symmetry-related set that sits at one half up to rounding on one side together.
+_BATH_HALF_FILLING = 0.5 - 1e-9
+# Occupations inside this band mean no single determinant describes the bath well in this basis.
+_BATH_MIXED_BAND = (0.2, 0.8)
+
+
+def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None, report=None):
     r"""Split the bath orbitals into initially-occupied (valence) and empty (conduction) sets.
 
-    The bath orbitals are all spin-orbitals of ``op`` that are **not** impurity orbitals; each is
-    classified by its one-body on-site energy ``h[o, o]``: baths below the Fermi level
-    (``h[o, o] < 0``) sit filled in the nominal configuration (**valence**, initially occupied),
-    the rest are empty (**conduction**, initially empty). This is only the fallback for a
-    model that carries no split: the tooling that assembled h0 classifies on its star levels, which a
-    chain site's on-site energy need not reflect, so a supplied split (``bath_split`` of
-    :func:`solver_basis.prepare_solver_basis`) always wins.
+    The bath orbitals are all spin-orbitals of ``op`` that are **not** impurity orbitals. The bath-bath
+    block of the one-body matrix is diagonalised and every level below the Fermi level (eigenvalue
+    ``< 0``) is filled; a bath orbital whose occupation in that density matrix is at least one half sits
+    filled in the nominal configuration (**valence**), the rest are empty (**conduction**). For a diagonal
+    bath block (star geometry) this is the sign of the on-site energy ``h[o, o]``. For a chain it is not:
+    a site that carries mostly a level above the Fermi level stays conduction even when a small admixture
+    of deep levels makes its on-site energy negative.
 
-    The bath on-site energies are the diagonal of the bath block; an impurity-only basis change
-    (such as :func:`impurity_symmetry_rotation`) leaves them unchanged.
+    The block is the bath alone, so the split does not depend on where the impurity levels sit (double
+    counting) and an impurity-only basis change (such as :func:`impurity_symmetry_rotation`) leaves it
+    unchanged.
+
+    This is only the fallback for a model that carries no split: a supplied split (``bath_split`` of
+    :func:`solver_basis.prepare_solver_basis`) always wins.
 
     Parameters
     ----------
     op : ManyBodyOperator or dict
-        The Hamiltonian (only its one-body diagonal on the bath orbitals is used).
+        The Hamiltonian (only its one-body bath-bath block is used).
     impurity_orbitals : sequence of int
         The impurity spin-orbital indices; everything else in ``op`` is treated as bath.
     n_orb : int, optional
         Number of spin-orbitals (inferred if ``None``).
     h0_matrix : ndarray, optional
         Pre-extracted one-body matrix of ``op``; pass it to avoid re-walking the operator.
+    report : callable, optional
+        Called with one message when the number of filled orbitals differs from the number of filled
+        levels (rounding the occupations does not conserve the electron count), and with one when
+        occupations lie in the mixed band, where the nominal filling is a poor reference.
 
     Returns
     -------
     valence_orbitals : list[int]
-        Initially-occupied bath orbital indices (``h[o, o] < 0``), sorted.
+        Initially-occupied bath orbital indices (occupation at least one half), sorted.
     conduction_orbitals : list[int]
-        Initially-empty bath orbital indices (``h[o, o] >= 0``), sorted.
+        Initially-empty bath orbital indices, sorted.
     """
     h = _one_body_matrix(op, n_orb=n_orb, h0_matrix=h0_matrix, must_span=impurity_orbitals)
     imp_set = set(impurity_orbitals)
     bath = [o for o in range(h.shape[0]) if o not in imp_set]
-    valence = [o for o in bath if h[o, o].real < 0]
-    conduction = [o for o in bath if h[o, o].real >= 0]
+    if not bath:
+        return [], []
+    h_bath = np.asarray(h)[np.ix_(bath, bath)]
+    levels, vectors = np.linalg.eigh((h_bath + h_bath.conj().T) / 2)
+    filled = levels < 0
+    occupation = (np.abs(vectors[:, filled]) ** 2).sum(axis=1)
+    valence = [o for o, n in zip(bath, occupation) if n >= _BATH_HALF_FILLING]
+    conduction = [o for o, n in zip(bath, occupation) if n < _BATH_HALF_FILLING]
+    if report is not None:
+        if len(valence) != int(filled.sum()):
+            report(
+                f"Bath split: {len(valence)} bath orbitals are nominally filled but the bath block has "
+                f"{int(filled.sum())} levels below the Fermi level; the nominal electron count is off by "
+                f"{len(valence) - int(filled.sum())}."
+            )
+        lo, hi = _BATH_MIXED_BAND
+        mixed = [(o, n) for o, n in zip(bath, occupation) if lo < n < hi]
+        if mixed:
+            report(
+                f"Bath split: {len(mixed)} bath orbitals have filled-bath occupations between {lo} and {hi} "
+                "(" + ", ".join(f"{o}: {n:.3f}" for o, n in mixed[:8]) + (", ..." if len(mixed) > 8 else "") + "); "
+                "the nominal valence/conduction filling is a poor reference in this bath basis."
+            )
     return valence, conduction
 
 

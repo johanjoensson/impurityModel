@@ -153,7 +153,7 @@ class ImpurityModel:
         ``dict[group, list[list[int]]]`` or ``dict[group, list[int]]``). Every solver driver
         (self-energy, double counting, susceptibility) classifies the bath by it when given, so a
         split fitted on the star levels is honoured as is. ``None`` leaves the solver to derive
-        the split from the sign of each bath on-site energy (:func:`classify_bath_occupation`).
+        the split from the filled-bath occupations (:func:`classify_bath_occupation`).
     n_spin_orbitals : int, optional
         Total number of spin-orbitals (impurity + bath). Derived from ``h0`` when not given.
     valence_l, core_l : int or None, optional
@@ -791,8 +791,7 @@ class ImpurityModel:
         bath_valence_conduction : tuple of sequence, optional
             ``(valence_indices, conduction_indices)`` classifying the bath spin-orbitals; when
             given it populates :attr:`bath_states`, and every solver path uses it instead of deriving
-            a split from the sign of the bath on-site energy (which misreads a conduction chain end whose
-            on-site energy is negative).
+            a split from the filled-bath occupations (:func:`classify_bath_occupation`).
         shell_ls : tuple of int, optional
             ``l`` of each spherical column block of an ndarray ``rot_to_spherical`` (multi-shell
             impurity); ``None`` is a single shell inferred from the column count.
