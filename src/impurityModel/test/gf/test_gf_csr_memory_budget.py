@@ -38,17 +38,22 @@ def test_the_csr_budget_is_never_below_the_guard_and_off_with_it(monkeypatch):
 
 
 def test_the_decision_uses_the_csr_budget_the_gf_stage_put_on_the_basis(monkeypatch):
-    """A unit held to the guard's budget runs matrix-free; the looser budget on the basis lets the ``P H P`` matrix
-    be built (the retained mode)."""
+    """A unit held to the guard's budget does not fit the ``P H P`` matrix at the cap; the looser budget on the basis
+    does. The mode is ``retained`` either way (the freeze re-prices it against the real P and falls back to matrix-free
+    there); the decision's report carries the cap-priced verdict."""
     from impurityModel.ed import memory_estimate
     from impurityModel.ed.gf_recurrence import choose_matrix_mode
 
     basis = _excited_basis(np.inf)
     monkeypatch.setattr(memory_estimate, "current_rss_bytes", lambda: 10**9)
     args = (basis, _siam_6(), 10**6, 1, 10**9 + 1)
-    assert choose_matrix_mode(*args, want_discovered=False) == "none", "premise: the guard declines"
+    declined = {}
+    assert choose_matrix_mode(*args, declined, want_discovered=False) == "retained"
+    assert declined["retained_fits_at_cap"] is False, "premise: the guard declines at the cap"
     basis.gf_csr_memory_budget = 10**10
-    assert choose_matrix_mode(*args, want_discovered=False) == "retained"
+    fits = {}
+    assert choose_matrix_mode(*args, fits, want_discovered=False) == "retained"
+    assert fits["retained_fits_at_cap"] is True
 
 
 def test_clones_and_copies_carry_the_csr_budget():

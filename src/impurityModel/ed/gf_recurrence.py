@@ -234,8 +234,8 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
 
     ``"discovered"`` when ``want_discovered`` (a consumer of the frontier rows: the importance probe, swap
     refinement) and the discovered-key matrix fits ``MATRIX_MEMORY_SAFETY`` of the rank's share on every
-    rank, else ``"retained"`` when the ``P H P`` matrix built at the freeze fits the GF stage's CSR budget
-    (``gf_solvers._frozen_matrix_need``), else ``"none"`` (the operator is applied to every block). No memory
+    rank, else ``"retained"``: never ``"none"`` from this estimate, which prices at the cap -- the freeze re-prices the
+    ``P H P`` matrix against the real ``P`` (``_ApplyEngine._fits_now``) and falls back to matrix-free there. No memory
     budget (the guard is off) always fits. ``P`` is priced at ``cap`` determinants spread over the ranks (the
     seed basis when the cap is unbounded), ``K`` at :data:`K_OVER_P_ESTIMATE` times that. ``report`` (a dict)
     receives the numbers the decision used. ``refine_shifts`` (the number of scoring shifts a refinement will
@@ -279,7 +279,13 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
         )
     if want_discovered and not over[0]:
         return "discovered"
-    return "retained" if not over[1] else "none"
+    # Never pre-commit to "none" from the cap-priced estimate: "retained" and "none" are the same until the
+    # support freezes, and _ApplyEngine._fits_now re-prices the matrix at the freeze against the real P and
+    # falls back to "none" there. Priced at the cap, a 30k-determinant restart ran matrix-free (every block
+    # re-applied H) because the cap, not P, was over budget. The report keeps ``over`` for the log line.
+    if report is not None:
+        report["retained_fits_at_cap"] = not bool(over[1])
+    return "retained"
 
 
 def _allreduce(comm, array, op=MPI.SUM):
@@ -655,7 +661,7 @@ class _ApplyEngine:
         self.basis = basis
         self.retained = retained
         self._built = False
-        self._width = 1
+        self._width = 1  # raised to the block width by apply(); array_operator may run first (restart)
         self._out = _OutputBuffer()
         self._filter = None
         self._n_chunks = int(config.APPLY_ROW_CHUNKS.get() or 1)
@@ -704,11 +710,16 @@ class _ApplyEngine:
             comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
         return not over[0]
 
-    def array_operator(self):
+    def array_operator(self, width=None):
         """``(operator, order)``: the frozen ``P H P`` for the array kernel with its P slots renumbered in key order
-        (``order[i]`` is the old slot now numbered ``i``); ``None`` unless ``"retained"``. Builds the columns."""
+        (``order[i]`` is the old slot now numbered ``i``); ``None`` unless ``"retained"``. Builds the columns.
+        ``width`` is the block width the matrix will be applied to (``_fits_now`` prices the work arrays at it)."""
         if not self.retained:
             return None
+        if width is not None:
+            # A restart reaches the freeze at block 0, before any apply() has set the width: price the matrix at
+            # the block width it will actually run, not at 1.
+            self._width = int(width)
         if not self._fits_now():
             self.retained = False
             self.admission.support.mode_ran = "none"
@@ -872,7 +883,7 @@ def block_lanczos_discovered(
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
         if d.frozen and not reort and hasattr(engine, "array_operator"):
-            handed = engine.array_operator()
+            handed = engine.array_operator(n_curr)
             if handed is not None:
                 operator, order = handed
                 n_rows = x.shape[0]
@@ -1467,7 +1478,7 @@ def block_Green_discovered(
     # The retained and matrix-free modes prune too (the cut is in the policy), but they hold no K store to size.
     if support.prunes and matrix_mode != "discovered" and verbose and rank == 0:
         print(
-            f"GF pruned growth ({support.rule}): |P| = {support.retained_size:,}, matrix mode {matrix_mode}, "
+            f"GF pruned growth ({support.rule}): |P| = {support.retained_size:,}, matrix mode {support.mode_ran or matrix_mode}, "
             f"admitted per depth {support.depth_histogram()}",
             flush=True,
         )

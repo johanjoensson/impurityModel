@@ -165,12 +165,13 @@ def test_the_mode_follows_the_memory_budget(comm):
     budget = rss + report["need_retained"] * 1.01
     assert rss + report["need_discovered"] > budget * scale
     assert choose_matrix_mode(basis, op, 3000, 2, budget) == "retained"
-    assert choose_matrix_mode(basis, op, 3000, 2, 1) == "none"
+    # Never "none" from the cap-priced estimate: the freeze re-prices against the real P and falls back there.
+    assert choose_matrix_mode(basis, op, 3000, 2, 1) == "retained"
     # Without a consumer of the frontier rows the discovered matrix is never chosen: it costs more memory and a
     # slower frozen matvec for nothing.
     assert choose_matrix_mode(basis, op, 3000, 2, None, want_discovered=False) == "retained"
     assert choose_matrix_mode(basis, op, 3000, 2, 10**12, want_discovered=False) == "retained"
-    assert choose_matrix_mode(basis, op, 3000, 2, 1, want_discovered=False) == "none"
+    assert choose_matrix_mode(basis, op, 3000, 2, 1, want_discovered=False) == "retained"
     if comm is not None:
         assert len(set(comm.allgather(choose_matrix_mode(basis, op, 3000, 2, budget)))) == 1
 
@@ -255,3 +256,23 @@ def test_a_recurrence_that_fills_the_space_is_exact_not_truncated():
         t = np.diag(a) + np.diag(b, 1) + np.diag(b, -1)
         assert np.allclose(np.linalg.eigvalsh(t), np.linalg.eigvalsh(h), atol=1e-9)
     assert set(statuses) == {"invariant_subspace"}
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_auto_prices_retained_and_the_freeze_falls_back_to_matrix_free_when_p_does_not_fit(comm, monkeypatch):
+    """Auto never commits to ``none`` from the cap-priced estimate: a budget that rejects the matrix runs the
+    ``retained`` engine, which declines the ``P H P`` build at the freeze (re-priced on the real P) and runs matrix-free.
+    The coefficients are those of a forced ``none`` run, and the mode that ran is reported."""
+    from impurityModel.ed.gf_recurrence import _ApplyEngine
+
+    monkeypatch.setattr(_ApplyEngine, "_fits_now", lambda self: False)
+    auto = run_chain(comm, kernel=_block_Green_discovered, cap=2500, support_settle=False)
+    forced = run_chain(
+        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode="none"), cap=2500, support_settle=False
+    )
+    assert auto[3]["engine"] == "none" and forced[3]["engine"] == "none"
+    np.testing.assert_allclose(_g(auto), _g(forced), atol=1e-9)
+    monkeypatch.undo()
+    fits = run_chain(comm, kernel=_block_Green_discovered, cap=2500, support_settle=False)
+    assert fits[3]["engine"] == "retained"
+    np.testing.assert_allclose(_g(fits), _g(forced), atol=1e-7)
