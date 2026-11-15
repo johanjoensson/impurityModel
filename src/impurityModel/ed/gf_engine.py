@@ -148,6 +148,8 @@ def _block_green_group(
             prune_rule=prune_rule,
             refine=refine,
         )
+        if info is not None and cap_info.get("status") is not None:
+            info["status"] = cap_info["status"]
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
         # discovers whether or not a cap is set), never `len(excited_basis)`: that is the clone of the seed support
         # and the matvec never adds to it, so it is the SEED size, not the Krylov support -- measured 1 vs 15

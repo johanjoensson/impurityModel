@@ -585,7 +585,9 @@ def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
 
     comm = MPI.COMM_WORLD
     monkeypatch.setattr(memory_estimate, "current_rss_bytes", lambda: 10**9)
-    for budget, mode in ((10**10, "retained"), (10**9 + 1, "none")):
+    # Auto no longer pre-commits to "none" from the cap-priced estimate: both budgets run "retained" (the freeze re-prices
+    # and falls back), and the decline shows in the printed need/budget numbers.
+    for budget, mode in ((10**10, "retained"), (10**9 + 1, "retained")):
         capsys.readouterr()
         _g, info = _run_capped(12, comm=comm, memory_budget=budget, verbose=True)
         out = capsys.readouterr().out

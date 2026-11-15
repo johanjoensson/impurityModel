@@ -711,6 +711,8 @@ def _merge_unit_convergence(cstats, conv_stats):
     an unconverged unit the monitor never sampled reports ``None``: neither made a measurement, so neither poisons
     the max with a NaN."""
     unit_ok = bool(conv_stats.get("converged", True))
+    if conv_stats.get("status") == "exhausted":
+        cstats["status"] = "exhausted"
     was_ok = cstats["converged"]
     cstats["converged"] = was_ok and unit_ok
     if unit_ok and not was_ok:
@@ -877,7 +879,11 @@ def _gf_assemble(
             conv_stats = conv_acc.get(block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": lanczos_tol})
             diags.append(
                 _gfd.check_lanczos_convergence(
-                    conv_stats["converged"], conv_stats["d_g"], conv_stats["n_blocks"], conv_stats["tol"]
+                    conv_stats["converged"],
+                    conv_stats["d_g"],
+                    conv_stats["n_blocks"],
+                    conv_stats["tol"],
+                    status=conv_stats.get("status"),
                 )
             )
             # Complementary, band-wide measure: convergence of the *whole* resolved Ritz

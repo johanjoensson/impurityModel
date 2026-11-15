@@ -224,3 +224,13 @@ the scoring solves are the expense (about 2.7x the breadth-first Green's-functio
 `SolverOptions` leaves both options unset, and an unset option is on for `gf_method = "lanczos"`
 (`model.DEFAULT_GF_PRUNE_TOL`, `DEFAULT_GF_REFINE_ROUNDS`); `0` is the explicit off. An archive written before the
 options existed reads as off, so a replay of an old run reproduces it.
+
+## The `exhausted` status
+
+A frozen, unreorthogonalized recurrence on a support `P` cannot reach a tolerance below its rounding floor
+(about `eps*|H|*k/eta^2`, growing with the block count `k`). It used to run until the divergence guard fired, at
+2.5-5x `|P|` vectors. All three recurrence sites (the Python loop of `block_lanczos_discovered`,
+`_continue_on_array_kernel`, `gf_solvers._array_block_lanczos`) now stop with status `"exhausted"` once
+`sum(widths) >= EXHAUSTED_VECTORS_OVER_P * |P|` (`gf_convergence.krylov_exhausted`, replicated on every rank).
+The status reaches `check_lanczos_convergence` as a WARN naming the rounding floor and the last relative change;
+compare that with `gf_tol` / `gf_real_tol`. The array continuation budgets in vectors, not blocks.

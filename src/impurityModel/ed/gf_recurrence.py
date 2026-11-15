@@ -34,7 +34,12 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, divergence_guard
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix, stage
-from impurityModel.ed.gf_convergence import EvalMeshes, _gf_monitor_tol, _make_gf_convergence_monitor
+from impurityModel.ed.gf_convergence import (
+    EvalMeshes,
+    _gf_monitor_tol,
+    _make_gf_convergence_monitor,
+    krylov_exhausted,
+)
 from impurityModel.ed.gf_primitives import (
     SETTLE_WINDOW,
     SupportDecisions,
@@ -734,6 +739,11 @@ class _ApplyEngine:
         matrix, admission = self.matrix, self.admission
         d = admission.d
         self._width = x.shape[1]
+        if d.frozen and self.retained and not self._built and not self._fits_now():
+            # The reort-on path never reaches array_operator, so the freeze re-pricing happens here (collective:
+            # every rank gets here on the same step, ``frozen`` being replicated).
+            self.retained = False
+            admission.support.mode_ran = "none"
         if d.frozen and self.retained:
             if not self._built:
                 matrix.build_columns()
@@ -786,7 +796,13 @@ def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, 
     tail = (np.zeros(x.shape, dtype=complex) if x_prev is None else x_prev, x)
     x_prev = x = None
     alphas, betas, widths = np.array(alphas), np.array(betas), list(widths)
-    budget = min(_csr_continue_budget(start), n_dim)
+    def blocks_left():
+        # The budget is in *vectors* of the space left, spent at the width the recurrence has now: blocks of
+        # width p reach n_dim after n_dim / p of them, not n_dim (which ran 5x |P| vectors at width 5).
+        rem = max(n_dim - sum(widths), 1)
+        return max(1, -(-rem // max(int(widths[len(widths) - 1]) if widths else 1, 1)))
+
+    budget = min(_csr_continue_budget(start), blocks_left())
     while True:
         with stage(stage_name):
             alphas, betas, last_q, widths, status, tail = block_lanczos(
@@ -807,15 +823,16 @@ def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, 
                 return_tail=True,
                 deflate_tol=deflate_tol,
             )
-        if status != "max_iter" or len(alphas) - start >= n_dim:
-            if status == "max_iter" and sum(widths) >= n_dim:
-                # The block columns span the whole operator: the Krylov space is H's, the continued fraction is
-                # exact, whether or not the last residual fell under the breakdown floor (at reort off it is
-                # rounding noise that lands either side of it). ``widths`` and ``n_dim`` are replicated, so every
-                # rank reaches the same verdict.
-                status = "invariant_subspace"
+        if status != "max_iter":
             break
-        budget = min(2 * budget, n_dim - (len(alphas) - start))
+        if krylov_exhausted(sum(widths), n_dim):
+            # |P| vectors without the kernel finding an invariant subspace or the monitor's tolerance: at reort
+            # off the recurrence sits on its rounding floor and the space is used up. NOT "invariant_subspace":
+            # that would claim the continued fraction is exact, which an unreorthogonalized run cannot. ``widths``
+            # and ``n_dim`` are replicated, so every rank reaches the same verdict.
+            status = "exhausted"
+            break
+        budget = min(2 * budget, blocks_left())
     return alphas, betas, widths, status, last_q
 
 
@@ -841,8 +858,9 @@ def block_lanczos_discovered(
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
 
     Returns ``(alphas, betas, widths, status, q_last)``: the padded ``(m, n, n)`` coefficient arrays, the
-    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"``, ``"quiet"`` or
-    ``"max_iter"``) and this rank's rows of the last accepted block (P-slot order of the final matrix).
+    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"``, ``"quiet"``,
+    ``"exhausted"`` or ``"max_iter"``; ``"exhausted"`` = a frozen reort-off recurrence has used as many vectors as
+    the support has determinants, so it sits on its rounding floor and cannot reach the tolerance) and this rank's rows of the last accepted block (P-slot order of the final matrix).
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
     ``shifted`` (a :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) is stepped with every block the
     recurrence accepts (a diverged step is not folded in; an invariant subspace is, as an exact solution) and told
@@ -873,6 +891,7 @@ def block_lanczos_discovered(
     status = "max_iter"
     store = [x] if reort else None
     freeze_step = None
+    n_vectors = 0  # Krylov vectors produced so far (replicated)
 
     it = 0
     while it < max_blocks:
@@ -964,6 +983,17 @@ def block_lanczos_discovered(
                 break
         if done:
             status = "scored" if score_only else "converged"
+            widths.append(n_curr)
+            it += 1
+            break
+        n_vectors += n_curr
+        # One block of lag: the block that fills the space is followed by the genuine breakdown (an invariant subspace,
+        # detected at the top of the next iteration), which is the better verdict.
+        # A scoring run (``shifted``) has its own stop rule (``shifted_rtol``) and must reach it.
+        if d.frozen and not reort and shifted is None and krylov_exhausted(n_vectors - n_curr, d.global_count):
+            # Frozen P, no reorthogonalization, |P| vectors spent and the monitor still not satisfied: the run is
+            # on its rounding floor. ``n_vectors`` and ``d.global_count`` are replicated (see _continue_on_array_kernel).
+            status = "exhausted"
             widths.append(n_curr)
             it += 1
             break
@@ -1501,6 +1531,7 @@ def block_Green_discovered(
         cap_info["memory_frozen"] = support.memory_frozen
         cap_info["proxy"] = support
         cap_info["engine"] = support.mode_ran or matrix_mode
+        cap_info["status"] = status
         cap_info["matrix"] = matrix if matrix_mode == "discovered" else None
         # Whether the frozen recurrence ran on a stored matrix (``csr_seconds`` is then the unit's recurrence wall).
         cap_info["csr_fallback"] = bool(support.decisions.frozen and cap_info["engine"] != "none")
@@ -1515,7 +1546,12 @@ def block_Green_discovered(
         why = (
             "its divergence guard truncated a corrupted tail"
             if status == "diverged"
-            else "the block budget ran out before the monitor's tolerance was met"
+            else (
+                f"the Krylov space is used up without reorthogonalization, so the recurrence is on its rounding "
+                f"floor (last relative change {'n/a' if last_dg[0] is None else format(last_dg[0], '.1e')})"
+                if status == "exhausted"
+                else "the block budget ran out before the monitor's tolerance was met"
+            )
         )
         print(
             f"warning: block Green's function did not reach the convergence tolerance {delta_min:.1e}; the "

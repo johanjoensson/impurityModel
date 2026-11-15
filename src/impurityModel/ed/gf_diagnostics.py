@@ -377,7 +377,9 @@ def check_thermal_weight_cutoff(
     )
 
 
-def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, tol: float) -> Diagnostic:
+def check_lanczos_convergence(
+    converged: bool, d_g: float, n_blocks: int, tol: float, status: Optional[str] = None
+) -> Diagnostic:
     r"""Surface the block-Lanczos Green's-function solver's *own* convergence verdict.
 
     ``converged``/``d_g``/``n_blocks`` come straight from the runtime monitor
@@ -397,6 +399,8 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, tol: f
         n_blocks: Number of Lanczos blocks actually run.
         tol: The relative-change tolerance the monitor was testing against
             (:func:`gf_convergence._gf_rel_tol`).
+        status: The recurrence's exit status, when known. ``"exhausted"`` (the Krylov space used up
+            without reorthogonalization) is reported as the rounding floor it is.
 
     Returns:
         Diagnostic: ``OK`` if converged, else ``WARN`` + ``needs_more_iterations``.
@@ -407,13 +411,23 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, tol: f
         severity=Severity.OK if converged else Severity.WARN,
         value=value,
         threshold=float(tol) if tol is not None else float("nan"),
-        message=(f"converged in {n_blocks} block(s)" if converged else f"not converged after {n_blocks} block(s)"),
+        message=(
+            f"converged in {n_blocks} block(s)"
+            if converged
+            else (
+                f"Krylov space exhausted after {n_blocks} block(s): the unreorthogonalized recurrence is on its "
+                "rounding floor"
+                if status == "exhausted"
+                else f"not converged after {n_blocks} block(s)"
+            )
+        ),
         suggestion=(
             ""
             if converged
             else (
                 "the recurrence stopped before the monitor's tolerance was met; the warning printed by the unit "
-                "names why. A divergence-guard truncation: try reort=full or a tighter slaterWeightMin"
+                "names why. Compare the last relative change with gf_tol / gf_real_tol: a looser tolerance that "
+                "the rounding floor can reach ends the unit earlier"
             )
         ),
         needs_more_iterations=not converged,

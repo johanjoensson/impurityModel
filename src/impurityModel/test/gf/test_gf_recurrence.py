@@ -255,7 +255,9 @@ def test_a_recurrence_that_fills_the_space_is_exact_not_truncated():
         b = np.abs(betas[: n - 1, 0, 0])
         t = np.diag(a) + np.diag(b, 1) + np.diag(b, -1)
         assert np.allclose(np.linalg.eigvalsh(t), np.linalg.eigvalsh(h), atol=1e-9)
-    assert set(statuses) == {"invariant_subspace"}
+    # At reort off a run that fills the space is not provably exact: it ends either on the breakdown floor
+    # ("invariant_subspace") or on the vector backstop ("exhausted"); never "max_iter".
+    assert set(statuses) <= {"invariant_subspace", "exhausted"}
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -276,3 +278,34 @@ def test_auto_prices_retained_and_the_freeze_falls_back_to_matrix_free_when_p_do
     fits = run_chain(comm, kernel=_block_Green_discovered, cap=2500, support_settle=False)
     assert fits[3]["engine"] == "retained"
     np.testing.assert_allclose(_g(fits), _g(forced), atol=1e-7)
+
+
+def test_krylov_exhausted_is_the_one_predicate():
+    from impurityModel.ed.gf_convergence import EXHAUSTED_VECTORS_OVER_P, krylov_exhausted
+
+    n = 1000
+    assert not krylov_exhausted(int(EXHAUSTED_VECTORS_OVER_P * n) - 1, n)
+    assert krylov_exhausted(int(EXHAUSTED_VECTORS_OVER_P * n), n)
+    assert not krylov_exhausted(10**9, 0), "an unknown or empty P never reports exhaustion"
+
+
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+def test_a_frozen_unreorthogonalized_run_that_cannot_converge_ends_exhausted(comm, mode, monkeypatch):
+    """Frozen P, reort off, a monitor that never says yes: the run stops once ``|P|`` vectors are spent, with the
+    ``exhausted`` status, in every matvec mode (the Python loop and the array-kernel continuation) -- not at the
+    divergence guard 2.5-5x later, and not relabelled ``invariant_subspace`` (which claims an exact fraction)."""
+    from impurityModel.ed import gf_recurrence
+
+    def never(delta, slater_weight_min, eval_meshes=None):
+        return (lambda *a, **k: False), [False], 1e-9, [None]
+
+    monkeypatch.setattr(gf_recurrence, "_make_gf_convergence_monitor", never)
+    alphas, betas, r, info = run_chain(
+        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode=mode), cap=2500, support_settle=False
+    )
+    assert info["cap_hit"], "premise: the support is frozen by the cap"
+    assert info["status"] == "exhausted"
+    n_p = info["retained_size"]
+    # Width-2 seeds (some blocks may deflate to 1): between |P|/2 and |P|+1 blocks, never the 2.5-5x |P| of the guard.
+    assert n_p // 2 <= len(alphas) <= n_p + 1, (len(alphas), n_p)

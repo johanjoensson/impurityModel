@@ -91,6 +91,22 @@ _GF_NEAR_FACTOR = 2.0
 _GF_MONITOR_POINTS = 64
 
 
+#: A frozen, unreorthogonalized recurrence has nothing left to find once it has produced this many
+#: Krylov vectors per determinant of ``P``: in exact arithmetic ``|P|`` vectors span the space, and
+#: beyond that the loss of orthogonality only re-finds ghost copies of Ritz values it already has. A
+#: recurrence that cannot reach the monitor's tolerance (it sits on a rounding floor) used to run
+#: until the divergence guard fired, at 2.5-5x ``|P|`` vectors (LMO 1-bath Mn8, ``|P|`` ~ 30k).
+EXHAUSTED_VECTORS_OVER_P = 1.0
+
+
+def krylov_exhausted(n_vectors, n_dim):
+    """Whether ``n_vectors`` Lanczos vectors exhaust a space of ``n_dim`` (replicated inputs, replicated verdict).
+
+    The one predicate behind the ``"exhausted"`` status at every site that runs a frozen recurrence without
+    reorthogonalization (the matrix-free loop, the array-kernel continuation, the dense/CSR fallback)."""
+    return n_dim > 0 and n_vectors >= EXHAUSTED_VECTORS_OVER_P * n_dim
+
+
 def _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta):
     r"""The requested frequency axes in the resolvent frame, *before* the thermal-energy shift.
 

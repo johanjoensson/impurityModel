@@ -27,7 +27,7 @@ from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_lanczos
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
-from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
+from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor, krylov_exhausted
 from impurityModel.ed.gf_primitives import (
     FrozenColumnMatvec,
     _allreduced_col_norms2,
@@ -300,13 +300,19 @@ def _finish_array_run(alphas, betas, widths, status, converged_flag, delta_min, 
     if status == "invariant_subspace":
         converged_flag[0] = True
     if not converged_flag[0] and rank == 0:
+        why = (
+            "The Krylov space is used up without reorthogonalization, so the recurrence sits on its rounding "
+            "floor (last relative change {last}); the continued fraction is the one it reached."
+            if status == "exhausted"
+            else "The continued fraction uses the subspace built so far."
+        ).format(last="n/a" if last_dg[0] is None else f"{last_dg[0]:.1e}")
         print(
             f"warning: block Green's function did not reach the convergence tolerance "
-            f"{delta_min:.1e} in {len(alphas)} block(s). The continued fraction uses the "
-            f"subspace built so far.",
+            f"{delta_min:.1e} in {len(alphas)} block(s). {why}",
             flush=True,
         )
     if info is not None:
+        info["status"] = status
         info["converged"] = converged_flag[0]
         info["d_g"] = last_dg[0]
         info["n_blocks"] = len(alphas)
@@ -385,6 +391,11 @@ def _array_block_lanczos(
             # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
             deflate_tol=DEFLATE_TOL_SEEDS,
         )
+        if status == "max_iter" and not resolved_reort and krylov_exhausted(sum(widths), n_dim):
+            # n_dim vectors and no invariant subspace: without reorthogonalization the run is on its rounding
+            # floor (see krylov_exhausted). Doubling the block budget would only run it to p * n_dim vectors.
+            status = "exhausted"
+            break
         if status != "max_iter" or max_iter >= n_dim:
             break
         max_iter = min(2 * max_iter, n_dim)
