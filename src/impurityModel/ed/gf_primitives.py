@@ -1253,6 +1253,121 @@ def _scalar_cf_inverse(alphas, betas, omegaP):
     return g[:, np.newaxis, np.newaxis]
 
 
+class _IncrementalBlockCF:
+    r"""Seed-block resolvent :math:`G_{00}(z)` of a growing block-tridiagonal matrix, one level per block.
+
+    :func:`_block_cf_inverse` eliminates from the *bottom*, so every new block changes the
+    whole recursion and the convergence monitor that called it once per check paid O(k) levels
+    per call, O(k^2) per run. This eliminates from the *top* instead: with ``D_0 = z - a_0`` and
+
+    .. math::
+
+        D_j = z - a_j - b_{j-1} D_{j-1}^{-1} b_{j-1}^\dagger, \qquad
+        L_j = L_{j-1} b_{j-1}^\dagger D_j^{-1}, \qquad
+        R_j = D_j^{-1} b_{j-1} R_{j-1},
+
+    (``L_0 = R_0 = D_0^{-1}``) block ``j`` adds exactly
+    :math:`dG_j = L_{j-1} b_{j-1}^\dagger D_j^{-1} b_{j-1} R_{j-1}` to :math:`G_{00}`. It is the same
+    arithmetic as :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`, and equals
+    ``inv(_block_cf_inverse(alphas[:j + 1], betas[:j + 1], z))`` to rounding. ``Im D_j >= |Im z|``
+    for a Hermitian ``T``, so every factor is bounded by ``|b| / |Im z|`` and the recursion is stable.
+
+    ``advance`` consumes only the blocks it has not seen, so a monitor that calls it every few
+    blocks does O(1) work per block. Blocks may be ragged (``block_widths`` trimming) and the
+    ``betas`` rectangular, as in :func:`_block_cf_inverse`; the trailing ``betas[-1]`` is never read.
+
+    Parameters
+    ----------
+    omegaP : ndarray
+        ``(n_w,)`` complex frequencies, shift already applied.
+    """
+
+    _DEAD = 1e-120  # |L| or |R| below this contributes nothing; zeroed so it never goes denormal
+
+    def __init__(self, omegaP):
+        self.z = np.asarray(omegaP, dtype=complex)
+        self.consumed = 0
+        self.G = None  # (n_w, n0, n0)
+        self.dG = None  # last block's contribution
+        self._D_inv = self._L = self._R = None
+        self._last_alpha = self._last_beta = None  # copies, to detect a history that was replaced
+
+    def _consistent(self, alphas, betas, widths):
+        """Whether the blocks already consumed are still the ones the caller holds."""
+        k = self.consumed
+        if len(alphas) < k:
+            return False
+        w = int(widths[k - 1]) if widths is not None else None
+        a = np.asarray(alphas[k - 1])
+        if w is not None:
+            a = a[:w, :w]
+        if not np.array_equal(a, self._last_alpha):
+            return False
+        if k >= 2:
+            b = np.asarray(betas[k - 2])
+            if widths is not None:
+                b = b[: int(widths[k - 1]), : int(widths[k - 2])]
+            if not np.array_equal(b, self._last_beta):
+                return False
+        return True
+
+    def advance(self, alphas, betas, block_widths=None):
+        """Consume blocks ``alphas[consumed:]`` and return the running ``G_00`` ``(n_w, n0, n0)``.
+
+        A history that is shorter than, or differs from, the one already consumed restarts the
+        recursion from block 0.
+        """
+        k = len(alphas)
+        use_w = block_widths is not None and len(block_widths) == k
+        widths = block_widths if use_w else None
+        if self.consumed and not self._consistent(alphas, betas, widths):
+            self.__init__(self.z)
+        for j in range(self.consumed, k):
+            a = np.asarray(alphas[j])
+            if use_w:
+                w = int(widths[j])
+                a = a[:w, :w]
+            n = a.shape[0]
+            if j == 0:
+                D = self.z[:, None, None] * np.identity(n, dtype=complex)[None] - a[None]
+                D_inv = 1.0 / D if n == 1 else np.linalg.inv(D)
+                self._L = self._R = D_inv
+                self.G = D_inv.copy()
+                self.dG = self.G
+                self._D_inv = D_inv
+            else:
+                b = np.asarray(betas[j - 1])
+                if use_w:
+                    b = b[:n, : int(widths[j - 1])]
+                bH = np.conj(b.T)
+                n_prev = b.shape[1]
+                if n == 1 and n_prev == 1:
+                    D = self.z[:, None, None] - a[None] - (b[0, 0] * bH[0, 0]) * self._D_inv
+                    D_inv = 1.0 / D
+                else:
+                    D = (
+                        self.z[:, None, None] * np.identity(n, dtype=complex)[None]
+                        - a[None]
+                        - b[None] @ self._D_inv @ bH[None]
+                    )
+                    D_inv = np.linalg.inv(D)
+                LbH = self._L @ bH[None]
+                bR = b[None] @ self._R
+                self.dG = LbH @ D_inv @ bR
+                self.G = self.G + self.dG
+                self._L = LbH @ D_inv
+                self._R = D_inv @ bR
+                self._D_inv = D_inv
+                dead = (np.abs(self._L).max(axis=(1, 2)) < self._DEAD) | (np.abs(self._R).max(axis=(1, 2)) < self._DEAD)
+                if dead.any():
+                    self._L[dead] = 0.0
+                    self._R[dead] = 0.0
+                self._last_beta = np.array(b)
+            self._last_alpha = np.array(a)
+            self.consumed = j + 1
+        return self.G
+
+
 def calc_G(alphas, betas, r, omega, e, delta):
     r"""Green's function from block-Lanczos continued-fraction coefficients.
 

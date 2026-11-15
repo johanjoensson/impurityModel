@@ -9,7 +9,7 @@ compatibility). Depends only on :mod:`gf_primitives` (the continued-fraction eva
 
 import numpy as np
 
-from impurityModel.ed.gf_primitives import _block_cf_inverse, _trim_blocks
+from impurityModel.ed.gf_primitives import _block_cf_inverse, _IncrementalBlockCF, _trim_blocks
 from impurityModel.ed.work_queue import queue_progress
 
 # Relative-change convergence floor for the block-Lanczos Green's function, shared by the
@@ -256,12 +256,16 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
 
     def converged_on_eval_meshes(alphas, betas, verbose, block_widths):
         d_g = 0.0
+        wrong_sign = False
         for mesh, cache, scale in zip(eval_meshes, axis_caches, axis_scales):
+            # Every axis is advanced even when an earlier one has the wrong sign, so each
+            # incremental state stays current with the block history.
             d = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh, cache=cache)
             if d is None:  # spurious (wrong-sign) imaginary part on this axis -> not converged
-                return None
-            d_g = max(d_g, d * scale)
-        return d_g
+                wrong_sign = True
+            else:
+                d_g = max(d_g, d * scale)
+        return None if wrong_sign else d_g
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
         # Called once per block by both Lanczos kernels: the rank hosting the GF unit queue's
@@ -346,16 +350,34 @@ def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cac
     spectrum is fully resolved.  Shrinking-block deflation is handled by trimming to
     ``block_widths`` first, so no fixed block dimension is assumed.
 
-    The optional ``cache`` (a ``[gs_value, n_blocks]`` list) lets the convergence loop reuse
-    work: this step's ``G^{-1}`` over ``k-1`` blocks is *identical* to the previous step's
-    over ``k-1`` blocks on the same frozen mesh, so the ``gs_prev`` continued fraction is taken
-    from the cache instead of rebuilt — halving the per-step continued-fraction cost. Exact
-    (no behavior change); pass the same list each step.
+    The optional ``cache`` (a ``[state, n_blocks]`` list, with a fixed ``omegaP``) makes the
+    evaluation incremental: the list holds an :class:`~impurityModel.ed.gf_primitives._IncrementalBlockCF`
+    that has already folded in the first ``n_blocks`` blocks, so a call costs the new blocks only
+    instead of two full rebuilds of the continued fraction. Same value to rounding; pass the same list
+    each step. Without ``cache`` (or without ``omegaP``) both continued fractions are rebuilt.
 
     Returns:
         float or None: the relative change, or ``None`` if the freshly added block yields
         a wrong-sign spectral weight (not yet stabilized).
     """
+    if cache is not None and omegaP is not None:
+        # Incremental path: the state lives in cache[0] and consumes only the blocks it has not
+        # seen, so a monitor calling every few blocks costs O(1) per block, not O(k) per call.
+        state = cache[0]
+        if not isinstance(state, _IncrementalBlockCF) or state.z.shape != np.shape(omegaP) or not np.array_equal(state.z, omegaP):
+            state = cache[0] = _IncrementalBlockCF(omegaP)
+        G_new = state.advance(alphas, betas, block_widths)
+        cache[1] = state.consumed
+        if len(alphas) < 2:
+            dG = G_new
+        else:
+            dG = state.dG
+        # Wrong-sign spectral weight is read off the inverse of the running G, which is G^{-1}_0.
+        gs_new = np.linalg.inv(G_new)
+        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
+            return None
+        scale = np.max(np.abs(G_new))
+        return np.max(np.abs(dG)) / max(scale, np.finfo(float).tiny)
     if block_widths is not None and len(block_widths) == len(alphas):
         A, B = _trim_blocks(alphas, betas, block_widths)
     else:
@@ -370,12 +392,7 @@ def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cac
         ws = np.concatenate([np.diagonal(a) for a in A])[: 15 * n0]
         omegaP = ws.real + delta * 1j
     gs_new = _block_cf_inverse(A, B, omegaP)
-    if cache is not None and cache[0] is not None and cache[1] == len(A) - 1:
-        gs_prev = cache[0]  # == previous step's gs_new (CF over the same k-1 blocks/mesh)
-    else:
-        gs_prev = _block_cf_inverse(A[:-1], B[:-1], omegaP)
-    if cache is not None:
-        cache[0], cache[1] = gs_new, len(A)
+    gs_prev = _block_cf_inverse(A[:-1], B[:-1], omegaP)
     if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
         return None
     # Compare the resolvents G = (G^{-1})^{-1}, not their inverses: the broadening
