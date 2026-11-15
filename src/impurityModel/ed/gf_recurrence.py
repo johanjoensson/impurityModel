@@ -796,10 +796,12 @@ def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, 
     tail = (np.zeros(x.shape, dtype=complex) if x_prev is None else x_prev, x)
     x_prev = x = None
     alphas, betas, widths = np.array(alphas), np.array(betas), list(widths)
+    n_before = sum(widths)  # vectors built before the hand-off, on a support that was still growing: not counted
+
     def blocks_left():
         # The budget is in *vectors* of the space left, spent at the width the recurrence has now: blocks of
         # width p reach n_dim after n_dim / p of them, not n_dim (which ran 5x |P| vectors at width 5).
-        rem = max(n_dim - sum(widths), 1)
+        rem = max(n_dim - (sum(widths) - n_before), 1)
         return max(1, -(-rem // max(int(widths[len(widths) - 1]) if widths else 1, 1)))
 
     budget = min(_csr_continue_budget(start), blocks_left())
@@ -825,7 +827,7 @@ def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, 
             )
         if status != "max_iter":
             break
-        if krylov_exhausted(sum(widths), n_dim):
+        if krylov_exhausted(sum(widths) - n_before, n_dim):
             # |P| vectors without the kernel finding an invariant subspace or the monitor's tolerance: at reort
             # off the recurrence sits on its rounding floor and the space is used up. NOT "invariant_subspace":
             # that would claim the continued fraction is exact, which an unreorthogonalized run cannot. ``widths``
@@ -891,7 +893,7 @@ def block_lanczos_discovered(
     status = "max_iter"
     store = [x] if reort else None
     freeze_step = None
-    n_vectors = 0  # Krylov vectors produced so far (replicated)
+    n_vectors = 0  # Krylov vectors produced since the support froze (replicated)
 
     it = 0
     while it < max_blocks:
@@ -986,7 +988,8 @@ def block_lanczos_discovered(
             widths.append(n_curr)
             it += 1
             break
-        n_vectors += n_curr
+        if d.frozen:  # counted from the freeze: before it the support was still growing
+            n_vectors += n_curr
         # One block of lag: the block that fills the space is followed by the genuine breakdown (an invariant subspace,
         # detected at the top of the next iteration), which is the better verdict.
         # A scoring run (``shifted``) has its own stop rule (``shifted_rtol``) and must reach it.
@@ -1532,6 +1535,7 @@ def block_Green_discovered(
         cap_info["proxy"] = support
         cap_info["engine"] = support.mode_ran or matrix_mode
         cap_info["status"] = status
+        cap_info["n_vectors"] = int(sum(widths))  # Krylov vectors the final recurrence produced
         cap_info["matrix"] = matrix if matrix_mode == "discovered" else None
         # Whether the frozen recurrence ran on a stored matrix (``csr_seconds`` is then the unit's recurrence wall).
         cap_info["csr_fallback"] = bool(support.decisions.frozen and cap_info["engine"] != "none")

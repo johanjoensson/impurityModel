@@ -128,14 +128,24 @@ def test_incremental_matches_the_rebuild_on_a_long_unreorthogonalized_recurrence
     np.testing.assert_allclose(G, _rebuild_G(alphas, betas, omegaP), rtol=1e-7, atol=1e-11)
 
 
-def test_the_incremental_state_agrees_with_shifted_galerkin():
-    from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin  # noqa: F401  (cross-check exists)
-
+def test_the_incremental_state_is_the_seed_block_of_the_dense_resolvent():
+    """Independent of ``_block_cf_inverse``: assemble the block-tridiagonal T densely and invert ``z - T``."""
     rng = np.random.default_rng(14)
-    alphas, betas = _random_blocks(rng, [2] * 40)
+    widths = [3, 3, 2, 2, 2, 1, 1, 2]
+    alphas, betas = _random_blocks(rng, widths)
+    starts = np.concatenate([[0], np.cumsum(widths)])
+    n = int(starts[-1])
+    T = np.zeros((n, n), dtype=complex)
+    for i, w in enumerate(widths):
+        T[starts[i] : starts[i] + w, starts[i] : starts[i] + w] = alphas[i]
+        if i + 1 < len(widths):
+            b = betas[i][: widths[i + 1], :w]
+            T[starts[i + 1] : starts[i + 2], starts[i] : starts[i + 1]] = b
+            T[starts[i] : starts[i + 1], starts[i + 1] : starts[i + 2]] = b.conj().T
     omegaP = np.linspace(-3, 3, 7) + 0.3j
-    G = gf_primitives._IncrementalBlockCF(omegaP).advance(alphas, betas)
-    np.testing.assert_allclose(G, _rebuild_G(alphas, betas, omegaP), rtol=1e-10)
+    G = gf_primitives._IncrementalBlockCF(omegaP).advance(alphas, betas, widths)
+    for gi, z in zip(G, omegaP):
+        np.testing.assert_allclose(gi, np.linalg.inv(z * np.eye(n) - T)[: widths[0], : widths[0]], rtol=1e-10)
 
 
 def test_greens_function_change_incremental_equals_the_rebuild_at_a_cadence():

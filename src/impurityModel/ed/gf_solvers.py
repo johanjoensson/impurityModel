@@ -398,7 +398,10 @@ def _array_block_lanczos(
             break
         if status != "max_iter" or max_iter >= n_dim:
             break
-        max_iter = min(2 * max_iter, n_dim)
+        # Doubled in blocks, but never past the vectors the space has left (width-p blocks reach n_dim after n_dim / p).
+        rem = max(n_dim - sum(widths), 1)
+        last_w = max(int(widths[len(widths) - 1]) if len(widths) else 1, 1)
+        max_iter = min(2 * max_iter, max_iter + -(-rem // last_w), n_dim)
     alphas, betas, widths = _finish_array_run(
         alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank
     )

@@ -307,5 +307,7 @@ def test_a_frozen_unreorthogonalized_run_that_cannot_converge_ends_exhausted(com
     assert info["cap_hit"], "premise: the support is frozen by the cap"
     assert info["status"] == "exhausted"
     n_p = info["retained_size"]
-    # Width-2 seeds (some blocks may deflate to 1): between |P|/2 and |P|+1 blocks, never the 2.5-5x |P| of the guard.
-    assert n_p // 2 <= len(alphas) <= n_p + 1, (len(alphas), n_p)
+    # |P| vectors counted from the freeze, plus the blocks built before it (the support was still growing; ~2% here),
+    # the one block of lag and the last block. Never the 2.5-5x |P| of the guard, and a predicate off by a factor of
+    # two (about 2x |P|) fails the upper bound.
+    assert n_p <= info["n_vectors"] <= 1.1 * n_p + 4, (info["n_vectors"], n_p)

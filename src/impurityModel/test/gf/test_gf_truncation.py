@@ -585,15 +585,17 @@ def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
 
     comm = MPI.COMM_WORLD
     monkeypatch.setattr(memory_estimate, "current_rss_bytes", lambda: 10**9)
-    # Auto no longer pre-commits to "none" from the cap-priced estimate: both budgets run "retained" (the freeze re-prices
-    # and falls back), and the decline shows in the printed need/budget numbers.
-    for budget, mode in ((10**10, "retained"), (10**9 + 1, "retained")):
+    # Auto never pre-commits to "none" from the cap-priced estimate: both budgets are announced as "retained". (This
+    # tiny P may or may not fit at the freeze (it does at -n 1, the freeze declines it at -n 2); the decline is pinned by
+    # test_the_decision_uses_the_csr_budget_the_gf_stage_put_on_the_basis, the freeze fallback by
+    # test_auto_prices_retained_and_the_freeze_falls_back_to_matrix_free_when_p_does_not_fit.)
+    for budget, announced, ran in ((10**10, "retained", ("retained",)), (10**9 + 1, "retained", ("retained", "none"))):
         capsys.readouterr()
         _g, info = _run_capped(12, comm=comm, memory_budget=budget, verbose=True)
         out = capsys.readouterr().out
-        assert info["engine"] == mode
+        assert info["engine"] in ran
         if comm.rank == 0:
-            assert f"GF matvec mode {mode}" in out and "fan-out" in out and "need" in out
+            assert f"GF matvec mode {announced}" in out and "fan-out" in out and "need" in out
 
 
 @pytest.mark.mpi

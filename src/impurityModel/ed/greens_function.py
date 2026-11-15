@@ -468,7 +468,10 @@ class GFRun:
             reason = ""
             if cap_stats.get("cap_hit") or cap_stats.get("memory_frozen"):
                 accepted, reason = False, "capped or held by the memory guard"
-            elif not conv_stats.get("converged", True):
+            elif not conv_stats.get("converged", True) and conv_stats.get("status") != "exhausted":
+                # An exhausted unit (frozen, unreorthogonalized, |P| vectors spent) is as converged as its support
+                # allows: the continued fraction is the one of P H P, which a re-solve at a stricter threshold cannot
+                # improve on by running longer.
                 accepted, reason = False, "did not converge"
             changes.append((u, before, cap_stats.get("retained_size"), reason))
         if not accepted:
