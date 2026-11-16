@@ -24,6 +24,7 @@ from typing import NamedTuple
 
 import numpy as np
 import scipy.linalg as sp
+from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
@@ -42,7 +43,7 @@ from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 
-__all__ = ["CollectiveDesync", "TRLMResult", "Window", "thick_restart_block_lanczos", "trlm"]
+__all__ = ["CollectiveDesync", "CorruptRitzVectors", "TRLMResult", "Window", "thick_restart_block_lanczos", "trlm"]
 
 #: Continuation blocks between mid-restart convergence checks. One check is a dense ``eigh`` of the
 #: current ``T``; one block is a matvec plus two CGS passes against the whole basis. Checking every
@@ -301,6 +302,64 @@ def _assess(theta, res, tol, window, n_converge):
     return max(r_in, float(res[n_in]) * tol / threshold), n_in + 1, n_in
 
 
+#: Largest magnitude an entry of an orthonormal Ritz block may have before it is called damaged. The
+#: true bound is 1; the slack only has to clear rounding.
+RITZ_ENTRY_MAX = 2.0
+
+
+class CorruptRitzVectors(FloatingPointError):
+    """Ritz vectors came out non-finite or far larger than an orthonormal block can be.
+
+    They are ``Q @ S`` with ``Q`` orthonormal and ``S`` unitary, so every entry is at most 1 in
+    magnitude. Anything else is damaged data, and continuing turns it into ``nan`` energies or a
+    ``LinAlgError`` several calls later with nothing left to say where it came from."""
+
+
+def _ritz_vectors(Q, Y, site, comm):
+    """``Q @ Y``, checked on every rank; **collective** (one ``Allreduce``) when ``comm`` is given.
+
+    Raises :class:`CorruptRitzVectors` on *every* rank when any rank's rows are damaged, each naming
+    what it holds itself: whether its ``Q`` rows and its copy of ``Y`` are sound, and whether redoing
+    the product without BLAS gives a sound answer (then the product is at fault, not its inputs).
+    """
+    vecs = block_combine(Q, Y, 0.0)
+    with np.errstate(all="ignore"):
+        peak = float(np.max(np.abs(vecs))) if vecs.size else 0.0
+    bad = np.array([0 if peak <= RITZ_ENTRY_MAX else 1], dtype=np.int64)
+    worst = bad
+    if comm is not None:
+        worst = np.empty_like(bad)
+        comm.Allreduce(bad, worst, op=MPI.MAX)
+    if not worst[0]:
+        return vecs
+    rank = comm.rank if comm is not None else 0
+    if not bad[0]:
+        raise CorruptRitzVectors(
+            f"TRLM {site}: another rank holds damaged Ritz vectors; rank {rank}'s {vecs.shape} rows are sound."
+        )
+    with np.errstate(all="ignore"):
+        q_peak = float(np.max(np.abs(Q))) if Q.size else 0.0
+        y_peak = float(np.max(np.abs(Y))) if Y.size else 0.0
+        again = np.einsum("ij,jk->ik", np.ascontiguousarray(Q), np.ascontiguousarray(Y), optimize=False)
+        again_peak = float(np.max(np.abs(again))) if again.size else 0.0
+    if not q_peak <= RITZ_ENTRY_MAX:
+        cause = "this rank's rows of the Lanczos basis were already damaged"
+    elif not y_peak <= RITZ_ENTRY_MAX:
+        cause = "this rank's copy of the rotation was already damaged"
+    elif again_peak <= RITZ_ENTRY_MAX:
+        cause = (
+            "both inputs are sound and the product redone without BLAS is sound: "
+            "the matrix product returned wrong values"
+        )
+    else:
+        cause = "both inputs look sound but their product is not, with or without BLAS"
+    raise CorruptRitzVectors(
+        f"TRLM {site}: damaged Ritz vectors on rank {rank}: max |entry| {peak:.3g} in a {vecs.shape} block that should "
+        f"be orthonormal (basis {Q.shape} max {q_peak:.3g}, rotation {Y.shape} max {y_peak:.3g}, product redone "
+        f"without BLAS max {again_peak:.3g}); {cause}."
+    )
+
+
 def _extract(T, Q, dim, num_wanted, comm, window):
     """Ritz pairs of the leading ``dim`` x ``dim`` block of ``T`` formed from ``Q[:, :dim]``.
 
@@ -315,7 +374,7 @@ def _extract(T, Q, dim, num_wanted, comm, window):
         n_in, _ = window.split(theta)
         n_ret = min(len(theta), n_in + 1)
     wanted = np.argsort(theta)[:n_ret]
-    return theta[wanted], block_combine(Q[:, 0:dim], S[:, wanted], 0.0), n_in
+    return theta[wanted], _ritz_vectors(Q[:, 0:dim], S[:, wanted], "extract", comm), n_in
 
 
 def _extract_invariant_subspace(alphas, betas_off, widths, Q_basis, num_wanted, comm, window, m_actual, m, q_m):
@@ -489,7 +548,10 @@ def trlm(
         stop_beta = max(float(tol), BREAKDOWN_TOL * t_scale)
 
         if verbose and rank0:
-            print(f"[TRLM] Restart {restart:3d} | MinEigval={theta[0]:.6f} | Metric={metric:.2e} | n_in={n_in}", flush=True)
+            print(
+                f"[TRLM] Restart {restart:3d} | MinEigval={theta[0]:.6f} | Metric={metric:.2e} | n_in={n_in}",
+                flush=True,
+            )
 
         done = metric < tol
         stagnated = monitor.update(restart, metric)
