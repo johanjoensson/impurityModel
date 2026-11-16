@@ -18,6 +18,7 @@ Collective on ``comm``. Every branch is decided from replicated data (the Allred
 root-broadcast ``eigh``), so all ranks leave the loop together.
 """
 
+import zlib
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -41,7 +42,7 @@ from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 
-__all__ = ["TRLMResult", "Window", "thick_restart_block_lanczos", "trlm"]
+__all__ = ["CollectiveDesync", "TRLMResult", "Window", "thick_restart_block_lanczos", "trlm"]
 
 #: Continuation blocks between mid-restart convergence checks. One check is a dense ``eigh`` of the
 #: current ``T``; one block is a matvec plus two CGS passes against the whole basis. Checking every
@@ -63,6 +64,61 @@ STATUS_CONVERGED = (
     "invariant_subspace_sweep",
     "invariant_subspace_continuation",
 )
+
+
+class CollectiveDesync(RuntimeError):
+    """A root broadcast arrived on this rank as something other than what this rank was waiting for.
+
+    Either this rank and rank 0 are in different MPI collectives (some earlier branch was decided on
+    rank-local data), or the payload was damaged in transit. Both used to surface as a bare
+    ``UnpicklingError`` -- or not at all, when the wrong payload happened to unpickle."""
+
+
+def _checksum(a):
+    return zlib.crc32(np.ascontiguousarray(a).view(np.uint8))
+
+
+def _root_bcast(comm, site, key, payload):
+    """Rank 0's ``payload`` on every rank, as **one** tagged broadcast. Collective on ``comm``.
+
+    ``site`` names the call site and ``key`` is a tuple of values every rank already holds (a dimension,
+    a restart counter): the receiver compares both with its own, so a rank that is waiting in a
+    different collective raises :class:`CollectiveDesync` naming the two positions instead of consuming
+    another call's bytes. ``payload`` is a tuple; its arrays are checksummed on rank 0 and verified on
+    receipt, which tells a damaged message apart from a desynchronized one.
+    """
+    if comm is None:
+        return payload
+    key = tuple(int(k) for k in key)
+    msg = None
+    if comm.rank == 0:
+        sums = tuple(_checksum(a) if isinstance(a, np.ndarray) else None for a in payload)
+        msg = (site, key, sums, payload)
+    try:
+        got = comm.bcast(msg, root=0)
+    except Exception as exc:
+        raise CollectiveDesync(
+            f"TRLM {site} {key} on rank {comm.rank}: the broadcast from rank 0 could not be decoded "
+            f"({type(exc).__name__}: {exc}). This rank and rank 0 are not in the same MPI collective."
+        ) from exc
+    if not (isinstance(got, tuple) and len(got) == 4 and isinstance(got[0], str)):
+        raise CollectiveDesync(
+            f"TRLM {site} {key} on rank {comm.rank}: expected rank 0's tagged broadcast, received a "
+            f"{type(got).__name__}. This rank and rank 0 are not in the same MPI collective."
+        )
+    r_site, r_key, r_sums, r_payload = got
+    if r_site != site or tuple(r_key) != key:
+        raise CollectiveDesync(
+            f"TRLM on rank {comm.rank} is at {site} {key} but rank 0 broadcast from {r_site} {tuple(r_key)}: "
+            "the ranks took different branches before this point."
+        )
+    for idx, (a, want) in enumerate(zip(r_payload, r_sums)):
+        if want is not None and _checksum(a) != want:
+            raise CollectiveDesync(
+                f"TRLM {site} {key} on rank {comm.rank}: item {idx} of rank 0's broadcast (shape {a.shape}) "
+                "fails its checksum: the message was damaged in transit, the ranks are in step."
+            )
+    return r_payload
 
 
 def check_width_sync(Q, widths, where, exact=False):
@@ -252,9 +308,7 @@ def _extract(T, Q, dim, num_wanted, comm, window):
     rank 0 and is broadcast so every rank forms identical Ritz vectors.
     """
     theta, S = sp.eigh(T[:dim, :dim])
-    if comm is not None:
-        theta = comm.bcast(theta, root=0)
-        S = comm.bcast(S, root=0)
+    theta, S = _root_bcast(comm, "extract", (dim,), (theta, S))
     if window is None:
         n_ret, n_in = num_wanted, None
     else:
@@ -276,9 +330,7 @@ def _extract_invariant_subspace(alphas, betas_off, widths, Q_basis, num_wanted, 
     if not (m_actual < m or q_m is None):
         return None
     theta, S = eigh_block_tridiagonal(alphas, betas_off, block_widths=widths)
-    if comm is not None:
-        theta = comm.bcast(theta, root=0)
-        S = comm.bcast(S, root=0)
+    theta, S = _root_bcast(comm, "invariant_subspace_sweep", (len(theta),), (theta, S))
     if window is None:
         n_ret, n_in = num_wanted, None
     else:
@@ -395,7 +447,7 @@ def trlm(
     # sum(widths), not m_actual * p.
     total = width_synced_total(Q_basis, widths, m_actual, p, "TRLM initial sweep")
     if verbose and rank0 and total < m_actual * p:
-        print(f"[TRLM] Sweep deflated to dim {total} (< {m_actual * p}); continuing to the restart loop.")
+        print(f"[TRLM] Sweep deflated to dim {total} (< {m_actual * p}); continuing to the restart loop.", flush=True)
     q_m = Q_basis[:, total:].copy() if block_cols(Q_basis) > total else None
     Q_basis = Q_basis[:, 0:total]
     betas_off = trim_trailing_beta(betas, m_actual)
@@ -427,9 +479,7 @@ def trlm(
         D = int(sum(cur_widths))
         p_last = cur_widths[len(cur_widths) - 1]
         theta, S = sp.eigh(T_full[:D, :D])
-        if comm is not None:
-            theta = comm.bcast(theta, root=0)
-            S = comm.bcast(S, root=0)
+        theta, S = _root_bcast(comm, "restart", (restart, D), (theta, S))
         res = np.linalg.norm(beta_res @ S[D - p_last : D, :], axis=0)
         metric, _n_ret, n_in = _assess(theta, res, tol, window, n_converge)
 
@@ -439,14 +489,14 @@ def trlm(
         stop_beta = max(float(tol), BREAKDOWN_TOL * t_scale)
 
         if verbose and rank0:
-            print(f"[TRLM] Restart {restart:3d} | MinEigval={theta[0]:.6f} | Metric={metric:.2e} | n_in={n_in}")
+            print(f"[TRLM] Restart {restart:3d} | MinEigval={theta[0]:.6f} | Metric={metric:.2e} | n_in={n_in}", flush=True)
 
         done = metric < tol
         stagnated = monitor.update(restart, metric)
         if mpi:
             # One collective for both decisions on every rank: a rank-local disagreement would send
             # two ranks out of a collective loop body through different breaks.
-            done, stagnated = comm.bcast((done, stagnated), root=0)
+            done, stagnated = _root_bcast(comm, "restart_verdict", (restart, D), (bool(done), bool(stagnated)))
         if done:
             status = "converged"
             break
@@ -521,7 +571,7 @@ def trlm(
 
             if q_next is None or np.linalg.norm(beta_i, ord=2) <= stop_beta:
                 if verbose and rank0:
-                    print(f"[TRLM] Invariant subspace found during restart at block {i}.")
+                    print(f"[TRLM] Invariant subspace found during restart at block {i}.", flush=True)
                 vals, vecs, n_in = _extract(T_full, Q_basis, off + w1, num_wanted, comm, window)
                 return TRLMResult(vals, vecs, "invariant_subspace_continuation", n_in)
 
@@ -534,7 +584,7 @@ def trlm(
                 # `eigh` is a rank-local LAPACK call on a replicated T_full and a threaded BLAS can
                 # make its last bits differ between ranks: decide on rank 0 and broadcast.
                 if mpi:
-                    done_now = comm.bcast(done_now, root=0)
+                    (done_now,) = _root_bcast(comm, "continuation_check", (restart, i, D_now), (bool(done_now),))
                 if done_now:
                     vals, vecs, n_in = _extract(T_full, Q_basis, D_now, num_wanted, comm, window)
                     return TRLMResult(vals, vecs, "continuation_converged", n_in)
@@ -556,7 +606,7 @@ def trlm(
 
     vals, vecs, n_in = _extract(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, window)
     if verbose and rank0:
-        print(f"[TRLM] Final eigvals:\n{vals}")
+        print(f"[TRLM] Final eigvals:\n{vals}", flush=True)
     return TRLMResult(vals, vecs, status, n_in)
 
 

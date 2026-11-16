@@ -371,7 +371,7 @@ def _block_lanczos_array(
     it += start_it
 
     if verbose and (not mpi or comm.rank == 0):
-        print(f"Block Lanczos terminated ({termination}) at iteration {it}")
+        print(f"Block Lanczos terminated ({termination}) at iteration {it}", flush=True)
 
     # Tail-only mode: q_curr is the last block ever appended in stored mode (the roll runs before
     # the append, and every break happens before the append), so callers slicing the final residual
@@ -504,7 +504,8 @@ def _lanczos_loop(
 
         if verbose and (comm is None or comm.Get_rank() == 0):
             print(
-                f"[BlockLanczos] it={it_abs:4d}  " f"|beta|={beta_norm:.3e}  " f"alpha_diag={np.real(np.diag(alpha_i))}"
+                f"[BlockLanczos] it={it_abs:4d}  " f"|beta|={beta_norm:.3e}  " f"alpha_diag={np.real(np.diag(alpha_i))}",
+                flush=True,
             )
 
         # Convergence check
