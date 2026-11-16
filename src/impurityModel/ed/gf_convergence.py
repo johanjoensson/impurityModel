@@ -108,6 +108,9 @@ EXHAUSTED_VECTORS_OVER_P = 1.0
 #: block count where the recurrence froze, when later). ``_GF_PLATEAU_FACTOR = 0`` switches the rule off.
 _GF_PLATEAU_MIN_BLOCKS = 500
 _GF_PLATEAU_FACTOR = 1000.0
+#: Absolute ceiling on the relative change of ``G`` per doubling that still counts as a plateau, whatever the
+#: user's tolerance (a loose ``gf_real_tol`` must not let a still-moving ``G`` pass).
+_GF_PLATEAU_MAX_CHANGE = 1e-6
 
 
 def krylov_exhausted(n_vectors, n_dim):
@@ -370,7 +373,7 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
         plateau_next[0] = 2 * n_blocks
         if len(plateau_snaps) < 3:
             return False
-        limit = _GF_PLATEAU_FACTOR * delta_min
+        limit = min(_GF_PLATEAU_FACTOR * delta_min, _GF_PLATEAU_MAX_CHANGE)
         for (_, g_old), (_, g_new) in zip(plateau_snaps[-3:-1], plateau_snaps[-2:]):
             for g0, g1, scale in zip(g_old, g_new, axis_scales):
                 change = np.max(np.abs(g1 - g0)) / max(np.max(np.abs(g1)), np.finfo(float).tiny)

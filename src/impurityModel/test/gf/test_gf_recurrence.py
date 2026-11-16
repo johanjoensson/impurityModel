@@ -311,3 +311,31 @@ def test_a_frozen_unreorthogonalized_run_that_cannot_converge_ends_exhausted(com
     # the one block of lag and the last block. Never the 2.5-5x |P| of the guard, and a predicate off by a factor of
     # two (about 2x |P|) fails the upper bound.
     assert n_p <= info["n_vectors"] <= 1.1 * n_p + 4, (info["n_vectors"], n_p)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+def test_a_plateau_verdict_reaches_info_status_in_every_matvec_mode(comm, mode, monkeypatch):
+    """A monitor that ends the run on a plateau (verdict True, ``plateau_hit`` set, flag set) is reported as
+    ``status == "plateau"`` with ``converged`` True -- not relabelled ``converged`` on the way through
+    ``cap_info`` and ``gf_engine``, and not ``exhausted``."""
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "_make_gf_convergence_monitor", _plateau_monitor_factory)
+    alphas, betas, r, info = run_chain(
+        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode=mode), cap=2500, support_settle=False
+    )
+    assert info["status"] == "plateau"
+
+
+def _plateau_monitor_factory(delta, slater_weight_min, eval_meshes=None):
+    hit, flag = [False], [False]
+
+    def conv(alphas, betas, *a, **k):
+        if len(alphas) >= 40:
+            hit[0] = flag[0] = True
+        return hit[0]
+
+    conv.plateau_hit = hit
+    conv.arm_plateau = lambda: None
+    return conv, flag, 1e-9, [None]

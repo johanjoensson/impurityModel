@@ -209,6 +209,7 @@ def _plateau_monitor(monkeypatch, arm):
     """A monitor whose tolerance is unreachable (floor patched to 1e-30), with the plateau limit at 1e-4."""
     monkeypatch.setattr(gf_convergence, "_GF_REL_TOL_FLOOR", 1e-30)
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_FACTOR", 1e26)
+    monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MAX_CHANGE", 1e-4)
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MIN_BLOCKS", 8)
     monkeypatch.setattr(gf_convergence, "_GF_CONSEC_CONVERGED", 10**6)  # the ordinary verdict must not end the run
     meshes = _gf_eval_meshes(_matsubara(32), None, side_i=0, delta=1.0, es=[0.0])  # smooth axis: settles early
@@ -236,3 +237,17 @@ def test_the_plateau_rule_is_off_at_factor_zero_and_never_fires_unarmed(monkeypa
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_FACTOR", 0.0)
     a, _b = _run(h, q0, mon)
     assert not mon.plateau_hit[0] and not flag[0]
+
+
+def test_a_tighter_plateau_limit_fires_later_than_the_reference_one(monkeypatch):
+    """G still moving by more than the limit between checkpoints (1.5e-2, 1.6e-4, 1.7e-8 per doubling on the
+    Matsubara axis) must not stop the run: a limit of 1e-12 waits for the changes to vanish, the 1e-4 reference
+    stops at the first two quiet doublings."""
+    h, q0, _r = _model(n=800)
+    mon_ref, _f = _plateau_monitor(monkeypatch, arm=True)
+    a_ref, _b = _run(h, q0, mon_ref)
+    mon, _f = _plateau_monitor(monkeypatch, arm=True)
+    monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MAX_CHANGE", 1e-12)
+    a, _b = _run(h, q0, mon)
+    assert mon_ref.plateau_hit[0] and 3 * 8 <= len(a_ref)
+    assert len(a) > len(a_ref), (len(a), len(a_ref))

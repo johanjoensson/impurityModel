@@ -1269,6 +1269,9 @@ def block_Green_discovered(
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
     converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
+    plateau_cell = [
+        getattr(converged, "plateau_hit", [False])
+    ]  # the evaluation monitor whose verdict is reported (a restart/rerun replaces it)
     cap = getattr(basis, "truncation_threshold", np.inf)
     cap = cap if np.isfinite(cap) else 2**62
     # Unspecified (``None``) is no pruning and a whole first shell.
@@ -1444,6 +1447,7 @@ def block_Green_discovered(
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
         )
+        plateau_cell[0] = getattr(converged, "plateau_hit", [False])
         alphas, betas, widths, status, _q_last = block_lanczos_discovered(
             matrix,
             support,
@@ -1466,6 +1470,7 @@ def block_Green_discovered(
             nonlocal converged_flag, delta_min, last_dg
             support.decisions.frozen = True
             conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
+            plateau_cell[0] = getattr(conv, "plateau_hit", [False])
             return block_lanczos_discovered(
                 matrix,
                 support,
@@ -1489,7 +1494,12 @@ def block_Green_discovered(
                 a_t, b_t, r if framed else np.eye(r.shape[0], dtype=r.dtype), np.asarray(zs, dtype=complex), 0.0, 0.0
             )
 
-        monitor_state = (converged_flag, delta_min, last_dg)  # round 0's, for a refinement that keeps round 0
+        monitor_state = (
+            converged_flag,
+            delta_min,
+            last_dg,
+            plateau_cell[0],
+        )  # round 0's, for a refinement that keeps round 0
         holder = [acc]
         acc = None  # the refinement owns it now (and frees it before it swaps)
         outcome = refine_frozen_unit(
@@ -1510,7 +1520,7 @@ def block_Green_discovered(
         if outcome.result is not None:
             alphas, betas, widths, status, _q_last = outcome.result
         else:
-            converged_flag, delta_min, last_dg = monitor_state
+            converged_flag, delta_min, last_dg, plateau_cell[0] = monitor_state
         if verbose and rank == 0:
             print(_refine_line(outcome.record), flush=True)
     if status == "quiet":
@@ -1547,7 +1557,7 @@ def block_Green_discovered(
         cap_info["memory_frozen"] = support.memory_frozen
         cap_info["proxy"] = support
         cap_info["engine"] = support.mode_ran or matrix_mode
-        cap_info["status"] = status
+        cap_info["status"] = "plateau" if status == "converged" and plateau_cell[0][0] else status
         cap_info["n_vectors"] = int(sum(widths))  # Krylov vectors the final recurrence produced
         cap_info["matrix"] = matrix if matrix_mode == "discovered" else None
         # Whether the frozen recurrence ran on a stored matrix (``csr_seconds`` is then the unit's recurrence wall).
@@ -1581,7 +1591,7 @@ def block_Green_discovered(
         info["d_g"] = last_dg[0]
         info["n_blocks"] = n_blocks
         info["tol"] = delta_min
-        if getattr(converged, "plateau_hit", [False])[0]:
+        if status == "converged" and plateau_cell[0][0]:
             info["status"] = "plateau"
     alphas, betas = _trim_blocks(alphas, betas, widths)
     if cap_info is not None and support.support_frozen and not support.cap_hit:
