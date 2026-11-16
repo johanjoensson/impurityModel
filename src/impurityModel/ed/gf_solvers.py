@@ -374,6 +374,8 @@ def _array_block_lanczos(
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
         )
+        if not resolved_reort:
+            converged.arm_plateau()
         alphas, betas, Q_list, widths, status = block_lanczos(
             psi0=psi_dense_local,
             h_op=H,
@@ -405,6 +407,8 @@ def _array_block_lanczos(
     alphas, betas, widths = _finish_array_run(
         alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank
     )
+    if info is not None and converged.plateau_hit[0]:
+        info["status"] = "plateau"
     return alphas, betas, Q_list, widths
 
 

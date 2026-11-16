@@ -99,6 +99,17 @@ _GF_MONITOR_POINTS = 64
 EXHAUSTED_VECTORS_OVER_P = 1.0
 
 
+#: Plateau stop of a frozen, unreorthogonalized recurrence (see :func:`_make_gf_convergence_monitor`). Without
+#: reorthogonalization the relative change between consecutive blocks stalls on a floor set by the lost
+#: orthogonality (measured 5e-8 to 1e-6 on LMO Mn8's heaviest removal unit, 50-1000x above the 1e-9 tolerance, flat from block ~900 to
+#: the exhaustion at 17,523 blocks) and never trips the tolerance. The recurrence is then stopped once ``G`` on the
+#: caller's meshes has moved by less than :data:`_GF_PLATEAU_FACTOR` x tolerance over each of the last two
+#: doublings of the block count, the first checkpoint being at :data:`_GF_PLATEAU_MIN_BLOCKS` blocks (or at the
+#: block count where the recurrence froze, when later). ``_GF_PLATEAU_FACTOR = 0`` switches the rule off.
+_GF_PLATEAU_MIN_BLOCKS = 500
+_GF_PLATEAU_FACTOR = 1000.0
+
+
 def krylov_exhausted(n_vectors, n_dim):
     """Whether ``n_vectors`` Lanczos vectors exhaust a space of ``n_dim`` (replicated inputs, replicated verdict).
 
@@ -269,6 +280,12 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
     # One continued-fraction cache per axis: the caller's meshes never move, so the cross-step
     # reuse in _greens_function_change is always valid and never needs the freeze bookkeeping.
     axis_caches = [[None, 0] for _ in (eval_meshes or ())]
+    # Plateau stop: armed by the caller only for a frozen, unreorthogonalized recurrence (the one that can sit on a
+    # rounding floor). ``plateau_snaps`` holds (block count, per-axis G on the monitor meshes) at geometric checkpoints.
+    plateau_armed = [False]
+    plateau_hit = [False]
+    plateau_snaps = []
+    plateau_next = [_GF_PLATEAU_MIN_BLOCKS]
 
     def converged_on_eval_meshes(alphas, betas, verbose, block_widths):
         d_g = 0.0
@@ -339,9 +356,30 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
             print(rf"GF convergence: $\delta$ = {d_g:.3e} (block {step[0]})", flush=True)
         consec[0] = consec[0] + 1 if d_g < delta_min else 0
         is_conv = consec[0] >= _GF_CONSEC_CONVERGED
+        if not is_conv and plateau_armed[0] and eval_meshes is not None and _plateau_reached(len(alphas)):
+            plateau_hit[0] = is_conv = True
         converged_flag[0] = converged_flag[0] or is_conv
         return is_conv
 
+    def _plateau_reached(n_blocks):
+        """Whether ``G`` has stopped moving across the last two doublings of the block count (see
+        :data:`_GF_PLATEAU_FACTOR`). A pure function of the replicated coefficients, like the rest of the monitor."""
+        if _GF_PLATEAU_FACTOR <= 0 or n_blocks < plateau_next[0]:
+            return False
+        plateau_snaps.append((n_blocks, [np.array(c[0].G) for c in axis_caches]))
+        plateau_next[0] = 2 * n_blocks
+        if len(plateau_snaps) < 3:
+            return False
+        limit = _GF_PLATEAU_FACTOR * delta_min
+        for (_, g_old), (_, g_new) in zip(plateau_snaps[-3:-1], plateau_snaps[-2:]):
+            for g0, g1, scale in zip(g_old, g_new, axis_scales):
+                change = np.max(np.abs(g1 - g0)) / max(np.max(np.abs(g1)), np.finfo(float).tiny)
+                if not change * scale < limit:
+                    return False
+        return True
+
+    converged.arm_plateau = lambda: plateau_armed.__setitem__(0, True)
+    converged.plateau_hit = plateau_hit
     return converged, converged_flag, delta_min, last_dg
 
 
@@ -380,7 +418,11 @@ def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cac
         # Incremental path: the state lives in cache[0] and consumes only the blocks it has not
         # seen, so a monitor calling every few blocks costs O(1) per block, not O(k) per call.
         state = cache[0]
-        if not isinstance(state, _IncrementalBlockCF) or state.z.shape != np.shape(omegaP) or not np.array_equal(state.z, omegaP):
+        if (
+            not isinstance(state, _IncrementalBlockCF)
+            or state.z.shape != np.shape(omegaP)
+            or not np.array_equal(state.z, omegaP)
+        ):
             state = cache[0] = _IncrementalBlockCF(omegaP)
         G_new = state.advance(alphas, betas, block_widths)
         cache[1] = state.consumed

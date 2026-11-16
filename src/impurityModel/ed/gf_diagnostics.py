@@ -400,7 +400,8 @@ def check_lanczos_convergence(
         tol: The relative-change tolerance the monitor was testing against
             (:func:`gf_convergence._gf_rel_tol`).
         status: The recurrence's exit status, when known. ``"exhausted"`` (the Krylov space used up
-            without reorthogonalization) is reported as the rounding floor it is.
+            without reorthogonalization) is reported as the rounding floor it is; ``"plateau"`` (stopped
+            because ``G`` stopped moving while the change per block stayed above ``tol``) is a converged verdict.
 
     Returns:
         Diagnostic: ``OK`` if converged, else ``WARN`` + ``needs_more_iterations``.
@@ -412,7 +413,12 @@ def check_lanczos_convergence(
         value=value,
         threshold=float(tol) if tol is not None else float("nan"),
         message=(
-            f"converged in {n_blocks} block(s)"
+            (
+                f"converged in {n_blocks} block(s) on a plateau: the change per block sits on a rounding floor "
+                "above the tolerance, but G has stopped moving on the evaluation meshes"
+                if status == "plateau"
+                else f"converged in {n_blocks} block(s)"
+            )
             if converged
             else (
                 f"Krylov space exhausted after {n_blocks} block(s): the unreorthogonalized recurrence is on its "

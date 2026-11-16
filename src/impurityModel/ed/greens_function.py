@@ -716,6 +716,8 @@ def _merge_unit_convergence(cstats, conv_stats):
     unit_ok = bool(conv_stats.get("converged", True))
     if conv_stats.get("status") == "exhausted":
         cstats["status"] = "exhausted"
+    elif conv_stats.get("status") == "plateau" and cstats.get("status") != "exhausted":
+        cstats["status"] = "plateau"
     was_ok = cstats["converged"]
     cstats["converged"] = was_ok and unit_ok
     if unit_ok and not was_ok:

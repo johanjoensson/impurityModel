@@ -781,6 +781,15 @@ class _ApplyEngine:
         return w_p
 
 
+def _arm_plateau(converged):
+    """Let the convergence monitor ``converged`` stop on a plateau (:data:`gf_convergence._GF_PLATEAU_FACTOR`): only a
+    frozen, unreorthogonalized recurrence calls this, the one that can sit on a rounding floor. A stand-in monitor
+    without the hook is left alone."""
+    arm = getattr(converged, "arm_plateau", None)
+    if arm is not None:
+        arm()
+
+
 def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, blocks, deflate_tol, stage_name):
     """The recurrence carried on by the array kernel (``BlockLanczosCore.block_lanczos``) over the frozen
     ``P H P`` ``operator``, from the blocks ``[x_prev, x]`` (``x_prev`` ``None`` on the first step; the list is
@@ -912,6 +921,8 @@ def block_lanczos_discovered(
                 # kernel runs with one copy of each, not two.
                 blocks = [None if x_prev is None else _pad_rows(x_prev, n_rows)[order], x[order]]
                 x = x_prev = None
+                if shifted is None:
+                    _arm_plateau(converged)
                 return _continue_on_array_kernel(
                     operator, comm, converged, alphas[:it], betas[:it], widths, blocks, deflate_tol, "frozen_kernel"
                 )
@@ -953,6 +964,8 @@ def block_lanczos_discovered(
             admission.note_next_block(x_next)
             if d.frozen:
                 freeze_step = it
+        if d.frozen and not reort and shifted is None:
+            _arm_plateau(converged)
         done = converged(alphas[: it + 1], betas[: it + 1], verbose=verbose, block_widths=widths + [n_curr])
         if comm is not None:
             done = comm.bcast(bool(done), root=0)
@@ -1568,6 +1581,8 @@ def block_Green_discovered(
         info["d_g"] = last_dg[0]
         info["n_blocks"] = n_blocks
         info["tol"] = delta_min
+        if getattr(converged, "plateau_hit", [False])[0]:
+            info["status"] = "plateau"
     alphas, betas = _trim_blocks(alphas, betas, widths)
     if cap_info is not None and support.support_frozen and not support.cap_hit:
         # A settled unit only (both are replicated): a capped or memory-held unit is not a settle, and the

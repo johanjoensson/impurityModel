@@ -13,6 +13,8 @@ it is the axis that sets the Lanczos depth. These tests pin the contract of the 
 
 import numpy as np
 import pytest
+
+from impurityModel.ed import gf_convergence
 import scipy.linalg as la
 
 from impurityModel.ed.BlockLanczosCore import block_lanczos
@@ -198,3 +200,39 @@ def test_the_driver_refuses_a_tolerance_on_the_per_frequency_kernel():
 
     with pytest.raises(ValueError, match="block-Lanczos tolerances"):
         _run_driver("bicgstab", None, extra={"gf_real_tol": 1e-4})
+
+
+# --- the plateau stop ----------------------------------------------------------------------------------
+
+
+def _plateau_monitor(monkeypatch, arm):
+    """A monitor whose tolerance is unreachable (floor patched to 1e-30), with the plateau limit at 1e-4."""
+    monkeypatch.setattr(gf_convergence, "_GF_REL_TOL_FLOOR", 1e-30)
+    monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_FACTOR", 1e26)
+    monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MIN_BLOCKS", 8)
+    monkeypatch.setattr(gf_convergence, "_GF_CONSEC_CONVERGED", 10**6)  # the ordinary verdict must not end the run
+    meshes = _gf_eval_meshes(_matsubara(32), None, side_i=0, delta=1.0, es=[0.0])  # smooth axis: settles early
+    mon, flag, tol, dg = _make_gf_convergence_monitor(1.0, 0.0, eval_meshes=meshes)
+    if arm:
+        mon.arm_plateau()
+    return mon, flag
+
+
+def test_an_armed_monitor_stops_on_a_plateau_that_an_unarmed_one_runs_through(monkeypatch):
+    h, q0, _r = _model(n=800)
+    mon_off, flag_off = _plateau_monitor(monkeypatch, arm=False)
+    mon_on, flag_on = _plateau_monitor(monkeypatch, arm=True)
+    a_off, _b = _run(h, q0, mon_off)
+    a_on, _b = _run(h, q0, mon_on)
+    assert mon_on.plateau_hit[0] and flag_on[0]
+    assert not mon_off.plateau_hit[0] and not flag_off[0]
+    assert len(a_on) < len(a_off), "the plateau stop must end the run before the Krylov space is used up"
+    assert len(a_on) >= 4 * 8, "three checkpoints at 8, 16, 32 blocks are needed before the rule can fire"
+
+
+def test_the_plateau_rule_is_off_at_factor_zero_and_never_fires_unarmed(monkeypatch):
+    h, q0, _r = _model(n=800)
+    mon, flag = _plateau_monitor(monkeypatch, arm=True)
+    monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_FACTOR", 0.0)
+    a, _b = _run(h, q0, mon)
+    assert not mon.plateau_hit[0] and not flag[0]
