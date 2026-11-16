@@ -137,3 +137,41 @@ def test_a_failure_on_rank_0_is_raised_on_every_rank():
     with pytest.raises((np.linalg.LinAlgError, RuntimeError), match="did not converge"):
         _on_root(comm, fails)
     assert _on_root(comm, lambda: 7) == (7 if comm.rank == 0 else None)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(
+    __import__("mpi4py.MPI").MPI.COMM_WORLD.size == 1, reason="needs a second rank to disagree with rank 0"
+)
+@pytest.mark.parametrize("which", ["_level_overlap_ranks", "_global_gram_rank"])
+def test_solve_window_takes_rank_0s_rank_counts_on_every_rank(which, monkeypatch):
+    """The warm block's rank and the per-level overlap ranks are counted by a rank-local ``eigvalsh`` /
+    ``svd`` of an Allreduced matrix, and they decide whether the fallback rounds -- collectives -- run.
+    A rank that counts differently from rank 0 must still take rank 0's branch: here every other rank
+    is made to count so that it alone would enter a fallback round."""
+    from mpi4py import MPI
+
+    from impurityModel.ed import eigensolvers
+
+    comm = MPI.COMM_WORLD
+    n = 60
+    h = _hermitian(n, 11)
+    exact = np.linalg.eigvalsh(h)
+    h_dist, cols = _split_columns(h, comm)
+    hashes = np.arange(n, dtype=np.uint64)[cols] * np.uint64(2654435761)
+    warm = np.linalg.eigh(h)[1][cols, :1] + 1e-3  # near the ground state: one overlap copy, rank 1
+
+    real = getattr(eigensolvers, which)
+
+    def skewed(*args, **kwargs):
+        out = real(*args, **kwargs)
+        if comm.rank == 0:
+            return out
+        return [-100] * len(out) if which == "_level_overlap_ranks" else 10**6
+
+    monkeypatch.setattr(eigensolvers, which, skewed)
+    eig = eigensolvers.solve_window(
+        h_dist, comm, hashes, warm=warm, max_energy=0.0, deg_tol=1e-6, tol=1e-10, num_wanted=2, n_global=n
+    )
+    np.testing.assert_allclose(eig.e[0], exact[0], atol=1e-8)
+    assert len(set(comm.allgather((int(eig.n_in), bool(eig.certified), eig.status)))) == 1

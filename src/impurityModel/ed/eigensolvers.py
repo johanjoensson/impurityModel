@@ -444,6 +444,8 @@ def solve_window(
         psi0 = start_block(False)
         q0, _ = block_normalize(psi0, mpi, comm, 0.0)
     rank_w = _global_gram_rank(warm, mpi, comm) if with_warm else 0
+    if mpi:  # rank 0's count on every rank, like `rank_c` below: it sizes `r_eff`, which gates the fallback rounds
+        rank_w = comm.bcast(rank_w, root=0)
     r_eff = max(0, q0.shape[1] - rank_w)
     wanted = max(1, min(int(num_wanted), n_global - 1))
     res = run(q0, wanted)
@@ -456,6 +458,11 @@ def solve_window(
     floor = max(_OVERLAP_RANK_FLOOR, 100.0 * tol)
     groups = degenerate_groups(e[:n_in], deg_tol)
     ranks = _level_overlap_ranks(vecs[:, :n_in], groups, warm if with_warm else warm[:, :0], mpi, comm, floor)
+    if mpi:
+        # `saturated` decides whether the fallback rounds (collectives) run. The ranks are counted by a rank-local
+        # SVD of an Allreduced matrix against a floor, and MPI does not promise a bitwise-identical Allreduce
+        # result on every rank: rank 0 counts for everyone.
+        ranks = comm.bcast(ranks, root=0)
     saturated = [len(g) >= c + r_eff for g, c in zip(groups, ranks)]
     k_max = max((len(g) for g in groups), default=0)
 
