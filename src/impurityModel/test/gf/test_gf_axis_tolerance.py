@@ -251,3 +251,21 @@ def test_a_tighter_plateau_limit_fires_later_than_the_reference_one(monkeypatch)
     a, _b = _run(h, q0, mon)
     assert mon_ref.plateau_hit[0] and 3 * 8 <= len(a_ref)
     assert len(a) > len(a_ref), (len(a), len(a_ref))
+
+
+def test_finer_plateau_checkpoints_never_stop_later_and_can_stop_sooner_than_doubling_ones(monkeypatch):
+    """The change that counts is still the one over a doubling, tested at more block counts: a G that settles just after
+    a doubling checkpoint stops at the next finer one instead of waiting a whole doubling."""
+    h, q0, _r = _model(n=800)
+    stops = {}
+    for ratio in (2.0, 2.0**0.5, 1.25):
+        for min_blocks in (8, 10, 12, 14):
+            mon, _f = _plateau_monitor(monkeypatch, arm=True)
+            monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_RATIO", ratio)
+            monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MIN_BLOCKS", min_blocks)
+            a, _b = _run(h, q0, mon)
+            assert mon.plateau_hit[0]
+            stops[ratio, min_blocks] = len(a)
+    for min_blocks in (8, 10, 12, 14):
+        assert stops[2.0**0.5, min_blocks] <= stops[2.0, min_blocks] + 8, stops
+    assert any(stops[2.0**0.5, m] < stops[2.0, m] for m in (8, 10, 12, 14)), stops

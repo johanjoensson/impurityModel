@@ -104,9 +104,15 @@ EXHAUSTED_VECTORS_OVER_P = 1.0
 #: orthogonality (measured 5e-8 to 1e-6 on LMO Mn8's heaviest removal unit, 50-1000x above the 1e-9 tolerance, flat from block ~900 to
 #: the exhaustion at 17,523 blocks) and never trips the tolerance. The recurrence is then stopped once ``G`` on the
 #: caller's meshes has moved by less than :data:`_GF_PLATEAU_FACTOR` x tolerance over each of the last two
-#: doublings of the block count, the first checkpoint being at :data:`_GF_PLATEAU_MIN_BLOCKS` blocks (or at the
+#: doublings of the block count (checkpoints every :data:`_GF_PLATEAU_RATIO`), the first checkpoint being at :data:`_GF_PLATEAU_MIN_BLOCKS` blocks (or at the
 #: block count where the recurrence froze, when later). ``_GF_PLATEAU_FACTOR = 0`` switches the rule off.
 _GF_PLATEAU_MIN_BLOCKS = 500
+#: Spacing of the checkpoints (the next one is at ``ratio`` x the block count of this one). The change that counts is
+#: still the one over a *doubling* (each checkpoint is compared with the latest one at or below half its block count,
+#: and that one with the latest at or below its half), so a ratio below 2 does not loosen the rule: it only tests it
+#: at more block counts. At ratio 2 a G that settled just after a checkpoint waited a whole doubling for the next
+#: one (LMO unit 5: settled between ~8k and ~33k blocks, stopped at 65,529).
+_GF_PLATEAU_RATIO = 2.0**0.5
 _GF_PLATEAU_FACTOR = 1000.0
 #: Absolute ceiling on the relative change of ``G`` per doubling that still counts as a plateau, whatever the
 #: user's tolerance (a loose ``gf_real_tol`` must not let a still-moving ``G`` pass).
@@ -370,11 +376,19 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
         if _GF_PLATEAU_FACTOR <= 0 or n_blocks < plateau_next[0]:
             return False
         plateau_snaps.append((n_blocks, [np.array(c[0].G) for c in axis_caches]))
-        plateau_next[0] = 2 * n_blocks
-        if len(plateau_snaps) < 3:
+        plateau_next[0] = max(n_blocks + 1, int(np.ceil(_GF_PLATEAU_RATIO * n_blocks)))
+        # The checkpoint, its latest predecessor at or below half its block count, and that one's own. The 2% slack
+        # is the alignment of the checks to the monitor's cadence (505 then 1017 is a doubling).
+        chain = [plateau_snaps[-1]]
+        for snap in reversed(plateau_snaps[:-1]):
+            if snap[0] <= 0.51 * chain[-1][0]:
+                chain.append(snap)
+                if len(chain) == 3:
+                    break
+        if len(chain) < 3:
             return False
         limit = min(_GF_PLATEAU_FACTOR * delta_min, _GF_PLATEAU_MAX_CHANGE)
-        for (_, g_old), (_, g_new) in zip(plateau_snaps[-3:-1], plateau_snaps[-2:]):
+        for (_, g_new), (_, g_old) in zip(chain[:-1], chain[1:]):
             for g0, g1, scale in zip(g_old, g_new, axis_scales):
                 change = np.max(np.abs(g1 - g0)) / max(np.max(np.abs(g1)), np.finfo(float).tiny)
                 if not change * scale < limit:
