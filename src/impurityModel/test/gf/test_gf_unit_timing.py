@@ -42,3 +42,8 @@ def test_the_per_unit_lines_carry_each_units_passes_and_exit_status_even_when_no
     assert len(lines) == 3 and "longest unit #5" in lines[0]
     assert lines[2].endswith("growth 32,769 blk/19500.0 s (frozen), restart 65,529 blk/11800.0 s, status plateau")
     assert lines[1].endswith("(10.0 s)")  # a unit that reported nothing prints no passes
+
+
+def test_a_unit_that_reports_only_a_status_does_not_turn_the_per_unit_lines_on():
+    records = [(0, 0.0, 10.0, {"status": "converged", "n_blocks": 5}), (1, 0.0, 4.0, {})]
+    assert len(format_unit_timing(records, [2])) == 1

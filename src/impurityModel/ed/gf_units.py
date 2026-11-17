@@ -1087,7 +1087,7 @@ def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=Non
         f"#{u_long} {longest:.1f} s ({100.0 * longest / makespan if makespan > 0 else 0.0:.0f}% of the makespan) "
         f"on colour {colour_of[records.index((u_long, s_long, e_long))]}"
     ]
-    if verbose or any(passes_of):  # a unit's passes are the one thing the summary line cannot show
+    if verbose or any("growth_blocks" in p for p in passes_of):  # a unit's passes are the one thing the summary line cannot show
         lines.extend(
             f"  unit #{u}: colour {colour}, {start:.1f} -> {end:.1f} s ({end - start:.1f} s){_passes_text(passes)}"
             for (u, start, end), colour, passes in zip(records, colour_of, passes_of)
