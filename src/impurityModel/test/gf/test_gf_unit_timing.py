@@ -30,3 +30,15 @@ def test_rank_seconds_and_utilisation_weight_each_colour_by_its_width():
     # unweighted fallback: every colour counts once
     (line,) = format_unit_timing(records, [1, 1])
     assert "12 rank-s of work, 60% utilisation" in line
+
+
+def test_the_per_unit_lines_carry_each_units_passes_and_exit_status_even_when_not_verbose():
+    passes = dict(
+        growth_blocks=32769, growth_seconds=19500.0, growth_stop="frozen", restart_blocks=65529,
+        restart_seconds=11800.0, status="plateau",
+    )  # fmt: skip
+    records = [(0, 0.0, 10.0), (5, 0.0, 39747.0, passes)]
+    lines = format_unit_timing(records, [2])
+    assert len(lines) == 3 and "longest unit #5" in lines[0]
+    assert lines[2].endswith("growth 32,769 blk/19500.0 s (frozen), restart 65,529 blk/11800.0 s, status plateau")
+    assert lines[1].endswith("(10.0 s)")  # a unit that reported nothing prints no passes

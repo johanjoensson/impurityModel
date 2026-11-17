@@ -896,7 +896,7 @@ def run_units_distributed(
 
         assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
         local_results = []
-        unit_times = []  # (unit, start, end) seconds from t0, on every rank of the colour
+        unit_times = []  # (unit, start, end, passes) seconds from t0, on every rank of the colour
         basis.comm.Barrier()  # a common origin: perf_counter is per process
         t0 = time.perf_counter()
         if use_queue:
@@ -936,7 +936,7 @@ def run_units_distributed(
                 _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
                 started = time.perf_counter() - t0
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
-                unit_times.append((u, started, time.perf_counter() - t0))
+                unit_times.append((u, started, time.perf_counter() - t0, _take_unit_passes()))
                 release_freed_heap()
             # Rank 0 may run out of units while other colors are still mid-unit: it answers their
             # remaining fetches here, before the collectives below, or they would wait forever.
@@ -965,7 +965,7 @@ def run_units_distributed(
                 _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
                 started = time.perf_counter() - t0
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
-                unit_times.append((u, started, time.perf_counter() - t0))
+                unit_times.append((u, started, time.perf_counter() - t0, _take_unit_passes()))
                 release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
         unit_indices_per_color = gather_distributed_results(
             basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices, dtype=np.int64), is_array=True
@@ -1026,6 +1026,30 @@ def run_units_distributed(
     return results
 
 
+def _take_unit_passes():
+    """The finished unit's pass summary (see ``gf_engine.last_unit_passes``), consumed: ``{}`` for a kernel that
+    reports none."""
+    from impurityModel.ed import gf_engine
+
+    taken = dict(gf_engine.last_unit_passes)
+    gf_engine.last_unit_passes.clear()
+    return taken
+
+
+def _passes_text(passes):
+    """``growth 32,769 blk/19.5k s (frozen), restart 65,529 blk/11.8k s, status plateau`` from a pass summary."""
+    if not passes or "growth_blocks" not in passes:
+        return ""
+    stop = passes.get("growth_stop")
+    parts = [
+        f"growth {passes['growth_blocks']:,} blk/{passes['growth_seconds']:.1f} s" + (f" ({stop})" if stop else ""),
+        f"restart {passes.get('restart_blocks', 0):,} blk/{passes.get('restart_seconds', 0.0):.1f} s",
+    ]
+    if passes.get("status"):
+        parts.append(f"status {passes['status']}")
+    return ", " + ", ".join(parts)
+
+
 def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=None):
     """Lines describing where a unit loop's wall time went, from ``(unit, start, end)`` records in colour order.
 
@@ -1037,6 +1061,9 @@ def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=Non
     """
     if not records:
         return []
+    # A record is ``(unit, start, end)`` or, from the unit loop, ``(unit, start, end, passes)``.
+    passes_of = [r[3] if len(r) > 3 else {} for r in records]
+    records = [tuple(r[:3]) for r in records]
     makespan = max(end for _u, _start, end in records)
     colour_of, offset = [], 0
     for colour, count in enumerate(units_per_color):
@@ -1060,10 +1087,10 @@ def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=Non
         f"#{u_long} {longest:.1f} s ({100.0 * longest / makespan if makespan > 0 else 0.0:.0f}% of the makespan) "
         f"on colour {colour_of[records.index((u_long, s_long, e_long))]}"
     ]
-    if verbose:
+    if verbose or any(passes_of):  # a unit's passes are the one thing the summary line cannot show
         lines.extend(
-            f"  unit #{u}: colour {colour}, {start:.1f} -> {end:.1f} s ({end - start:.1f} s)"
-            for (u, start, end), colour in zip(records, colour_of)
+            f"  unit #{u}: colour {colour}, {start:.1f} -> {end:.1f} s ({end - start:.1f} s){_passes_text(passes)}"
+            for (u, start, end), colour, passes in zip(records, colour_of, passes_of)
         )
     return lines
 

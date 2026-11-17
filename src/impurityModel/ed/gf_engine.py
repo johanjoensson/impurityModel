@@ -26,6 +26,12 @@ from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.symmetries import weighted_parts
 
 
+#: What the unit that just finished on this rank's colour did, for the unit-timing table (``gf_units``), which
+#: gathers it with the unit's start and end times. A side channel because the kernels return only the results.
+#: Set on every rank of the colour, unconditionally (never behind ``verbose``).
+last_unit_passes = {}
+
+
 def _block_green_group(
     split_basis,
     hOp,
@@ -212,6 +218,10 @@ def _block_green_group(
     peak_kind = "unit" if peak_is_own else "cumulative"
     retained_size = cap_stats["retained_size"]
     n_blocks = info.get("n_blocks")
+    last_unit_passes.clear()
+    last_unit_passes.update(cap_stats.get("passes") or {})
+    last_unit_passes["status"] = info.get("status")
+    last_unit_passes["n_blocks"] = n_blocks
     _trace_note(
         "gf_unit_memory",
         unit=unit_label,
