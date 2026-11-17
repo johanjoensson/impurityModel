@@ -864,6 +864,7 @@ def block_lanczos_discovered(
     score_only=False,
     score_gate=None,
     quiet_window=None,
+    stop_at_freeze=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -885,6 +886,10 @@ def block_lanczos_discovered(
     status ``"quiet"`` once that many consecutive blocks admitted nothing -- the growth has found its support and
     only the restart on it (which the caller must run) is left to do. The test reads the replicated
     ``support.step_counts``, so every rank leaves on the same block.
+    ``stop_at_freeze`` (``None``: off; else a replicated, rank-invariant callable) ends the run with the status
+    ``"frozen"`` on the first block after the support froze (the memory guard, the cap or the settle), provided it
+    returns true: the caller restarts from the seeds on the frozen P anyway, so the frozen continuation of the
+    growth would be discarded. The caller **must** run that restart.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -904,6 +909,7 @@ def block_lanczos_discovered(
     freeze_step = None
     n_vectors = 0  # Krylov vectors produced since the support froze (replicated)
 
+    frozen_on_entry = d.frozen
     it = 0
     while it < max_blocks:
         n_curr = x.shape[1]
@@ -912,6 +918,11 @@ def block_lanczos_discovered(
             comm.Allreduce(MPI.IN_PLACE, probe, op=MPI.MAX)
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
+        if stop_at_freeze is not None and d.frozen and not frozen_on_entry and stop_at_freeze():
+            # ``d.frozen`` is replicated, so every rank leaves on the same block, before the frozen continuation
+            # (and its array-kernel handoff) that the restart would throw away.
+            status = "frozen"
+            break
         if d.frozen and not reort and hasattr(engine, "array_operator"):
             handed = engine.array_operator(n_curr)
             if handed is not None:
@@ -1020,7 +1031,7 @@ def block_lanczos_discovered(
             store.append(x)
         widths.append(n_curr)
         it += 1
-    if status != "max_iter" and freeze_step is not None and freeze_step == it - 1 and d.support_frozen:
+    if status not in ("max_iter", "frozen") and freeze_step is not None and freeze_step == it - 1 and d.support_frozen:
         # The support settled on the step the recurrence ended on anyway: nothing was dropped.
         d.unfreeze_support()
     return alphas[:it], betas[:it], widths, status, x
@@ -1382,7 +1393,13 @@ def block_Green_discovered(
         shifted_rtol=None if plan is None else plan.stop_rtol,
         score_gate=None if plan is None else _swappable_gate,
         quiet_window=growth_quiet if support.prunes else None,
+        # The restart below is certain once a pruned growth froze on a support larger than the seeds': end the
+        # growth at the freeze instead of running a frozen continuation the restart discards.
+        stop_at_freeze=(
+            (lambda: _needs_restart(support, n_seed)) if support.prunes and acc is None else None
+        ),
     )
+    freeze_stop = status == "frozen"
     quiet_stop = status == "quiet"
     stopped_early = (growth_flag is not None and bool(growth_flag[0])) or quiet_stop
     if growth_flag is not None:
@@ -1390,7 +1407,7 @@ def block_Green_discovered(
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap or the settle
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
     passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
-    passes["growth_stop"] = "quiet" if quiet_stop else ("tol" if stopped_early else "converged")
+    passes["growth_stop"] = "frozen" if freeze_stop else "quiet" if quiet_stop else ("tol" if stopped_early else "converged")
     passes.update(restart_blocks=0, restart_seconds=0.0)
     if acc is not None and getattr(acc, "skipped", False):
         plan, acc = None, None
@@ -1435,7 +1452,12 @@ def block_Green_discovered(
             _decline_nothing_swappable()
         else:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-    if _needs_restart(support, n_seed) or _restart_after_early_stop(stopped_early) or (acc is not None and not carried):
+    if (
+        freeze_stop
+        or _needs_restart(support, n_seed)
+        or _restart_after_early_stop(stopped_early)
+        or (acc is not None and not carried)
+    ):
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
         # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P

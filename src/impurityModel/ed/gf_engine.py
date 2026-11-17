@@ -233,9 +233,9 @@ def _block_green_group(
         # (the operator applied every block until the support froze, then its frozen continuation) and restart=
         # the rerun from the seeds on the final support, each with its own blocks and wall.
         passes = cap_stats.get("passes")
-        quiet_mark = " (quiet)" if passes and passes.get("growth_stop") == "quiet" else ""
+        stop_mark = f" ({passes['growth_stop']})" if passes and passes.get("growth_stop") in ("quiet", "frozen") else ""
         csr = (
-            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s{quiet_mark}"
+            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s{stop_mark}"
             f", restart={passes['restart_blocks']} blk/{passes['restart_seconds']:.1f} s"
             if passes
             else ""

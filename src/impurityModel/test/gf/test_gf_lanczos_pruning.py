@@ -472,3 +472,34 @@ def test_a_deferred_weight_store_over_its_budget_share_hands_the_unit_to_the_amp
     _G_amp, amp, _z = _run_rule(monkeypatch, "amplitude", 0.45, mode=mode)
     assert _retained(info) == _retained(amp)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+
+
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+def test_a_freeze_ends_the_growth_at_the_freeze_and_G_is_bitwise_the_one_of_the_frozen_continuation(monkeypatch, mode):
+    """The restart on the final ``P`` discards the growth pass's frozen continuation, so growth stops at the freeze.
+    The answer is the restart's, so it must not move by one bit against the run that continued to the end."""
+    from impurityModel.ed import gf_recurrence
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, matrix_mode=mode)
+    G, info, z = _run(monkeypatch, 0.225, cap=14)
+    assert info["cap_hit"] and info["passes"]["growth_stop"] == "frozen"
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+
+    real = gf_recurrence.block_lanczos_discovered
+    monkeypatch.setattr(
+        gf_recurrence, "block_lanczos_discovered", lambda *a, **kw: real(*a, **{**kw, "stop_at_freeze": None})
+    )
+    G_ref, ref, _z = _run(monkeypatch, 0.225, cap=14)
+    assert ref["passes"]["growth_stop"] != "frozen"
+    assert ref["passes"]["growth_blocks"] > info["passes"]["growth_blocks"]
+    np.testing.assert_array_equal(G, G_ref)
+
+
+def test_a_freeze_stop_must_be_followed_by_the_restart(monkeypatch):
+    """Negative control: with the restart switched off a growth that stopped at the freeze is not an answer."""
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "_needs_restart", lambda support, n_seed: False)
+    G, info, z = _run(monkeypatch, 0.225, cap=14)
+    assert info["passes"]["growth_stop"] != "frozen"
