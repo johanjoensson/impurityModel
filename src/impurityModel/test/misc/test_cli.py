@@ -164,24 +164,21 @@ def test_selfenergy_mesh_and_solver_flags():
     args = _parse(selfenergy.add_arguments, ["h0.pickle"])
     assert args.realaxis is True
     assert args.n_matsubara == 0
-    # Unspecified, not "lanczos": with --from-archive a flag that was not passed must leave the
-    # recorded kernel alone (see test_selfenergy_replay_keeps_what_the_archive_recorded).
-    assert args.gf_method is None and args.gf_admission is None and args.gf_admit_tol is None
     assert args.sparse_green is True
 
     args = _parse(
         selfenergy.add_arguments,
-        ["h0.pickle", "--no-realaxis", "--n_matsubara", "16", "--gf-method", "bicgstab", "--no-sparse-green"],
+        ["h0.pickle", "--no-realaxis", "--n_matsubara", "16", "--no-sparse-green"],
     )
     assert args.realaxis is False
     assert args.n_matsubara == 16
-    assert args.gf_method == "bicgstab"
     assert args.sparse_green is False
 
 
-def test_selfenergy_rejects_bad_gf_method():
-    with pytest.raises(SystemExit):
-        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "nope"])
+def test_selfenergy_refuses_the_retired_kernel_flags():
+    for flag, value in (("--gf-method", "lanczos"), ("--gf-admission", "outer"), ("--gf-admit-tol", "1e-5")):
+        with pytest.raises(SystemExit):
+            _parse(selfenergy.add_arguments, ["h0.pickle", flag, value])
 
 
 def test_susceptibility_defaults():
@@ -246,34 +243,6 @@ def test_cli_rejects_unknown_subcommand():
         cli.main(["does-not-exist"])
 
 
-def test_selfenergy_admission_flags():
-    args = _parse(
-        selfenergy.add_arguments,
-        ["h0.pickle", "--gf-method", "bicgstab", "--gf-admission", "outer", "--gf-admit-tol", "1e-5"],
-    )
-    assert (args.gf_method, args.gf_admission, args.gf_admit_tol) == ("bicgstab", "outer", 1e-5)
-    with pytest.raises(SystemExit):
-        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-admission", "sometimes"])
-
-
-def test_selfenergy_replay_keeps_what_the_archive_recorded():
-    """The replay branch used to overwrite the recorded kernel with the CLI default. A flag that was not
-    passed keeps the record; one that was passed overrides it; a contradiction is refused."""
-    from impurityModel.ed.model import SolverOptions
-
-    recorded = SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)
-    untouched = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle"]))
-    assert untouched == recorded
-    looser = selfenergy.apply_solver_overrides(
-        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-admit-tol", "1e-3"])
-    )
-    assert (looser.gf_method, looser.gf_admission, looser.gf_admit_tol) == ("bicgstab", "outer", 1e-3)
-    with pytest.raises(ValueError, match="needs gf_method='bicgstab'"):
-        selfenergy.apply_solver_overrides(
-            recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "lanczos"])
-        )
-
-
 def test_selfenergy_gf_tolerance_flags_reach_the_options_and_override_an_archive():
     from impurityModel.ed.model import SolverOptions
 
@@ -286,89 +255,16 @@ def test_selfenergy_gf_tolerance_flags_reach_the_options_and_override_an_archive
     assert (looser.gf_tol, looser.gf_real_tol) == (1e-9, 1e-4)
 
 
-def test_the_settle_flags_parse_and_override_the_archive_record():
-    from impurityModel.ed.model import SolverOptions
-
-    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
-    assert args.gf_settle == "off" and args.gf_settle_ratio is None
-    with pytest.raises(SystemExit):
-        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "maybe"])
-    recorded = SolverOptions(gf_settle_ratio=3.0)
-    untouched = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle"]))
-    assert untouched == recorded
-    looser = selfenergy.apply_solver_overrides(
-        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle-ratio", "10"])
-    )
-    assert looser.gf_settle_ratio == 10.0 and looser.gf_settle is None
-    off = selfenergy.apply_solver_overrides(
-        SolverOptions(), _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
-    )
-    assert off.gf_settle is False
-    # switching the settle off over an archived ratio clears the ratio instead of refusing the replay
-    cleared = selfenergy.apply_solver_overrides(
-        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
-    )
-    assert cleared.gf_settle is False and cleared.gf_settle_ratio is None
-
-
-def test_the_settle_retry_flag_overrides_the_archive_record():
-    from impurityModel.ed.model import SolverOptions
-
-    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle-retry", "off"])
-    off = selfenergy.apply_solver_overrides(SolverOptions(), args)
-    assert off.gf_settle_retry is False
-    untouched = selfenergy.apply_solver_overrides(off, _parse(selfenergy.add_arguments, ["h0.pickle"]))
-    assert untouched.gf_settle_retry is False
-    with pytest.raises(SystemExit):
-        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle-retry", "maybe"])
-
-
-def test_switching_the_settle_off_or_leaving_lanczos_clears_the_archived_settle_fields():
-    from impurityModel.ed.model import SolverOptions
-
-    recorded = SolverOptions(gf_settle_ratio=3.0, gf_settle_retry=True)
-    off = selfenergy.apply_solver_overrides(
-        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
-    )
-    assert off.gf_settle is False and off.gf_settle_ratio is None and off.gf_settle_retry is None
-    bicg = selfenergy.apply_solver_overrides(
-        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
-    )
-    assert bicg.gf_method == "bicgstab" and (bicg.gf_settle, bicg.gf_settle_ratio, bicg.gf_settle_retry) == (
-        None,
-        None,
-        None,
-    )
-    with pytest.raises(ValueError, match="remove one of the two"):
-        selfenergy.apply_solver_overrides(
-            recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off", "--gf-settle-ratio", "2"])
-        )
-
-
-def test_the_prune_flags_override_the_archive_record_and_replace_the_recorded_settle():
+def test_the_prune_flags_override_the_archive_record():
     from impurityModel.ed.model import SolverOptions
 
     args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-prune-tol", "1e-4", "--gf-first-shell-tol", "1e-6"])
     assert (args.gf_prune_tol, args.gf_first_shell_tol) == (1e-4, 1e-6)
-    recorded = SolverOptions(gf_settle=True, gf_settle_ratio=3.0, gf_settle_retry=True)
+    recorded = SolverOptions()
     pruned = selfenergy.apply_solver_overrides(recorded, args)
     assert pruned.gf_prune_tol == 1e-4 and pruned.gf_first_shell_tol == 1e-6
-    assert (pruned.gf_settle, pruned.gf_settle_ratio, pruned.gf_settle_retry) == (None, None, None)
     untouched = selfenergy.apply_solver_overrides(pruned, _parse(selfenergy.add_arguments, ["h0.pickle"]))
     assert untouched == pruned
-    bicg = selfenergy.apply_solver_overrides(
-        pruned, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
-    )
-    assert bicg.gf_method == "bicgstab" and (bicg.gf_prune_tol, bicg.gf_first_shell_tol) == (None, None)
-
-
-def test_a_settle_flag_replaces_a_recorded_pruning():
-    from impurityModel.ed.model import SolverOptions
-
-    recorded = SolverOptions(gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
-    for flags in (["--gf-settle-ratio", "1"], ["--gf-settle", "on"], ["--gf-settle-retry", "on"]):
-        out = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle", *flags]))
-        assert (out.gf_prune_tol, out.gf_first_shell_tol) == (None, None)
 
 
 def test_the_cost_budget_flag_is_parsed_by_both_clis():
@@ -378,7 +274,7 @@ def test_the_cost_budget_flag_is_parsed_by_both_clis():
     assert _parse(spectra.add_arguments, ["h0.pickle", "--cost_budget", "1.5"]).cost_budget == 1.5
 
 
-def test_the_refine_flags_override_the_archive_record_and_are_cleared_when_leaving_lanczos():
+def test_the_refine_flags_override_the_archive_record():
     from impurityModel.ed.model import SolverOptions
 
     args = _parse(
@@ -390,10 +286,6 @@ def test_the_refine_flags_override_the_archive_record_and_are_cleared_when_leavi
     assert (refined.gf_refine_rounds, refined.gf_refine_tol, refined.gf_refine_swap) == (3, 1e-4, 0.2)
     untouched = selfenergy.apply_solver_overrides(refined, _parse(selfenergy.add_arguments, ["h0.pickle"]))
     assert untouched == refined
-    bicg = selfenergy.apply_solver_overrides(
-        refined, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
-    )
-    assert bicg.gf_method == "bicgstab" and bicg.gf_refine_rounds is None
 
 
 @pytest.mark.parametrize("mod", [selfenergy, susceptibility])
@@ -405,47 +297,7 @@ def test_legacy_scripts_take_the_charge_sector_mode_and_default_to_on(mod):
         _parse(mod.add_arguments, ["h0.pickle", "--mixed_valence", "maybe"])
 
 
-def test_the_growth_tolerance_flag_overrides_the_record_and_leaving_lanczos_clears_it():
-    from impurityModel.ed.model import SolverOptions
-
-    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-growth-tol", "1e-5"])
-    assert args.gf_growth_tol == 1e-5 and _parse(selfenergy.add_arguments, ["h0.pickle"]).gf_growth_tol is None
-    out = selfenergy.apply_solver_overrides(SolverOptions(gf_prune_tol=1e-3), args)
-    assert out.gf_growth_tol == 1e-5
-    bicg = selfenergy.apply_solver_overrides(
-        out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
-    )
-    assert bicg.gf_growth_tol is None
-
-
 def test_spectra_rixs_adaptive_tol_reaches_the_options():
     args = _parse(spectra.add_arguments, ["h0.pickle", "radial.dat", "--rixs-adaptive-tol", "1e-4"])
     assert args.rixs_adaptive_tol == 1e-4
     assert _parse(spectra.add_arguments, ["h0.pickle", "radial.dat"]).rixs_adaptive_tol is None
-
-
-def test_the_quiet_window_flag_overrides_the_record_and_leaving_lanczos_clears_it():
-    from impurityModel.ed.model import SolverOptions
-
-    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-growth-quiet", "32"])
-    assert args.gf_growth_quiet == 32 and _parse(selfenergy.add_arguments, ["h0.pickle"]).gf_growth_quiet is None
-    out = selfenergy.apply_solver_overrides(SolverOptions(gf_prune_tol=1e-3), args)
-    assert out.gf_growth_quiet == 32
-    bicg = selfenergy.apply_solver_overrides(
-        out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
-    )
-    assert bicg.gf_growth_quiet is None
-
-
-def test_the_prune_rule_flag_overrides_the_record_and_leaving_lanczos_clears_it():
-    from impurityModel.ed.model import SolverOptions
-
-    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-prune-rule", "accumulated"])
-    assert args.gf_prune_rule == "accumulated"
-    assert _parse(selfenergy.add_arguments, ["h0.pickle"]).gf_prune_rule is None
-    out = selfenergy.apply_solver_overrides(SolverOptions(gf_prune_tol=1e-3), args)
-    assert out.gf_prune_rule == "accumulated"
-    bicg = selfenergy.apply_solver_overrides(
-        out, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
-    )
-    assert bicg.gf_prune_rule is None

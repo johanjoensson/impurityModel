@@ -60,7 +60,7 @@ def _basis(comm, policy, split_threshold=None):
     return basis
 
 
-def _gf(comm, policy, split_threshold=None, gf_method="lanczos"):
+def _gf(comm, policy, split_threshold=None):
     rank0 = comm is None or comm.rank == 0
     psi = ManyBodyState({SlaterDeterminant.from_bytes(GROUND): 1.0} if rank0 else {}, width=1)
     return get_Greens_function(
@@ -80,7 +80,6 @@ def _gf(comm, policy, split_threshold=None, gf_method="lanczos"):
         occ_cutoff=1e-9,
         slaterWeightMin=0.0,
         sparse=True,
-        gf_method=gf_method,
     )
 
 
@@ -93,13 +92,15 @@ def test_the_proxy_guard_is_off_by_default():
     assert proxy.memory_budget is None and not proxy._over_memory_budget()
 
 
-def test_an_auto_gf_unit_freezes_when_measured_memory_reaches_the_budget(monkeypatch):
+def test_an_auto_gf_unit_freezes_when_measured_memory_reaches_the_budget(monkeypatch, capfd):
     """A budget every sample exceeds: the auto unit's support freezes at its seed, and the
     report attributes it to the memory guard, not to the cap."""
     _force_budget(monkeypatch, 1)
     _, _, report = _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=True))
     messages = _basis_cap_messages(report)
     assert any("memory guard" in m for m in messages), messages
+    out, _err = capfd.readouterr()
+    assert "stopped at the memory limit" in out, out
 
 
 def test_a_user_gf_cap_is_not_frozen_by_memory_only_warned_about(monkeypatch, capfd):
@@ -137,6 +138,24 @@ def test_the_gf_guard_is_collective_safe_mpi(monkeypatch):
     comm.Barrier()
 
 
+@pytest.mark.mpi
+def test_the_memory_limit_note_names_every_colours_units_on_rank_0(monkeypatch, capfd):
+    """The per-unit report is printed from rank 0's records, which hold the units other colours ran: every
+    (block, side) the guard froze carries the note, however the ranks were split."""
+    _force_budget(monkeypatch, 1)
+    comm = MPI.COMM_WORLD
+    _gf(comm, CapPolicy(gs=CAP, gf=CAP, from_memory=True))
+    out, _err = capfd.readouterr()
+    comm.Barrier()
+    if comm.rank == 0:
+        # an addition unit with no seeds (0 determinants) ran nothing, so only the units that ran carry the note
+        rows = [
+            line for line in out.splitlines() if line.lstrip().startswith("block ") and " 0 determinants" not in line
+        ]
+        assert rows, out
+        assert all("stopped at the memory limit" in line for line in rows), rows
+
+
 def test_the_guard_budget_has_the_sizing_floor():
     """After a heavy ground state (resident >= available) the guard must still leave the headroom
     the auto cap was sized with; a floorless `s * (A + R)` sits at the resident set and freezes
@@ -160,19 +179,19 @@ def test_an_unlimited_gf_unit_is_still_memory_guarded(monkeypatch):
 
 
 def test_auto_gf_caps_are_pinned_per_kernel_and_clamped(monkeypatch):
-    """One pinned number per (reort, method) for a calculation; a later, wider stage that cannot
+    """One pinned number per kernel (reort on/off) for a calculation; a later, wider stage that cannot
     afford it on all ranks is clamped instead of trusted to a guard it may not have."""
     from impurityModel.ed import gf_units as gu
     from impurityModel.ed import memory_estimate as me
 
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
     basis = _basis(None, CapPolicy(gs=CAP, gf=None, from_memory=True))
-    narrow = gu._pinned_auto_gf_cap(basis, [1], 1, None, "lanczos", 0)
-    assert gu._pinned_auto_gf_cap(basis, [1], 1, None, "lanczos", 10**6) == narrow, "pinned"
-    wide = gu._pinned_auto_gf_cap(basis, [1], 40, None, "lanczos", 0)
+    narrow = gu._pinned_auto_gf_cap(basis, [1], 1, None, 0)
+    assert gu._pinned_auto_gf_cap(basis, [1], 1, None, 10**6) == narrow, "pinned"
+    wide = gu._pinned_auto_gf_cap(basis, [1], 40, None, 0)
     assert wide < narrow, "a wider stage is clamped to what it can afford"
-    other = gu._pinned_auto_gf_cap(basis, [1], 1, None, "bicgstab", 0)
-    assert set(basis._auto_gf_caps) == {(False, "lanczos"), (False, "bicgstab")}
+    other = gu._pinned_auto_gf_cap(basis, [1], 1, "partial", 0)
+    assert set(basis._auto_gf_caps) == {False, True}
     assert other != narrow
 
 
@@ -198,12 +217,3 @@ def test_guarded_proxy_proxies_for_a_cap_or_a_budget_only():
     unlimited = guarded_proxy(bare, np.inf)
     assert isinstance(unlimited, _CappedBasisProxy)
     assert unlimited.memory_budget == 10**12 and unlimited.memory_policy == "warn"
-
-
-def test_the_bicgstab_gf_kernel_is_guarded_too(monkeypatch, capfd):
-    """The per-frequency driver builds its own proxies; under a user cap and a budget every
-    sample exceeds, it must warn exactly as the Lanczos kernel does."""
-    _force_budget(monkeypatch, 1)
-    _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=False), gf_method="bicgstab")
-    _out, err = capfd.readouterr()
-    assert err.count("WARNING determinant cap: a Green's-function unit") == 1

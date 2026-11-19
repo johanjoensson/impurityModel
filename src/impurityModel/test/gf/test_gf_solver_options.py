@@ -1,223 +1,43 @@
-"""The per-frequency kernel's basis-growth policy as a solver option (``SolverOptions.gf_admission``).
+"""The Green's-function options a ``get_Greens_function`` call hands to the one Lanczos kernel.
 
-Until now ``outer`` admission was an environment knob: not part of any input format, not recorded in an
-archive, so a run that used it could not be reproduced from its output. These tests pin the option's
-contract at the layers it passes through:
+These tests pin the contract at the layers the options pass through:
 
-* ``SolverOptions`` refuses a combination that would be silently ignored two layers down;
-* an explicit argument wins over the matching environment knob, in both directions;
-* choosing ``outer`` switches the measured error bound on (and says so in the diagnostics report),
-  unless the environment forces it off;
-* a whole ``calc_selfenergy`` run with ``outer`` agrees with the Lanczos one.
+* ``SolverOptions`` no longer carries the retired ``gf_method`` / ``gf_admission`` / ``gf_admit_tol``;
+* an unset prune tolerance reaches the kernel as the default, an explicit one as given;
+* the refinement spec reaches the kernel unchanged.
 """
 
-import contextlib
-import io
-
-import numpy as np
 import pytest
-from mpi4py import MPI
 
-from impurityModel.ed import solver_trace
 from impurityModel.ed.model import SolverOptions
-from impurityModel.ed.selfenergy import calc_selfenergy
-from impurityModel.test.gf.test_selfenergy_end_to_end import _basis_and_solver, _meshes, _siam_model
 from impurityModel.test.support.gf_oracles import _run_driver
 
-KNOBS = ("GF_BICGSTAB_RESIDUAL_CHECK", "GF_BICGSTAB_WARM_HISTORY")
+
+@pytest.mark.parametrize("name", ["gf_method", "gf_admission", "gf_admit_tol"])
+def test_a_retired_option_is_refused(name):
+    with pytest.raises(TypeError, match=name):
+        SolverOptions(**{name: "lanczos" if name == "gf_method" else None})
 
 
-@pytest.fixture(autouse=True)
-def _hermetic_knobs(monkeypatch):
-    for name in KNOBS:
-        monkeypatch.delenv(name, raising=False)
-
-
-# --- the options ------------------------------------------------------------------------------------
-
-
-def test_the_defaults_leave_the_policy_unspecified():
-    options = SolverOptions()
-    assert (options.gf_method, options.gf_admission, options.gf_admit_tol) == ("lanczos", None, None)
-
-
-def test_outer_admission_with_a_tolerance_is_accepted():
-    options = SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)
-    assert options.gf_admission == "outer" and options.gf_admit_tol == 1e-5
-
-
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
-        (dict(gf_admission="sometimes"), "expected one of"),
-        (dict(gf_method="lanczos", gf_admission="outer"), "needs gf_method='bicgstab'"),
-        (dict(gf_method="bicgstab", gf_admit_tol=1e-4), "only applies to gf_admission='outer'"),
-        (dict(gf_method="bicgstab", gf_admission="all", gf_admit_tol=1e-4), "only applies to gf_admission='outer'"),
-        (dict(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=0.0), "must be positive"),
-        (dict(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=-1e-4), "must be positive"),
-    ],
-)
-def test_a_combination_that_would_be_ignored_is_refused(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        SolverOptions(**kwargs)
-
-
-def test_an_unknown_kernel_is_refused_when_the_options_are_built_not_mid_run():
-    """A typo on the RSPt solver line must fail before the ground state is computed, not minutes into it."""
-    with pytest.raises(ValueError, match="Unknown gf_method 'nope'"):
-        SolverOptions(gf_method="nope")
-    with pytest.raises(ValueError, match="Unknown gf_method 'cipsi'"):
-        SolverOptions(gf_method="cipsi")
-
-
-# --- the argument reaches the kernel, and beats the environment -------------------------------------
-
-
-def _driver(monkeypatch, env=None, **extra):
-    """``(points, diagnostics)`` of one small per-frequency run: the per-point records from the
-    root-side unit notes, and the names of the diagnostics the report carries."""
-    for name, value in (env or {}).items():
-        monkeypatch.setenv(name, value)
-    with solver_trace.tracing() as trace, contextlib.redirect_stdout(io.StringIO()):
-        _mat, _real, report = _run_driver("bicgstab", None, extra=extra)
-    points = [p for note in trace.of_kind("gf_unit_basis") for p in note.get("points", [])]
-    return points, {d.name for d in report.diagnostics}
-
-
-def test_the_default_run_has_no_admission_records_and_no_error_bound(monkeypatch):
-    points, diagnostics = _driver(monkeypatch)
-    assert points and all("admission" not in p for p in points)
-    assert "truncation_error_bound" not in diagnostics
-
-
-def test_outer_by_argument_records_each_point_and_reports_the_error_bound(monkeypatch):
-    points, diagnostics = _driver(monkeypatch, gf_admission="outer", gf_admit_tol=1e-3)
-    assert points and all("admission" in p for p in points)
-    assert "truncation_error_bound" in diagnostics
-
-
-def test_all_is_the_explicit_form_of_the_default(monkeypatch):
-    points, _ = _driver(monkeypatch, gf_admission="all")
-    assert all("admission" not in p for p in points)
-
-
-def test_the_tolerance_argument_sets_the_threshold(monkeypatch):
-    """On SIAM-6, whose start set is smaller than its closure: a threshold above every score admits nothing
-    beyond the start set, and a tiny one admits."""
-    from impurityModel.ed.gf_solvers import block_Green_bicgstab
-    from impurityModel.ed.greens_function import _gf_signed_axes
-    from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _seed_basis, _seeds, _siam_6
-
-    z_axes = _gf_signed_axes(None, OMEGA[:4], 0, DELTA)
-
-    def rounds(**kwargs):
-        _G, stats = block_Green_bicgstab(
-            _siam_6(), _seeds(), _seed_basis(), [0.0], 2, z_axes, atol=1e-10, admission="outer", **kwargs
-        )
-        return [p["admission"]["rounds"] for p in stats["points"]]
-
-    assert all(r == 0 for r in rounds(admit_tol=1e6))
-    assert any(r > 0 for r in rounds(admit_tol=1e-12))
-
-
-def test_the_environment_can_force_the_error_bound_either_way(monkeypatch):
-    _, diagnostics = _driver(
-        monkeypatch, env={"GF_BICGSTAB_RESIDUAL_CHECK": "0"}, gf_admission="outer", gf_admit_tol=1e-3
-    )
-    assert "truncation_error_bound" not in diagnostics
-    _, diagnostics = _driver(monkeypatch, env={"GF_BICGSTAB_RESIDUAL_CHECK": "1"})
-    assert "truncation_error_bound" in diagnostics
-
-
-def test_outer_with_the_lanczos_kernel_is_refused_where_it_would_otherwise_be_ignored(monkeypatch):
-    with pytest.raises(ValueError, match="needs gf_method='bicgstab'"):
-        _run_driver("lanczos", True, extra={"gf_admission": "outer"})
-    with pytest.raises(ValueError, match="Unknown gf_admission"):
-        _run_driver("bicgstab", None, extra={"gf_admission": "banana"})
-
-
-def test_all_by_argument_is_bit_identical_to_not_passing_it(monkeypatch):
-    base = _run_driver("bicgstab", None)
-    explicit = _run_driver("bicgstab", None, extra={"gf_admission": "all", "gf_admit_tol": None})
-    for a, b in zip(base[:2], explicit[:2]):
-        assert np.array_equal(np.asarray(a), np.asarray(b))
-
-
-# --- a whole self-energy run ------------------------------------------------------------------------
-
-
-def _sigma(solver, comm):
-    basis, _ = _basis_and_solver()
-    with contextlib.redirect_stdout(io.StringIO()):
-        return calc_selfenergy(_siam_model(), _meshes(), basis, solver, comm=comm, verbosity=0)
-
-
-def test_calc_selfenergy_with_outer_admission_matches_the_lanczos_run(monkeypatch):
-    reference = _sigma(SolverOptions(dense_cutoff=500, sparse_green=True, gf_method="lanczos"), MPI.COMM_SELF)
-    outer = _sigma(
-        SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-9, dense_cutoff=500),
-        MPI.COMM_SELF,
-    )
-    np.testing.assert_allclose(outer["sigma"], reference["sigma"], atol=1e-5)
-    np.testing.assert_allclose(outer["sigma_real"], reference["sigma_real"], atol=1e-5)
-
-
-@pytest.mark.mpi
-def test_calc_selfenergy_with_outer_admission_is_the_same_distributed(monkeypatch):
-    solver = SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-9, dense_cutoff=500)
-    serial = _sigma(solver, MPI.COMM_SELF)
-    distributed = _sigma(solver, MPI.COMM_WORLD)
-    if MPI.COMM_WORLD.rank == 0:
-        np.testing.assert_allclose(distributed["sigma"], serial["sigma"], atol=1e-6)
-        np.testing.assert_allclose(distributed["sigma_real"], serial["sigma_real"], atol=1e-6)
-
-
-def test_the_settle_options_reach_the_kernel_and_bicgstab_refuses_them(monkeypatch):
+def test_the_prune_options_reach_the_kernel_and_beat_the_default(monkeypatch):
     from impurityModel.ed import gf_engine
 
     seen = []
     real = gf_engine.block_Green_sparse
 
     def spy(*args, **kwargs):
-        seen.append((kwargs.get("support_settle"), kwargs.get("settle_ratio")))
+        seen.append((kwargs.get("prune_tol"), kwargs.get("first_shell_tol")))
         return real(*args, **kwargs)
 
     monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
-    _run_driver("lanczos", None)
-    assert set(seen) == {(True, None)}
+    _run_driver(None)
+    assert set(seen) == {(1e-3, None)}, "an unset tolerance reaches the kernel as the default"
     seen.clear()
-    _run_driver("lanczos", None, extra={"gf_settle": False, "gf_settle_ratio": None})
-    assert set(seen) == {(False, None)}
-    seen.clear()
-    _run_driver("lanczos", None, extra={"gf_settle_ratio": 4.0})
-    assert set(seen) == {(True, 4.0)}
-    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
-        _run_driver("bicgstab", None, extra={"gf_settle": True})
+    _run_driver(None, extra={"gf_prune_tol": 1e-3, "gf_first_shell_tol": 1e-5})
+    assert set(seen) == {(1e-3, 1e-5)}
 
 
-def test_the_prune_options_reach_the_kernel_beat_the_knob_and_bicgstab_refuses_them(monkeypatch):
-    from impurityModel.ed import gf_engine
-
-    seen = []
-    real = gf_engine.block_Green_sparse
-
-    def spy(*args, **kwargs):
-        seen.append((kwargs.get("prune_tol"), kwargs.get("first_shell_tol"), kwargs.get("support_settle")))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
-    _run_driver("lanczos", None)
-    assert set(seen) == {(None, None, True)}
-    seen.clear()
-    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_first_shell_tol": 1e-5})
-    assert set(seen) == {(1e-3, 1e-5, True)}, "the settle flag stays on; the kernel disables it under pruning"
-    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
-        _run_driver("bicgstab", None, extra={"gf_prune_tol": 1e-3})
-    with pytest.raises(ValueError, match="exclusive with the support settle"):
-        _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_settle": True})
-
-
-def test_the_refine_spec_reaches_the_kernel_and_bicgstab_refuses_it(monkeypatch):
+def test_the_refine_spec_reaches_the_kernel(monkeypatch):
     from impurityModel.ed import gf_engine
     from impurityModel.ed.gf_refinement import RefineSpec
 
@@ -229,62 +49,9 @@ def test_the_refine_spec_reaches_the_kernel_and_bicgstab_refuses_it(monkeypatch)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
-    _run_driver("lanczos", None)
+    _run_driver(None)
     assert set(seen) == {None}
     seen.clear()
     spec = RefineSpec(rounds=2, tol=1e-4, swap=0.2)
-    _run_driver("lanczos", None, extra={"gf_refine": spec})
+    _run_driver(None, extra={"gf_refine": spec})
     assert set(seen) == {spec}
-    with pytest.raises(ValueError, match=r"apply only to gf_method='lanczos'|only to gf_method='lanczos'"):
-        _run_driver("bicgstab", None, extra={"gf_refine": spec})
-
-
-def test_the_growth_tolerance_reaches_every_unit_kernel_call(monkeypatch):
-    from impurityModel.ed import gf_engine
-
-    seen = []
-    real = gf_engine.block_Green_sparse
-
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("growth_tol"))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
-    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_growth_tol": 1e-5})
-    assert seen and set(seen) == {1e-5}
-    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
-        _run_driver("bicgstab", None, extra={"gf_growth_tol": 1e-5})
-
-
-def test_the_quiet_window_reaches_every_unit_kernel_call(monkeypatch):
-    from impurityModel.ed import gf_engine
-
-    seen = []
-    real = gf_engine.block_Green_sparse
-
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("growth_quiet"))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
-    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_growth_quiet": 7})
-    assert seen and set(seen) == {7}
-    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
-        _run_driver("bicgstab", None, extra={"gf_growth_quiet": 7})
-
-
-def test_the_prune_rule_reaches_every_unit_kernel_call(monkeypatch):
-    from impurityModel.ed import gf_engine
-
-    seen = []
-    real = gf_engine.block_Green_sparse
-
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("prune_rule"))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
-    _run_driver("lanczos", None, extra={"gf_prune_tol": 1e-3, "gf_prune_rule": "accumulated"})
-    assert seen and set(seen) == {"accumulated"}
-    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
-        _run_driver("bicgstab", None, extra={"gf_prune_rule": "accumulated"})

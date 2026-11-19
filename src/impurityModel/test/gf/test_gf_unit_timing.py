@@ -34,16 +34,24 @@ def test_rank_seconds_and_utilisation_weight_each_colour_by_its_width():
 
 def test_the_per_unit_lines_carry_each_units_passes_and_exit_status_even_when_not_verbose():
     passes = dict(
-        growth_blocks=32769, growth_seconds=19500.0, growth_stop="frozen", restart_blocks=65529,
+        growth_blocks=32769, growth_seconds=19500.0, restart_blocks=65529,
         restart_seconds=11800.0, status="plateau",
     )  # fmt: skip
     records = [(0, 0.0, 10.0), (5, 0.0, 39747.0, passes)]
     lines = format_unit_timing(records, [2])
     assert len(lines) == 3 and "longest unit #5" in lines[0]
-    assert lines[2].endswith("growth 32,769 blk/19500.0 s (frozen), restart 65,529 blk/11800.0 s, status plateau")
+    assert lines[2].endswith("growth 32,769 blk/19500.0 s, restart 65,529 blk/11800.0 s, status plateau")
     assert lines[1].endswith("(10.0 s)")  # a unit that reported nothing prints no passes
 
 
 def test_a_unit_that_reports_only_a_status_does_not_turn_the_per_unit_lines_on():
     records = [(0, 0.0, 10.0, {"status": "converged", "n_blocks": 5}), (1, 0.0, 4.0, {})]
     assert len(format_unit_timing(records, [2])) == 1
+
+
+def test_the_plain_summary_is_one_sentence_without_scheduler_terms():
+    from impurityModel.ed.gf_units import plain_unit_summary
+
+    line = plain_unit_summary([(0, 0.0, 4.0), (1, 0.0, 14.0, {})])
+    assert line == "Green's function: 2 work units finished in 14.0 s (the slowest took 14.0 s)."
+    assert plain_unit_summary([]) == ""

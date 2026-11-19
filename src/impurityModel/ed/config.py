@@ -96,7 +96,7 @@ class Knob:
         """The knob's current value: the parsed environment variable, else the default.
 
         Read lazily -- every call re-reads ``os.environ``. An empty string counts as unset
-        for the non-string knobs, so ``GF_BICGSTAB_ATOL=`` takes the default rather
+        for the non-string knobs, so ``GF_GMRES_RESTART=`` takes the default rather
         than raising.
         """
         raw = os.environ.get(self.name)
@@ -110,26 +110,6 @@ class Knob:
 
 def _register(*knobs: Knob) -> dict[str, Knob]:
     return {knob.name: knob for knob in knobs}
-
-
-# --- Green's-function kernels (the ``gf_method`` solver option) ----------------------------
-# Not knobs -- ``gf_method`` is a solver option -- but every front end (the driver, the TOML
-# schema, the CLI, archive replay) must accept the same set, and this leaf module is the one
-# they all import.
-
-#: Accepted ``gf_method`` values.
-GF_METHODS = ("lanczos", "bicgstab")
-
-#: Accepted ``SolverOptions.gf_admission`` values, the basis-growth policy of the per-frequency
-#: ``"bicgstab"`` kernel: ``"all"`` admits every determinant the solver produces, ``"outer"`` solves on a
-#: frozen basis, measures the residual outside it and admits only what scores above a threshold
-#: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
-GF_ADMISSIONS = ("all", "outer")
-
-#: Accepted ``SolverOptions.gf_prune_rule`` values, the admission rule of the pruned growth: ``"amplitude"`` admits a
-#: determinant when one block's amplitude clears ``gf_prune_tol``, ``"accumulated"`` when its weight summed over the
-#: blocks that reach it does.
-GF_PRUNE_RULES = ("amplitude", "accumulated")
 
 
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
@@ -162,59 +142,16 @@ def effective_ranking_cap(cap):
     return None if ranking >= int(cap) else ranking
 
 
-# --- Green's function: per-frequency BiCGSTAB solver (gf_method="bicgstab") -----------------
-
-GF_BICGSTAB_ATOL = Knob(
-    name="GF_BICGSTAB_ATOL",
-    kind="float",
-    default=1e-8,
-    group="bicgstab",
-    doc="""Absolute residual tolerance of a per-frequency BiCGSTAB solve. The default sits at
-    the block-Lanczos reference's accuracy (doc/plans/bicgstab_per_frequency_gf.md, Phase 3a)
-    -- inside the 2.5e-8 spread PARTIAL-vs-FULL reorthogonalization itself shows on the real
-    workloads. The reliability diagnostics (gf_diagnostics.check_bicgstab_convergence) derive
-    their thresholds from the value actually used; never re-hardcode it.""",
-)
-
-GF_BICGSTAB_RESIDUAL_CHECK = Knob(
-    name="GF_BICGSTAB_RESIDUAL_CHECK",
-    kind="bool",
-    default=None,
-    group="bicgstab",
-    doc="""After every per-frequency solve, apply the operator once more at cutoff 0 and record the
-    true residual split at the solve basis: the in-basis part (the solver's residual, recomputed)
-    and the boundary residual (1-P) H X that a truncated basis leaves unseen, with a bound on the
-    error of G built from them (``gf_primitives.resolvent_error_bound``). Costs one unchunked
-    matvec per point -- its peak is the full cutoff-0 image of the iterate, larger than a solve
-    iteration's. Unset (derived), it follows the admission policy: on for ``outer`` admission,
-    whose point is to trade basis size for a measured error, off for ``all``. ``1``/``0`` force it
-    either way.""",
-)
-
-GF_SUPPORT_TRACE = Knob(
-    name="GF_SUPPORT_TRACE",
-    kind="bool",
-    default=False,
-    group="bicgstab",
-    doc="""Diagnostic. Print one ``GF support step k: ...`` line per block of a sparse Lanczos Green's-function
-    unit (rank 0): the retained support, the new rows, the weight on them (leak), the weight the
-    ``slaterWeightMin`` prunes cut, ``||Hq||^2``, the largest amplitude squared landing on a new row and the
-    convergence monitor's last change. The same numbers are
-    kept in ``cap_info["support_trace"]``; the lines let a production log be replayed offline against any
-    settle rule. It also switches on the end-of-unit frontier probe of a settled unit (one extra unfrozen matvec).
-    It never changes a result.""",
-)
-
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
     default=40,
     minimum=1,
     group="bicgstab",
-    doc="""Krylov restart length of the GMRES fallback (the solver for points BiCGSTAB leaves
-    unconverged: its shadow-residual recurrence stagnates near a pole, GMRES minimizes the
-    residual and has no such mode). Bounds the fallback's live Krylov blocks, so the memory
-    model (memory_estimate.estimate_gf_peak_bytes, method="bicgstab") reads the same knob.""",
+    doc="""Krylov restart length of the GMRES fallback of the RIXS shifted solves (the solver for
+    points BiCGSTAB leaves unconverged: its shadow-residual recurrence stagnates near a pole,
+    GMRES minimizes the residual and has no such mode). Bounds the fallback's live Krylov
+    blocks, so the memory model (memory_estimate) reads the same knob.""",
 )
 
 # --- Green's function: work-unit decomposition ---------------------------------------------
@@ -616,9 +553,6 @@ DC_GAP_LEVER_MIN = Knob(
 
 
 KNOBS: dict[str, Knob] = _register(
-    GF_BICGSTAB_ATOL,
-    GF_BICGSTAB_RESIDUAL_CHECK,
-    GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
     ROUTING_HASH,
     GF_CSR_MEMORY_SAFETY,
@@ -642,7 +576,7 @@ KNOBS: dict[str, Knob] = _register(
 )
 
 GROUP_TITLES = {
-    "bicgstab": 'Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)',
+    "bicgstab": "Shifted linear solvers (BiCGSTAB with GMRES fallback; RIXS)",
     "units": "Green's-function work-unit decomposition",
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",

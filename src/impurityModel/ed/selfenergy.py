@@ -2,7 +2,6 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.cipsi_solver import _degeneracy_tol
@@ -21,7 +20,14 @@ from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc  # noqa: F401
 from impurityModel.ed.degeneracy import degenerate_groups
 from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
-from impurityModel.ed.gf_refinement import REFINE_SWAP, REFINE_TOL, RefineSpec, g0_check_shifts, g0_zero_shifts
+from impurityModel.ed.gf_refinement import (
+    GROW_TOL,
+    REFINE_SWAP,
+    REFINE_TOL,
+    RefineSpec,
+    g0_check_shifts,
+    g0_zero_shifts,
+)
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     get_Greens_function,
@@ -233,7 +239,7 @@ def _refine_tables(sb, blocks, w, iw, delta, comm):
 def _pole_note(omega, record, orbital, poles, delta):
     """One line: the nearest bath level that couples to ``orbital``, how far the worst point is from it, and whether
     that pole dominates ``G0^-1`` there (its own term ``|W|^2 delta / ((w-eps)^2 + delta^2)`` above ``|Re G^-1|``).
-    Information only: a violation on a pole can still be the settle's (``|G|^-2`` amplifies there most)."""
+    Information only (``|G|^-2`` amplifies a truncation error most there)."""
     levels, modes, v_full = poles
     if v_full.size == 0 or len(levels) == 0:
         return None  # no bath
@@ -249,19 +255,19 @@ def _pole_note(omega, record, orbital, poles, delta):
     text = f"  nearest coupled bath level {levels[k]:.4g} (|W|^2 = {weights[k]:.1e}), {widths:.1f} broadenings away"
     if widths <= _BATH_POLE_WIDTHS and dominated:
         text += (
-            "; G0^-1 is dominated by that pole: if the settle is not the cause this is the bath-discretisation "
+            "; G0^-1 is dominated by that pole: this can be the bath-discretisation "
             "artefact of doc/known_issues.md (raise delta or the number of bath states, or accept it with "
             "sigma_causality_tol)"
         )
     return text
 
 
-def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_run, tol):
-    """``(lines, retry_unit_ids)`` for one failing block: what the violation looks like and whether the support
-    settle can be blamed. ``failures`` are the block's ``(mesh label, mesh, record)`` above tolerance. Rank 0 only;
-    the lines are what a user reads when the run stops."""
+def _attribute_block(block_i, block, failures, units, poles, delta, tol):
+    """The lines for one failing block: what the violation looks like and what bounds the accuracy of its
+    units. ``failures`` are the block's ``(mesh label, mesh, record)`` above tolerance. Rank 0 only; the lines
+    are what a user reads when the run stops."""
     lines = []
-    real_axis = False
+    pole_named = False
     for label, mesh, record in failures:
         omega = complex(mesh[record["worst_freq_index"]])
         where = f"{omega.real:.4g}" if omega.imag == 0 else f"i*{omega.imag:.4g}"
@@ -272,61 +278,114 @@ def _attribute_block(block_i, block, failures, units, poles, delta, retry, have_
         g0i, gi = record.get("g0_inv_at_worst"), record.get("ginv_at_worst")
         if g0i is not None:
             lines.append(f"  there Im(G0^-1) = {g0i.imag:.3e}, Im(G^-1) = {gi.imag:.3e}")
-        if omega.imag == 0:
-            real_axis = True
-            if poles is not None and delta > 0:
-                note = _pole_note(omega.real, record, block[record["worst_orbital"]], poles, delta)
-                if note:
-                    lines.append(note)
+        if omega.imag == 0 and poles is not None and delta > 0:
+            note = _pole_note(omega.real, record, block[record["worst_orbital"]], poles, delta)
+            if note:
+                lines.append(note)
+                pole_named = True
     mine = [u for u in units if u.block == block_i and u.retained is not None]
-    settled = [u for u in mine if u.settled]
-    if not settled:
-        capped = [u for u in mine if u.cap_hit]
-        if capped:
-            lines.append(
-                f"  support settle: no unit of this block settled, so it is not the cause. {len(capped)} of "
-                f"{len(mine)} units froze at the determinant cap, which bounds the accuracy here, not slater_min: "
-                "raise the cap, use importance-pruned growth (gf_prune_tol) or swap refinement (gf_refine_rounds), "
-                "or raise delta (doc/known_issues.md)."
-            )
-        else:
-            lines.append(
-                "  support settle: no unit of this block settled, so it is not the cause. "
-                "Lower slater_min (it can widen the excitation bounds the excited bases inherit from the ground state) "
-                "or raise delta (doc/known_issues.md)."
-            )
-        return lines, []
-    lines.append(
-        f"  support settle: {len(settled)} of {len(mine)} units settled (gf_settle_ratio {settled[0].ratio:g}); "
-        f"they drop determinants whose next-block amplitude stayed <= {settled[0].ratio:g} x slater_min"
+    capped = [u for u in mine if u.cap_hit or u.memory_frozen]
+    if capped:
+        lines.append(
+            f"  Likely cause: {len(capped)} of {len(mine)} units of this block froze at the determinant cap or the "
+            "memory limit, so their Green's functions are truncated (slater_min is not what limits them). "
+            "What to change: raise the determinant cap (or give the run more memory), or raise gf_refine_rounds "
+            "(it swaps determinants for more important ones; default 3), or raise delta (doc/known_issues.md)."
+        )
+    else:
+        lines.append(
+            "  Likely cause: the determinant sets were cut too coarsely"
+            + (" near a weakly coupled bath level" if pole_named else "")
+            + ". What to change: lower gf_prune_tol or slater_min (it can widen the excitation bounds the excited "
+            "bases inherit from the ground state), or raise delta (doc/known_issues.md)."
+        )
+    return lines
+
+
+#: How much tighter the one-shot re-solve of a failing block makes the grow-mode budget, and its rounds' multiple.
+RESOLVE_GROW_TOL_FACTOR = 0.1
+RESOLVE_ROUNDS_FACTOR = 2
+
+
+def _resolve_failing_blocks(solve_gf, gf_refine, gf_prune_tol, solved, *, judge, comm, report):
+    """Solve the blocks whose self-energy is acausal once more with a tighter selection, and splice them in.
+
+    ``solved = (matsubara, realaxis, gf_report)`` is the member's first solve (families on rank 0, ``None`` elsewhere).
+    Rank 0 judges the self-energy block by block (:func:`_failing_blocks`) and keeps those with a unit that is neither
+    cap- nor memory-bound (:func:`_blocks_to_tighten`); the flags are broadcast so every rank makes the same collective
+    ``solve_gf(blocks, refine)`` call, once (never a loop). Only when the member can tighten at all: pruned growth on
+    (``gf_prune_tol`` not 0) and refinement rounds above 0. **Collective.** Returns the (possibly spliced) triple."""
+    matsubara, realaxis, gf_report = solved
+    if gf_refine is None or gf_refine.rounds <= 0 or not gf_prune_tol:
+        return solved  # replicated: nothing a tighter selection could change
+    blocks = judge["blocks"]
+    flags = np.zeros(len(blocks), dtype=np.int8)
+    if comm is None or comm.rank == 0:
+        try:
+            failing = _failing_blocks(family_matsubara=matsubara, family_realaxis=realaxis, **judge)
+            units = list(gf_report.units) if gf_report is not None else []
+            flags[_blocks_to_tighten(failing, units)] = 1
+        except Exception as err:
+            flags[:] = 0
+            report(f"The self-energy check could not be run before the re-solve ({err}); no block is re-solved.")
+    if comm is not None and comm.size > 1:
+        comm.Bcast(flags, root=0)
+    chosen = [int(i) for i in np.flatnonzero(flags)]
+    if not chosen:
+        return solved
+    tight = replace(
+        gf_refine,
+        grow_tol=(GROW_TOL if gf_refine.grow_tol is None else gf_refine.grow_tol) * RESOLVE_GROW_TOL_FACTOR,
+        rounds=gf_refine.rounds * RESOLVE_ROUNDS_FACTOR,
     )
-    if not real_axis:
-        lines.append(
-            "  not re-solved: a Matsubara-only failure; the settle changed G(i w) by less than 1e-13 on every "
-            "measured run, so it cannot be the cause"
+    new_matsubara, new_realaxis, new_report = solve_gf([blocks[i] for i in chosen], tight)
+    if comm is None or comm.rank == 0:
+        for family, new in ((matsubara, new_matsubara), (realaxis, new_realaxis)):
+            if family is not None and new is not None:
+                for k, block_i in enumerate(chosen):
+                    family[block_i] = new[k]
+        if gf_report is not None and new_report is not None:
+            kept = [u for u in gf_report.units if u.block not in chosen]
+            offset = 1 + max((u.unit for u in kept), default=-1)  # unit numbers stay unique across the two solves
+            gf_report.units = kept + [replace(u, block=chosen[u.block], unit=offset + u.unit) for u in new_report.units]
+        n_units = 0 if new_report is None else sum(u.retained is not None for u in new_report.units)
+        report(
+            f"The self-energy of {len(chosen)} block(s) of orbitals {[list(blocks[i]) for i in chosen]} has negative "
+            f"spectral weight although not all of their determinant sets were limited by the determinant cap or the "
+            f"memory limit: re-solved {n_units} calculation(s) with a finer selection of determinants where the "
+            "solver could refine (others come out unchanged). The check is repeated below.",
+            level=V_RESULT,  # it changes the result, so it is never hidden
+            flush=True,
         )
-        return lines, []
-    if any(u.cap_hit or u.memory_frozen for u in settled):
-        lines.append("  not re-solved: a unit of this block is also held by the cap or the memory guard")
-        return lines, []
-    if all(u.ratio == 0 for u in settled):
-        lines.append("  not re-solved: the units already ran closure-only (gf_settle_ratio 0)")
-        return lines, []
-    if not retry:
-        lines.append(
-            "  not re-solved (gf_settle_retry is off). To test the settle, rerun with gf_settle_retry on, or with "
-            "gf_settle_ratio 1 (closer to closure; expect a longer Green's-function phase)."
-        )
-        return lines, []
-    if not have_run:
-        lines.append("  not re-solved: this Green's-function kernel cannot re-solve units (gf_method)")
-        return lines, []
-    return lines, [u.unit for u in settled]
+    return matsubara, realaxis, gf_report
 
 
-def _settle_retry(
+def _failing_blocks(*, family_matsubara, family_realaxis, iw, w, delta, estimator, sb, blocks, cluster_label, tol):
+    """``{block_i: [(mesh label, mesh, record), ...]}`` for the blocks whose self-energy is acausal beyond ``tol`` on
+    a mesh. Rank 0 (where the Green's functions live); not collective."""
+    failing = {}
+    for label, mesh, fam, d in (("Real frequency", w, family_realaxis, delta), ("Matsubara", iw, family_matsubara, 0)):
+        _sigma, _comp, reports = _sigma_collect(
+            mesh, fam, delta=d, estimator=estimator, solver_basis=sb, cluster_label=cluster_label, blocks=blocks
+        )
+        for block_i, record in reports.items():
+            if record["worst_ratio"] > tol:
+                failing.setdefault(block_i, []).append((label, mesh, record))
+    return failing
+
+
+def _blocks_to_tighten(failing, units):
+    """The failing blocks a tighter selection can still help: those with a unit that neither froze at the
+    determinant cap nor at the memory limit (a capped unit's support is final, whatever the budget)."""
+    return sorted(
+        block_i
+        for block_i in failing
+        if any(u.block == block_i and u.retained is not None and not (u.cap_hit or u.memory_frozen) for u in units)
+    )
+
+
+def _attribute_failures(
     *,
-    run,
     gf_report,
     family_matsubara,
     family_realaxis,
@@ -339,124 +398,35 @@ def _settle_retry(
     comm,
     report,
     cluster_label,
-    retry,
-    gf_seconds,
     tol,
 ):
-    """Attribute a self-energy causality failure and, when the support settle can plausibly be blamed and
-    ``gf_settle_retry`` is on, solve the settled units again once, closure-only (``gf_settle_ratio = 0``).
-
-    Re-solved only if: the block has settled units, none held by the cap or the memory guard, at least one failure
-    is on the real axis (the settle does not reach ``G(i w)``), the units did not already run at ratio 0, and the
-    kernel can re-solve units. A nearby bath pole is reported, not used as a veto. The closure-only re-solve can take
-    as long as an unsettled run (3,271 s against 280 s on the small SMO case), which is why it is off by default.
-
-    Returns ``(family_matsubara, family_realaxis, note, retried)``. ``retried`` is replicated (every rank must repeat
-    the physicality check on the new ``G``); ``note`` (rank 0) is the attribution text the final failure message
-    carries. Nothing is raised here: the caller's checks judge the (possibly new) ``G`` as they always did.
-    The re-solve is taken only if every unit comes back uncapped, unguarded and converged, and the closure-only
-    result is kept even if the violation got worse (it is the more complete solve at the same cutoff).
-    **Collective** on ``comm``: the plan is broadcast from rank 0 before any rank branches, and
-    :meth:`GFRun.resolve` is entered by every rank or by none."""
-    rank0 = comm is None or comm.rank == 0
-    plan = {"units": []}
-    note_lines = []
-    failing = {}
-
-    def collect(fam_m, fam_r):
-        out = {}
-        for label, mesh, fam, d in (("Real frequency", w, fam_r, delta), ("Matsubara", iw, fam_m, 0)):
-            sigma, _comp, reports = _sigma_collect(
-                mesh, fam, delta=d, estimator=estimator, solver_basis=sb, cluster_label=cluster_label, blocks=blocks
-            )
-            for block_i, record in reports.items():
-                if record["worst_ratio"] > tol:
-                    out.setdefault(block_i, []).append((label, mesh, sigma, record))
-        return out
-
-    if rank0:
-        failing = collect(family_matsubara, family_realaxis)
-        if failing:
-            poles = _bath_poles(sb) if w is not None else None
-            units = list(gf_report.units) if gf_report is not None else []
-            for block_i in sorted(failing):
-                lines, ids = _attribute_block(
-                    block_i,
-                    blocks[block_i],
-                    [(label, mesh, record) for label, mesh, _sigma, record in failing[block_i]],
-                    units,
-                    poles,
-                    delta,
-                    retry,
-                    run is not None,
-                    tol,
-                )
-                note_lines += lines
-                plan["units"] += ids
-            plan["units"] = sorted(set(plan["units"]))
-    if comm is not None:
-        plan = comm.bcast(plan, root=0)
-    if rank0 and note_lines:
-        report("\n".join(note_lines), level=V_RESULT, flush=True)
-    if not plan["units"]:
-        return family_matsubara, family_realaxis, "\n".join(note_lines), False
-
-    if rank0:
-        report(
-            f"Re-solving {len(plan['units'])} settled unit(s) closure-only (gf_settle_ratio 0); this can take as long "
-            f"as an unsettled Green's function (the first pass took {gf_seconds:.1f} s). Set gf_settle_retry off to "
-            "fail fast. The self-energy before the re-solve is saved as sig-*-before-retry.",
-            level=V_RESULT,
-            flush=True,
-        )
-        # The self-energy the failing run would have produced, kept for the before/after comparison.
-        for _label, mesh, sigma, _record in {id(e[2]): e for entries in failing.values() for e in entries}.values():
-            for i, sig in enumerate(sigma):
-                save_Greens_function(sig, mesh, f"sig-{i}-before-retry", cluster_label)
-    t0 = time.perf_counter()
-    accepted, changes, new_m, new_r, new_report = run.resolve(plan["units"], 0.0)
-    seconds = time.perf_counter() - t0
-    if comm is not None:
-        seconds = comm.allreduce(seconds, op=MPI.MAX)
-    if rank0:
-
-        def size(n):
-            return f"{n:,}" if n is not None else "n/a"
-
-        pieces = [f"unit {u}: {size(b)} -> {size(a)}" for u, b, a, _r in changes]
-        report(
-            f"Re-solved in {seconds:.1f} s; determinants {'; '.join(pieces)}",
-            level=V_RESULT,
-            flush=True,
-        )
-        if accepted:
-            family_matsubara, family_realaxis = new_m, new_r
-            if new_report is not None:
-                report("Green's-function diagnostics after the re-solve:", level=V_RESULT)
-                report(new_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT, flush=True)
-            after = collect(family_matsubara, family_realaxis)
-            worst_before = max(e[3]["worst_ratio"] for entries in failing.values() for e in entries)
-            worst_after = max((e[3]["worst_ratio"] for entries in after.values() for e in entries), default=0.0)
-            if not after:
-                msg = (
-                    f"sigma_settle_retry: cured (worst relative violation {worst_before:.2e} -> {worst_after:.2e}); "
-                    f"the re-solve took {seconds:.1f} s. For the next iterations set gf_settle_ratio 1 (or 0 if 1 "
-                    "is not enough), or every failing iteration pays this re-solve again."
-                )
-            else:
-                msg = (
-                    f"The closure-only support did not cure it ({worst_before:.2e} -> {worst_after:.2e}; the "
-                    "closure-only result is kept and the failure stands), so the settle is not the cause. Lower "
-                    "slater_min (it can widen the excitation bounds the excited bases inherit from the ground "
-                    "state) or raise delta; see doc/known_issues.md ('causality "
-                    "violations at sharp hybridization resonances')."
-                )
-        else:
-            why = "; ".join(sorted({r for *_x, r in changes if r}))
-            msg = f"The re-solve was not taken ({why}); the first pass stands."
-        note_lines.append(msg)
-        report(msg, level=V_RESULT, flush=True)
-    return family_matsubara, family_realaxis, "\n".join(note_lines), True
+    """Attribute a self-energy causality failure: print, on rank 0, which blocks fail, where, and what bounds the
+    accuracy of their units. Returns the same text (rank 0; ``""`` when nothing fails) for the final failure message.
+    Nothing is raised or re-solved here: the caller's checks judge ``G`` as they always did. Not collective:
+    non-root ranks return ``""`` at once and nothing waits on the text."""
+    if comm is not None and comm.rank != 0:
+        return ""
+    failing = _failing_blocks(
+        family_matsubara=family_matsubara,
+        family_realaxis=family_realaxis,
+        iw=iw,
+        w=w,
+        delta=delta,
+        estimator=estimator,
+        sb=sb,
+        blocks=blocks,
+        cluster_label=cluster_label,
+        tol=tol,
+    )
+    if not failing:
+        return ""
+    poles = _bath_poles(sb) if w is not None else None
+    units = list(gf_report.units) if gf_report is not None else []
+    lines = []
+    for block_i in sorted(failing):
+        lines += _attribute_block(block_i, blocks[block_i], failing[block_i], units, poles, delta, tol)
+    report("\n".join(lines), level=V_RESULT, flush=True)
+    return "\n".join(lines)
 
 
 def _report_phase_time(report, phase, t_start):
@@ -572,7 +542,7 @@ def calc_selfenergy(
         cap from available per-rank memory; ``np.inf`` disables capping), chain restrictions,
         spin-flip determinants, occupation cutoff, minimum Slater weight and temperature.
     solver : impurityModel.ed.model.SolverOptions
-        Green's-function kernel (``gf_method`` -- ``"lanczos"`` or ``"bicgstab"``),
+        Green's-function convergence and truncation options,
         reorthogonalization mode, dense cutoff and the sparse-Green flag. See
         :func:`impurityModel.ed.greens_function.get_Greens_function`.
     comm : MPI.Comm or None
@@ -610,27 +580,14 @@ def calc_selfenergy(
     dN = basis.dN
     dense_cutoff = solver.dense_cutoff
     sparse_green = solver.sparse_green
-    gf_method = solver.gf_method
-    gf_admission = solver.gf_admission
-    gf_admit_tol = solver.gf_admit_tol
-    gf_settle = solver.gf_settle
-    gf_settle_ratio = solver.gf_settle_ratio
-    gf_settle_retry = solver.gf_settle_retry
     gf_prune_tol = solver.resolved_gf_prune_tol
     gf_first_shell_tol = solver.gf_first_shell_tol
-    gf_growth_tol = solver.gf_growth_tol
-    gf_growth_quiet = solver.resolved_gf_growth_quiet
-    gf_prune_rule = solver.resolved_gf_prune_rule
     gf_refine_rounds = solver.resolved_gf_refine_rounds
-    gf_refine = (
-        RefineSpec(
-            rounds=gf_refine_rounds,
-            tol=REFINE_TOL if solver.gf_refine_tol is None else solver.gf_refine_tol,
-            swap=REFINE_SWAP if solver.gf_refine_swap is None else solver.gf_refine_swap,
-        )
-        if gf_refine_rounds
-        else None
-    )
+    gf_refine = RefineSpec(
+        rounds=gf_refine_rounds,
+        tol=REFINE_TOL if solver.gf_refine_tol is None else solver.gf_refine_tol,
+        swap=REFINE_SWAP if solver.gf_refine_swap is None else solver.gf_refine_swap,
+    )  # rounds=0 still carries the shift tables: the per-unit peak-shift report needs them
     gf_tol = solver.gf_tol
     gf_real_tol = solver.gf_real_tol
     gf_min_weight = solver.gf_min_weight
@@ -719,8 +676,6 @@ def calc_selfenergy(
         )
         gf_refine = replace(gf_refine, tables=tables, check_tables=check_tables)
     inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
-    # The retry is off unless asked for: it can cost as much as an unsettled Green's function.
-    settle_retry = gf_settle_retry is True and gf_settle is not False
     # Sort the flattened indices: the groups enumerate the impurity orbitals in
     # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but h/thermal_rho below
     # are in the input-basis orbital order. get_greens_function_moments indexes h
@@ -825,51 +780,39 @@ def calc_selfenergy(
         report(f"{label}Considering {len(es)} eigenstate(s) for the spectra.")
         report("Calculating interacting Green's function ...", flush=True)
         t_phase = time.perf_counter()
-        gf_run = {}
-        gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
-            matsubara_mesh=iw,
-            omega_mesh=w,
-            psis=psis,
-            es=es,
-            tau=tau,
-            basis=ground_state_basis,
-            hOp=h,
-            delta=delta,
-            blocks=inequivalent_blocks,
-            verbose=verbosity >= 1,
-            verbose_extra=verbosity >= 2,
-            reort=None,  # the Green's-function recurrence never reorthogonalizes
-            dN=dN,
-            occ_cutoff=occ_cutoff,
-            slaterWeightMin=slaterWeightMin,
-            sparse=sparse_green,
-            gf_method=gf_method,
-            gf_admission=gf_admission,
-            gf_admit_tol=gf_admit_tol,
-            gf_settle=gf_settle,
-            gf_settle_ratio=gf_settle_ratio,
-            gf_prune_tol=gf_prune_tol,
-            gf_first_shell_tol=gf_first_shell_tol,
-            gf_growth_tol=gf_growth_tol,
-            gf_growth_quiet=gf_growth_quiet,
-            gf_prune_rule=gf_prune_rule,
-            gf_refine=gf_refine,
-            gf_tol=gf_tol,
-            gf_real_tol=gf_real_tol,
-            ensemble_es=ensemble_es,
-            operator_families=lambda block: estimator.operator_families(block, sb),
-            run_out=gf_run if settle_retry else None,
-        )
 
-        gf_seconds = time.perf_counter() - t_phase
+        def solve_gf(solve_blocks, refine):
+            return get_Greens_function(
+                matsubara_mesh=iw,
+                omega_mesh=w,
+                psis=psis,
+                es=es,
+                tau=tau,
+                basis=ground_state_basis,
+                hOp=h,
+                delta=delta,
+                blocks=solve_blocks,
+                verbose=verbosity >= 1,
+                verbose_extra=verbosity >= 2,
+                reort=None,  # the Green's-function recurrence never reorthogonalizes
+                dN=dN,
+                occ_cutoff=occ_cutoff,
+                slaterWeightMin=slaterWeightMin,
+                sparse=sparse_green,
+                gf_prune_tol=gf_prune_tol,
+                gf_first_shell_tol=gf_first_shell_tol,
+                gf_refine=refine,
+                gf_tol=gf_tol,
+                gf_real_tol=gf_real_tol,
+                ensemble_es=ensemble_es,
+                operator_families=lambda block: estimator.operator_families(block, sb),
+            )
+
+        gs_matsubara, gs_realaxis, gf_report = solve_gf(inequivalent_blocks, gf_refine)
+
         if running["gf_caps"] is None:
             running["gf_caps"] = getattr(ground_state_basis, "_auto_gf_caps", None)
         _report_phase_time(report, "Green's function", t_phase)
-        if rank == 0 and gf_report is not None:
-            gf_report.add("ground state", check_ground_state_truncation(truncation, convergence))
-            # Always shown (this is the diagnostics report itself, not detail): only
-            # problem rows at the terse default, the full table from -v.
-            report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
         # get_Greens_function resolved the estimator's operator families; the impurity Green's
         # function is the leading block of each (the whole of it for the Dyson estimator).
         family_matsubara, family_realaxis = gs_matsubara, gs_realaxis
@@ -879,10 +822,37 @@ def calc_selfenergy(
         _check_gf_physical(comm, _impurity_gf(family_matsubara), "Matsubara")
         _check_gf_physical(comm, _impurity_gf(family_realaxis), "Real frequency")
 
-        # A self-energy that fails the causality check is attributed, and when the support settle can plausibly be
-        # blamed its units are solved again once, closure-only; the checks below then judge the (possibly new) G.
-        family_matsubara, family_realaxis, retry_note, retried = _settle_retry(
-            run=gf_run.get("run"),
+        # A block whose self-energy is acausal although none of its units hit the cap or the memory limit is solved
+        # once more with a tighter selection (replicated decision: rank 0 judges, the flags are broadcast, and every
+        # rank then makes the same collective call). The unit table below describes the result that is kept.
+        family_matsubara, family_realaxis, gf_report = _resolve_failing_blocks(
+            solve_gf,
+            gf_refine,
+            gf_prune_tol,
+            (family_matsubara, family_realaxis, gf_report),
+            judge=dict(
+                iw=iw,
+                w=w,
+                delta=delta,
+                estimator=estimator,
+                sb=sb,
+                blocks=inequivalent_blocks,
+                cluster_label=cluster_label,
+                tol=causality_tol,
+            ),
+            comm=comm,
+            report=report,
+        )
+        _check_gf_physical(comm, _impurity_gf(family_matsubara), "Matsubara")
+        _check_gf_physical(comm, _impurity_gf(family_realaxis), "Real frequency")
+        if rank == 0 and gf_report is not None:
+            gf_report.add("ground state", check_ground_state_truncation(truncation, convergence))
+            # Always shown (this is the diagnostics report itself, not detail): only
+            # problem rows at the terse default, the full table from -v.
+            report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
+        # A self-energy that fails the causality check is attributed (which units bound its accuracy); the checks
+        # below judge G as they always did.
+        retry_note = _attribute_failures(
             gf_report=gf_report,
             family_matsubara=family_matsubara,
             family_realaxis=family_realaxis,
@@ -895,14 +865,8 @@ def calc_selfenergy(
             comm=comm,
             report=report,
             cluster_label=cluster_label,
-            retry=settle_retry,
-            gf_seconds=gf_seconds,
             tol=causality_tol,
         )
-        gf_run.clear()  # the run held every unit's seeds and results; nothing needs them past this point
-        if retried:
-            _check_gf_physical(comm, _impurity_gf(family_matsubara), "Matsubara")
-            _check_gf_physical(comm, _impurity_gf(family_realaxis), "Real frequency")
 
         M = member_moments(psis, es, ground_state_basis)
         return {

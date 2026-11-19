@@ -550,88 +550,10 @@ def test_the_occupation_criterion_takes_no_convergence_override(tmp_path, key):
         load_input(_dc_input(tmp_path, table))
 
 
-# ------------------------------------------------- Green's-function admission policy
-
-
-def test_the_admission_policy_is_unspecified_when_the_file_does_not_name_it(written):
-    solver = build(load_input(written(SELFENERGY))).solver
-    assert solver.gf_method == "lanczos" and solver.gf_admission is None and solver.gf_admit_tol is None
-
-
-def test_the_admission_keys_reach_the_solver_options(written):
-    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "outer"\ngf_admit_tol = 1e-5\n'
-    solver = build(load_input(written(text))).solver
-    assert (solver.gf_method, solver.gf_admission) == ("bicgstab", "outer")
-    assert solver.gf_admit_tol == pytest.approx(1e-5)
-
-
-def test_auto_is_the_same_as_not_naming_the_policy(written):
-    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "auto"\n'
-    assert build(load_input(written(text))).solver.gf_admission is None
-
-
-@pytest.mark.parametrize(
-    "table,match",
-    [
-        ('gf_admission = "outer"\n', "needs gf_method='bicgstab'"),
-        ('gf_method = "bicgstab"\ngf_admit_tol = 1e-4\n', "only applies to gf_admission='outer'"),
-    ],
-    ids=["outer on the Lanczos kernel", "a threshold without the policy"],
-)
-def test_a_contradictory_solver_table_is_refused_with_its_location(written, table, match):
-    with pytest.raises(InputError, match=r"\[solver\].*" + match):
-        build(load_input(written(SELFENERGY + "\n[solver]\n" + table)))
-
-
-def test_a_zero_admission_threshold_is_refused(written):
-    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "outer"\ngf_admit_tol = 0\n'
-    with pytest.raises(InputError, match="gf_admit_tol"):
-        build(load_input(written(text)))
-
-
 def test_the_gf_tolerance_keys_reach_the_solver_options(written):
     solver = build(load_input(written(SELFENERGY + "\n[solver]\ngf_tol = 1e-8\ngf_real_tol = 1e-5\n"))).solver
     assert (solver.gf_tol, solver.gf_real_tol) == (1e-8, 1e-5)
     assert build(load_input(written(SELFENERGY))).solver.gf_real_tol is None
-
-
-def test_a_gf_tolerance_on_the_per_frequency_kernel_is_refused(written):
-    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_real_tol = 1e-5\n'
-    with pytest.raises(InputError, match="gf_real_tol"):
-        build(load_input(written(text)))
-
-
-def test_the_settle_keys_reach_the_solver_options(written):
-    solver = build(load_input(written(SELFENERGY))).solver
-    assert solver.gf_settle is None and solver.gf_settle_ratio is None, "absent: on, the knob decides the ratio"
-    for word, want in (("auto", None), ("on", True), ("off", False)):
-        text = SELFENERGY + f'\n[solver]\ngf_settle = "{word}"\n'
-        assert build(load_input(written(text))).solver.gf_settle is want
-    text = SELFENERGY + "\n[solver]\ngf_settle_ratio = 5\n"
-    assert build(load_input(written(text))).solver.gf_settle_ratio == 5.0
-
-
-@pytest.mark.parametrize(
-    "body,match",
-    [
-        ('gf_settle = "sometimes"\n', "gf_settle"),
-        ('gf_settle = "off"\ngf_settle_ratio = 2\n', "only applies with the support settle on"),
-        ('gf_method = "bicgstab"\ngf_settle = "on"\n', "applies only to gf_method='lanczos'"),
-        ("gf_settle_ratio = -1\n", "gf_settle_ratio"),
-    ],
-)
-def test_the_settle_keys_refuse_a_contradiction_by_name(written, body, match):
-    with pytest.raises(InputError, match=match):
-        build(load_input(written(SELFENERGY + "\n[solver]\n" + body)))
-
-
-def test_the_settle_retry_key_reaches_the_solver_options(written):
-    assert build(load_input(written(SELFENERGY))).solver.gf_settle_retry is None
-    for word, want in (("auto", None), ("on", True), ("off", False)):
-        text = SELFENERGY + f'\n[solver]\ngf_settle_retry = "{word}"\n'
-        assert build(load_input(written(text))).solver.gf_settle_retry is want
-    with pytest.raises(InputError, match="contradicts gf_settle off"):
-        build(load_input(written(SELFENERGY + '\n[solver]\ngf_settle = "off"\ngf_settle_retry = "on"\n')))
 
 
 def test_the_prune_keys_reach_the_solver_options(written):
@@ -646,9 +568,6 @@ def test_the_prune_keys_reach_the_solver_options(written):
     "body,match",
     [
         ("gf_prune_tol = 0\ngf_first_shell_tol = 1e-3\n", "pruning is switched off"),
-        ('gf_prune_tol = 1e-3\ngf_settle = "on"\n', "exclusive with the support settle"),
-        ("gf_prune_tol = 1e-3\ngf_settle_ratio = 2\n", "exclusive with the support settle"),
-        ('gf_method = "bicgstab"\ngf_prune_tol = 1e-3\n', "applies only to gf_method='lanczos'"),
     ],
 )
 def test_the_prune_keys_refuse_a_contradiction_by_name(written, body, match):
@@ -674,27 +593,3 @@ def test_the_refine_keys_reach_the_solver_options(written):
     assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, 1e-4, 0.2)
     with pytest.raises(InputError, match="need gf_refine_rounds"):
         build(load_input(written(SELFENERGY + "\n[solver]\ngf_refine_rounds = 0\ngf_refine_swap = 0.2\n")))
-
-
-def test_the_growth_tolerance_key_reaches_the_solver_options(written):
-    assert build(load_input(written(SELFENERGY))).solver.gf_growth_tol is None
-    text = SELFENERGY + "\n[solver]\ngf_prune_tol = 1e-4\ngf_growth_tol = 1e-5\n"
-    assert build(load_input(written(text))).solver.gf_growth_tol == 1e-5
-    with pytest.raises(InputError, match="pruning is switched off"):
-        build(load_input(written(SELFENERGY + "\n[solver]\ngf_prune_tol = 0\ngf_growth_tol = 1e-5\n")))
-
-
-def test_the_quiet_window_key_reaches_the_solver_options(written):
-    assert build(load_input(written(SELFENERGY))).solver.gf_growth_quiet is None
-    text = SELFENERGY + "\n[solver]\ngf_prune_tol = 1e-4\ngf_growth_quiet = 32\n"
-    assert build(load_input(written(text))).solver.gf_growth_quiet == 32
-    with pytest.raises(InputError, match="pruning is switched off"):
-        build(load_input(written(SELFENERGY + "\n[solver]\ngf_prune_tol = 0\ngf_growth_quiet = 8\n")))
-
-
-def test_the_prune_rule_key_reaches_the_solver_options(written):
-    assert build(load_input(written(SELFENERGY))).solver.gf_prune_rule is None
-    text = SELFENERGY + '\n[solver]\ngf_prune_tol = 1e-4\ngf_prune_rule = "accumulated"\n'
-    assert build(load_input(written(text))).solver.gf_prune_rule == "accumulated"
-    with pytest.raises(InputError, match="pruning is switched off"):
-        build(load_input(written(SELFENERGY + '\n[solver]\ngf_prune_tol = 0\ngf_prune_rule = "accumulated"\n')))

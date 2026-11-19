@@ -20,9 +20,6 @@ def _restore_what_the_rig_sets(monkeypatch):
     from impurityModel.ed import gf_solvers, selfenergy
 
     monkeypatch.setattr(selfenergy, "DEFAULT_CAUSALITY_TOL", selfenergy.DEFAULT_CAUSALITY_TOL)  # the rig sets 1e9
-    from impurityModel.ed import gf_recurrence
-
-    monkeypatch.setattr(gf_recurrence, "_PRUNE_RULE", "amplitude")
     monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", gf_solvers._MATRIX_MODE)
 
 
@@ -84,10 +81,10 @@ def test_two_finite_caps_are_final():
     assert (policy.gs, policy.gf, policy.from_memory) == (300, 900, False)
 
 
-def test_pruning_replaces_the_settle_in_the_toml_overrides():
-    assert fr._solver_overrides(False, 3.0, 1e-3, None, None, None, None) == {"gf_prune_tol": 1e-3}
-    assert fr._solver_overrides(False, None, None, None, None, None, None) == {"gf_settle": False}
-    assert fr._solver_overrides(None, None, None, 0.1, 3, 0.2, 0.05) == {
+def test_the_toml_overrides_carry_the_pruning_options():
+    assert fr._solver_overrides(1e-3, None, None, None, None) == {"gf_prune_tol": 1e-3}
+    assert fr._solver_overrides(None, None, None, None, None) == {}
+    assert fr._solver_overrides(None, 0.1, 3, 0.2, 0.05) == {
         "gf_first_shell_tol": 0.1,
         "gf_refine_rounds": 3,
         "gf_refine_tol": 0.2,
@@ -105,7 +102,7 @@ def test_the_replay_overrides_reach_the_options_built_from_a_toml_input(tmp_path
         swm=1e-6,
         cap=policy,
         cost_budget=None,
-        solver_overrides=fr._solver_overrides(None, None, 1e-3, None, 2, None, None),
+        solver_overrides=fr._solver_overrides(1e-3, None, 2, None, None),
     )
     assert basis.truncation_threshold is policy
     assert basis.slater_weight_min == 1e-6

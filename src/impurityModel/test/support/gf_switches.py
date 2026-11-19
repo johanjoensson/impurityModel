@@ -4,8 +4,7 @@ GF's recurrence. Not user knobs.
 
 ``_BICGSTAB_CLOSURE_FREEZE`` gates the per-frequency kernel's closure freeze (and the RIXS R1 chain's).
 ``_MATRIX_MODE`` is ``"auto"`` (the mode is priced per unit), ``"discovered"``, ``"retained"`` or ``"none"``. The
-block-Lanczos support settle is not a seam: switch it with the ``gf_settle`` solver option, or
-``block_Green_sparse(support_settle=False)``.
+(The block-Lanczos support settle is gone; pruned growth is the depth filter.)
 """
 
 from contextlib import contextmanager

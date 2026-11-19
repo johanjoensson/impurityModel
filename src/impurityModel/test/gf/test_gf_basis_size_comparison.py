@@ -44,10 +44,7 @@ def small():
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
     # The harness sets every knob it depends on; an exported one would leak into the cells it does not set.
-    for name in (
-        "GF_BICGSTAB_WARM_HISTORY",
-        "APPLY_ROW_CHUNKS",
-    ):
+    for name in ("APPLY_ROW_CHUNKS",):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -61,17 +58,16 @@ def test_uncapped_every_method_reproduces_the_exact_reference(small, method):
 
 
 def test_every_method_needs_the_same_uncapped_basis(small):
-    """Uncapped, all five reach the whole connectivity closure of the seeds."""
+    """Uncapped, every method reaches the whole connectivity closure of the seeds."""
     aim, mesh = small
     sizes = {m: run_cell(aim, mesh, m)["size"] for m in METHODS}
     assert len(set(sizes.values())) == 1, sizes
 
 
-@pytest.mark.parametrize("method", ["lanczos-cap", "bicgstab-cap"])
-def test_a_binding_cap_is_reported_and_costs_accuracy(small, method):
+def test_a_binding_cap_is_reported_and_costs_accuracy(small):
     aim, mesh = small
-    full = run_cell(aim, mesh, method)
-    cell = run_cell(aim, mesh, method, cap=int(0.6 * full["size"]))
+    full = run_cell(aim, mesh, "lanczos-cap")
+    cell = run_cell(aim, mesh, "lanczos-cap", cap=int(0.6 * full["size"]))
     assert cell["cap_hit"] and cell["size"] < full["size"]
     assert cell["dSigma"] > 1e-4 > full["dSigma"]
 
@@ -81,13 +77,6 @@ def test_a_cap_below_the_seed_support_freezes_on_the_seeds(small):
     aim, mesh = small
     cell = run_cell(aim, mesh, "lanczos-cap", cap=10)
     assert cell["cap_hit"] and cell["size"] == cell["seed_size"]
-
-
-def test_a_singular_G_is_a_failed_cell_not_a_crash_or_a_small_error(small):
-    """An amplitude cutoff above the seed amplitudes removes the seeds: G is singular, Sigma undefined."""
-    aim, mesh = small
-    cell = run_cell(aim, mesh, "bicgstab-swm", eta=0.5)
-    assert np.isinf(cell["dSigma_mats"]) or cell["dSigma_mats"] > 1e-2
 
 
 def test_pareto_keeps_only_points_that_improve_on_every_smaller_basis():
@@ -114,33 +103,19 @@ def spectators():
     return aim, Mesh(aim, OMEGA, MATSUBARA, DELTA, n_real=8, n_mats=4)
 
 
-@pytest.mark.parametrize("method", ["bicgstab-outer", "lanczos-pruned"])
-def test_importance_admission_excludes_the_spectator_determinants(spectators, method):
+def test_importance_admission_excludes_the_spectator_determinants(spectators):
     """The positive control. With the first shell kept whole the spectator-hole rows are in the start
     set (a coupling of 1e-5 still reaches the determinant), so nothing can be excluded; relaxing the
     first-shell cut is what lets the admission see that they do not matter."""
     aim, mesh = spectators
     closure = run_cell(aim, mesh, "lanczos-cap")["size"]
-    whole = run_cell(aim, mesh, method, eta=1e-3)
+    whole = run_cell(aim, mesh, "lanczos-pruned", eta=1e-3)
     assert whole["size"] == closure, "the strict first shell should hold every spectator row"
-    relaxed = run_cell(aim, mesh, method, eta=1e-3, shell_tol=1e-3)
+    relaxed = run_cell(aim, mesh, "lanczos-pruned", eta=1e-3, shell_tol=1e-3)
     # The Lanczos rule defers a row instead of banning it, so a deferred row re-enters when a stronger path reaches
     # it: on this model 744 of 1012 are kept (the banned rule kept 340, at dSigma 1e-4 against 7e-13 here).
-    assert relaxed["size"] < (0.6 if method == "bicgstab-outer" else 0.8) * closure
+    assert relaxed["size"] < 0.8 * closure
     assert relaxed["dSigma_mats"] < 1e-3
-
-
-def test_an_equal_cap_tells_the_two_methods_apart_or_the_prior_is_recorded(small):
-    """Prior P1 says capped Lanczos and capped BiCGSTAB keep the same basis for the same answer. The
-    harness records the ratio rather than asserting it, because the measurement is the point; this
-    only pins that both cells exist, are capped, and report errors at the same cap."""
-    aim, mesh = small
-    full = run_cell(aim, mesh, "lanczos-cap")["size"]
-    cap = int(0.75 * full)
-    lan, bic = run_cell(aim, mesh, "lanczos-cap", cap=cap), run_cell(aim, mesh, "bicgstab-cap", cap=cap)
-    assert lan["cap_hit"] and bic["cap_hit"]
-    assert lan["size"] <= cap and bic["size"] <= cap
-    assert np.isfinite(lan["dSigma"]) and np.isfinite(bic["dSigma"])
 
 
 # --- F-metal: the semicircular-bath SIAM with a truncated ground state ---------------------------------
@@ -173,10 +148,10 @@ def test_metal_seeds_are_a_small_fraction_of_the_closure(metal):
 def test_a_single_axis_mesh_scores_only_that_axis(metal):
     aim, _ = metal
     mats_only = Mesh(aim, np.array([0.0]), 1j * np.pi * 0.05 * (2 * np.arange(8) + 1), 0.1, n_real=0, n_mats=4)
-    cell = run_cell(aim, mats_only, "bicgstab-cap")
+    cell = run_cell(aim, mats_only, "lanczos-cap")
     assert cell["dSigma_mats"] is not None and cell["dSigma_real"] is None
     assert cell["dSigma"] == cell["dSigma_mats"] and cell["dSigma"] < 1e-6
-    result = run_grid(aim, mats_only, cap_fractions=(0.3,), etas=(1e-2,), swm_etas=(), methods=("lanczos-cap",))
+    result = run_grid(aim, mats_only, cap_fractions=(0.3,), etas=(1e-2,), methods=("lanczos-cap",))
     assert list(result["pareto_by"]) == ["dSigma_mats"]
     assert "dSigma_real" not in format_report("x", result)
 
@@ -289,7 +264,7 @@ def test_full_size_metal():
             runs.append((f"real delta={delta}", Mesh(aim, omega, matsubara, delta, n_real=8, n_mats=0)))
         for axis, mesh in runs:
             title = f"{label} {axis}"
-            result = run_grid(aim, mesh, swm_etas=(1e-4, 1e-5), progress=progress)
+            result = run_grid(aim, mesh, progress=progress)
             print("\n" + format_report(title, result), flush=True)
             dump[title] = result
             if out:
@@ -341,7 +316,7 @@ def test_full_size_geometry(fixture):
             runs.append((f"real delta={delta}", Mesh(aim, omega, matsubara, delta, n_real=8, n_mats=0, truth=exact)))
         for axis, mesh in runs:
             title = f"{head} {axis}"
-            result = run_grid(aim, mesh, swm_etas=(1e-4, 1e-5), progress=progress)
+            result = run_grid(aim, mesh, progress=progress)
             print("\n" + format_report(title, result), flush=True)
             dump[title] = result
             if out:

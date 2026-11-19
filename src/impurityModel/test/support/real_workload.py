@@ -13,7 +13,7 @@ on the evaluation mesh).
 Typical use (opt-in benchmarks, e.g. ``test_bicgstab_gf_real_workload.py``)::
 
     wl = load_workload("impmod_tests/FCC_Ni/impmod/.../impurityModel_data.h5")
-    result = run_selfenergy(wl, gf_method="bicgstab", n_iw=64, n_w=0, comm=comm)
+    result = run_selfenergy(wl, n_iw=64, n_w=0, comm=comm)
 
 The archives live outside this repository (``impmod_tests``); everything here fails with a
 clear message when the file is missing, so the callers can skip cleanly.
@@ -53,17 +53,8 @@ _CONSUMED_ATTRS = frozenset(
         "sparse_green",
         "gf_tol",
         "gf_real_tol",
-        "gf_method",
-        "gf_admission",
-        "gf_admit_tol",
-        "gf_settle",
-        "gf_settle_ratio",
-        "gf_settle_retry",
         "gf_prune_tol",
         "gf_first_shell_tol",
-        "gf_growth_tol",
-        "gf_growth_quiet",
-        "gf_prune_rule",
         "gf_refine_rounds",
         "gf_refine_tol",
         "gf_refine_swap",
@@ -79,7 +70,21 @@ _CONSUMED_ATTRS = frozenset(
 #: Attributes old runs recorded that no longer steer anything. They are reported as ``retired_attrs`` (not
 #: ``ignored_attrs``, which means "a replay would silently solve a different problem"): the replay derives its
 #: excitation bounds from its own ground state, so it can differ from the archived run's basis.
-_RETIRED_ATTRS = frozenset({"excitation_budget", "spin_flip_dj", "u_densify"})
+_RETIRED_ATTRS = frozenset(
+    {
+        "excitation_budget",
+        "spin_flip_dj",
+        "u_densify",
+        "gf_prune_rule",
+        "gf_growth_tol",
+        "gf_growth_quiet",
+        "gf_method",
+        "gf_admission",
+        "gf_admit_tol",
+        "gf_settle",
+        "gf_settle_ratio",
+    }
+)
 _BATH_FIT_ONLY = frozenset(
     {
         "bath_geometry",
@@ -221,21 +226,12 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "e_pt2_tol": _optional(attrs, "e_pt2_tol", float),
         "de2_min": _optional(attrs, "de2_min", float),
         "interaction_merges_blocks": _optional_bool(_attr(attrs, "interaction_merges_blocks")),
-        "gf_admission": _optional(attrs, "gf_admission", str),
-        "gf_admit_tol": _optional(attrs, "gf_admit_tol", float),
-        "gf_settle": _optional_bool(_attr(attrs, "gf_settle")),
-        "gf_settle_ratio": _optional(attrs, "gf_settle_ratio", float),
-        "gf_settle_retry": _optional_bool(_attr(attrs, "gf_settle_retry")),
         "gf_prune_tol": _optional(attrs, "gf_prune_tol", float),
         "gf_first_shell_tol": _optional(attrs, "gf_first_shell_tol", float),
-        "gf_growth_tol": _optional(attrs, "gf_growth_tol", float),
-        "gf_growth_quiet": _optional(attrs, "gf_growth_quiet", int),
-        "gf_prune_rule": _optional(attrs, "gf_prune_rule", str),
         "gf_refine_rounds": _optional(attrs, "gf_refine_rounds", int),
         "gf_refine_tol": _optional(attrs, "gf_refine_tol", float),
         "gf_refine_swap": _optional(attrs, "gf_refine_swap", float),
         "gf_min_weight": _optional(attrs, "gf_min_weight", float),
-        "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
         "h0": h0,
         "dc": dc,
@@ -272,7 +268,6 @@ def _subsample(mesh, n):
 
 def build_options(
     workload,
-    gf_method=None,
     truncation_threshold="archive",
     dN="archive",
     n_iw=None,
@@ -280,13 +275,8 @@ def build_options(
     gf_min_weight=None,
     gf_tol=None,
     gf_real_tol=None,
-    gf_settle=None,
-    gf_settle_ratio=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
-    gf_growth_tol=None,
-    gf_growth_quiet=None,
-    gf_prune_rule=None,
     cost_budget=None,
     gf_refine_rounds=None,
     gf_refine_tol=None,
@@ -299,11 +289,8 @@ def build_options(
     archive recorded is passed on (a recorded excitation budget is retired and reported as ``retired_attrs``);
     an attribute the archive does not record is left to the library default. Arguments as in
     :func:`run_selfenergy`; ``gf_min_weight=None`` takes the
-    archive's value (``None`` when unrecorded), and so does ``gf_method=None`` (``"lanczos"`` when unrecorded):
-    an archive written by a ``bicgstab`` run is not silently replayed as Lanczos.
+    archive's value (``None`` when unrecorded).
     """
-    if gf_method is None:
-        gf_method = workload.get("gf_method") or "lanczos"
     from impurityModel.ed import atomic_physics
     from impurityModel.ed.lie_algebra import tensors_to_operator
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
@@ -345,61 +332,24 @@ def build_options(
     solver_kwargs = dict(
         dense_cutoff=workload["dense_cutoff"],
         sparse_green=workload["sparse_green"],
-        gf_method=gf_method,
         gf_min_weight=workload.get("gf_min_weight") if gf_min_weight is None else gf_min_weight,
         gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
         gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
     )
     for key in (
-        "gf_admission",
-        "gf_admit_tol",
-        "gf_settle",
-        "gf_settle_ratio",
-        "gf_settle_retry",
         "gf_prune_tol",
         "gf_first_shell_tol",
-        "gf_growth_tol",
-        "gf_growth_quiet",
-        "gf_prune_rule",
         "gf_refine_rounds",
         "gf_refine_tol",
         "gf_refine_swap",
     ):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
-    # An explicit argument beats the archive's record (the freeze-replay rig sweeps these); switching the settle off
-    # drops the archive's ratio and retry, which only apply with it on.
-    if gf_settle is not None:
-        solver_kwargs["gf_settle"] = gf_settle
-        if gf_settle is False:
-            solver_kwargs.pop("gf_settle_ratio", None)
-            solver_kwargs.pop("gf_settle_retry", None)
-    if gf_settle_ratio is not None:
-        solver_kwargs["gf_settle_ratio"] = gf_settle_ratio
-    # Pruned growth replaces the settle: an explicit tolerance drops the archive's settle fields (the sweep's
-    # option beats the record), unless the caller set them too.
+    # An explicit argument beats the archive's record (the freeze-replay rig sweeps these).
     if gf_prune_tol is not None:
         solver_kwargs["gf_prune_tol"] = gf_prune_tol
-        for key in ("gf_settle_ratio", "gf_settle_retry"):
-            if (key == "gf_settle_ratio" and gf_settle_ratio is None) or key == "gf_settle_retry":
-                solver_kwargs.pop(key, None)
-        if solver_kwargs.get("gf_settle") is True and gf_settle is None:
-            solver_kwargs.pop("gf_settle")
-    elif gf_settle_ratio is not None or gf_settle is True:
-        # ...and an explicit settle replaces an archived pruning.
-        solver_kwargs.pop("gf_prune_tol", None)
-        solver_kwargs.pop("gf_first_shell_tol", None)
-        solver_kwargs.pop("gf_growth_tol", None)
-        solver_kwargs.pop("gf_growth_quiet", None)
-        solver_kwargs.pop("gf_prune_rule", None)
     if gf_first_shell_tol is not None:
         solver_kwargs["gf_first_shell_tol"] = gf_first_shell_tol
-    if gf_growth_tol is not None:
-        solver_kwargs["gf_growth_tol"] = gf_growth_tol
-    if gf_growth_quiet is not None:
-        solver_kwargs["gf_growth_quiet"] = gf_growth_quiet
-    if gf_prune_rule is not None:
-        solver_kwargs["gf_prune_rule"] = gf_prune_rule
     for key, value in (
         ("gf_refine_rounds", gf_refine_rounds),
         ("gf_refine_tol", gf_refine_tol),
@@ -413,7 +363,6 @@ def build_options(
 def run_selfenergy(
     workload,
     comm=None,
-    gf_method=None,
     truncation_threshold="archive",
     dN="archive",
     n_iw=None,
@@ -422,13 +371,8 @@ def run_selfenergy(
     gf_min_weight=None,
     gf_tol=None,
     gf_real_tol=None,
-    gf_settle=None,
-    gf_settle_ratio=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
-    gf_growth_tol=None,
-    gf_growth_quiet=None,
-    gf_prune_rule=None,
     cost_budget=None,
     gf_refine_rounds=None,
     gf_refine_tol=None,
@@ -440,8 +384,6 @@ def run_selfenergy(
     ----------
     workload : dict
         From :func:`load_workload`.
-    gf_method : str, optional
-        ``"lanczos"`` or ``"bicgstab"``; ``None`` (default) takes the archive's recorded kernel.
     truncation_threshold, dN
         ``"archive"`` keeps the recorded production setting; anything else overrides it
         (``dN`` bounds the excited-sector occupation window -- FCC Ni production runs
@@ -467,13 +409,12 @@ def run_selfenergy(
 
     Notes
     -----
-    The residual-PT2 tolerances and GF admission options the archive recorded are passed
+    The residual-PT2 tolerances and GF options the archive recorded are passed
     on (see :func:`build_options`); an archived excitation budget is retired and not replayed (the bounds are
     derived from the replay's own ground state), so a replay of an old archive can differ from the archived run.
     """
     model, meshes, basis, solver = build_options(
         workload,
-        gf_method=gf_method,
         truncation_threshold=truncation_threshold,
         dN=dN,
         n_iw=n_iw,
@@ -481,13 +422,8 @@ def run_selfenergy(
         gf_min_weight=gf_min_weight,
         gf_tol=gf_tol,
         gf_real_tol=gf_real_tol,
-        gf_settle=gf_settle,
-        gf_settle_ratio=gf_settle_ratio,
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
-        gf_growth_tol=gf_growth_tol,
-        gf_growth_quiet=gf_growth_quiet,
-        gf_prune_rule=gf_prune_rule,
         cost_budget=cost_budget,
         gf_refine_rounds=gf_refine_rounds,
         gf_refine_tol=gf_refine_tol,

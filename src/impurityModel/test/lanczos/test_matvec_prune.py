@@ -16,7 +16,6 @@ from mpi4py import MPI
 from impurityModel.ed import spectra
 from impurityModel.ed.BiCGSTAB import _make_matmat, block_bicgstab
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_apply, matvec_cut_after_sum
-from impurityModel.ed.gf_admission import start_set
 from impurityModel.ed.gf_primitives import _CappedBasisProxy
 from impurityModel.ed.gf_solvers import block_Green
 from impurityModel.ed.gf_units import enumerate_gf_units
@@ -235,24 +234,6 @@ def test_a_reject_everything_filter_empties_a_frozen_matvec(monkeypatch):
     assert not rejected
 
 
-@pytest.mark.mpi
-@pytest.mark.parametrize("stale", [False, True])
-def test_an_unfrozen_proxy_applies_unfiltered(stale):
-    """After ``unfreeze_support`` the matvec is the plain cut H v again: the filter is dropped, and even one
-    left behind (``stale``: a reject-everything filter planted after the unfreeze) is not applied."""
-    comm = MPI.COMM_WORLD
-    _, proxy = _frozen_matvec(0.4, comm)
-    assert proxy.apply_filter is not None
-    proxy.unfreeze_support()
-    assert proxy.apply_filter is None
-    proxy.cap = 10**6  # nothing to cap: every row of the cut H v is admitted
-    if stale:
-        proxy.apply_filter = KeyFilter(1)
-    states = _my_share(_states(), comm)
-    out = apply_and_redistribute(_siam_6(), ManyBodyState.from_states(states), proxy, 0.4, True)
-    _assert_rows_match(_gathered(_rows(out), comm), _block_reference(0.4))
-
-
 # --- The other call sites, end to end or at the site (each goes red with that site reverted to the
 # before-sum cut at -n 2, 3 and 4; the cutoffs are ones that discriminate there). ---------------
 
@@ -438,42 +419,6 @@ def test_a_row_whose_partials_cancel_is_dropped_after_the_sum():
     assert not set(cancelled) & set(reference)
     got = _gathered(_rows(apply_and_redistribute(_siam_6(), _split_seed(comm), _sector(comm), 0.0, True)), comm)
     _assert_rows_match(got, reference)
-
-
-def _start_keys(comm, seeds_block, shell_tol):
-    basis = _sector(comm) if comm is not None else None
-    seeds = seeds_block.to_states()
-    x0 = [ManyBodyState(width=1) for _ in seeds]
-    keys = start_set(_siam_6(), seeds_block, seeds, x0, 1e-3, comm, len(seeds), shell_tol, basis=basis)
-    if comm is None:
-        return set(keys)
-    out = set()
-    for part in comm.allgather(set(keys)):
-        out |= part
-    return out
-
-
-@pytest.mark.mpi
-@_multirank
-def test_the_admission_start_set_cuts_the_summed_shell():
-    """admission="outer" with a first-shell tolerance: the shared image of ``|A> + |B>``
-    gets 0.5 / sqrt(2) = 0.35 of the seed norm from each rank and 0.71 in total, so a 0.5 cut keeps
-    it only on the sum."""
-    comm = MPI.COMM_WORLD
-    *_, shared = _cancelling_seed()
-    serial = _start_keys(None, _split_seed(None, sign=+1.0), 0.5)
-    assert set(shared) <= serial
-    assert _start_keys(comm, _split_seed(comm, sign=+1.0), 0.5) == serial
-
-
-@pytest.mark.mpi
-@_multirank
-def test_the_admission_start_set_drops_a_cancelled_row():
-    comm = MPI.COMM_WORLD
-    *_, cancelled = _cancelling_seed()
-    serial = _start_keys(None, _split_seed(None), 0.0)
-    assert not set(cancelled) & serial
-    assert _start_keys(comm, _split_seed(comm), 0.0) == serial
 
 
 # --- End to end: a spectrum with a many-term transition operator (an XAS/NIXS-like seed). ------------

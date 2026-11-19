@@ -33,11 +33,11 @@ def test_words_are_unique():
 
 def test_parse_values_flags_and_leftovers():
     basis, solver, unused = parse_option_tokens(
-        ["Slater_Min", "1d-8", "dn", "3", "no_mv", "dense_green", "gf_settle", "off", "gf_admission", "auto"]
+        ["Slater_Min", "1d-8", "dn", "3", "no_mv", "dense_green", "gf_prune_tol", "0"]
         + ["truncation_threshold", "2e6", "gamma", "0.1"]
     )
     assert basis == {"slater_weight_min": 1e-8, "dN": 3, "mixed_valence": False, "truncation_threshold": 2_000_000}
-    assert solver == {"sparse_green": False, "gf_settle": False, "gf_admission": None}
+    assert solver == {"sparse_green": False, "gf_prune_tol": 0.0}
     assert unused == ["gamma", "0.1"]
 
 
@@ -45,8 +45,6 @@ def test_aliases_and_missing_value():
     assert parse_option_tokens(["e_pt2_tol", "1e-9"])[0] == {"e_pt2_tol": 1e-9}
     with pytest.raises(ValueError, match="needs a value"):
         parse_option_tokens(["gf_tol"])
-    with pytest.raises(ValueError, match="on or off"):
-        parse_option_tokens(["gf_settle", "maybe"])
     with pytest.raises(ValueError, match="positive"):
         parse_option_tokens(["e_pt2", "0"])
 
@@ -59,7 +57,7 @@ def test_parsed_kwargs_build_the_dataclasses():
 
 def test_attrs_round_trip():
     basis = BasisOptions(nominal_occ={0: 8}, dN=2, slater_weight_min=1e-7, e_pt2_tol=1e-9, chain_restrict=False)
-    solver = SolverOptions(gf_tol=1e-8, gf_settle=False, gf_prune_tol=0.0)
+    solver = SolverOptions(gf_tol=1e-8, gf_prune_tol=0.0)
     attrs = options_to_attrs(basis, solver)
     assert attrs["slater_min"] == 1e-7
     basis_kwargs, solver_kwargs = options_from_attrs(attrs)
@@ -69,7 +67,7 @@ def test_attrs_round_trip():
 
 def test_describe_uses_the_words_of_the_grammar():
     rows = dict(describe_options(BasisOptions(nominal_occ={0: 8}), SolverOptions()))
-    assert rows["GF support settle"] == "on"
+    assert rows["GF pruned growth threshold"] == "default (1e-3)"
     assert rows["Determinant cap (truncation_threshold)"] == "auto"
     rows = dict(
         describe_options(

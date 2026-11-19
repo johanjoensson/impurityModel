@@ -136,8 +136,7 @@ def _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta):
     part). The sign multiplies the mesh *and* the broadening so ``Im(z)`` keeps the sign of the
     unit's signed delta. Adding an eigenstate energy ``e`` to any returned axis gives exactly the
     ``omegaP`` frame :func:`calc_G` evaluates in -- the single source of that frame, shared by
-    the convergence monitor (:func:`_gf_eval_meshes`, subsampled) and the per-frequency BiCGSTAB
-    driver (full axes). Empty list when no mesh was requested.
+    the convergence monitor (:func:`_gf_eval_meshes`, subsampled) and the refinement scoring (full axes). Empty list when no mesh was requested.
     """
     sign = 1.0 if side_i == 0 else -1.0
     axes = []

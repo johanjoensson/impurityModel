@@ -17,6 +17,7 @@ from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
+from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
 
 # The RIXS drivers live in their own module; re-exported here for simulate_spectra and callers.
 from impurityModel.ed.rixs import calc_map, calc_tensor_map
@@ -778,6 +779,7 @@ def calc_spectra(
         slaterWeightMin=slaterWeightMin,
         solver_verbose=verbose,
         print_size=verbose,
+        prune_tol=DEFAULT_GF_PRUNE_TOL,
     )
 
     results = gf.run_units_distributed(

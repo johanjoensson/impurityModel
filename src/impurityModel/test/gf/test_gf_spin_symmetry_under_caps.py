@@ -20,7 +20,7 @@ NB = 7  # 16 spin-orbitals, a 4,900-determinant singlet; the removal/addition se
 CAP = 2500  # below the 3,920 each unit reaches: every unit freezes, and G moves ~5e-5 (3000 moves it 8e-11)
 
 
-def _green(comm, cap, method):
+def _green(comm, cap):
     aim = build_semicircle_siam(NB)
     basis = aim.basis(sorted(aim.gs.keys()), truncation_threshold=cap, comm=comm)
     gs = ManyBodyState(dict(aim.gs.items()) if comm is None or comm.rank == 0 else {}, width=1)
@@ -40,21 +40,19 @@ def _green(comm, cap, method):
         blocks=[[0], [1]],
         verbose=False,
         verbose_extra=False,
-        reort=True if method == "lanczos" else None,
+        reort=True,
         dN=None,
         occ_cutoff=0.0,
         slaterWeightMin=0.0,
         sparse=True,
-        gf_method=method,
     )
     return mat, real
 
 
 @pytest.mark.parametrize("comm", COMMS)
-@pytest.mark.parametrize("method", ["lanczos"])
-def test_spin_partner_units_cut_at_the_cap_give_equal_green_functions(comm, method):
-    mat, real = _green(comm, CAP, method)
-    full, _ = _green(comm, np.inf, method)  # collective: every rank, before any early return
+def test_spin_partner_units_cut_at_the_cap_give_equal_green_functions(comm):
+    mat, real = _green(comm, CAP)
+    full, _ = _green(comm, np.inf)  # collective: every rank, before any early return
     # Only the ranks that assemble the answer hold it; on those, a missing block is a failure.
     if comm is not None and comm.rank != 0:
         return

@@ -1,22 +1,18 @@
-r"""The BiCGSTAB solves on a frozen ``P H P`` (``gf_solvers._FrozenShiftedSystem``, ``GF_SUPPORT_FREEZE``).
+r"""The frozen ``P H P`` solves of the RIXS R1 chain (``gf_solvers._FrozenShiftedSystem``).
 
-Both BiCGSTAB drivers -- ``gf_method="bicgstab"`` (:func:`block_Green_bicgstab`) and the RIXS R1 fallback
-(``rixs._R1SolverChain``) -- solve one shift at a time on a sparse basis rebuilt per point, with a
-right-hand side that is the same for every shift of a unit. Once a point's solve admits nothing beyond its
-starting support, the remaining points solve on the frozen matrix, each checked against the full ``H``.
-The contract these tests pin:
+``rixs._R1SolverChain`` solves one incoming-energy shift at a time on a sparse basis rebuilt per point, with a
+right-hand side that is the same for every shift. Once a point's solve admits nothing beyond its starting support,
+the remaining points solve on the frozen matrix, each checked against the full ``H``. The contract these tests pin:
 
-* the frozen solves give the sparse ``G`` (to the solver tolerance), most points take them, and they
-  converge in BiCGSTAB itself, on every rank count (a rank-local reduction once sent every multi-rank
-  frozen point to GMRES, which hid it by getting ``G`` right anyway);
 * the frozen matvec is ``H`` restricted to ``P``; the leak check is ``(1 - P)(z - H) X`` above the cutoff
   relative to ``||Y||``, against a dense oracle on a ``P`` that is not closed;
-* a solution that leaks goes back to the sparse solve, warm-started, and stays there;
-* no freeze after a cap hit, nor on a unit's last point; a matrix that does not fit is not built;
-  ``GF_SUPPORT_FREEZE=0`` keeps every point sparse;
-* several eigenstates with complex seeds, and the residual check, on frozen points;
-* RIXS: the R1 chain and the full map take the frozen path and give the sparse result; its fallback;
+* the R1 chain and the full map take the frozen path and give the sparse result; a leaking solution falls back
+  to the sparse solve and stays there;
+* the weighted window applies to the sparse tier and to the leak check alike;
 * every rank takes the same decisions (``-n 2``/``-n 3``).
+
+(Until 2026-11 these tests shared a file with the per-frequency Green's-function driver, ``gf_method="bicgstab"``,
+which was removed; only the RIXS half survives.)
 """
 
 import numpy as np
@@ -26,44 +22,18 @@ from mpi4py import MPI
 from impurityModel.ed import gf_solvers
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix
 from impurityModel.ed.gf_primitives import FrozenColumnMatvec, block_to_local_dense
-from impurityModel.ed.gf_solvers import block_Green_bicgstab
-from impurityModel.ed.greens_function import _gf_signed_axes
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.gf.test_gf_truncation import _redistribute_as_width1
 from impurityModel.test.support import gf_oracles
-from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _n3_sector_dets, _seed_basis, _seeds, _siam_6
+from impurityModel.test.support.gf_oracles import DELTA, _n3_sector_dets, _seed_basis, _seeds, _siam_6
 from impurityModel.test.support.gf_switches import set_gf_switches
-
-ATOL = 1e-10
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_FREEZE", "APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
+    for name in ("GF_SUPPORT_FREEZE", "APPLY_ROW_CHUNKS"):
         monkeypatch.delenv(name, raising=False)
-
-
-def _complex_seeds():
-    """The default seeds with complex, column-specific phases: a missing conjugate shows."""
-    a, b = _seeds()
-    return [a * np.exp(0.7j), (b + a * 0.3j) * np.exp(-0.4j)]
-
-
-def _gf(comm=None, seeds=None, es=(0.0,), cap=10**9, omega=OMEGA, **kw):
-    basis = _seed_basis(cap=cap, comm=comm)
-    full = []
-    for _ in es:
-        full += list(seeds if seeds is not None else _seeds())
-    seeds_r = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
-    z_axes = _gf_signed_axes(None, omega, 0, DELTA)
-    return block_Green_bicgstab(_siam_6(), seeds_r, basis, list(es), 2, z_axes, atol=ATOL, **kw)
-
-
-def _assert_same_g(G, G_ref, rel=1e-8):
-    scale = max(np.abs(g).max() for g in G_ref)
-    for g, g_ref in zip(G, G_ref):
-        np.testing.assert_allclose(g, g_ref, atol=rel * scale)
 
 
 def _sparse(monkeypatch, fn, *args, **kwargs):
@@ -72,25 +42,6 @@ def _sparse(monkeypatch, fn, *args, **kwargs):
         return fn(*args, **kwargs)
     finally:
         set_gf_switches(monkeypatch, closure_freeze="1")
-
-
-def test_the_frozen_solves_give_the_sparse_g_and_converge_in_bicgstab(monkeypatch):
-    G, stats = _gf()
-    assert stats["frozen_points"] > len(OMEGA) // 2, stats["frozen_points"]
-    assert stats["frozen_fallbacks"] == 0
-    assert stats["gmres_points"] == 0, "a frozen solve escalated to GMRES"
-    assert sum(pt["frozen"] for pt in stats["points"]) == stats["frozen_points"]
-    G_sparse, sparse_stats = _sparse(monkeypatch, _gf)
-    assert sparse_stats["frozen_points"] == 0
-    _assert_same_g(G, G_sparse)
-
-
-def test_several_eigenstates_with_complex_seeds(monkeypatch):
-    """The frozen system is per eigenstate (same seeds, its own shift), and G is <seed|X>, conjugated."""
-    G, stats = _gf(seeds=_complex_seeds(), es=(0.0, 0.4))
-    assert stats["frozen_points"] > len(OMEGA), "both eigenstates froze"
-    G_sparse, _ = _sparse(monkeypatch, _gf, seeds=_complex_seeds(), es=(0.0, 0.4))
-    _assert_same_g(G, G_sparse)
 
 
 def _p_short_of_the_sector(comm=None):
@@ -146,71 +97,6 @@ def test_the_leak_check_is_the_part_outside_p_above_the_relative_cutoff():
     np.testing.assert_allclose(got, want, rtol=1e-12)
     uncut = np.sqrt(np.sum(np.abs(outside) ** 2, axis=0)) / system.seed_norms
     assert np.all(got < uncut), "the cut is applied"
-
-
-def test_a_leaking_solution_goes_back_to_the_sparse_solve_and_stays(monkeypatch):
-    G_sparse, _ = _sparse(monkeypatch, _gf)
-    monkeypatch.setattr(gf_solvers._FrozenShiftedSystem, "boundary", lambda self, *a: np.full(self.n_cols, 1.0))
-    warm = []
-    real = gf_solvers.solve_shifted_block
-
-    def recording(A_op, x0, *a, **k):
-        if isinstance(x0, ManyBodyState):  # the sparse solves (the frozen one passes dense rows)
-            warm.append(len(x0) > 0)
-        return real(A_op, x0, *a, **k)
-
-    monkeypatch.setattr(gf_solvers, "solve_shifted_block", recording)
-    G, stats = _gf()
-    assert stats["frozen_fallbacks"] == 1 and stats["frozen_points"] == 0, "one fallback, then no refreeze"
-    assert all(warm[1:]), "the sparse solves after the fallback are warm-started"
-    _assert_same_g(G, G_sparse)
-
-
-def test_no_freeze_after_a_cap_hit(monkeypatch):
-    built = []
-    real = gf_solvers._freeze_bicgstab_support
-    monkeypatch.setattr(gf_solvers, "_freeze_bicgstab_support", lambda *a, **k: built.append(1) or real(*a, **k))
-    _, stats = _gf(cap=8)
-    assert stats["cap_hit"]
-    assert not built and stats["frozen_points"] == 0 and stats["frozen_fallbacks"] == 0
-
-
-def test_no_freeze_on_a_units_last_point(monkeypatch):
-    built = []
-    real = gf_solvers._freeze_bicgstab_support
-    monkeypatch.setattr(gf_solvers, "_freeze_bicgstab_support", lambda *a, **k: built.append(1) or real(*a, **k))
-    _gf(omega=OMEGA[:1])
-    assert not built, "a single point has no later point to use the frozen matrix"
-
-
-def test_a_matrix_that_does_not_fit_is_not_built(monkeypatch):
-    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
-    built = []
-    monkeypatch.setattr(gf_solvers, "_FrozenShiftedSystem", lambda *a, **k: built.append(1))
-    _, stats = _gf()
-    assert not built and stats["frozen_points"] == 0
-
-
-def test_the_fit_check_budgets_the_solvers_dense_blocks(monkeypatch):
-    seen = []
-    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: seen.append(k["work_blocks"]) or True)
-    monkeypatch.setenv("GF_GMRES_RESTART", "40")
-    _gf()
-    assert seen and all(w == 50 for w in seen), seen
-
-
-def test_the_residual_check_runs_on_frozen_points(monkeypatch):
-    monkeypatch.setenv("GF_BICGSTAB_RESIDUAL_CHECK", "1")
-    _, stats = _gf()
-    frozen = [pt for pt in stats["points"] if pt["frozen"]]
-    assert frozen and all("dG_bound" in pt for pt in frozen)
-    assert all(np.all(pt["boundary"] <= 1e-9) for pt in frozen), "a frozen point passed its leak check"
-
-
-def test_off_switch(monkeypatch):
-    set_gf_switches(monkeypatch, closure_freeze="0")
-    _, stats = _gf()
-    assert stats["frozen_points"] == 0 and stats["frozen_size"] is None
 
 
 # --------------------------------------------------------------------------- RIXS R1
@@ -292,46 +178,6 @@ def test_the_rixs_map_passes_the_knob_and_gives_the_sparse_map(monkeypatch):
     sparse = _sparse(monkeypatch, _run_rixs, op, psis, es, tin, tout, dets)
     assert flags and not any(flags), flags
     np.testing.assert_allclose(frozen, sparse, atol=1e-6 * np.abs(sparse).max())
-
-
-# --------------------------------------------------------------------------- MPI
-
-
-@pytest.mark.mpi
-def test_every_rank_takes_the_same_decisions_and_bicgstab_converges(monkeypatch):
-    comm = MPI.COMM_WORLD
-    G, stats = _gf(comm=comm)
-    assert stats["frozen_points"] > 0
-    assert stats["gmres_points"] == 0, "a frozen solve escalated to GMRES (a rank-local reduction?)"
-    assert len(set(comm.allgather((stats["frozen_points"], stats["frozen_size"], stats["iterations"])))) == 1
-    serial_iterations = _gf()[1]["iterations"]
-    assert stats["iterations"] <= 2 * serial_iterations, (stats["iterations"], serial_iterations)
-    G_sparse, _ = _sparse(monkeypatch, _gf, comm=comm)
-    _assert_same_g(G, G_sparse, rel=1e-9)
-
-
-@pytest.mark.mpi
-@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the replication is between ranks")
-def test_the_leak_norms_are_the_same_bits_on_every_rank(monkeypatch):
-    """The accept/fallback verdict picks different collectives, so the norms it compares must not differ by a
-    rank's Allreduce rounding. Simulated here by a reduction that returns rank-dependent last bits."""
-    from impurityModel.ed import gf_primitives
-
-    comm = MPI.COMM_WORLD
-    reduce = gf_primitives._allreduced_col_norms2
-    monkeypatch.setattr(
-        gf_primitives,
-        "_allreduced_col_norms2",
-        lambda block, n_cols, c: reduce(block, n_cols, c) * (1.0 + 1e-15 * comm.rank),
-    )
-    basis, op = _p_short_of_the_sector(comm=comm)
-    rng = np.random.default_rng(5)
-    X = rng.normal(size=(len(basis.local_basis), 2)) + 1j * rng.normal(size=(len(basis.local_basis), 2))
-    got = gf_primitives.boundary_residual(
-        (0.7 + 1j * DELTA) - op, ManyBodyState.from_keys_and_amps(basis._keys, X), basis, 2, 0.0, comm
-    )
-    assert np.all(got > 0), "premise: X leaks out of P"
-    assert len({g.tobytes() for g in comm.allgather(got)}) == 1
 
 
 class _SkewedComm:

@@ -48,7 +48,6 @@ def test_the_other_solver_attributes_are_passed_on_too(tmp_path):
         de2_min=1e-12,
         gf_real_tol=1e-4,
         gf_min_weight=1e-3,
-        gf_method="lanczos",
     )
     workload = load_workload(lanczos_archive)
     _model, _meshes, basis, solver = build_options(workload, gf_real_tol="archive")
@@ -56,10 +55,6 @@ def test_the_other_solver_attributes_are_passed_on_too(tmp_path):
     assert solver.gf_real_tol == 1e-4
     assert solver.gf_min_weight == 1e-3, "the archive's thermal-weight cutoff, unless the caller overrides it"
     assert build_options(workload, gf_min_weight=0.5)[3].gf_min_weight == 0.5
-    # ... and the admission policy on a BiCGSTAB run.
-    bicgstab_archive = _archive(tmp_path / "bicgstab.h5", gf_admission="outer", gf_admit_tol=1e-3, gf_method="bicgstab")
-    bicgstab = build_options(load_workload(bicgstab_archive), gf_method="bicgstab")[3]
-    assert (bicgstab.gf_admission, bicgstab.gf_admit_tol) == ("outer", 1e-3)
 
 
 def test_an_attribute_nobody_consumes_is_reported_not_dropped(tmp_path):
@@ -78,17 +73,15 @@ def test_the_bath_fit_provenance_is_not_flagged(tmp_path):
     assert load_workload(path)["ignored_attrs"] == []
 
 
-def test_the_kernel_the_archive_recorded_is_the_one_replayed(tmp_path):
-    """An archive written by a bicgstab run was once replayed as Lanczos, and its attribute counted as consumed."""
-    recorded = load_workload(_archive(tmp_path / "b.h5", gf_method="bicgstab"))
-    assert recorded["gf_method"] == "bicgstab"
-    assert build_options(recorded)[3].gf_method == "bicgstab"
-    assert build_options(recorded, gf_method="lanczos")[3].gf_method == "lanczos", "an explicit choice still wins"
-    assert build_options(load_workload(_archive(tmp_path / "u.h5")))[3].gf_method == "lanczos", "unrecorded: Lanczos"
+def test_retired_kernel_and_admission_attributes_are_reported_as_retired(tmp_path):
+    """An archive from a bicgstab run replays on the one Lanczos path; its attributes are retired, not ignored."""
+    workload = load_workload(_archive(tmp_path / "b.h5", gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-3))
+    assert workload["ignored_attrs"] == []
+    assert workload["retired_attrs"] == ["gf_admission", "gf_admit_tol", "gf_method"]
 
 
 def test_the_archived_prune_options_reach_the_solver_and_an_explicit_argument_beats_them(tmp_path):
-    archive = _archive(tmp_path / "p.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
+    archive = _archive(tmp_path / "p.h5", gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
     workload = load_workload(archive)
     assert workload["ignored_attrs"] == []
     solver = build_options(workload)[3]
@@ -97,12 +90,11 @@ def test_the_archived_prune_options_reach_the_solver_and_an_explicit_argument_be
     assert (solver.gf_prune_tol, solver.gf_first_shell_tol) == (3e-3, 0.0)
 
 
-def test_an_explicit_prune_tolerance_replaces_the_archived_settle(tmp_path):
-    archive = _archive(tmp_path / "s.h5", gf_method="lanczos", gf_settle=True, gf_settle_ratio=3.0)
+def test_an_explicit_prune_tolerance_reaches_the_solver_options(tmp_path):
+    archive = _archive(tmp_path / "s.h5", gf_method="lanczos")
     workload = load_workload(archive)
-    assert build_options(workload)[3].gf_settle_ratio == 3.0
-    solver = build_options(workload, gf_prune_tol=1e-3)[3]
-    assert solver.gf_prune_tol == 1e-3 and (solver.gf_settle, solver.gf_settle_ratio) == (None, None)
+    assert build_options(workload)[3].gf_prune_tol is None
+    assert build_options(workload, gf_prune_tol=1e-3)[3].gf_prune_tol == 1e-3
 
 
 def test_the_bath_fit_and_dc_cap_attributes_are_not_flagged(tmp_path):
@@ -142,30 +134,3 @@ def test_the_archived_dc_cap_reaches_the_cap_ledger(tmp_path, monkeypatch):
     assert seen["cap_ledger"].ceiling == 4321
     real_workload.run_selfenergy(load_workload(_archive(tmp_path / "b.h5")), comm=None)
     assert seen["cap_ledger"].ceiling is None
-
-
-def test_the_archived_growth_tolerance_reaches_the_solver_and_an_explicit_argument_beats_it(tmp_path):
-    archive = _archive(tmp_path / "g.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_growth_tol=1e-5)
-    workload = load_workload(archive)
-    assert workload["ignored_attrs"] == []
-    assert build_options(workload)[3].gf_growth_tol == 1e-5
-    assert build_options(workload, gf_growth_tol=1e-6)[3].gf_growth_tol == 1e-6
-    assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_growth_tol is None
-
-
-def test_the_archived_quiet_window_reaches_the_solver_and_an_explicit_argument_beats_it(tmp_path):
-    archive = _archive(tmp_path / "q.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_growth_quiet=32)
-    workload = load_workload(archive)
-    assert workload["ignored_attrs"] == []
-    assert build_options(workload)[3].gf_growth_quiet == 32
-    assert build_options(workload, gf_growth_quiet=0)[3].gf_growth_quiet == 0
-    assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_growth_quiet is None
-
-
-def test_the_archived_prune_rule_reaches_the_solver_and_an_explicit_argument_beats_it(tmp_path):
-    archive = _archive(tmp_path / "r.h5", gf_method="lanczos", gf_prune_tol=1e-4, gf_prune_rule="accumulated")
-    workload = load_workload(archive)
-    assert workload["ignored_attrs"] == []
-    assert build_options(workload)[3].gf_prune_rule == "accumulated"
-    assert build_options(workload, gf_prune_rule="amplitude")[3].gf_prune_rule == "amplitude"
-    assert build_options(load_workload(_archive(tmp_path / "u.h5", gf_method="lanczos")))[3].gf_prune_rule is None

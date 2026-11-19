@@ -4,7 +4,7 @@ This document explains the physics and the algorithms behind every way this code
 an interacting Green's function, written for computational physicists rather than specialists
 in numerical linear algebra. It covers the objects (the impurity model, the finite-temperature
 Green's function, the variational many-body basis), the three resolvent engines
-(`gf_method="lanczos"`, `"bicgstab"`, and the retired spectrum slicing, kept here as a record), and the two
+(the block-Lanczos continued fraction, which is the only Green's-function engine now, and the retired per-frequency BiCGSTAB driver and spectrum slicing, kept here as a record), and the two
 production use cases — the self-energy for self-consistent DFT+DMFT and core-level
 spectroscopy. Every performance or accuracy claim quoted here was *measured* on this code; the
 raw tables live in the engineering logs under `doc/plans/` and are cited where relevant.
@@ -246,7 +246,7 @@ Casimirs ($S^2, L^2, J^2$) over whole shells.
 
 ---
 
-## 3. Method I — the block-Lanczos continued fraction (`gf_method="lanczos"`)
+## 3. Method I — the block-Lanczos continued fraction (the one Green's-function engine)
 
 ### 3.1 The Haydock recursion
 
@@ -324,20 +324,6 @@ $\mathrm{Im}\,\Sigma_{ii} \le 0$ and is rejected by the physicality guard. When 
 this hard, the resolution is more retained weight (larger cap, more ranks) or a better
 subspace, not a different solver.
 
-#### The support settle
-
-Below the cap, a unit's support can still stop growing on its own: once, over 16 blocks, the amplitude the
-normalised next block carries on newly reached determinants stays at or below `ratio x slaterWeightMin` (and is not
-rising), the unit continues as the exact block Lanczos of $PHP$ from there (`FreezeRule`;
-`doc/gf_support_pipeline.md`). At `ratio` $\le 1$ every row it excludes would have been cut from that next block
-anyway; above 1 it also excludes rows the cutoff would have kept, and the size of that effect is measured, not
-bounded. At the default ratio 3, on the NiO 10-bath archive (iterations 1 and 28, `slater_min` $10^{-8}$ and
-$10^{-10}$), the settle changed $\Sigma(\omega)$ by at most $9.3\times10^{-9}$ of the causality guard's pointwise
-headroom ($|\Delta\Sigma| \le 10^{-9}$ eV) and left $\Sigma(i\omega_n)$ unchanged to the printed precision; at
-ratio 10 the same comparison reached $7\times10^{-4}$ of the headroom. For scale, moving `slater_min` from
-$10^{-10}$ to $10^{-8}$ changes $\Sigma(\omega)$ by about $10^{-5}$ eV on the same model
-(`doc/plans/gf_support_freeze_redesign.md`).
-
 ### 3.5 Work distribution
 
 All Green's-function drivers share one distribution engine: the flat work units are
@@ -357,7 +343,13 @@ and cannot serve estimators that need whole-block recurrences — `doc/reviews/g
 
 ---
 
-## 4. Method II — per-frequency Krylov solves (`gf_method="bicgstab"`)
+## 4. Method II — per-frequency Krylov solves (retired as a Green's-function driver; still the RIXS solver)
+
+> The Green's-function driver described in 4.1 (`gf_method="bicgstab"`, with `gf_admission` / `gf_admit_tol`)
+> was removed; every Green's function is now the block-Lanczos continued fraction of section 3. What remains of
+> this machinery is `block_bicgstab` / `block_gmres` through `solve_shifted_block`, used by the RIXS
+> intermediate-state solves, where the right-hand side depends on the frequency. Sections 4.1-4.4 stay as the
+> measured record and as the background for those solves.
 
 ### 4.1 The resolvent as a linear system
 
@@ -439,9 +431,6 @@ frequency* — which is exactly the RIXS intermediate-state problem
 |---|---|---|
 | Matsubara-only self-energy, healthy basis | `lanczos`, `reort="none"` | one recurrence, no store, measured excellent |
 | real-axis spectra, healthy basis | `lanczos`, `reort="none"` (or `partial` for belt-and-braces) | same; ghosts smeared by $\delta$ |
-| cap-frozen basis where the CF monitor cannot converge | `bicgstab` | per-point residual certificates; measured all-converged where Lanczos stalled |
-| real axis at very small $\delta$ with strict per-point accuracy | `bicgstab` (+ automatic GMRES fallback) | stagnation handled and *reported* |
-| far more ranks than matvec parallelism can absorb | `bicgstab` | frequency axis is embarrassingly parallel |
 | frequency-dependent right-hand side (RIXS $R_1$) | `block_bicgstab` directly | no shared Krylov space exists to exploit |
 
 ---
@@ -572,11 +561,11 @@ matrices underneath it.
 
 ### 6.2 Practical recipe
 
-Production defaults (what the RSPt interface records in the archives): `gf_method="lanczos"`,
+Production defaults (what the RSPt interface records in the archives):
 `reort="none"`, `sparse_green=True`, `truncation_threshold=None` (auto-sized from per-rank
 RAM by the memory model below), `dN=None`. The diagnostics report printed at the end of every
 run is the honest summary — read it: `thermal_cut` (ensemble truncation → auto-retry),
-`basis_cap` (cap hit; result exact on the retained subspace), `lanczos`/`bicgstab` (solver
+`basis_cap` (cap hit; result exact on the retained subspace), `lanczos` (solver
 convergence, GMRES rescues), `mesh_density` (quadrature quality at the given $\delta$),
 `causality` (hard failure). The memory model
 (`memory_estimate.estimate_gf_peak_bytes`) prices a run as
@@ -655,22 +644,13 @@ solve per $\omega_{\mathrm{in}}$ regardless of how many polarization pairs are r
 
 ## 8. Decision guide and knob reference
 
-**Method choice** — the table of section 4.4, plus: spectra drivers (`get_spectra`) currently
-run Method I internally (their result contract is continued-fraction coefficients); the
-self-energy path accepts `--gf-method {lanczos,bicgstab}` (`sliced` and `cipsi` are retired: §5,
-`doc/plans/gf_cipsi_frequency_truncation.md`).
+**Method choice** — there is one: the block-Lanczos continued fraction (spectra drivers and the
+self-energy path both use it). `bicgstab` (as `--gf-method`), `sliced` and `cipsi` are retired: §4, §5,
+`doc/plans/gf_cipsi_frequency_truncation.md`.
 
-**Start with `lanczos`.** It is the default for a reason: one recurrence serves the whole mesh,
-it retains no Krylov store at `reort=none`, and on every workload measured on this branch it is
-simultaneously the fastest *and* the most memory-frugal method. The other two exist for
-specific reasons, both narrow:
+**Why one method.** One recurrence serves the whole mesh, it retains no Krylov store at `reort=none`, and on every workload measured on this branch it was simultaneously the fastest *and* the most memory-frugal method. The per-frequency driver cost ~5x wall end-to-end (~12x in the GF phase) and more memory than `reort=none`, and was removed.
 
-| method | reach for it when | measured cost |
-|---|---|---|
-| `lanczos` | always, first | baseline |
-| `bicgstab` | the capped recurrence's monitor cannot converge on a frozen subspace but per-point solves can (FCC Ni), or you want embarrassing frequency parallelism / RIXS intermediate states | ~5x wall end-to-end (~12x in the GF phase); **more** memory than `reort=none`, not less |
-
-The memory hope that motivated both non-default methods — that a per-point or per-slice basis
+The memory hope that motivated the retired methods — that a per-point or per-slice basis
 is smaller than the mesh-union basis — is **false on both production workloads**, for the same
 underlying reason: the live basis is the H-connectivity closure of the seed support, and
 neither restricting to one frequency nor filtering in energy shrinks that closure. What *does*
@@ -685,7 +665,6 @@ shrink it: the occupation restrictions (§1.4) and the determinant cap (§3.4).
 | `dN` (+ `imp/val/con_change`) | charge-fluctuation window of the excited sector (§1.4) | physical prior; measured **ineffective on metals** (FCC Ni: no reduction, 12% slower) |
 | `slaterWeightMin` | amplitude cutoff on states/seeds | sets the accuracy floor $\sim$`slaterWeightMin`$^2$ of the CF monitor |
 | `delta` | broadening: resolution on the real axis, core-hole lifetime in spectra | smaller δ = harder solves near poles (§4.2); mesh must resolve it (`check_mesh_density`) |
-| `GF_BICGSTAB_ATOL` / `MAX_ITER` / `RESTARTS` | per-point solve contract (§4.2) | default `1e-8`; tighten to `1e-10` for real-axis Σ at small δ |
 | `GF_GMRES_RESTART` / `MAX_RESTARTS` | fallback Arnoldi depth (§4.3) | 40 default; bounds the fallback's memory transient |
 | `gf_units._EIGENSTATE_GROUP` | unit granularity (§3.5) | grouping shares matvecs |
 | `num_wanted`, `tau` | thermal ensemble (§2.4) | auto-retry doubles `num_wanted` on the truncation diagnostic |

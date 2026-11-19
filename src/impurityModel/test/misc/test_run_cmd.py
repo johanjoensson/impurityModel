@@ -165,7 +165,7 @@ def test_show_resolved_names_where_each_value_came_from(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "energies below are in eV" in out
     assert "default for [spectroscopy]" in out, "the per-calculation defaults must be attributed"
-    assert "[environment]" in out and "GF_BICGSTAB_ATOL" in out
+    assert "[environment]" in out and "GF_GMRES_RESTART" in out
     # The distinction that makes this verb worth having: a value the file set must not be
     # reported as a default. Every key here has a default, so without tracking what the file
     # actually wrote, everything would be labelled "default" -- including what the user typed.

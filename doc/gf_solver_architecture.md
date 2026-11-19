@@ -81,51 +81,20 @@ test-only stub in `test/gf/test_gf_operator_families.py` checks two things:
 - the stub family's full `2n x 2n` `G` against the exact Lehmann oracle, on every kernel;
 - its seed-Gram cross block `<{q_a, c_b^dag}>` against production's `sigma_static`.
 
-## Resolvent kernel: the `gf_method` switch
+## Resolvent kernel
 
-`get_Greens_function(...)` in `greens_function.py` picks the resolvent kernel with the
-`gf_method` argument:
+Every interacting Green's function unit is one block-Lanczos recurrence, whose continued fraction serves the
+**whole frequency mesh** at once (`get_Greens_function` -> `_block_green_group` -> `block_green_impl` (array) /
+`block_Green_sparse` (state)). There is no kernel switch: the per-frequency BiCGSTAB driver and its `gf_method`,
+`gf_admission` and `gf_admit_tol` options were removed. An input that still carries them is refused by the
+reader (TOML), the CLI parser and `SolverOptions`; the archive replay rig lists them as retired attributes and
+ignores them. The per-frequency BiCGSTAB/GMRES solvers survive only for the
+frequency-dependent right-hand sides of RIXS (`solve_shifted_block`, below).
 
-| `gf_method` | Driver | Per-unit kernel | When |
-| --- | --- | --- | --- |
-| `"lanczos"` *(default)* | `get_Greens_function` | `_block_green_group` → `block_green_impl` (array) / `block_Green_sparse` (state) | One block-Lanczos recurrence per unit builds a continued fraction serving the **whole frequency mesh** at once. The workhorse. |
-| `"bicgstab"` | `_get_greens_function_bicgstab` | `block_Green_bicgstab` | One linear solve **per frequency point**, basis rebuilt-and-discarded each point. Wins on memory (the live basis never exceeds one point's support) at a time cost. |
-
-### Basis growth of the per-frequency kernel: `gf_admission`
-
-Each per-frequency solve grows its basis from the seeds. `gf_admission` chooses how:
-
-| `gf_admission` | Behaviour |
-| --- | --- |
-| `all` | Every determinant the solver produces is admitted, up to the cap (`truncation_threshold`). |
-| `outer` | Solve on a **frozen** basis, measure the residual outside it, admit only the determinants whose score clears `gf_admit_tol`, re-solve (`gf_admission.py`). Admission happens only *between* solves, so every solve is the exact resolvent of the projected `P H P`. Switches on a measured bound on the error of `G` (`GF_BICGSTAB_RESIDUAL_CHECK`, derived), reported in the diagnostics as `truncation_error_bound`. |
-| unset | The `GF_BICGSTAB_ADMISSION` environment knob decides, else `all`. |
-
-It needs `gf_method = "bicgstab"`; any other combination is refused where the options are built
-(`SolverOptions`), not ignored. The same three settings -- `gf_method`, `gf_admission`,
-`gf_admit_tol` -- are accepted by every front-end, in one vocabulary:
-
-| Front-end | Where |
-| --- | --- |
-| RSPt solver line | `gf_method bicgstab gf_admission outer gf_admit_tol 1e-5` |
-| TOML | `[solver]` keys of the same names (`gf_admission = "auto"` is "unset") |
-| CLI | `--gf-method bicgstab --gf-admission outer --gf-admit-tol 1e-5` |
-| Python | `SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)` |
-
-They are recorded in the HDF5 archive and replayed by `--from-archive`; a flag that is not passed
-leaves the recorded value alone.
-
-**What the measurements support** (`doc/plans/gf_basis_size_comparison.md`; model problems with an
-exact reference, unrestricted, not yet a real archive). `outer` needed 1.3-3.2x fewer
-determinants than the best plain cap on the Matsubara axis of a strongly hybridized metal, and
-tighter thresholds converge steadily (the error bound says what was left out). It did **not**
-beat the plain cap on the Matsubara axis of the NiO-like model in the star basis (it did in the chain-like
-bases), and no method shrinks the basis
-much on the real axis at narrow broadening. The per-frequency kernel costs one solve per point,
-so a long mesh multiplies the cost; `lanczos` solves the whole mesh in one recurrence and is the
-cheaper kernel whenever the closure fits in memory. The bath basis matters more than the
-solver: a chain-like geometry (e.g. the linked chain) shrinks the required basis by several
-times, but the closure of an unrestricted calculation does not change with it.
+The basis a unit runs on is chosen by amplitude-pruned growth (`gf_prune_tol`, default `1e-3` for every caller;
+`gf_prune_tol = 0` is the explicit unpruned path that fills up to the cap). See `doc/gf_support_pipeline.md`.
+The bath basis matters more than the solver: a chain-like geometry (e.g. the linked chain) shrinks the required
+basis by several times, but the closure of an unrestricted calculation does not change with it.
 
 Orthogonal switches on the default Lanczos path:
 
@@ -141,17 +110,13 @@ Orthogonal switches on the default Lanczos path:
   at a global determinant cap; the post-freeze recurrence is exact Lanczos of the projected
   `PHP` (see `doc/plans/truncation_reliability.md`).
 
-### Four words for four ways a unit's support stops growing
+### Three words for three ways a unit's support stops growing
 
 | word | mechanism | lossy? | where it shows |
 |---|---|---|---|
-| **settled** | the support settle (`gf_settle`, `gf_settle_ratio`): the frontier stayed at or below `ratio x slaterWeightMin` over 16 blocks | drops the rows below that next-block amplitude; size of the effect measured, not bounded | `support_settled` row, the max-basis table remark, `-vv` unit line (`support_frozen=True` token kept for log parsers) |
 | **frozen at the cap** | `truncation_threshold` reached | yes | `basis_truncation` WARN, `-- frozen at the cap` |
 | **held by the memory guard** | measured RSS reached the GF budget | yes | `GF basis held at N ... by the measured-memory guard` |
 | **deep zone** | chain-window site beyond `a < slater_min**0.5` capped at one excitation | restricts the basis a priori | `Chain windows:` line at `-v` |
-
-The settle options on `SolverOptions`: `gf_settle` (None = on), `gf_settle_ratio` (a multiple of `slater_weight_min`,
-None = the default 3), `gf_settle_retry` (None = off). Block-Lanczos only.
 
 ## Convergence monitoring
 

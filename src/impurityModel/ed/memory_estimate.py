@@ -513,8 +513,6 @@ def estimate_gf_peak_bytes(
     ranks=1,
     n_blocks=None,
     krylov_dtype=None,
-    method="lanczos",
-    gmres_restart=None,
     row_fanout=None,
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
@@ -585,28 +583,11 @@ def estimate_gf_peak_bytes(
     krylov_dtype : optional
         Storage dtype of the Krylov basis. ``complex64`` halves the store and is legal
         only for ``FULL`` (see :func:`_krylov_itemsize`).
-    method : str
-        ``"lanczos"`` (default) or ``"bicgstab"`` -- the per-frequency BiCGSTAB driver
-        retains **no** Krylov store (``reort``/``n_blocks``/``krylov_dtype`` are ignored)
-        but carries more live blocks per solve: the 7 solver blocks (``xi, ri, r0_t, pi,
-        vi, si, ti``) plus the seeds, the 3 warm-start history solutions and the
-        extrapolated guess -- ~12 block-rows against the recurrence's 3 -- plus, on the
-        points BiCGSTAB leaves unconverged, the GMRES fallback's transient Arnoldi space
-        of ``gmres_restart + 3`` block-rows. That transient is what a worst-case point
-        peaks at, and peaks are what OOM-kill, so it is modeled rather than footnoted.
-        The basis term is the *per-point* rebuilt support, still bounded by the same
-        ``n_dets`` cap. Its matvec's raw image (``row_fanout`` rows per local row, applied in
-        one piece, so without the row-chunk credit) is priced too.
     row_fanout : float, optional
         The workload's whole-step de-duplicated row fan-out of one matvec, measured at GF entry
         (``gf_units.measure_gf_row_fanout``, the same measurement that produced the default).
         ``None`` uses :data:`_GF_MATVEC_ROW_FANOUT_DEFAULT`, measured on SrMnO3: on CrI3 (spin-orbit,
         raw image 51-87 against SrMnO3's 19) that default under-predicted the sparse path ~2x.
-    gmres_restart : int, optional
-        The fallback's block-Arnoldi restart length; only read for ``method="bicgstab"``.
-        ``None`` (default) reads :data:`config.GF_GMRES_RESTART` -- the same knob
-        :func:`gf_solvers.solve_shifted_block` resolves at solve time, so a caller who
-        overrides it cannot silently get a peak estimate for the un-overridden length.
 
     Returns
     -------
@@ -618,15 +599,6 @@ def estimate_gf_peak_bytes(
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
     fanout = _GF_MATVEC_ROW_FANOUT_DEFAULT if row_fanout is None else float(row_fanout)
-    if method == "bicgstab":
-        if gmres_restart is None:
-            gmres_restart = config.GF_GMRES_RESTART.get()
-        live = 12 + gmres_restart + 3
-        # The solvers' matvec (`_make_matmat` -> `apply_and_redistribute`) applies H to the whole
-        # block in one `apply_block`, before routing and pruning: the same raw-image transient as
-        # the recurrence's below, and with no row chunking, so no chunk credit. It was missing.
-        matvec_bytes = ceil(local_rows * fanout) * row_bytes
-        return basis_bytes + live * local_rows * row_bytes + matvec_bytes
     live_bytes = 3 * local_rows * row_bytes
     # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
     # `lanczos_step` is NOT hash-partitioned -- it is everything this rank's rows reach
@@ -643,7 +615,6 @@ def estimate_gf_peak_bytes(
     # `truncation_threshold` (a `_CappedBasisProxy` sets `caps_growth`, serial or not), and a
     # finite cap is exactly the case this function is called to size.
     #
-    # The bicgstab branch above prices the same transient for its own (unchunked) matvec.
     fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.APPLY_ROW_CHUNKS.get())) * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
@@ -1083,7 +1054,6 @@ def max_unit_dets_within_budget(
     comm,
     safety=DEFAULT_MEMORY_SAFETY,
     krylov_dtype=None,
-    method="lanczos",
     resident_bytes=None,
     row_fanout=None,
 ):
@@ -1122,8 +1092,6 @@ def max_unit_dets_within_budget(
         Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
     krylov_dtype : optional
         Krylov store dtype; ``complex64`` halves the store and so raises the cap.
-    method : str
-        See :func:`estimate_gf_peak_bytes`.
     row_fanout : float, optional
         See :func:`estimate_gf_peak_bytes`.
     resident_bytes : int, optional
@@ -1164,7 +1132,6 @@ def max_unit_dets_within_budget(
                 reort,
                 ranks=ranks,
                 krylov_dtype=krylov_dtype,
-                method=method,
                 row_fanout=row_fanout,
             )
             <= budget

@@ -720,8 +720,7 @@ def _build_solver(resolved):
     try:
         return _solver_options_from(SolverOptions, table)
     except ValueError as error:
-        # A combination the options refuse (outer admission on the Lanczos kernel, a threshold
-        # without the policy it belongs to) is a mistake in the file: say where, not a traceback.
+        # A combination the options refuse (a threshold without the policy it belongs to) is a mistake in the file: say where, not a traceback.
         raise InputError(f"[solver]: {error}") from error
 
 

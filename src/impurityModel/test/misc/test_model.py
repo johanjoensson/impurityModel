@@ -55,7 +55,6 @@ def test_atomic_u4_p_shell_shape():
 def test_option_group_defaults():
     """The option groups expose today's effective defaults."""
     solver = SolverOptions()
-    assert solver.gf_method == "lanczos"
     assert solver.sparse_green is True
     assert solver.dense_cutoff == 500
 
@@ -194,7 +193,6 @@ def test_load_selfenergy_archive_recovers_options(tmp_path):
     assert basis.chain_restrict is True
     assert basis.dN is None
     assert solver.dense_cutoff == 500
-    assert solver.gf_method == "lanczos"
     assert isinstance(model, ImpurityModel)
 
 
@@ -324,74 +322,6 @@ def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
     np.testing.assert_allclose(recovered, dc)
 
 
-def test_archive_records_and_replays_the_admission_policy(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _write_synthetic_archive(
-        str(archive), solver_kwargs={"gf_method": "bicgstab", "gf_admission": "outer", "gf_admit_tol": 1e-5}
-    )
-    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
-    assert (solver.gf_method, solver.gf_admission) == ("bicgstab", "outer")
-    assert solver.gf_admit_tol == pytest.approx(1e-5)
-
-
-def test_archive_records_and_replays_the_support_settle(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _archive_with_attrs(archive, gf_settle=False)
-    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
-    assert solver.gf_settle is False and solver.gf_settle_ratio is None
-    archive = tmp_path / "second.h5"
-    _archive_with_attrs(archive, gf_settle=True, gf_settle_ratio=3.0)
-    solver = load_selfenergy_archive(str(archive))[3]
-    assert solver.gf_settle is True and solver.gf_settle_ratio == pytest.approx(3.0)
-
-
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
-        (dict(gf_settle_ratio=-1.0), "must be >= 0"),
-        (dict(gf_settle=False, gf_settle_ratio=2.0), "only applies with the support settle on"),
-        (dict(gf_method="bicgstab", gf_settle=True), "applies only to gf_method='lanczos'"),
-        (dict(gf_method="bicgstab", gf_settle_ratio=2.0), "applies only to gf_method='lanczos'"),
-    ],
-)
-def test_the_settle_options_refuse_what_would_be_silently_ignored(kwargs, match):
-    from impurityModel.ed.model import SolverOptions
-
-    with pytest.raises(ValueError, match=match):
-        SolverOptions(**kwargs)
-
-
-def test_the_settle_options_accept_closure_and_the_defaults():
-    from impurityModel.ed.model import SolverOptions
-
-    assert SolverOptions().gf_settle is None and SolverOptions().gf_settle_ratio is None
-    assert SolverOptions(gf_settle_ratio=0.0).gf_settle_ratio == 0.0
-    assert SolverOptions(gf_settle=False).gf_settle is False
-
-
-def test_the_settle_retry_option_replays_and_refuses_contradictions(tmp_path):
-    from impurityModel.ed.model import SolverOptions
-
-    _archive_with_attrs(tmp_path / "a.h5", gf_settle_retry=False)
-    assert load_selfenergy_archive(str(tmp_path / "a.h5"))[3].gf_settle_retry is False
-    _write_synthetic_archive(str(tmp_path / "b.h5"))
-    assert load_selfenergy_archive(str(tmp_path / "b.h5"))[3].gf_settle_retry is None
-    with pytest.raises(ValueError, match="contradicts gf_settle off"):
-        SolverOptions(gf_settle=False, gf_settle_retry=True)
-    with pytest.raises(ValueError, match="applies only to gf_method='lanczos'"):
-        SolverOptions(gf_method="bicgstab", gf_settle_retry=True)
-    assert SolverOptions(gf_settle=False, gf_settle_retry=False).gf_settle_retry is False
-
-
-def test_a_settle_ratio_below_one_warns_that_it_is_a_multiple():
-    from impurityModel.ed.model import SolverOptions
-
-    with pytest.warns(UserWarning, match="MULTIPLE of slater_min"):
-        SolverOptions(gf_settle_ratio=1e-4)
-    with pytest.raises(ValueError):
-        SolverOptions(gf_settle_ratio=float("inf"))
-
-
 def test_archive_records_and_replays_the_pruned_growth(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
     _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
@@ -409,10 +339,6 @@ def test_archive_records_and_replays_the_pruned_growth(tmp_path):
         (dict(gf_prune_tol=-1e-3), "non-negative"),
         (dict(gf_prune_tol=0.0, gf_first_shell_tol=1e-3), "pruning is switched off"),
         (dict(gf_prune_tol=1e-3, gf_first_shell_tol=-1.0), "non-negative"),
-        (dict(gf_prune_tol=1e-3, gf_settle=True), "exclusive with the support settle"),
-        (dict(gf_prune_tol=1e-3, gf_settle_ratio=2.0), "exclusive with the support settle"),
-        (dict(gf_prune_tol=1e-3, gf_settle_retry=True), "exclusive with the support settle"),
-        (dict(gf_method="bicgstab", gf_prune_tol=1e-3), "applies only to gf_method='lanczos'"),
     ],
 )
 def test_the_prune_options_refuse_what_would_be_silently_ignored(kwargs, match):
@@ -422,13 +348,12 @@ def test_the_prune_options_refuse_what_would_be_silently_ignored(kwargs, match):
         SolverOptions(**kwargs)
 
 
-def test_the_prune_options_accept_the_defaults_a_relaxed_shell_and_an_explicit_settle_off():
+def test_the_prune_options_accept_the_defaults_and_a_relaxed_shell():
     from impurityModel.ed.model import SolverOptions
 
     assert SolverOptions().gf_prune_tol is None and SolverOptions().gf_first_shell_tol is None
     assert SolverOptions(gf_first_shell_tol=1e-6).resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
     assert SolverOptions(gf_prune_tol=1e-4, gf_first_shell_tol=0.0).gf_first_shell_tol == 0.0
-    assert SolverOptions(gf_prune_tol=1e-4, gf_settle=False).gf_settle is False
 
 
 def test_the_cost_budget_must_be_positive_and_defaults_to_off():
@@ -460,7 +385,6 @@ def test_archive_records_and_replays_the_swap_refinement(tmp_path):
         (dict(gf_refine_rounds=2, gf_refine_tol=1.0), "in \\(0, 1\\)"),
         (dict(gf_refine_rounds=2, gf_refine_swap=0.6), "in \\(0, 0.5\\]"),
         (dict(gf_refine_rounds=2, gf_refine_swap=0.0), "in \\(0, 0.5\\]"),
-        (dict(gf_refine_rounds=2, gf_method="bicgstab"), "only to gf_method='lanczos'"),
     ],
 )
 def test_the_refine_options_refuse_a_contradiction_by_name(kwargs, match):
@@ -468,60 +392,20 @@ def test_the_refine_options_refuse_a_contradiction_by_name(kwargs, match):
         SolverOptions(**kwargs)
 
 
-def test_the_refine_options_default_to_on_for_lanczos_and_accept_a_valid_set():
+def test_the_refine_options_default_to_on_and_accept_a_valid_set():
     assert SolverOptions().gf_refine_rounds is None
     assert SolverOptions().resolved_gf_refine_rounds == DEFAULT_GF_REFINE_ROUNDS > 0
-    assert SolverOptions(gf_method="bicgstab").resolved_gf_refine_rounds == 0
     assert SolverOptions(gf_refine_rounds=0).gf_refine_rounds == 0
     ok = SolverOptions(gf_refine_rounds=4, gf_refine_tol=1e-4, gf_refine_swap=0.5)
     assert (ok.gf_refine_rounds, ok.gf_refine_tol, ok.gf_refine_swap) == (4, 1e-4, 0.5)
 
 
-def test_an_unset_pruning_is_the_default_unless_a_settle_option_asks_for_the_settle():
+def test_an_unset_pruning_is_the_default():
     assert SolverOptions().resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
     assert SolverOptions(gf_prune_tol=0.0).resolved_gf_prune_tol == 0.0
     assert SolverOptions(gf_prune_tol=2e-4).resolved_gf_prune_tol == 2e-4
-    # The settle is what pruning replaces: asking for it explicitly wins over the default.
-    for kwargs in (dict(gf_settle=True), dict(gf_settle_ratio=2.0), dict(gf_settle_retry=True)):
-        assert SolverOptions(**kwargs).resolved_gf_prune_tol == 0.0, kwargs
-    assert SolverOptions(gf_settle=False).resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
-    # Leaving the block-Lanczos kernel: nothing to prune, and the explicit 0 is still accepted.
-    assert SolverOptions(gf_method="bicgstab").resolved_gf_prune_tol is None
-    assert SolverOptions(gf_method="bicgstab", gf_prune_tol=0.0).resolved_gf_prune_tol == 0.0
     assert SolverOptions(gf_refine_rounds=0).resolved_gf_refine_rounds == 0
     assert SolverOptions(gf_refine_rounds=5).resolved_gf_refine_rounds == 5
-
-
-def test_the_growth_tolerance_is_recorded_replayed_and_absent_means_off(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_growth_tol=1e-5)
-    assert load_selfenergy_archive(str(archive))[3].gf_growth_tol == pytest.approx(1e-5)
-    archive = tmp_path / "old.h5"
-    _write_synthetic_archive(str(archive))
-    assert load_selfenergy_archive(str(archive))[3].gf_growth_tol is None
-
-
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
-        (dict(gf_prune_tol=1e-3, gf_growth_tol=0.0), "must lie in"),
-        (dict(gf_prune_tol=1e-3, gf_growth_tol=1.5), "must lie in"),
-        (dict(gf_prune_tol=0.0, gf_growth_tol=1e-5), "pruning is switched off"),
-        (dict(gf_method="bicgstab", gf_growth_tol=1e-5), "applies only to gf_method='lanczos'"),
-    ],
-)
-def test_the_growth_tolerance_refuses_what_would_be_silently_ignored(kwargs, match):
-    from impurityModel.ed.model import SolverOptions
-
-    with pytest.raises(ValueError, match=match):
-        SolverOptions(**kwargs)
-
-
-def test_the_growth_tolerance_defaults_to_off():
-    from impurityModel.ed.model import SolverOptions
-
-    assert SolverOptions().gf_growth_tol is None
-    assert SolverOptions(gf_growth_tol=1e-5).gf_growth_tol == 1e-5
 
 
 def test_an_archive_group_without_the_current_version_is_refused(tmp_path):
@@ -540,80 +424,8 @@ def test_an_archive_group_without_the_current_version_is_refused(tmp_path):
 def test_the_options_written_to_an_archive_are_the_options_read_back(tmp_path):
     archive = tmp_path / "impurityModel_data.h5"
     basis_kwargs = {"dN": 3, "chain_restrict": False, "mixed_valence": "auto", "cost_budget": 2.0}
-    solver_kwargs = {"gf_settle": False, "gf_tol": 1e-7, "gf_refine_rounds": 0}
+    solver_kwargs = {"gf_prune_tol": 0.0, "gf_tol": 1e-7, "gf_refine_rounds": 0}
     _write_synthetic_archive(str(archive), basis_kwargs=basis_kwargs, solver_kwargs=solver_kwargs)
     _, _, basis, solver, _ = load_selfenergy_archive(str(archive))
     assert (basis.dN, basis.chain_restrict, basis.mixed_valence, basis.cost_budget) == (3, False, "auto", 2.0)
-    assert (solver.gf_settle, solver.gf_tol, solver.gf_refine_rounds) == (False, 1e-7, 0)
-
-
-def test_the_quiet_window_is_recorded_and_replayed(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_growth_quiet=32)
-    assert load_selfenergy_archive(str(archive))[3].gf_growth_quiet == 32
-    archive = tmp_path / "old.h5"
-    _write_synthetic_archive(str(archive))
-    assert load_selfenergy_archive(str(archive))[3].gf_growth_quiet is None
-
-
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
-        (dict(gf_prune_tol=1e-3, gf_growth_quiet=-1), "non-negative integer"),
-        (dict(gf_prune_tol=1e-3, gf_growth_quiet=2.5), "non-negative integer"),
-        (dict(gf_prune_tol=0.0, gf_growth_quiet=8), "pruning is switched off"),
-        (dict(gf_method="bicgstab", gf_growth_quiet=8), "applies only to gf_method='lanczos'"),
-    ],
-)
-def test_the_quiet_window_refuses_what_would_be_silently_ignored(kwargs, match):
-    from impurityModel.ed.model import SolverOptions
-
-    with pytest.raises(ValueError, match=match):
-        SolverOptions(**kwargs)
-
-
-def test_the_quiet_window_resolves_against_pruning_and_its_default():
-    from impurityModel.ed import options
-    from impurityModel.ed.model import SolverOptions
-
-    assert options.DEFAULT_GF_GROWTH_QUIET == 64
-    assert SolverOptions().resolved_gf_growth_quiet == 64
-    assert SolverOptions(gf_growth_quiet=8).resolved_gf_growth_quiet == 8
-    assert SolverOptions(gf_growth_quiet=0).resolved_gf_growth_quiet is None
-    assert SolverOptions(gf_prune_tol=0.0).resolved_gf_growth_quiet is None
-    assert SolverOptions(gf_method="bicgstab").resolved_gf_growth_quiet is None
-    assert SolverOptions(gf_settle=True).resolved_gf_growth_quiet is None  # the settle replaces pruning
-
-
-def test_the_prune_rule_is_recorded_and_replayed(tmp_path):
-    archive = tmp_path / "impurityModel_data.h5"
-    _archive_with_attrs(archive, gf_prune_tol=1e-4, gf_prune_rule="accumulated")
-    assert load_selfenergy_archive(str(archive))[3].gf_prune_rule == "accumulated"
-    archive = tmp_path / "old.h5"
-    _write_synthetic_archive(str(archive))
-    assert load_selfenergy_archive(str(archive))[3].gf_prune_rule is None
-
-
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
-        (dict(gf_prune_tol=1e-3, gf_prune_rule="mass"), "expected one of"),
-        (dict(gf_prune_tol=0.0, gf_prune_rule="accumulated"), "pruning is switched off"),
-        (dict(gf_method="bicgstab", gf_prune_rule="accumulated"), "applies only to gf_method='lanczos'"),
-    ],
-)
-def test_the_prune_rule_refuses_what_would_be_silently_ignored(kwargs, match):
-    from impurityModel.ed.model import SolverOptions
-
-    with pytest.raises(ValueError, match=match):
-        SolverOptions(**kwargs)
-
-
-def test_the_prune_rule_resolves_to_its_public_name():
-    from impurityModel.ed.model import SolverOptions
-
-    assert SolverOptions().resolved_gf_prune_rule is None  # unset: the kernel default (and the rig switch) apply
-    assert SolverOptions(gf_prune_rule="amplitude").resolved_gf_prune_rule == "amplitude"
-    assert SolverOptions(gf_prune_rule="accumulated").resolved_gf_prune_rule == "accumulated"
-    assert SolverOptions(gf_prune_tol=0.0).resolved_gf_prune_rule is None
-    assert SolverOptions(gf_method="bicgstab").resolved_gf_prune_rule is None
+    assert (solver.gf_prune_tol, solver.gf_tol, solver.gf_refine_rounds) == (0.0, 1e-7, 0)

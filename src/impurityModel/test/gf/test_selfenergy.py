@@ -691,8 +691,7 @@ def test_greens_function_moments_hubbard_atom():
     "solver_kwargs,prune,rounds",
     [
         ({}, 1e-3, 3),  # the defaults: pruned growth and swap refinement
-        (dict(gf_prune_tol=0.0, gf_refine_rounds=0), 0.0, None),  # the explicit off
-        (dict(gf_settle=True), 0.0, 3),  # a settle request replaces the default pruning
+        (dict(gf_prune_tol=0.0, gf_refine_rounds=0), 0.0, 0),  # the explicit off: no swaps, but the shift tables stay
         (dict(gf_prune_tol=5e-4, gf_refine_rounds=1), 5e-4, 1),
     ],
 )

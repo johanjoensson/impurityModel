@@ -87,7 +87,7 @@ def test_the_charge_transfer_weight_grows_with_the_hybridization():
     assert weights == sorted(weights) and weights[0] < weights[-1]
 
 
-def _driver_G(aim, method, matsubara, omega, delta=0.3):
+def _driver_G(aim, matsubara, omega, delta=0.3):
     basis = aim.basis(sorted(aim.gs.keys()), comm=MPI.COMM_SELF)
     mat, real, _report = get_Greens_function(
         matsubara_mesh=matsubara,
@@ -101,25 +101,22 @@ def _driver_G(aim, method, matsubara, omega, delta=0.3):
         blocks=[aim.imp],
         verbose=False,
         verbose_extra=False,
-        reort=True if method == "lanczos" else None,
+        reort=True,
         dN=None,
         occ_cutoff=0.0,
         slaterWeightMin=0.0,
         sparse=True,
-        gf_method=method,
     )
     return mat, real
 
 
-@pytest.mark.parametrize("method", ["bicgstab", "lanczos"])
-def test_the_dense_reference_matches_the_production_driver_on_both_axes(method, monkeypatch):
+def test_the_dense_reference_matches_the_production_driver_on_both_axes():
     """The discriminating check of the reference: sides, transposes and signs all have to be right."""
-    monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-12")
     aim = build_nio_like(NB, target_d9L=0.15)
     matsubara = 1j * np.pi * 0.4 * (2 * np.arange(6) + 1)
     omega = np.linspace(-14.0, 6.0, 11)
     delta = 0.3
-    mat, real = _driver_G(aim, method, matsubara, omega, delta)
+    mat, real = _driver_G(aim, matsubara, omega, delta)
     np.testing.assert_allclose(mat[0], reference_G(aim, matsubara), atol=1e-7)
     np.testing.assert_allclose(real[0], reference_G(aim, omega + 1j * delta), atol=1e-7)
 
@@ -185,15 +182,13 @@ def test_the_metal_without_interaction_has_zero_self_energy():
 
 
 @pytest.mark.parametrize("keep", [None, 40])
-@pytest.mark.parametrize("method", ["bicgstab", "lanczos"])
-def test_the_metal_reference_matches_the_driver_for_the_exact_and_a_truncated_ground_state(method, keep, monkeypatch):
+def test_the_metal_reference_matches_the_driver_for_the_exact_and_a_truncated_ground_state(keep):
     """A truncated ground state is not an eigenstate of H, but G for fixed seeds and energy is a
     well-defined resolvent, so the dense reference must still match the production driver on it."""
-    monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-12")
     aim = build_semicircle_siam(5, v=0.5, gs_keep=keep)
     matsubara = 1j * np.pi * 0.1 * (2 * np.arange(5) + 1)
     omega = np.linspace(-1.2, 1.2, 9)
-    mat, real = _driver_G(aim, method, matsubara, omega, 0.05)
+    mat, real = _driver_G(aim, matsubara, omega, 0.05)
     np.testing.assert_allclose(mat[0], reference_G(aim, matsubara), atol=1e-7)
     np.testing.assert_allclose(real[0], reference_G(aim, omega + 0.05j), atol=1e-7)
 

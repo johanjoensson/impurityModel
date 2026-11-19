@@ -171,11 +171,7 @@ def _g_with_cutoff(basis, swm, comm=None):
     (``redistribute_psis`` sums the ranks' copies), explicit width-1 blocks elsewhere."""
     seeds = _seeds() if comm is None or comm.rank == 0 else [ManyBodyState(width=1) for _ in _seeds()]
     seeds = [ManyBodyState.from_states([s]).to_states()[0] if len(s) else s for s in seeds]
-    # The settle only acts under a policy (the capped basis), the reference has none: this test is about where the
-    # cut is made, so the settle is off in both.
-    alphas, betas, r = block_Green_sparse(
-        _siam_6(), seeds, basis, DELTA, slaterWeightMin=swm, verbose=False, support_settle=False
-    )
+    alphas, betas, r = block_Green_sparse(_siam_6(), seeds, basis, DELTA, slaterWeightMin=swm, verbose=False)
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA)
 
 

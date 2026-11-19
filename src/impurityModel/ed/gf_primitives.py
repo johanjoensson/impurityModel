@@ -7,10 +7,7 @@ compatibility) so the solver-policy code in that module and in :mod:`gf_converge
 either of those two, or from :mod:`greens_function` itself.
 """
 
-import math
-from collections import deque
 from contextlib import contextmanager
-from typing import NamedTuple
 
 import numpy as np
 import scipy as sp
@@ -23,7 +20,7 @@ from impurityModel.ed.basis_transcription import (
 )
 from impurityModel.ed.BlockLanczosCore import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
 
 
@@ -197,104 +194,9 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     return G_avg
 
 
-class SettleRecord(NamedTuple):
-    """One recurrence step of a unit running the support settle (``SupportPolicy.support_trace``).
-
-    ``leak``, ``cut``, ``hq2`` and ``max2_matvec`` are in the matvec's units (weight on new rows, weight the
-    ``slaterWeightMin`` prunes dropped, ``||Hq||^2``, largest ``|amp|^2`` on a new row); ``max2_next`` is the largest
-    ``|amp|^2`` the normalised next block carries on those rows -- the quantity the rule judges. ``d_g`` is the
-    convergence monitor's last change (rank-local, logged only). A tuple, so it still unpacks and feeds
-    ``np.array``."""
-
-    step: int
-    retained_before: int
-    n_new: int
-    leak: float
-    cut: float
-    hq2: float
-    d_g: float
-    max2_matvec: float
-    max2_next: float
-
-
-#: Blocks over which the support settle watches the frontier: long enough to span a gap between the layered shells
-#: a support grows in.
-SETTLE_WINDOW = 16
-
-
-class FreezeRule:
-    r"""The support settle's decision: a pure strategy over the per-step frontier records of one unit.
-
-    Each recurrence step contributes ``max2_next``, the largest ``|amp|^2`` (max over columns) the *normalised
-    next block* ``q_{k+1}`` carries on a row that was new at step ``k`` -- measured before the ``slaterWeightMin``
-    cut acts on it, so ``ratio = 1`` reads "every excluded row would have been pruned from the next block
-    anyway", and ``ratio = 0`` is closure (no new row at all). The unit settles when a full window of ``window``
-    steps all have ``max2_next <= (ratio * slaterWeightMin)^2`` *and* the frontier is not growing over the window:
-    the least-squares slope of ``log10 max(max2_next, (1e-3 * slaterWeightMin)^2)`` is not positive. The trend
-    term is a heuristic against a monotonically growing trickle, not a proof of closure.
-
-    At ``slaterWeightMin = 0`` the threshold is 0, so only a window of exactly-zero frontiers settles (closure).
-    The decision uses only the allreduced records, so every rank decides alike. The records are sums over ranks and
-    chunks, so a window sitting within rounding of the threshold can settle one step earlier or later when the rank
-    or chunk count changes; the settled ``G`` then differs by far less than the settle's own error.
-    """
-
-    #: Slope above which a window counts as growing (log10 per step); rounding of a flat window stays below it.
-    SLOPE_TOL = 1e-12
-    #: The floor of the trend's logarithm, as a fraction of ``slaterWeightMin`` in amplitude.
-    FLOOR_FRACTION = 1e-3
-
-    def __init__(self, window, ratio, slater_weight_min):
-        if not (math.isfinite(ratio) and ratio >= 0):
-            raise ValueError(f"the settle ratio must be a finite number >= 0 (got {ratio})")
-        self.ratio = float(ratio)
-        self.slater_weight_min = float(slater_weight_min)
-        self.threshold2 = (self.ratio * self.slater_weight_min) ** 2
-        self._floor2 = (self.FLOOR_FRACTION * self.slater_weight_min) ** 2
-        self._window = deque(maxlen=int(window))
-
-    @property
-    def maxlen(self):
-        return self._window.maxlen
-
-    def push(self, max2_next, leak, cut):
-        """Record one step; True when the window now says settle."""
-        self._window.append((float(max2_next), float(leak), float(cut)))
-        return self.settles()
-
-    def settles(self):
-        w = self._window
-        if len(w) < w.maxlen:
-            return False
-        values = [rec[0] for rec in w]
-        if max(values) > self.threshold2:
-            return False
-        if self._floor2 == 0.0:
-            return True  # swm = 0: every record is exactly 0 here (threshold 0), a flat window
-        y = np.log10(np.maximum(values, self._floor2))
-        x = np.arange(len(y), dtype=float)
-        x -= x.mean()
-        slope = float(np.dot(x, y - y.mean()) / np.dot(x, x))
-        return slope <= self.SLOPE_TOL
-
-    def verdict(self):
-        """The window's numbers: ``{window, ratio, max_amp, max_amp_over_swm, leak, cut}`` (amplitudes, not squares)."""
-        values = [rec[0] for rec in self._window]
-        max_amp = math.sqrt(max(values)) if values else 0.0
-        swm = self.slater_weight_min
-        return {
-            "window": len(self._window),
-            "ratio": self.ratio,
-            "max_amp": max_amp,
-            "max_amp_over_swm": max_amp / swm if swm > 0 else float("nan"),
-            "leak": math.fsum(rec[1] for rec in self._window),
-            "cut": math.fsum(rec[2] for rec in self._window),
-        }
-
-
 class SupportDecisions:
-    """The block-agnostic decisions of a capped support: counts, the cap, the memory guard, the settle
-    rule and its record, the boundary ranking, and the log phrases.
+    """The block-agnostic decisions of a capped support: counts, the cap, the memory guard, the boundary
+    ranking, and the log phrases.
 
     Everything here works on scalars, arrays and key bytes -- never on a ``ManyBodyState`` -- so the same
     decisions serve :class:`SupportPolicy` (which applies them to the matvec's block states) and the
@@ -315,43 +217,11 @@ class SupportDecisions:
         self.memory_policy = memory_policy
         self.memory_frozen = False
         self.memory_warned = False
-        self.support_freeze = False
-        self.support_frozen = False
-        self.rule = None
-        self.support_log = False
-        self.trace_steps = False
-        #: One :class:`SettleRecord` per recurrence step (support settle only); the settle verdict is taken from
-        #: ``max2_next`` as each is appended, nothing else in it decides anything.
-        self.support_trace = []
-        #: The convergence monitor's ``last_dg`` list, set by ``block_Green_sparse`` for the trace. ``d_g`` is
-        #: computed per rank from allreduced coefficients, so it is logged but never gathered or decided on.
-        self.monitor_dg = None
-        self.pending_cut = 0.0
 
     def allreduce_sum(self, value):
         if self.comm is None or self.comm.size == 1:
             return value
         return self.comm.allreduce(value, op=MPI.SUM)
-
-    def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
-        self.support_freeze = True
-        self.rule = FreezeRule(window, ratio, slater_weight_min)
-        self.support_log = bool(log)
-        self.trace_steps = bool(trace)
-
-    def settle_verdict(self):
-        """The window's numbers (:meth:`FreezeRule.verdict`) once the support has settled, else ``None``."""
-        if not self.support_frozen or self.rule is None:
-            return None
-        return {**self.rule.verdict(), "step": len(self.support_trace)}
-
-    def unfreeze_support(self):
-        self.frozen = False
-        self.support_frozen = False
-        self.support_freeze = False
-
-    def note_step_cut(self, weight):
-        self.pending_cut += weight
 
     def over_memory_budget(self):
         """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
@@ -414,60 +284,14 @@ class SupportDecisions:
         self.frozen = True
         self.cap_hit = True
 
-    def settle_step(self, q_next_max2, retained_before, n_new, leak, cut, hq2, max2_matvec):
-        """Complete the step's record with the next block's largest amplitude on the step's new rows
-        (already reduced over the ranks) and take the settle verdict; freezes when it settles."""
-        d_g = float("nan")
-        if self.monitor_dg is not None and self.monitor_dg[0] is not None:
-            d_g = float(self.monitor_dg[0])
-        step_no = len(self.support_trace) + 1
-        self.support_trace.append(
-            SettleRecord(step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, q_next_max2)
-        )
-        swm = self.rule.slater_weight_min
-        if self.trace_steps and (self.comm is None or self.comm.rank == 0):
-            print(
-                f"GF support step {step_no}: retained {retained_before:,}, new {n_new:,}, leak {leak:.3e}, "
-                f"cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}, max|amp|^2 {max2_matvec:.3e}, "
-                f"next-block max|amp|^2 {q_next_max2:.3e}",
-                flush=True,
-            )
-        settled = self.rule.push(q_next_max2, leak, cut)
-        if self.support_log and step_no % self.rule.maxlen == 0 and (self.comm is None or self.comm.rank == 0):
-            v = self.rule.verdict()
-            amp = (
-                f"{v['max_amp']:.2e} = {v['max_amp_over_swm']:.3g}x slaterWeightMin"
-                if swm > 0
-                else f"{v['max_amp']:.2e}"
-            )
-            print(
-                f"GF support: {self.global_count:,} determinants after {step_no} blocks; over the last "
-                f"{v['window']}: largest amplitude on a new determinant {amp} (settles below "
-                f"{self.rule.ratio:g}x, gf_settle_ratio)",
-                flush=True,
-            )
-        if settled:
-            self.frozen = True
-            self.support_frozen = True
-
     def stop_phrase(self):
-        """How the support stopped growing, as the opening of a log line: settled, held or frozen at the cap."""
-        if self.support_frozen:
-            return "GF unit support settled at"
+        """How the support stopped growing, as the opening of a log line: held or frozen at the cap."""
         if self.memory_frozen:
             return "GF basis held at"
         return "GF basis frozen at the cap at"
 
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
-        if self.support_frozen:
-            return (
-                f"GF unit support settled at {self.global_count:,} determinants: over the last "
-                f"{self.rule.maxlen} blocks "
-                f"no new determinant carried more than {self.rule.ratio:g} x slater_min in the next block "
-                "(gf_settle_ratio); the Green's function is the exact one on the retained subspace from here on, "
-                "which drops the determinants whose next-block amplitude stayed at or below that bound."
-            )
         if self.memory_frozen:
             return (
                 f"GF basis held at {self.global_count:,} determinants by the measured-memory guard; the Green's "
@@ -523,7 +347,7 @@ class SupportPolicy:
     bisection derive only from allreduce'd data, so ranks cannot disagree, and every
     collective runs unconditionally (a rank may retain zero rows).
 
-    The per-frequency BiCGSTAB driver (:func:`block_Green_bicgstab`) reuses this proxy
+    The RIXS BiCGSTAB solves reuse this proxy
     unchanged in spirit: ``block_bicgstab``'s matvec routes through
     ``redistribute_block`` (also in serial runs, keyed on ``caps_growth``), so the same
     freeze-growth policy bounds a linear solve's live support, and post-freeze the solve
@@ -541,8 +365,6 @@ class SupportPolicy:
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
     stop_on_freeze = False
-    #: The support freeze (:meth:`enable_support_freeze`) -- ``support_freeze`` and ``support_frozen``, forwarded
-    #: from :attr:`decisions` below.
     #: A :class:`KeyFilter` of the frozen retained set (built by :meth:`begin_step`), or None; the matvec
     #: applies through it so rows the projection would drop are never generated.
     apply_filter = None
@@ -557,7 +379,7 @@ class SupportPolicy:
         never probed here."""
         self._basis = basis
         self.comm = basis.comm
-        # The block-agnostic state and decisions (cap, counts, memory guard, settle rule, log phrases).
+        # The block-agnostic state and decisions (cap, counts, memory guard, log phrases).
         self.decisions = SupportDecisions(
             basis.comm, cap, int(basis.size), memory_budget=memory_budget, memory_policy=memory_policy
         )
@@ -573,8 +395,6 @@ class SupportPolicy:
         self._mask = ManyBodyState.from_keys(basis.local_basis)
         self._verbose_freeze_logged = False
         self._deferred = False
-        self._pending = None
-        self._pending_hq2 = 0.0
 
     # --- the decisions' state under the names the callers use
     @property
@@ -618,38 +438,6 @@ class SupportPolicy:
         self.decisions.cap_hit = value
 
     @property
-    def support_freeze(self):
-        return self.decisions.support_freeze
-
-    @support_freeze.setter
-    def support_freeze(self, value):
-        self.decisions.support_freeze = value
-
-    @property
-    def support_frozen(self):
-        return self.decisions.support_frozen
-
-    @support_frozen.setter
-    def support_frozen(self, value):
-        self.decisions.support_frozen = value
-
-    @property
-    def support_trace(self):
-        return self.decisions.support_trace
-
-    @support_trace.setter
-    def support_trace(self, value):
-        self.decisions.support_trace = value
-
-    @property
-    def monitor_dg(self):
-        return self.decisions.monitor_dg
-
-    @monitor_dg.setter
-    def monitor_dg(self, value):
-        self.decisions.monitor_dg = value
-
-    @property
     def _frozen(self):
         return self.decisions.frozen
 
@@ -666,44 +454,12 @@ class SupportPolicy:
         self.decisions.global_count = value
 
     @property
-    def _rule(self):
-        return self.decisions.rule
-
-    @_rule.setter
-    def _rule(self, value):
-        self.decisions.rule = value
-
-    @property
-    def _pending_cut(self):
-        return self.decisions.pending_cut
-
-    @_pending_cut.setter
-    def _pending_cut(self, value):
-        self.decisions.pending_cut = value
-
-    @property
     def _memory_warned(self):
         return self.decisions.memory_warned
 
     @_memory_warned.setter
     def _memory_warned(self, value):
         self.decisions.memory_warned = value
-
-    @property
-    def _support_log(self):
-        return self.decisions.support_log
-
-    @_support_log.setter
-    def _support_log(self, value):
-        self.decisions.support_log = value
-
-    @property
-    def _trace_steps(self):
-        return self.decisions.trace_steps
-
-    @_trace_steps.setter
-    def _trace_steps(self, value):
-        self.decisions.trace_steps = value
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -769,38 +525,6 @@ class SupportPolicy:
     def _allreduce_sum(self, value):
         return self.decisions.allreduce_sum(value)
 
-    def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
-        """Settle the support once its frontier is below ``ratio`` x ``slaterWeightMin`` (see :class:`FreezeRule`).
-
-        Every recurrence step then records, in the units of its matvec, the weight on rows outside the retained set
-        (the *leak*), the weight the ``slaterWeightMin`` prunes dropped (the *cut*, :meth:`note_step_cut`) and the
-        largest amplitude landing on a new row, and in the units of the next block the amplitude those rows carry
-        there (:meth:`note_next_block`, which takes the verdict). Opt-in, set identically on every rank by the
-        caller that hands the frozen recurrence on (``gf_solvers.block_Green_sparse``): every other user of the
-        proxy (BiCGSTAB's per-point solves, the shift-recycled resolvent) never freezes this way. ``log`` prints
-        the window verdict every ``window`` steps (rank 0 only); ``trace`` also prints one line per step (rank 0
-        only; ``GF_SUPPORT_TRACE``)."""
-        self.decisions.enable_support_freeze(window, ratio, slater_weight_min, log=log, trace=trace)
-
-    def settle_verdict(self):
-        """The window's numbers (:meth:`FreezeRule.verdict`) once the support has settled, else ``None``."""
-        return self.decisions.settle_verdict()
-
-    def unfreeze_support(self):
-        """Undo a support freeze whose frozen matrix did not fit, and do not freeze this way again: a truncation
-        that buys no speed is not kept. Exact, since the freezing step had admitted all of its rows. Not
-        collective; every rank calls it on the same step (the caller decides from a collective answer)."""
-        self.decisions.unfreeze_support()
-        self.apply_filter = None
-
-    def note_step_cut(self, weight):
-        """Add weight the step's ``slaterWeightMin`` prunes dropped (rank-local; reduced with the step's admission).
-
-        Called by the recurrence step for the after-sum matvec prune, before :meth:`finish_step`, and for the
-        prune of the normalized next block, after it -- that one is weighed back into matvec units by the
-        step's ``beta beta^H`` and so rides into the next step's reduction."""
-        self.decisions.note_step_cut(weight)
-
     def _over_memory_budget(self):
         """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
         See :meth:`SupportDecisions.over_memory_budget`."""
@@ -823,14 +547,9 @@ class SupportPolicy:
 
     def decide(self, wp, cutoff):
         """The step's whole matvec output, summed over ranks and chunks: cut ``cutoff`` on the summed rows,
-        weigh what the cut dropped for the support freeze, then admit (or project, if frozen). The one
+        then admit (or project, if frozen). The one
         decision point of a recurrence step. Collective."""
-        if self.support_freeze:
-            # ||H q||^2 before the cut, for the diagnostic trace (a width-0 block on an empty rank sums to 0).
-            self._pending_hq2 = math.fsum(np.asarray(wp.col_norm2(), dtype=np.float64))
-        dropped = wp.prune_rows(cutoff)
-        if self.support_freeze:
-            self.note_step_cut(dropped)
+        wp.prune_rows(cutoff)
         return self.finish_step(wp)
 
     def begin_step(self):
@@ -845,7 +564,6 @@ class SupportPolicy:
         the chunks pass through unprojected and the decision is taken once, on the summed output.
         Called by the block-Lanczos step on every rank of the colour (replicated)."""
         self._deferred = not self._frozen
-        self._pending = None
         if self._frozen and self.apply_filter is None:
             # The retained set no longer changes (every admission above is pre-freeze), so the filter of
             # it is built once. `_frozen` is replicated, so every rank enters this collective together.
@@ -862,7 +580,7 @@ class SupportPolicy:
             # The memory guard froze mid-step: what earlier chunks brought in was never admitted.
             wp.keep_rows(self._mask)
             return wp
-        return self._admit_counted(wp, step=True)
+        return self._admit_counted(wp)
 
     def _admit(self, block):
         """Project one redistributed matvec output onto the retained set, growing it while it may.
@@ -887,13 +605,8 @@ class SupportPolicy:
         block.keep_rows(self._mask)
         return block
 
-    def _admit_counted(self, block, step=False):
-        """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective.
-
-        ``step``: ``block`` is a recurrence step's whole output (:meth:`finish_step`), which the support freeze
-        counts; the seed block's redistribution is not a step."""
-        if self.support_freeze:
-            return self._admit_counted_support(block, step)
+    def _admit_counted(self, block):
+        """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective."""
         n_new = self._allreduce_sum(len(block) - block.count_rows_in(self._mask))
         if self._global_count + n_new <= self.cap:
             self._mask.merge_keys(block)
@@ -902,60 +615,6 @@ class SupportPolicy:
         self._admit_top_and_freeze(block)
         block.keep_rows(self._mask)
         return block
-
-    def _admit_counted_support(self, block, step):
-        """:meth:`_admit_counted` under the support settle: the count, leak and cut in one gather, admit the step's
-        rows, and leave the half-finished record for :meth:`note_next_block` (the same step's next block completes
-        it and takes the settle verdict). Collective."""
-        n_new, leak = block.new_rows_stats(self._mask)
-        # Column 4 is reduced by MAX, the others by sum: the largest |amp|^2 landing outside the support, in the
-        # units of the matvec (a trace column; the settle rule measures the normalised next block instead).
-        local = np.array(
-            [n_new, leak, self._pending_cut, self._pending_hq2, block.new_rows_max_norm2(self._mask)],
-            dtype=np.float64,
-        )
-        self._pending_cut = 0.0
-        self._pending_hq2 = 0.0
-        if self.comm is not None and self.comm.size > 1:
-            gathered = np.empty((self.comm.size, 5), dtype=np.float64)
-            self.comm.Allgather(local, gathered)
-        else:
-            gathered = local[None, :]
-        n_new = round(math.fsum(gathered[:, 0]))
-        leak = math.fsum(gathered[:, 1])
-        cut = math.fsum(gathered[:, 2])
-        hq2 = math.fsum(gathered[:, 3])
-        max2 = float(np.max(gathered[:, 4]))
-        self._pending = None
-        if self._global_count + n_new > self.cap:
-            self._admit_top_and_freeze(block)
-            block.keep_rows(self._mask)
-            return block
-        retained_before = self._global_count
-        # The rows new at this step, taken BEFORE they join the mask: the next block's amplitude on them is the
-        # frontier the settle judges.
-        new_keys = block.keys_new_above(self._mask, 0.0) if step else None
-        self._mask.merge_keys(block)
-        self._global_count += n_new
-        if step:
-            self._pending = (new_keys, retained_before, n_new, leak, cut, hq2, max2)
-        return block
-
-    def note_next_block(self, q_next):
-        """The step's normalised next block, before the ``slaterWeightMin`` cut acts on it: complete the step's
-        record with the largest amplitude ``q_next`` carries on the rows that were new at this step, and take the
-        settle verdict. Called by the Lanczos step on every rank of the colour (replicated gate); one fixed-shape
-        ``MAX`` reduction. A step that breaks down before reaching here leaves no record (the list is one short);
-        :meth:`begin_step` drops the half-finished one. The verdict applies from the next step: ``supp(q_next)`` is
-        inside the support this step admitted, so the freezing step's own block is already in ``P``."""
-        pending, self._pending = self._pending, None
-        if pending is None:
-            return
-        new_keys, retained_before, n_new, leak, cut, hq2, max2_matvec = pending
-        buf = np.array([q_next.max_row_norm2_in(new_keys)], dtype=np.float64)
-        if self.comm is not None and self.comm.size > 1:
-            self.comm.Allreduce(MPI.IN_PLACE, buf, op=MPI.MAX)
-        self.decisions.settle_step(float(buf[0]), retained_before, n_new, leak, cut, hq2, max2_matvec)
 
     def _admit_top_and_freeze(self, block):
         """Admit the ``cap - retained`` most important candidate rows, then freeze.
@@ -981,7 +640,7 @@ class SupportPolicy:
         self.decisions.freeze_at_cap(len(admitted))
 
     def stop_phrase(self):
-        """How the support stopped growing, as the opening of a log line: settled, held or frozen at the cap."""
+        """How the support stopped growing, as the opening of a log line: held or frozen at the cap."""
         return self.decisions.stop_phrase()
 
     def freeze_message(self):
@@ -1002,91 +661,6 @@ def _allreduced_col_norms2(block, n_cols, comm):
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, out, op=MPI.SUM)
     return out
-
-
-def residual_blocks(A_op, X, Y, basis, mask, n_cols):
-    r"""The true residual ``R = Y - A X`` of a projected solve, as two blocks split at ``P``.
-
-    ``X`` solved ``P A P X = Y`` (``supp Y`` inside ``P``) on a basis that may have frozen, so
-    the solver's own residual measures only the in-``P`` part. One full matvec at cutoff 0
-    recovers both parts:
-
-    * ``inside`` -- the rows of ``R`` inside ``P``: the solver residual, recomputed rather than
-      trusted (``block_bicgstab``'s is a recursively-updated estimate);
-    * ``outside`` -- the rows outside ``P``, which equal ``(1-P) H X`` because ``Y`` and ``z X``
-      both live inside ``P``: the *boundary residual*, zero exactly when nothing was truncated.
-
-    ``A_op`` must be the operator the solve ran with, restrictions included (the solver set
-    them from the basis), so that ``outside`` holds only determinants the restricted model can
-    reach. ``basis`` must be the **raw** ``Basis``: its ``redistribute_block`` sums every
-    rank's contribution to a determinant onto its owner, which a capped proxy would follow by
-    ``keep_rows``-ing the boundary away. ``mask`` is the width-0 block of this rank's retained
-    determinants. Both blocks are distributed per ``basis``.
-    """
-    AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
-    R = block_add_scaled_cy(Y, AX, -np.eye(n_cols, dtype=complex))
-    outside = R.copy()
-    outside.keep_rows(R.keys_new_above(mask, 0.0))
-    inside = R
-    inside.keep_rows(mask)
-    return inside, outside
-
-
-def residual_split(A_op, X, Y, basis, mask, n_cols, comm):
-    r"""Column norms ``(||r_P,j||, ||b_j||)`` of :func:`residual_blocks`, summed over ``comm``.
-
-    Collective over ``comm``; always length-``n_cols`` arrays.
-    """
-    inside, outside = residual_blocks(A_op, X, Y, basis, mask, n_cols)
-    return (
-        np.sqrt(_allreduced_col_norms2(inside, n_cols, comm)),
-        np.sqrt(_allreduced_col_norms2(outside, n_cols, comm)),
-    )
-
-
-def real_up_to_phase(block, n_cols, comm, rtol=1e-12):
-    r"""Per column: is it a real vector times one global phase?
-
-    ``|sum_D s_D^2| <= sum_D |s_D|^2`` with equality exactly when every amplitude shares one
-    phase up to sign, so the test is two allreduced column sums -- no gather, no pivot row.
-    """
-    sums = np.zeros((2, n_cols), dtype=complex)
-    amps = np.asarray(block)
-    if amps.ndim == 2 and amps.shape[1] == n_cols and amps.shape[0] > 0:
-        sums[0] = np.sum(amps * amps, axis=0)
-        sums[1] = np.sum(np.abs(amps) ** 2, axis=0)
-    del amps  # release the buffer view before anything mutates the block
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, sums, op=MPI.SUM)
-    n2 = np.real(sums[1])
-    return np.abs(sums[0]) >= (1.0 - rtol) * n2
-
-
-def resolvent_error_bound(s_norm, r_p, b, imag_z, symmetric):
-    r"""Elementwise bound on ``|G_exact - G|`` for ``G_ij = <s_i|X_j>``.
-
-    With ``A = z - H`` (``H`` Hermitian), the full residual ``R_j = s_j - A X_j = r_P,j + b_j``
-    (``r_P`` inside the solve basis ``P``, ``b`` outside) and ``||A^{-1}|| <= 1/|Im z|``:
-
-    * always, first order: ``dG_ij = <s_i|A^{-1} R_j>``, so
-      ``|dG_ij| <= ||s_i|| ||R_j|| / |Im z|``, with ``||R_j||^2 = ||r_P,j||^2 + ||b_j||^2``;
-    * second order, for a column ``i`` whose adjoint solve on ``P`` is known. Let
-      ``Y_i = (P A^dagger P)^{-1} s_i`` and ``b~_i = (1-P) A^dagger Y_i``; then
-      ``dG_ij = <Y_i|r_P,j> - <b~_i|A^{-1} R_j>``, so
-      ``|dG_ij| <= ||s_i|| ||r_P,j|| / |Im z| + ||b~_i|| ||R_j|| / |Im z|``. When ``H`` is real
-      and ``s_i`` is real up to a phase (``symmetric[i]``), ``Y_i`` is the conjugate of the
-      forward solution on ``P`` and ``||b~_i|| = ||b_i||``, which is what is used. That equality
-      is exact for the exact ``P`` solve; with the solver's own ``r_P`` it carries a correction of
-      order ``||(1-P) H P|| ||r_P|| / |Im z|``, negligible for a converged solve and the reason
-      this bound is stated for converged solves.
-
-    Returns the elementwise minimum of the applicable bounds. ``symmetric`` is a per-column
-    boolean array (only the bra column ``i`` matters).
-    """
-    R = np.sqrt(r_p**2 + b**2)
-    first = np.outer(s_norm, R) / imag_z
-    second = (np.outer(s_norm, r_p) + np.outer(b, R)) / imag_z
-    return np.where(np.asarray(symmetric, dtype=bool)[:, None], np.minimum(first, second), first)
 
 
 #: The pre-merge name; every capped or pruned GF support is one :class:`SupportPolicy`.
@@ -1472,29 +1046,6 @@ def block_to_local_dense(basis, block, width):
 def local_dense_to_block(basis, dense):
     """The inverse of :func:`block_to_local_dense`: a ``ManyBodyState`` over ``basis``'s local keys."""
     return ManyBodyState.from_keys_and_amps(basis._keys, np.ascontiguousarray(dense, dtype=complex))
-
-
-def boundary_frontier(A_op, X, basis, slaterWeightMin, comm):
-    r"""``(max_amp2, weight)`` of the part of ``A X`` that leaves ``P`` and survives the cut: the largest
-    ``|amp|^2`` (max over columns) on one row outside ``basis`` and the summed ``|amp|^2`` there.
-
-    The frontier a frozen recurrence left behind, measured on the block ``X`` it ended on, in the matvec's
-    units (the settle rule's own statistic is the normalised next block: divide by ``sigma_min(beta)^2``).
-    ``X`` lives on ``basis`` (= ``P``) and ``basis`` must be the raw :class:`Basis`, not a policy (which would
-    ``keep_rows`` the boundary away). One full sparse matvec summed on the owners before the cut, as
-    :func:`boundary_residual`. Both numbers are reduced into fixed-shape buffers, so they are bitwise
-    identical on every rank. Collective over ``comm``."""
-    AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
-    if slaterWeightMin > 0:
-        AX.prune_rows(slaterWeightMin)
-    _n, weight = AX.new_rows_stats(basis._keys)
-    local_weight = np.array([weight], dtype=np.float64)
-    local_max = np.array([AX.new_rows_max_norm2(basis._keys)], dtype=np.float64)
-    if comm is not None and comm.size > 1:
-        gathered = np.empty((comm.size, 2), dtype=np.float64)
-        comm.Allgather(np.concatenate([local_max, local_weight]), gathered)
-        return float(np.max(gathered[:, 0])), math.fsum(gathered[:, 1])
-    return float(local_max[0]), float(local_weight[0])
 
 
 def boundary_residual(A_op, X, basis, n_cols, slaterWeightMin, comm):

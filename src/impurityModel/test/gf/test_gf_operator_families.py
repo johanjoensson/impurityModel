@@ -37,7 +37,7 @@ def family_reference(oracle, removal_ops, idx, z):
     return g_add - np.transpose(g_rem, (0, 2, 1))
 
 
-def run_gf(comm, families, *, gf_method="lanczos", sparse=True, model=1):
+def run_gf(comm, families, *, sparse=True, model=1):
     oracle, (hOp, imp, baths, _n_orb, _n0, blocks) = cached_oracle(model)
     idx, es = oracle.thermal_states(N_STATES)
     basis = Basis(imp, baths, initial_basis=oracle.gs.dets, comm=comm, verbose=False)
@@ -61,7 +61,6 @@ def run_gf(comm, families, *, gf_method="lanczos", sparse=True, model=1):
             slaterWeightMin=0.0,
             sparse=sparse,
             num_wanted=N_STATES,
-            gf_method=gf_method,
             operator_families=families,
         )
     return oracle, idx, blocks, gs_iw, gs_w, report
@@ -111,16 +110,16 @@ def test_an_explicit_plain_family_is_bitwise_the_default(comm_kind):
     root_verdict(comm, check)
 
 
-KERNELS = [("lanczos", True), ("lanczos", False), ("bicgstab", True)]
+KERNELS = [True, False]
 
 
 # The array cells also guard ledger C12: block [2, 3]'s bath column deflates inside the growing
 # basis, which the expansion probe used to miss.
-@pytest.mark.parametrize("gf_method, sparse", KERNELS)
+@pytest.mark.parametrize("sparse", KERNELS)
 @pytest.mark.parametrize("comm_kind", ["self", pytest.param("world", marks=pytest.mark.mpi)])
-def test_a_wider_family_resolves_its_full_greens_function(gf_method, sparse, comm_kind):
+def test_a_wider_family_resolves_its_full_greens_function(sparse, comm_kind):
     comm = MPI.COMM_SELF if comm_kind == "self" else MPI.COMM_WORLD
-    oracle, idx, blocks, gs_iw, gs_w, report = run_gf(comm, _with_bath, gf_method=gf_method, sparse=sparse)
+    oracle, idx, blocks, gs_iw, gs_w, report = run_gf(comm, _with_bath, sparse=sparse)
 
     def check():
         for block, g_iw, g_w in zip(blocks, gs_iw, gs_w):
@@ -130,10 +129,8 @@ def test_a_wider_family_resolves_its_full_greens_function(gf_method, sparse, com
                 ref = family_reference(oracle, removal, idx, z)
                 np.testing.assert_allclose(g, ref, rtol=0, atol=2e-6 * np.max(np.abs(ref)))
         # The sum rule is checked on the plain c part only; the bath column must not break it.
-        # (The per-frequency path records no sum rule: it has no seed factors.)
         sum_rules = [d for d in report.diagnostics if d.name == "sum_rule"]
-        if gf_method == "lanczos":
-            assert len(sum_rules) == len(blocks)
+        assert len(sum_rules) == len(blocks)
         assert all(d.severity.name == "OK" for d in sum_rules), [d.value for d in sum_rules]
 
     root_verdict(comm, check)
@@ -179,7 +176,7 @@ def _stub_oracle(u):
     return LehmannOracle(hOp, imp, baths, n_orb, n0), (hOp, h0, h_int, imp, baths, n_orb, n0, blocks)
 
 
-def _run_stub(comm, u, iw, w=None, gf_method="lanczos", sparse=True):
+def _run_stub(comm, u, iw, w=None, sparse=True):
     oracle, (hOp, _h0, h_int, imp, baths, _n, _n0, blocks) = _stub_oracle(u)
     stub = ImprovedEstimatorStub()
     solver_basis = types.SimpleNamespace(h_int=h_int)
@@ -205,7 +202,6 @@ def _run_stub(comm, u, iw, w=None, gf_method="lanczos", sparse=True):
             slaterWeightMin=0.0,
             sparse=sparse,
             num_wanted=N_STATES,
-            gf_method=gf_method,
             operator_families=lambda block: stub.operator_families(block, solver_basis),
         )
     families = [stub.operator_families(block, solver_basis)[1] for block in blocks]
@@ -213,12 +209,9 @@ def _run_stub(comm, u, iw, w=None, gf_method="lanczos", sparse=True):
 
 
 @pytest.mark.parametrize("u", [2.5, 0.0])
-@pytest.mark.parametrize(
-    "gf_method, sparse",
-    [("lanczos", True), ("lanczos", False), ("bicgstab", True)],
-)
+@pytest.mark.parametrize("sparse", [True, False])
 @pytest.mark.parametrize("comm_kind", ["self", pytest.param("world", marks=pytest.mark.mpi)])
-def test_the_improved_estimator_family_resolves_its_full_greens_function(u, gf_method, sparse, comm_kind):
+def test_the_improved_estimator_family_resolves_its_full_greens_function(u, sparse, comm_kind):
     """All four ``n x n`` blocks of the ``[c, q]`` Green's function match the oracle.
 
     Comparing only the ``c`` block would pass with ``q`` of the wrong sign or adjoint; the cross
@@ -226,7 +219,7 @@ def test_the_improved_estimator_family_resolves_its_full_greens_function(u, gf_m
     the ``q`` rows and columns must come back zero -- with an empty half on some rank at ``-n 3``.
     """
     comm = MPI.COMM_SELF if comm_kind == "self" else MPI.COMM_WORLD
-    oracle, idx, blocks, families, *_, gs_iw, gs_w = _run_stub(comm, u, IW, W, gf_method=gf_method, sparse=sparse)
+    oracle, idx, blocks, families, *_, gs_iw, gs_w = _run_stub(comm, u, IW, W, sparse=sparse)
 
     def check():
         for block, removal, g_iw, g_w in zip(blocks, families, gs_iw, gs_w):

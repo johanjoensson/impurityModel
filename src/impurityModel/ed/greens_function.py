@@ -6,7 +6,6 @@ from typing import Optional
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import (
@@ -57,7 +56,6 @@ from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported 
 )
 from impurityModel.ed.gf_solvers import (  # noqa: F401  -- block_Green(_sparse) re-exported for rixs/tests
     block_Green,
-    block_Green_bicgstab,
     block_Green_sparse,
 )
 from impurityModel.ed.gf_units import (
@@ -67,6 +65,7 @@ from impurityModel.ed.gf_units import (
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
+from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 
@@ -307,7 +306,7 @@ def _report_max_unit_basis(heading, rows):
 
     Not behind ``verbose``: sizing the next run's basis budget is exactly what someone reads
     off a finished calculation, whereas the existing per-unit lines
-    (:func:`_block_green_group`, :func:`gf_solvers.block_Green_bicgstab`) are emitted mid-run
+    (:func:`_block_green_group`) are emitted mid-run
     at ``-vv``, interleaved with every other unit's output.
 
     Parameters
@@ -376,27 +375,6 @@ def _unit_basis_rows(blocks, max_basis, notes=None):
     return rows
 
 
-def _settle_notes(records):
-    """``{(block, side): remark}`` for the units that settled, for the max-basis table: how many of the pair's
-    units settled (and how many of those closed: no new determinant at all over the window), which unit the
-    row's size is, and the smallest settled one, so the table and the diagnostics row cannot disagree."""
-    notes = {}
-    for block_i in sorted({r.block for r in records}):
-        for side_i, side in enumerate(_UNIT_SIDE_NAMES):
-            mine = [r for r in records if r.block == block_i and r.side == side and r.retained is not None]
-            settled = [r for r in mine if r.settled]
-            if not settled:
-                continue
-            small = min(settled, key=lambda r: r.retained)
-            row = max(mine, key=lambda r: r.retained)
-            closed = sum(1 for r in settled if r.frontier_over_swm == 0)
-            closed_note = f", {closed} of them closed" if closed else ""
-            row_note = f"; {'settled' if row.settled else 'grown'} row is {row.describe()}"
-            small_note = f"; smallest settled {small.retained:,}: {small.describe()}" if small is not row else ""
-            notes[(block_i, side_i)] = f"{len(settled)} of {len(mine)} units settled{closed_note}{row_note}{small_note}"
-    return notes
-
-
 def _merge_unit_basis(acc, key, size, cap_hit):
     """Fold one work unit's basis size into the per-unit maximum ``acc[key]``.
 
@@ -436,54 +414,6 @@ class GFPlan:
     slater_weight_min: float = 0.0
 
 
-class GFRun:
-    """A finished block-Lanczos Green's-function calculation that can solve some of its work units again.
-
-    Held by the self-energy driver so a block whose self-energy fails the causality check can have the units whose
-    support settled re-solved at a stricter threshold (:meth:`resolve`) without redoing the rest. ``results`` is the
-    gathered per-unit list in global unit order on the root rank (``None`` elsewhere), as :func:`_gf_assemble` takes
-    it. :meth:`resolve` is collective."""
-
-    def __init__(self, plan, results, solve, assemble):
-        self.plan = plan
-        self.results = results
-        self._solve = solve
-        self._assemble = assemble
-
-    def resolve(self, subset, settle_ratio):
-        """Solve the units ``subset`` (global indices, the same on every rank) again at ``settle_ratio`` and, if
-        they all come back uncapped, unguarded and converged, write them into the results and assemble ``G`` again.
-
-        Returns ``(accepted, changes, gs_matsubara, gs_realaxis, report)``: on the root rank ``accepted`` says
-        whether the new units were taken, ``changes`` is ``[(unit, retained_before, retained_after, reason)]`` and the
-        rest the re-assembled ``G`` and report (the old ones are not returned when rejected: the caller keeps them);
-        everything is ``None`` off the root rank. A rejected re-solve leaves the results as they were."""
-        new = self._solve(list(subset), settle_ratio)
-        if new is None:
-            return None, None, None, None, None
-        changes, accepted = [], True
-        for pos, u in enumerate(subset):
-            _a, _b, _r, cap_stats, conv_stats = new[pos]
-            before = self.results[u][3].get("retained_size")
-            reason = ""
-            if cap_stats.get("cap_hit") or cap_stats.get("memory_frozen"):
-                accepted, reason = False, "capped or held by the memory guard"
-            elif not conv_stats.get("converged", True) and conv_stats.get("status") != "exhausted":
-                # An exhausted unit (frozen, unreorthogonalized, |P| vectors spent) is as converged as its support
-                # allows: the continued fraction is the one of P H P, which a re-solve at a stricter threshold cannot
-                # improve on by running longer.
-                accepted, reason = False, "did not converge"
-            changes.append((u, before, cap_stats.get("retained_size"), reason))
-        if not accepted:
-            return False, changes, None, None, None
-        spliced = list(self.results)
-        for pos, u in enumerate(subset):
-            spliced[u] = new[pos]
-        gs_matsubara, gs_realaxis, report = self._assemble(spliced)
-        self.results = spliced
-        return True, changes, gs_matsubara, gs_realaxis, report
-
-
 def _gf_lanczos_plan(
     psis,
     es,
@@ -495,8 +425,6 @@ def _gf_lanczos_plan(
     dN,
     occ_cutoff,
     slaterWeightMin,
-    gf_method,
-    gf_admission,
     gf_tol,
     gf_real_tol,
     operator_families,
@@ -505,16 +433,6 @@ def _gf_lanczos_plan(
     """Validate the options, build the excited-sector windows and enumerate the work units. Collective.
 
     At ``verbose`` the chain windows print as one line; ``verbose_extra`` adds one line per chain."""
-    if gf_method not in config.GF_METHODS:
-        raise ValueError(f"Unknown gf_method {gf_method!r}; expected one of {', '.join(map(repr, config.GF_METHODS))}")
-    if gf_admission is not None and gf_admission not in config.GF_ADMISSIONS:
-        raise ValueError(
-            f"Unknown gf_admission {gf_admission!r}; expected one of {', '.join(map(repr, config.GF_ADMISSIONS))}"
-        )
-    if gf_admission == "outer" and gf_method != "bicgstab":
-        raise ValueError(f"gf_admission='outer' needs gf_method='bicgstab' (got {gf_method!r})")
-    if gf_method != "lanczos" and (gf_tol is not None or gf_real_tol is not None):
-        raise ValueError(f"gf_tol/gf_real_tol are block-Lanczos tolerances; gf_method={gf_method!r} ignores them")
     # Resolved (and validated) here, before any collective, so a bad value fails on every rank at once.
     axis_tols = _gf_axis_tols(slaterWeightMin, gf_tol, gf_real_tol)
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
@@ -618,13 +536,8 @@ def _gf_solve_units(
     slaterWeightMin,
     verbose_extra,
     subset=None,
-    gf_settle=None,
-    gf_settle_ratio=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
-    gf_growth_tol=None,
-    gf_growth_quiet=None,
-    gf_prune_rule=None,
     gf_refine=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
@@ -662,7 +575,7 @@ def _gf_solve_units(
         )
 
     def refine_for(unit):
-        if gf_refine is None or not gf_refine.rounds:
+        if gf_refine is None:
             return gf_refine
         block_i, side_i = group_meta[unit.group_i]
         return unit_refine_spec(gf_refine, block_i, side_i, [es[ei] for ei in unit.chunk])
@@ -680,13 +593,8 @@ def _gf_solve_units(
         print_size=verbose_extra,
         eval_meshes_for=eval_meshes_for,
         refine_for=refine_for,
-        support_settle=gf_settle is not False,
-        settle_ratio=gf_settle_ratio,
         prune_tol=gf_prune_tol,
         first_shell_tol=gf_first_shell_tol,
-        growth_tol=gf_growth_tol,
-        growth_quiet=gf_growth_quiet,
-        prune_rule=gf_prune_rule,
         refine=gf_refine,
         unit_ids=None if subset is None else list(subset),
     )
@@ -764,7 +672,6 @@ def _gf_assemble(
         boltzmann = np.exp(-e_gap / tau) / float(np.sum(np.exp(-e_gap / tau)))
         for unit_i, (unit, (_alphas, _betas, r_slices, cap_stats, conv_stats)) in enumerate(zip(units, results)):
             block_i, unit_side_i = group_meta[unit.group_i]
-            verdict = cap_stats.get("settle_verdict") or {}
             records.append(
                 _gfd.UnitRecord(
                     unit=unit_i,
@@ -775,21 +682,9 @@ def _gf_assemble(
                     boltzmann=tuple(float(boltzmann[i]) for i in unit.chunk),
                     seed_weight=float(math.fsum(float(np.linalg.norm(np.asarray(r))) ** 2 for r in r_slices)),
                     retained=cap_stats.get("retained_size"),
-                    settled=bool(cap_stats.get("support_frozen", False)),
-                    settle_step=verdict.get("step"),
                     n_blocks=conv_stats.get("n_blocks"),
-                    frontier_over_swm=float(verdict.get("max_amp_over_swm", float("nan"))),
-                    ratio=float(verdict.get("ratio", float("nan"))),
-                    window=int(verdict.get("window", 0)),
                     cap_hit=bool(cap_stats.get("cap_hit", False)),
                     memory_frozen=bool(cap_stats.get("memory_frozen", False)),
-                    leak_window=float(verdict.get("leak", float("nan"))),
-                    frontier_end_over_swm=(
-                        float(cap_stats.get("frontier_end", float("nan"))) / plan.slater_weight_min
-                        if plan.slater_weight_min > 0
-                        else float("nan")
-                    ),
-                    leak_end=float(cap_stats.get("leak_end", float("nan"))),
                 )
             )
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
@@ -803,7 +698,6 @@ def _gf_assemble(
                 retained_size=cap_stats.get("retained_size"),
                 seed_size=cap_stats.get("seed_size"),
                 cap_hit=bool(cap_stats["cap_hit"]),
-                support_frozen=bool(cap_stats.get("support_frozen", False)),
                 n_blocks=conv_stats.get("n_blocks"),
             )
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
@@ -870,9 +764,6 @@ def _gf_assemble(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
-                block_records = [r for r in records if r.block == block_i]
-                if any(r.settled for r in block_records):
-                    diags.append(_gfd.check_support_settled(block_records, plan.slater_weight_min))
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
             n_c = len(block)
             if widths[block_i] != n_c:
@@ -913,8 +804,14 @@ def _gf_assemble(
 
         report.units = records
         if print_table:
+            # A unit that stopped on the memory limit says so in words: its size is what fitted, not what it wanted.
+            memory_notes = {
+                (rec.block, _UNIT_SIDE_NAMES.index(rec.side)): "stopped at the memory limit"
+                for rec in records
+                if rec.memory_frozen
+            }
             _report_max_unit_basis(
-                "Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis, _settle_notes(records))
+                "Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis, memory_notes)
             )
 
     return (gs_matsubara, gs_realaxis, report)
@@ -938,22 +835,13 @@ def get_Greens_function(
     slaterWeightMin: float,
     sparse: bool,
     num_wanted: int | None = None,
-    gf_method: str = "lanczos",
     operator_families=None,
-    gf_admission: Optional[str] = None,
-    gf_admit_tol: Optional[float] = None,
     gf_tol: Optional[float] = None,
     gf_real_tol: Optional[float] = None,
     ensemble_es=None,
-    gf_settle: Optional[bool] = None,
-    gf_settle_ratio: Optional[float] = None,
     gf_prune_tol: Optional[float] = None,
     gf_first_shell_tol: Optional[float] = None,
-    gf_growth_tol: Optional[float] = None,
-    gf_growth_quiet: Optional[int] = None,
-    gf_prune_rule: Optional[str] = None,
     gf_refine=None,
-    run_out: Optional[dict] = None,
 ):
     """
     Calculate interacting Greens function.
@@ -963,42 +851,18 @@ def get_Greens_function(
     (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
     the eigensolver was asked for, used by the ensemble-truncation check.
 
-    ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
-    recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
-    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
-    On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
-    representation only).
-
-    ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
-    (``None``, the default: ``"all"``). ``"outer"`` solves on a
-    frozen basis, scores the residual outside it and admits only what clears
-    ``gf_admit_tol`` (``None``: 1e-4), and repeats; see
-    :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
-    diagnostics report. An explicit argument wins over the matching environment knob.
-
     ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
     ``G``) on every axis / on the real axis only (``None``:
     ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
-    They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
-
-    ``gf_settle`` / ``gf_settle_ratio`` control the support settle of the ``"lanczos"`` kernel's sparse units
-    (``None``: on, ratio 3; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
-    error.
 
     ``gf_refine`` (a :class:`gf_refinement.RefineSpec`, ``None``: off) swap-refines the units the cap froze.
-    ``gf_prune_tol`` / ``gf_first_shell_tol`` turn on importance-pruned growth of the sparse units (``None``: no
-    pruning, first shell whole; see :class:`SolverOptions`). Pruning replaces the
-    support settle, so ``gf_settle=True`` or a ``gf_settle_ratio`` with it is an error; with ``"bicgstab"`` they are
-    an error too. ``gf_growth_tol`` (``None``: off) is the looser tolerance the pruned growth pass stops at; the
-    restart on the final support then converges ``G`` fully. ``gf_growth_quiet`` (``None``: off) ends the growth pass
-    after that many consecutive blocks that admitted nothing, with the same restart.
+    ``gf_prune_tol`` / ``gf_first_shell_tol`` set the importance-pruned growth of the sparse units (``None``: the
+    default, :data:`DEFAULT_GF_PRUNE_TOL`, first shell whole; ``0`` switches pruning off, so the unit grows until it
+    closes or hits the determinant cap; see :class:`SolverOptions`)..
 
     ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
     only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
     judges the eigensolver's output, not the subset. ``None``: ``es``.
-
-    ``run_out`` (a dict, optional): receives ``run_out["run"]``, a :class:`GFRun` that can solve some of the units
-    again (the block-Lanczos kernel only; absent for ``"bicgstab"``). Filled on every rank.
 
     ``operator_families`` is the self-energy estimator seam
     (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
@@ -1010,24 +874,8 @@ def get_Greens_function(
     rule is checked on it. ``None`` is exactly that plain family, so each block is
     ``len(block)`` wide.
     """
-    if gf_method != "lanczos" and (gf_settle is not None or gf_settle_ratio is not None):
-        raise ValueError("gf_settle/gf_settle_ratio apply only to gf_method='lanczos'; remove them or switch gf_method")
-    if gf_method != "lanczos" and (
-        gf_prune_tol is not None
-        or gf_first_shell_tol is not None
-        or gf_growth_tol is not None
-        or gf_growth_quiet is not None
-        or gf_prune_rule is not None
-    ):
-        raise ValueError(
-            "gf_prune_tol/gf_first_shell_tol/gf_growth_tol/gf_growth_quiet/gf_prune_rule apply only to "
-            "gf_method='lanczos'; "
-            "remove them or switch"
-        )
-    if gf_method != "lanczos" and gf_refine is not None and gf_refine.rounds > 0:
-        raise ValueError("gf_refine applies only to gf_method='lanczos'; remove it or switch gf_method")
-    if gf_prune_tol and (gf_settle is True or gf_settle_ratio is not None):
-        raise ValueError("gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio)")
+    if gf_prune_tol is None:
+        gf_prune_tol = DEFAULT_GF_PRUNE_TOL
     plan = _gf_lanczos_plan(
         psis,
         es,
@@ -1039,44 +887,11 @@ def get_Greens_function(
         dN,
         occ_cutoff,
         slaterWeightMin,
-        gf_method,
-        gf_admission,
         gf_tol,
         gf_real_tol,
         operator_families,
         verbose_extra=verbose_extra,
     )
-    units, unit_seeds, unit_weights, unit_restrictions = (
-        plan.units,
-        plan.unit_seeds,
-        plan.unit_weights,
-        plan.unit_restrictions,
-    )
-    group_meta, widths, excited_weighted_restrictions = plan.group_meta, plan.widths, plan.excited_weighted_restrictions
-    if gf_method == "bicgstab":
-        return _get_greens_function_bicgstab(
-            matsubara_mesh,
-            omega_mesh,
-            es,
-            tau,
-            basis,
-            hOp,
-            delta,
-            blocks,
-            widths,
-            units,
-            unit_seeds,
-            unit_weights,
-            unit_restrictions,
-            group_meta,
-            excited_weighted_restrictions,
-            slaterWeightMin,
-            verbose,
-            verbose_extra,
-            num_wanted,
-            gf_admission=gf_admission,
-            gf_admit_tol=gf_admit_tol,
-        )
     results = _gf_solve_units(
         plan,
         basis,
@@ -1089,326 +904,16 @@ def get_Greens_function(
         sparse,
         slaterWeightMin,
         verbose_extra,
-        gf_settle=gf_settle,
-        gf_settle_ratio=gf_settle_ratio,
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
-        gf_growth_tol=gf_growth_tol,
-        gf_growth_quiet=gf_growth_quiet,
-        gf_prune_rule=gf_prune_rule,
         gf_refine=gf_refine,
     )
-    if run_out is not None:
-        run_out["run"] = GFRun(
-            plan,
-            results,
-            lambda subset, ratio: _gf_solve_units(
-                plan,
-                basis,
-                hOp,
-                matsubara_mesh,
-                omega_mesh,
-                es,
-                delta,
-                reort,
-                sparse,
-                slaterWeightMin,
-                verbose_extra,
-                subset=subset,
-                gf_settle=gf_settle,
-                gf_settle_ratio=ratio,
-                gf_prune_tol=gf_prune_tol,
-                gf_first_shell_tol=gf_first_shell_tol,
-                gf_growth_tol=gf_growth_tol,
-                gf_growth_quiet=gf_growth_quiet,
-                gf_prune_rule=gf_prune_rule,
-                gf_refine=gf_refine,
-            ),
-            lambda res: _gf_assemble(
-                plan,
-                res,
-                blocks,
-                matsubara_mesh,
-                omega_mesh,
-                es,
-                tau,
-                delta,
-                ensemble_es,
-                num_wanted,
-                print_table=False,
-            ),
-        )
     return _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted)
 
 
 def impurity_operator_family(block):
     """The impurity Green's-function family of ``block``: ``([c_i^dag], [c_i])`` in block order."""
     return tuple([ManyBodyOperator({((orb, op_char),): 1}) for orb in block] for op_char in ("c", "a"))
-
-
-def _get_greens_function_bicgstab(
-    matsubara_mesh,
-    omega_mesh,
-    es,
-    tau,
-    basis,
-    hOp,
-    delta,
-    blocks,
-    widths,
-    units,
-    unit_seeds,
-    unit_weights,
-    unit_restrictions,
-    group_meta,
-    excited_weighted_restrictions,
-    slaterWeightMin,
-    verbose,
-    verbose_extra,
-    num_wanted,
-    gf_admission=None,
-    gf_admit_tol=None,
-):
-    r"""Distribution + assembly of the per-frequency BiCGSTAB Green's function.
-
-    The unit decomposition (and the excited windows) are exactly the Lanczos driver's --
-    :func:`get_Greens_function` hands them over after :func:`enumerate_gf_units` -- only the
-    per-unit kernel and the result contract differ: each unit returns ``G`` already evaluated
-    on the caller's meshes (:func:`block_Green_bicgstab`); the shared assembler :func:`_run_evaluated_gf_units` does the
-    rest.
-    """
-
-    def kernel(split_basis, u, seeds):
-        unit = units[u]
-        _block_i, side_i = group_meta[unit.group_i]
-        z_axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
-        return block_Green_bicgstab(
-            hOp,
-            seeds,
-            split_basis,
-            [es[ei] for ei in unit.chunk],
-            unit.n_ops,
-            z_axes,
-            slaterWeightMin=slaterWeightMin,
-            verbose=verbose_extra,
-            excited_restrictions=unit_restrictions[u],
-            excited_weighted_restrictions=excited_weighted_restrictions,
-            admission=gf_admission,
-            admit_tol=gf_admit_tol,
-        )
-
-    units_meta = [(group_meta[unit.group_i][0], group_meta[unit.group_i][1], unit.chunk) for unit in units]
-    return _run_evaluated_gf_units(
-        matsubara_mesh,
-        omega_mesh,
-        es,
-        tau,
-        basis,
-        delta,
-        blocks,
-        widths,
-        units_meta,
-        unit_seeds,
-        unit_weights,
-        kernel,
-        verbose,
-        num_wanted,
-        unit_windows=unit_restrictions,
-        hOp=hOp,
-    )
-
-
-def _run_evaluated_gf_units(
-    matsubara_mesh,
-    omega_mesh,
-    es,
-    tau,
-    basis,
-    delta,
-    blocks,
-    widths,
-    units_meta,
-    unit_seeds,
-    unit_weights,
-    kernel,
-    verbose,
-    num_wanted,
-    unit_windows=None,
-    hOp=None,
-):
-    r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
-
-    The engine behind the per-frequency drivers: ``kernel(split_basis,
-    u, seeds)`` must return ``(G_axes, stats)`` in :func:`block_Green_bicgstab`'s contract,
-    and ``units_meta[u] = (block_i, side_i, chunk)`` names where unit ``u``'s result belongs.
-    The assembly is a streaming Boltzmann-weighted accumulation into per-``(block, side)``
-    arrays (rank 0 never holds more than one color's payload) followed by the same
-    :math:`(G_\mathrm{IPS} - G_\mathrm{PS}^T)/Z` combination the Lanczos path applies to its
-    evaluated continued fractions.
-
-    The diagnostics report keeps the representation-independent checks (thermal cutoff, mesh
-    density, causality, basis truncation) plus the solver-residual record
-    (:func:`gf_diagnostics.check_bicgstab_convergence`). The spectral sum rule
-    and integrated-weight checks are expressed in seed-projection/continued-fraction terms
-    these paths do not produce.
-
-    ``hOp`` is passed to :func:`run_units_distributed`, which prices an auto GF cap at its
-    measured matvec fan-out.
-    """
-    thermal = ThermalEnsemble(es, tau)
-    e0, boltzmann, Z = thermal.e0, thermal.weights, thermal.Z
-    axis_lens = [len(m) for m in (matsubara_mesh, omega_mesh) if m is not None]
-
-    # Streaming accumulators, populated on global rank 0 only (reduce_fn's contract).
-    is_root = basis.comm is None or basis.comm.rank == 0
-    G_acc = (
-        {
-            (bi, si): [np.zeros((L, widths[bi], widths[bi]), dtype=complex) for L in axis_lens]
-            for bi in range(len(blocks))
-            for si in (0, 1)
-        }
-        if is_root
-        else None
-    )
-    stats_acc = {} if is_root else None
-    # Largest per-frequency solve basis per (block, spectral side) work unit. `stats_acc` keys
-    # on the block alone (its diagnostics are per-block) and its `retained_size` is the
-    # *smallest* frozen size, so neither answers "how big did this unit's basis get". This is a
-    # different construction from the block-Lanczos path's excited basis -- a basis rebuilt and
-    # discarded per frequency point, not one recurrence's support -- so it is reported under
-    # its own heading below and the two numbers must not be compared.
-    max_basis_acc = {} if is_root else None
-
-    def reduce_fn(u, result):
-        G_axes, stats = result
-        block_i, side_i, chunk = units_meta[u]
-        _merge_unit_basis(max_basis_acc, (block_i, side_i), stats["max_solve_basis"], stats["cap_hit"])
-        _trace_note(
-            "gf_unit_basis",
-            method="bicgstab",
-            block=int(block_i),
-            side=int(side_i),
-            retained_size=stats["max_solve_basis"],
-            max_rebuild_basis=stats["max_rebuild_basis"],
-            cap_hit=bool(stats["cap_hit"]),
-            points=stats["points"],
-        )
-        for p, ei in enumerate(chunk):
-            for ax in range(len(axis_lens)):
-                G_acc[(block_i, side_i)][ax] += boltzmann[ei] * G_axes[ax][p]
-        agg = stats_acc.setdefault(
-            block_i,
-            {
-                "n_points": 0,
-                "n_unconverged": 0,
-                "max_rel_residual": 0.0,
-                "iterations": 0,
-                "gmres_points": 0,
-                "gmres_iterations": 0,
-                "atol": stats["atol"],
-                "cap": stats["cap"],
-                "cap_hit": False,
-                "retained_size": None,
-                "seed_overflow": False,
-                "max_solve_basis": 0,
-                "max_rebuild_basis": 0,
-                "max_dG_bound": None,
-                "max_boundary": None,
-                "frozen_points": 0,
-                "frozen_fallbacks": 0,
-            },
-        )
-        for key in (
-            "n_points",
-            "n_unconverged",
-            "iterations",
-            "gmres_points",
-            "gmres_iterations",
-            "frozen_points",
-            "frozen_fallbacks",
-        ):
-            agg[key] += stats.get(key, 0)
-        for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
-            agg[key] = max(agg[key], stats[key])
-        for key in ("max_dG_bound", "max_boundary"):
-            if stats[key] is not None:
-                agg[key] = max(agg[key] or 0.0, stats[key])
-        agg["cap_hit"] = agg["cap_hit"] or stats["cap_hit"]
-        agg["seed_overflow"] = agg["seed_overflow"] or stats["seed_overflow"]
-        if stats["retained_size"] is not None:
-            agg["retained_size"] = (
-                stats["retained_size"]
-                if agg["retained_size"] is None
-                else min(agg["retained_size"], stats["retained_size"])
-            )
-
-    got = run_units_distributed(
-        basis,
-        unit_seeds,
-        unit_weights,
-        kernel,
-        verbose=verbose,
-        reduce_fn=reduce_fn,
-        gf_method="bicgstab",
-        unit_windows=unit_windows,
-        hOp=hOp,
-    )
-    if got is None:
-        return None, None, None
-
-    gs_matsubara = (
-        [np.empty((len(matsubara_mesh), n, n), dtype=complex) for n in widths] if matsubara_mesh is not None else None
-    )
-    gs_realaxis = [np.empty((len(omega_mesh), n, n), dtype=complex) for n in widths] if omega_mesh is not None else None
-    report = _gfd.DiagnosticReport()
-    for block_i, block in enumerate(blocks):
-        ax = 0
-        combined_real = None
-        if matsubara_mesh is not None:
-            G_IPS = G_acc[(block_i, 0)][ax]
-            G_PS = G_acc[(block_i, 1)][ax]
-            gs_matsubara[block_i][:] = combine_sides(G_IPS, G_PS, Z)
-            ax += 1
-        if omega_mesh is not None:
-            G_IPS_real = G_acc[(block_i, 0)][ax]
-            G_PS_real = G_acc[(block_i, 1)][ax]
-            combined_real = combine_sides(G_IPS_real, G_PS_real, Z)
-            gs_realaxis[block_i][:] = combined_real
-
-        agg = stats_acc[block_i]
-        if verbose:
-            print(
-                f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations "
-                f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations; "
-                f"{agg['frozen_points']} on a frozen P H P, {agg['frozen_fallbacks']} back to sparse), "
-                f"max per-point basis {agg['max_solve_basis']:,} "
-                f"(rebuild floor {agg['max_rebuild_basis']:,}), "
-                f"max residual {agg['max_rel_residual']:.1e}",
-                flush=True,
-            )
-        diags = [
-            _gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted),
-            _gfd.check_bicgstab_convergence(
-                agg["n_points"],
-                agg["n_unconverged"],
-                agg["max_rel_residual"],
-                agg["atol"],
-                seed_overflow=agg["seed_overflow"],
-                n_gmres_fallbacks=agg["gmres_points"],
-            ),
-        ]
-        if np.isfinite(agg["cap"]):
-            diags.append(_gfd.check_basis_truncation(agg["cap_hit"], agg["retained_size"], agg["cap"]))
-        if agg["max_dG_bound"] is not None:
-            diags.append(_gfd.check_truncation_error_bound(agg["max_dG_bound"], agg["max_boundary"]))
-        if combined_real is not None:
-            diags.append(_gfd.check_mesh_density(omega_mesh, delta))
-            diags.append(_gfd.check_causality(combined_real, "G"))
-        report.extend(str(block), diags)
-
-    _report_max_unit_basis("Maximum per-frequency solve basis size per unit", _unit_basis_rows(blocks, max_basis_acc))
-
-    return gs_matsubara, gs_realaxis, report
 
 
 def _build_excited_restrictions(
@@ -1577,6 +1082,7 @@ def calc_Greens_function_with_offdiag(
         slaterWeightMin=slaterWeightMin,
         solver_verbose=verbose,
         print_size=verbose,
+        prune_tol=DEFAULT_GF_PRUNE_TOL,
     )
     results = run_units_distributed(
         block_basis,

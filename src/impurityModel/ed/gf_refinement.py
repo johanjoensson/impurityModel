@@ -124,8 +124,13 @@ def seed_block_on_p_slots(matrix, states):
 
 # --- swap refinement of a capped unit ------------------------------------------------------------------------
 
-#: Defaults of the refinement (beside ``GF_METHODS``: not environment knobs).
+#: Defaults of the refinement (not environment knobs).
 REFINE_TOL = 1e-3
+#: Grow mode's budget for the summed score of the rows left out, as a fraction of the largest |G| on the shifts. Tighter
+#: than :data:`REFINE_TOL`: at 1e-3 the two-channel fixture stopped "settled" with one resonant row (7e-4 of the scale)
+#: missing and the self-energy still off by 0.04 against 5e-11 at 1e-4. On SMO unit 7, 1e-4 -> 2e-5 takes the error of G
+#: at the bath resonance (-0.28) from 1.6e-4 to 2.0e-5 for 512 more rows (of 337k) and the same refinement time (392 s).
+GROW_TOL = 2e-5
 REFINE_SWAP = 0.10
 #: The residual the recurrence-fed scoring solutions must reach, and whether the shifts are weighted by ``|G_0^-1|^2``.
 #: Harness switches (``freeze_replay`` sets them identically on every rank), not user options, until measured: a
@@ -162,6 +167,9 @@ class RefineSpec:
     #: Reject a round whose estimated self-energy error (:func:`sigma_error`) grew on the check shifts; ``False`` keeps
     #: the rule that compares the estimated gain only.
     verify: bool = True
+    #: Grow mode's budget for the mass left out (``None``: :data:`GROW_TOL`). The one-shot re-solve of a block that
+    #: still fails the self-energy check passes a tighter one.
+    grow_tol: Optional[float] = None
     #: The unit's check shifts ``((z, weight, axis), ...)`` in the recurrence's frame (``axis`` 0: real, 1: Matsubara),
     #: filled per unit from ``check_tables``: one :func:`g0_check_shifts` result per block, unsigned.
     checks: tuple = ()
@@ -436,6 +444,40 @@ def _select_swap(matrix, scores, exempt, k_max):
     return np.zeros(0, dtype=np.int64), [], gain
 
 
+def _select_grow(matrix, scores, budget, k_cap, fits=None):
+    """``(admit_keys, remaining, stopped)``: the cumulative cut of a pruned unit with room (nothing is retired).
+
+    ``remaining`` is the summed ``s_cand`` of every discovered non-P row before the admission. At or below ``budget``
+    nothing is admitted (the unit is settled). Otherwise the rows above :func:`collective_mass_cutoff` at ``budget`` are
+    admitted, so what is left out sums to at most ``budget``: many rows that each score too little to matter alone but
+    together carry the resonance go in together, which a per-row threshold would drop. ``k_cap`` (the room left under
+    the cap) and ``fits(k)`` (the memory budget, replicated and collective) bound the number; when they bind, the ``k``
+    best rows go in (:func:`collective_top_k_mask`, rank-count-invariant), ``k`` halved until it fits. ``stopped`` names
+    why nothing was admitted when it was not settled (``None`` otherwise). **Collective.**"""
+    from impurityModel.ed.manybody_basis import collective_mass_cutoff, collective_top_k_mask
+
+    comm = matrix.comm
+    alive = matrix.alive().astype(bool)
+    in_p = np.zeros(matrix.n_k_local, dtype=bool)
+    in_p[matrix.p_to_k_slot()[alive]] = True
+    f_slots = np.flatnonzero(~in_p)
+    cand = np.maximum(scores.s_cand[f_slots], 0.0)
+    cand = np.where(np.isfinite(cand), cand, 0.0)
+    remaining = _allreduce(comm, float(cand.sum()), MPI.SUM)
+    if remaining <= budget:
+        return [], remaining, None
+    cutoff = collective_mass_cutoff(cand, budget, comm)
+    above = (cand > cutoff) & (cand > 0.0)
+    n_above = int(_allreduce(comm, float(above.sum()), MPI.SUM))
+    k = min(n_above, int(k_cap))
+    while k > 0 and fits is not None and not fits(k):
+        k //= 2
+    if k <= 0:
+        return [], remaining, "room" if k_cap <= 0 else "memory"
+    take = above if k == n_above else collective_top_k_mask(cand, _LazyKeys(matrix, f_slots), k, comm) & (cand > 0.0)
+    return matrix.keys_of(f_slots[take]), remaining, None
+
+
 @dataclass(frozen=True)
 class ScoringPlan:
     """What the recurrence must accumulate for the scores, decided before it runs (replicated): the scoring shifts
@@ -528,10 +570,12 @@ def _round_worse(err_prev, err, axes, slack=None):
     )
 
 
-def scoring_plan(spec, seed_block, matrix, operator_real):
+def scoring_plan(spec, seed_block, matrix, operator_real, verify=True):
     """The :class:`ScoringPlan` of a refining unit, or ``(None, reason)`` when it cannot be scored. ``seed_block`` is
     the seed block on the P slots and ``operator_real`` whether every coefficient of ``H`` is real (decided from the
-    operator, replicated, before the first run: the matrix does not hold its later columns yet). **Collective** (the
+    operator, replicated, before the first run: the matrix does not hold its later columns yet). ``verify=False``
+    drops the check shifts: grow mode never lets the acceptance estimate decide, so they would cost accumulator
+    columns for nothing. **Collective** (the
     seeds real up to a phase is a global test)."""
     if not spec.shifts:
         return None, spec.note or "no scoring shifts"
@@ -540,7 +584,7 @@ def scoring_plan(spec, seed_block, matrix, operator_real):
     zs = tuple(complex(z) for z, _w in spec.shifts)
     weights = tuple(float(w) if weighted else 1.0 for _z, w in spec.shifts)
     rtol = REFINE_STOP_RTOL if spec.stop_rtol is None else spec.stop_rtol
-    checks = spec.checks if spec.verify else ()
+    checks = spec.checks if (spec.verify and verify) else ()
     return (
         ScoringPlan(
             zs,
@@ -555,7 +599,9 @@ def scoring_plan(spec, seed_block, matrix, operator_real):
     )
 
 
-def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc, rerun, g_cf, eval_meshes, seed_block):
+def refine_frozen_unit(
+    matrix, spec, plan, seed_keys, seed_q0, first, first_acc, rerun, g_cf, eval_meshes, seed_block, room=None, fits=None
+):
     """Swap refinement of a unit the cap froze, on its discovered matrix. **Collective** (every rank, same arguments).
 
     ``first`` is round 0's ``(alphas, betas, widths, status, q_last)`` and ``first_acc`` the
@@ -564,6 +610,13 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     the matrix's current P slots, stepping the accumulator it is given; ``g_cf(result, zs, framed=True)`` the
     continued-fraction ``G`` of a result on the shifts ``zs``; ``seed_block(matrix, seed_keys, q0)`` the seed block on
     the current P slots.
+
+    ``room`` (``None``: swap mode) is the number of determinants the unit may still add, for a pruned unit the cap
+    did not freeze: a round then only *admits* discovered determinants and retires nothing. It admits by the cumulative
+    cut of :func:`_select_grow` (everything above the score mass ``GROW_TOL * scale_gain`` that may be left out), at
+    most ``room`` in all and as many as ``fits(k)`` (replicated, collective: ``k`` more determinants stay inside the
+    memory budget) allows; the unit stops when the mass left out is within the budget, or on room or memory
+    (``record["stopped"]``). ``spec.swap`` is not used in grow mode.
 
     Round ``n`` scores the retained and discovered determinants from the accumulator's solutions
     (:func:`importance_scores`), then swaps the least important retained against the most important discovered ones
@@ -597,6 +650,8 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
     keys0 = [key for key, a in zip(matrix.p_keys(), matrix.alive()) if a]
     n_alive = int(_allreduce(comm, float(matrix.n_alive_local), MPI.SUM))
     k_max = max(1, int(spec.swap * n_alive))
+    grow_only = room is not None
+    grow_tol = GROW_TOL if spec.grow_tol is None else spec.grow_tol
     extra, first_gain = [], None
     swapped_total = 0
     err_prev, keys_prev, rejected = None, keys0, False
@@ -613,7 +668,7 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
             record.setdefault("sigma_error", []).append(
                 [float(err[np.asarray(plan.check_axes) == a].max()) for a in sorted(set(plan.check_axes))]
             )
-            if err_prev is not None and _round_worse(err_prev, err, plan.check_axes):
+            if err_prev is not None and not grow_only and _round_worse(err_prev, err, plan.check_axes):
                 # The last swap made the estimated self-energy worse on one axis: undo it and stop (review F4/R1).
                 record["rejected"] = round_
                 matrix.set_p_keys(keys_prev)
@@ -623,16 +678,30 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
                 rejected = True
                 break
             err_prev = err
-        exempt = _exempt_pslots(matrix, seed_keys, seeds, extra)
-        retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
+        exempt = None if grow_only else _exempt_pslots(matrix, seed_keys, seeds, extra)
+        if grow_only:
+            retire = np.zeros(0, dtype=np.int64)
+            admit, gain, why = _select_grow(matrix, scores, grow_tol * scale_gain, room - swapped_total, fits)
+            if why is not None:
+                record["stopped"] = {
+                    "room": "no room under the cap",
+                    "memory": "the next admission would exceed the memory budget",
+                }[why]
+        else:
+            retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
         record["gain"].append(gain)
         record.setdefault("pass_seconds", []).append(time.perf_counter() - t_round)
         record.setdefault("blocks", []).append(len(result[2]))
         record.setdefault("floor", []).append(float(acc.floor.max(initial=0.0)))
         if first_gain is None:
             first_gain = gain
-        n_swap = int(_allreduce(comm, float(len(retire)), MPI.SUM))
-        if gain <= spec.tol * scale_gain or n_swap == 0 or round_ == spec.rounds:
+        n_swap = int(_allreduce(comm, float(len(admit) if grow_only else len(retire)), MPI.SUM))
+        if (
+            gain <= (grow_tol if grow_only else spec.tol) * scale_gain
+            or n_swap == 0
+            or round_ == spec.rounds
+            or (grow_only and room - swapped_total <= 0)
+        ):
             break
         record["swapped"].append(n_swap)  # the swaps made, not the one the last pass would have made
         del scores, seeds, xs, ys, acc  # the solutions and the accumulator go before the (memory-hungry) set_p_keys
@@ -656,11 +725,11 @@ def refine_frozen_unit(matrix, spec, plan, seed_keys, seed_q0, first, first_acc,
             record["stopped"] = "a scoring recurrence diverged"
             record["seconds"] = time.perf_counter() - t0
             return RefineOutcome(None, record)
-    record["settled"] = bool(gain <= spec.tol * scale_gain) and not rejected
+    record["settled"] = bool(gain <= (grow_tol if grow_only else spec.tol) * scale_gain) and not rejected
     if swapped_total == 0:
         record["seconds"] = time.perf_counter() - t0
         return RefineOutcome(None, record)
-    if record["gain"][-1] > first_gain:
+    if record["gain"][-1] > first_gain and not grow_only:
         matrix.set_p_keys(keys0)
         record["fell_back"] = True
         record["seconds"] = time.perf_counter() - t0

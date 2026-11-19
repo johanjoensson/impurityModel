@@ -205,7 +205,7 @@ def apply_and_redistribute(
     if policy is not None:
         policy.begin_step()
         # A frozen support reads the output only on its retained rows (`transport` projects onto them), so
-        # the apply stops generating the others. Read only while frozen, so a filter that outlived an unfreeze
+        # the apply stops generating the others. Read only while frozen, so a stale filter
         # can never cut an unfrozen recurrence; the exact projection still runs.
         if policy.frozen:
             keep_filter = policy.apply_filter

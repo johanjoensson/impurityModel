@@ -13,10 +13,9 @@ it is the axis that sets the Lanczos depth. These tests pin the contract of the 
 
 import numpy as np
 import pytest
-
-from impurityModel.ed import gf_convergence
 import scipy.linalg as la
 
+from impurityModel.ed import gf_convergence
 from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.gf_convergence import (
     EvalMeshes,
@@ -156,8 +155,6 @@ def test_solver_options_accept_and_validate_the_tolerances():
     assert SolverOptions().gf_tol is None and SolverOptions().gf_real_tol is None
     with pytest.raises(ValueError, match="must lie in"):
         SolverOptions(gf_real_tol=0.0)
-    with pytest.raises(ValueError, match="block-Lanczos convergence tolerance"):
-        SolverOptions(gf_method="bicgstab", gf_tol=1e-6)
 
 
 # --- the driver threads the tolerances to every unit's monitor ----------------------------------------
@@ -175,12 +172,12 @@ def _monitor_tolerances(monkeypatch, env=None, **extra):
         seen.append(getattr(eval_meshes, "tols", None))
         return real(delta, slaterWeightMin, eval_meshes)
 
-    # Each kernel imported the factory by name: the Lanczos GF's recurrence, and the BiCGSTAB/array kernels.
+    # Each kernel imported the factory by name: the Lanczos GF's recurrence and the array kernels.
     monkeypatch.setattr(gf_solvers, "_make_gf_convergence_monitor", recording)
     monkeypatch.setattr(gf_recurrence, "_make_gf_convergence_monitor", recording)
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
-    _run_driver("lanczos", None, extra=extra)
+    _run_driver(None, extra=extra)
     assert seen, "no unit built a convergence monitor"
     return seen
 
@@ -193,13 +190,6 @@ def test_unset_options_take_the_default_and_an_explicit_option_wins(monkeypatch)
     floor = _gf_rel_tol(0.0)
     assert all(t == [floor, floor] for t in _monitor_tolerances(monkeypatch))
     assert all(t == [floor, 1e-3] for t in _monitor_tolerances(monkeypatch, gf_real_tol=1e-3))
-
-
-def test_the_driver_refuses_a_tolerance_on_the_per_frequency_kernel():
-    from impurityModel.test.support.gf_oracles import _run_driver
-
-    with pytest.raises(ValueError, match="block-Lanczos tolerances"):
-        _run_driver("bicgstab", None, extra={"gf_real_tol": 1e-4})
 
 
 # --- the plateau stop ----------------------------------------------------------------------------------
@@ -249,7 +239,7 @@ def test_a_tighter_plateau_limit_fires_later_than_the_reference_one(monkeypatch)
     mon, _f = _plateau_monitor(monkeypatch, arm=True)
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MAX_CHANGE", 1e-12)
     a, _b = _run(h, q0, mon)
-    assert mon_ref.plateau_hit[0] and 3 * 8 <= len(a_ref)
+    assert mon_ref.plateau_hit[0] and len(a_ref) >= 3 * 8
     assert len(a) > len(a_ref), (len(a), len(a_ref))
 
 

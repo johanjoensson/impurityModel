@@ -10,7 +10,7 @@ with ``A`` a callable, so the same step serves a fixed matrix and one that grows
 the matvec returns the step's rows in ``P`` (the Lanczos step) and in ``F = K \\ P`` (the frontier), the
 admission decision reads ``F``, :meth:`DistributedSparseMatrix.grow` admits the chosen rows (one operator
 application per admitted determinant), and the admitted rows' amplitude enters the same step. After the
-support freezes (cap, memory guard, settle) ``F`` is discarded and the recurrence runs on ``P H P`` from
+support freezes (cap, memory guard) ``F`` is discarded and the recurrence runs on ``P H P`` from
 the same blocks -- the flag is the whole freeze.
 
 **Cut semantics are the array kernel's**: no ``slaterWeightMin`` cut on the ``P`` rows of ``w`` and none on
@@ -19,11 +19,10 @@ the frozen restart of the ManyBodyState kernel (the GF's growth path until 2026-
 kernel's pre-freeze steps by the cut amounts at ``slaterWeightMin > 0``.
 
 The admission rules (cap with importance-ranked boundary, importance pruning ``eta`` without a ban, the
-measured-memory guard, the support settle) are the :class:`~impurityModel.ed.gf_primitives.SupportDecisions`
+measured-memory guard) are the :class:`~impurityModel.ed.gf_primitives.SupportDecisions`
 applied to dense frontier rows.
 """
 
-import math
 import time
 
 import numpy as np
@@ -35,36 +34,20 @@ from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, divergence_guard
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix, stage
 from impurityModel.ed.gf_convergence import (
-    EvalMeshes,
     _gf_monitor_tol,
     _make_gf_convergence_monitor,
     krylov_exhausted,
 )
 from impurityModel.ed.gf_primitives import (
-    SETTLE_WINDOW,
     SupportDecisions,
     _distributed_seed_qr,
     _sanitize_continued_fraction,
     _trim_blocks,
-    boundary_frontier,
     calc_G,
 )
-from impurityModel.ed.manybody_basis import collective_mass_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
-
-#: Support-settle threshold, a multiple of ``slaterWeightMin`` (``SolverOptions.gf_settle_ratio``).
-DEFAULT_SETTLE_RATIO = 3.0
-
-#: Cut rule of the importance pruning: ``"amplitude"`` (a row is admitted when one block's largest column
-#: ``|amp|^2`` exceeds ``eta^2``), ``"accumulated"`` (the same quantity summed over the blocks that reach the row) or
-#: ``"mass"`` (a fraction of the step's frontier weight; rig only).
-_PRUNE_RULE = "amplitude"
-_PRUNE_RULES = ("amplitude", "accumulated", "mass")
-#: The rules a caller may name (``prune_rule``, ``SolverOptions.gf_prune_rule``); ``"mass"`` is reached only through
-#: the module switch above.
-_PUBLIC_PRUNE_RULES = ("amplitude", "accumulated")
 
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
 _FORWARDED = {
@@ -73,10 +56,6 @@ _FORWARDED = {
     "memory_policy": "memory_policy",
     "memory_frozen": "memory_frozen",
     "cap_hit": "cap_hit",
-    "support_freeze": "support_freeze",
-    "support_frozen": "support_frozen",
-    "support_trace": "support_trace",
-    "monitor_dg": "monitor_dg",
     "frozen": "frozen",
 }
 
@@ -94,14 +73,11 @@ class DiscoveredSupport:
     #: longer fit at the freeze continues matrix-free).
     mode_ran = None
 
-    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, rule="amplitude"):
-        if rule not in _PRUNE_RULES:
-            raise ValueError(f"the prune rule must be one of {_PRUNE_RULES}, got {rule!r}")
+    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0):
         self.matrix = matrix
         self.decisions = decisions
         self.comm = matrix.comm
         self.prunes = eta is not None
-        self.rule = rule
         self._eta = float(eta) if self.prunes else 0.0
         self._eta2 = self._eta**2
         self._shell_tol = float(first_shell_tol)
@@ -112,23 +88,6 @@ class DiscoveredSupport:
         self.step_counts = []
         #: Key-only block of this rank's first-shell rows the cut kept (``None`` before the first shell).
         self.shell_keys = None
-        #: Accumulated frontier weight per K slot (rule ``"accumulated"``; grown with the matrix's K).
-        self._acc = np.zeros(0)
-        #: Key-based weight store of the matrix-free modes (``None``: the K-slot array above); and whether the unit
-        #: gave the accumulated rule up for lack of memory.
-        self.weights = None
-        self.rule_fallback = False
-
-    def accumulate(self, slots, norms2):
-        """Add ``norms2`` to the running weight of the K ``slots`` and return their totals (rank-local)."""
-        n_k = self.matrix.n_k_local
-        if len(self._acc) < n_k:
-            # Capacity doubling: K grows by a few slots almost every step, a copy per step would be O(K * steps).
-            grown = np.zeros(max(n_k, 2 * len(self._acc)))
-            grown[: len(self._acc)] = self._acc
-            self._acc = grown
-        self._acc[slots] += norms2
-        return self._acc[slots]
 
     def depth_histogram(self):
         """Global number of determinants admitted at each H-depth from the seeds (step ``k`` reaches depth ``k``);
@@ -154,14 +113,6 @@ class DiscoveredSupport:
     def retained_mask(self):
         """Width-0 key-only block of this rank's admitted determinants."""
         return ManyBodyState.from_keys(self.retained_keys())
-
-    def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
-        if self.prunes:
-            raise ValueError("the support freeze and importance pruning (gf_prune_tol) are exclusive")
-        self.decisions.enable_support_freeze(window, ratio, slater_weight_min, log=log, trace=trace)
-
-    def settle_verdict(self):
-        return self.decisions.settle_verdict()
 
     def stop_phrase(self):
         return self.decisions.stop_phrase()
@@ -190,6 +141,10 @@ for _name, _attr in _FORWARDED.items():
 MATRIX_MEMORY_SAFETY = 0.75
 #: ``|K_local|`` as a multiple of ``|P_local|`` before the unit has measured it (the NiO estimate: 2.3-2.5).
 K_OVER_P_ESTIMATE = 2.5
+#: How many times its starting basis a unit's ``P`` is priced at when the cap is larger. Measured |P| / seeds: SMO
+#: units 1 and 4 2.2 and 3.3 (cap 4e6, |P| 161k and 409k); a unit that outgrows the price freezes on the memory
+#: guard, reported as such.
+GROWTH_PRICE_FACTOR = 10
 #: Bytes per stored element (a 16 B value and an 8 B packed row) and per K row (key, two slot arrays, the
 #: ``K -> P`` map and slack).
 _ELEMENT_BYTES = 24
@@ -199,7 +154,8 @@ _K_ROW_BYTES = 36
 def matrix_need_bytes(n_p_local, n_k_local, fanout, n_global_k, n_ranks, width):
     """Upper bound on the bytes a rank needs for the discovered-key matrix and the recurrence on it: the
     columns of ``P_local`` over the rows of ``K``, the ``K`` store, the dense blocks (``q``, ``q_prev``, the
-    next block over ``P`` and the product over ``K``), the exchange buffers and one ``grow`` batch."""
+    next block over ``P`` and the product over ``K``), the exchange buffers, the replicated K -> P table (multi-rank)
+    and one ``grow`` batch."""
     from impurityModel.ed.DistributedSparseMatrix import _GROW_BATCH
     from impurityModel.ed.mpi_comm import matvec_column_chunk_width
 
@@ -211,7 +167,10 @@ def matrix_need_bytes(n_p_local, n_k_local, fanout, n_global_k, n_ranks, width):
         recv_rows = n_k_local * (n_ranks - 1)
         w_c = matvec_column_chunk_width(max(send_rows, recv_rows), width, config.GS_MATVEC_EXCHANGE_BYTES.get())
         working += 16 * w_c * (send_rows + recv_rows + n_k_local)
-    return matrix + working + min(_GROW_BATCH, elements) * 160
+    # The K -> P table of every ``rows="P"`` plan (the frozen phase, a refinement's scoring runs) is gathered whole
+    # on every rank (int64 per K row of every rank).
+    ptab = 8 * n_global_k if n_ranks > 1 else 0
+    return matrix + working + ptab + min(_GROW_BATCH, elements) * 160
 
 
 def _sample_fanout(basis, hop):
@@ -241,8 +200,8 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     refinement) and the discovered-key matrix fits ``MATRIX_MEMORY_SAFETY`` of the rank's share on every
     rank, else ``"retained"``: never ``"none"`` from this estimate, which prices at the cap -- the freeze re-prices the
     ``P H P`` matrix against the real ``P`` (``_ApplyEngine._fits_now``) and falls back to matrix-free there. No memory
-    budget (the guard is off) always fits. ``P`` is priced at ``cap`` determinants spread over the ranks (the
-    seed basis when the cap is unbounded), ``K`` at :data:`K_OVER_P_ESTIMATE` times that. ``report`` (a dict)
+    budget (the guard is off) always fits. ``P`` is priced at ``min(cap, GROWTH_PRICE_FACTOR * |starting basis|)`` determinants spread over the
+    ranks (the starting basis when the cap is unbounded), ``K`` at :data:`K_OVER_P_ESTIMATE` times that. ``report`` (a dict)
     receives the numbers the decision used. ``refine_shifts`` (the number of scoring shifts a refinement will
     accumulate, conjugates included) adds the accumulator's ``2 * shifts * |P_local| * width`` complex entries, times
     :data:`REFINE_SKEW` for the routing hash's imbalance, to the price of the discovered mode: a unit whose matrix
@@ -257,7 +216,11 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     n_ranks = comm.size if comm is not None else 1
     n_basis_local = len(basis.local_basis)
     fanout = _sample_fanout(basis, hop)
-    n_p = max(n_basis_local, int(min(cap, 2**40) / n_ranks)) if np.isfinite(cap) and cap < 2**40 else n_basis_local
+    # A cap far above anything the unit will reach says nothing about its size (the harness's 1e9 priced the matrix at
+    # 4.7e12 B and silently ran `retained`): price at the cap or at GROWTH_PRICE_FACTOR times the starting basis,
+    # whichever is smaller. The growth itself is guarded by the measured memory (``_grow_fits``, the freeze guard).
+    priced = min(float(cap), GROWTH_PRICE_FACTOR * float(basis.size)) if np.isfinite(cap) else None
+    n_p = n_basis_local if priced is None else max(n_basis_local, int(priced / n_ranks))
     n_k = int(K_OVER_P_ESTIMATE * n_p)
     need_e = matrix_need_bytes(n_p, n_k, fanout, n_k * n_ranks, n_ranks, width)
     need_acc = int(REFINE_SKEW * 2 * refine_shifts * n_p * width * 16)
@@ -368,63 +331,6 @@ def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_t
     return alpha, x_next, beta, k
 
 
-#: Share of the memory budget the deferred-weight store of a matrix-free unit may take before the unit gives the
-#: accumulated rule up (and finishes on the amplitude rule).
-_WEIGHT_STORE_SHARE = 0.25
-
-
-class _KeyWeights:
-    """Accumulated frontier weight by determinant key, for the matvec modes whose frontier ids (row numbers of the
-    applied block) change from step to step.
-
-    A width-1 :class:`ManyBodyState` whose amplitude is the weight; rows are owned by one rank after the apply's
-    redistribution, so the store is rank-local and needs no communication. Per step :meth:`totals` reads each
-    frontier row's prior weight and :meth:`commit` folds the step in, zeroing (so dropping) the rows admitted."""
-
-    def __init__(self):
-        self.store = ManyBodyState.from_keys([])
-        self.applied = None
-        self._pending = None
-
-    def begin(self, applied):
-        """The step's applied block, whose rows the ids of :meth:`totals` number."""
-        self.applied = applied
-        self._pending = None
-
-    def nbytes(self):
-        return int(self.store.memory_bytes())
-
-    def totals(self, ids, norms2):
-        """Weight of the frontier rows ``ids`` after adding this step's ``norms2``."""
-        ids = np.asarray(ids, dtype=np.int64)
-        prior = np.zeros(len(ids))
-        if len(self.store) and len(ids):
-            pos = self.applied.find_rows_in(self.store)[ids]
-            found = pos < len(self.store)
-            # Fancy indexing copies only the matched entries, and the buffer view dies before the store is mutated.
-            prior[found] = np.asarray(self.store)[pos[found], 0].real
-        self._pending = (ids, np.asarray(norms2, dtype=float), prior)
-        return prior + self._pending[1]
-
-    def commit(self, admitted):
-        """Fold the step into the store: the deferred rows keep their total, the ``admitted`` ones leave."""
-        pending, self._pending = self._pending, None
-        applied, self.applied = self.applied, None  # do not keep the step's block alive into the next matvec
-        if pending is None or applied is None:
-            return
-        ids, norms2, prior = pending
-        delta = np.zeros(len(applied))
-        delta[ids] = norms2
-        admitted = np.asarray(admitted, dtype=np.int64)
-        if len(admitted):
-            # ``ids`` ascend (flatnonzero, then masks) and ``admitted`` is a subset of them in the same order.
-            delta[admitted] = -prior[np.searchsorted(ids, admitted)]
-        inc = ManyBodyState.from_keys_and_amps(applied, delta)
-        inc.prune_rows(0.0)
-        self.store += inc
-        self.store.prune_rows(0.0)
-
-
 class _Admission:
     """The admission decision of one step on dense frontier rows. Collective; replicated verdicts."""
 
@@ -432,123 +338,55 @@ class _Admission:
         self.support = support
         self.d = support.decisions
         self.swm = float(slater_weight_min)
-        self.pending = None  # the settle record of the step, completed by note_next_block
-        self.pending_hq2 = 0.0
 
-    def decide(self, f_ids, wf, hq2, keys_of):
+    def decide(self, f_ids, wf, keys_of):
         """:meth:`_decide`, plus the step's admitted count and (once) the first shell's kept keys."""
         before = self.d.global_count
-        admitted = self._decide(f_ids, wf, hq2, keys_of)
+        admitted = self._decide(f_ids, wf, keys_of)
         sup = self.support
-        if sup.weights is not None:
-            sup.weights.commit(admitted)
         sup.step_counts.append(int(self.d.global_count - before))
         if sup._shell_pending:
             sup._shell_pending = False
             sup.shell_keys = list(keys_of(admitted))
         return admitted
 
-    def _decide(self, f_ids, wf, hq2, keys_of):
+    def _decide(self, f_ids, wf, keys_of):
         """The frontier rows to admit from the step's matvec output.
 
         ``f_ids`` identify this rank's frontier rows (K slots, or row numbers of the applied block) and
-        ``wf`` their amplitudes ``(n_f, p)``; ``hq2`` is this rank's ``||w||^2`` over all rows (the settle
-        trace) and ``keys_of(ids)`` the determinants of some ids. Cuts the frontier at ``slaterWeightMin``
-        (the weight it drops is reported for the settle), applies the memory guard, then the counted or
-        pruned rule; at the cap it ranks the candidates and freezes. Returns the ids admitted."""
+        ``wf`` their amplitudes ``(n_f, p)`` and ``keys_of(ids)`` the determinants of some ids. Cuts the
+        frontier at ``slaterWeightMin``, applies the memory guard, then the counted or pruned rule; at the cap it
+        ranks the candidates and freezes. Returns the ids admitted."""
         d = self.d
         sup = self.support
-        self.pending = None
         f_slots = np.asarray(f_ids, dtype=np.int64)
         amp2 = (np.abs(wf) ** 2).max(axis=1) if wf.shape[1] else np.zeros(len(f_slots))
-        if d.support_freeze:
-            self.pending_hq2 = float(hq2)
         keep = amp2 > self.swm**2
-        if d.support_freeze:
-            d.note_step_cut(float(np.sum(np.abs(wf[~keep]) ** 2)))
         slots = f_slots[keep]
         norms2 = amp2[keep]
         if d.over_memory_budget():
             d.freeze_on_memory()
             return slots[:0]
         if sup.prunes:
-            return self._pruned(keys_of, slots, norms2, wf[keep])
-        if d.support_freeze:
-            return self._counted_support(keys_of, slots, norms2, wf[keep])
+            return self._pruned(keys_of, slots, norms2)
         n_new = int(d.allreduce_sum(len(slots)))
         if d.global_count + n_new <= d.cap:
             d.global_count += n_new
             return slots
         return self._top_and_freeze(keys_of, slots, norms2)
 
-    def _pruned(self, keys_of, slots, norms2, rows):
+    def _pruned(self, keys_of, slots, norms2):
         sup, d = self.support, self.d
         first_shell = not sup._shell_admitted and int(d.allreduce_sum(len(slots))) > 0
         sup._shell_admitted = sup._shell_admitted or first_shell
         sup._shell_pending = first_shell
-        if sup.rule == "accumulated" and sup.weights is not None:
-            self._check_weight_store()
-        if sup.rule == "mass":
-            weight = (np.abs(rows) ** 2).sum(axis=1) if len(slots) else np.zeros(0)
-            fraction = sup._shell_tol if first_shell else sup._eta
-            budget = fraction * float(d.allreduce_sum(float(weight.sum())))
-            sel = weight > collective_mass_cutoff(weight, budget, d.comm)
-        elif sup.rule == "accumulated":
-            totals = sup.weights.totals(slots, norms2) if sup.weights is not None else sup.accumulate(slots, norms2)
-            sel = (norms2 if first_shell else totals) > (sup._shell_tol2 if first_shell else sup._eta2)
-            norms2 = totals
-        else:
-            sel = norms2 > (sup._shell_tol2 if first_shell else sup._eta2)
+        sel = norms2 > (sup._shell_tol2 if first_shell else sup._eta2)
         slots, norms2 = slots[sel], norms2[sel]
         n_new = int(d.allreduce_sum(len(slots)))
         if d.global_count + n_new <= d.cap:
             d.global_count += n_new
             return slots
         return self._top_and_freeze(keys_of, slots, norms2)
-
-    def _check_weight_store(self):
-        """Collective: one fixed-shape MAX of the deferred-weight store's bytes; above its share of the memory
-        budget the unit drops the store and finishes on the amplitude rule (the verdict is replicated)."""
-        sup, d = self.support, self.d
-        buf = np.array([float(sup.weights.nbytes())])
-        _allreduce(d.comm if d.comm is not None and d.comm.size > 1 else None, buf, MPI.MAX)
-        if d.memory_budget is None or buf[0] <= _WEIGHT_STORE_SHARE * d.memory_budget:
-            return
-        sup.rule, sup.weights = "amplitude", None
-        sup.rule_fallback = True
-        if d.comm is None or d.comm.rank == 0:
-            print(
-                f"GF accumulated rule: the deferred-weight store reached {format_bytes(buf[0])}/rank, over "
-                f"{_WEIGHT_STORE_SHARE:.0%} of the {format_bytes(d.memory_budget)} memory budget; "
-                "this unit finishes on the amplitude rule.",
-                flush=True,
-            )
-
-    def _counted_support(self, keys_of, slots, norms2, rows):
-        d = self.d
-        n_new = len(slots)
-        leak = float(np.sum(np.abs(rows) ** 2))
-        max2 = float(norms2.max()) if len(norms2) else 0.0
-        local = np.array([n_new, leak, d.pending_cut, self.pending_hq2, max2], dtype=np.float64)
-        d.pending_cut = 0.0
-        hq2_local = self.pending_hq2
-        self.pending_hq2 = 0.0
-        if d.comm is not None and d.comm.size > 1:
-            gathered = np.empty((d.comm.size, 5), dtype=np.float64)
-            d.comm.Allgather(local, gathered)
-        else:
-            gathered = local[None, :]
-        n_new_g = round(math.fsum(gathered[:, 0]))
-        leak_g = math.fsum(gathered[:, 1])
-        cut_g = math.fsum(gathered[:, 2])
-        hq2_g = math.fsum(gathered[:, 3]) if d.comm is not None else hq2_local
-        max2_g = float(np.max(gathered[:, 4]))
-        if d.global_count + n_new_g > d.cap:
-            return self._top_and_freeze(keys_of, slots, norms2)
-        retained_before = d.global_count
-        d.global_count += n_new_g
-        self.pending = (slots, retained_before, n_new_g, leak_g, cut_g, hq2_g, max2_g)
-        return slots
 
     def _top_and_freeze(self, keys_of, slots, norms2):
         """Admit the ``cap - retained`` most important candidates (whole near-tie groups, the boundary group
@@ -566,25 +404,6 @@ class _Admission:
         admitted = slots[take]
         d.freeze_at_cap(len(admitted))
         return admitted
-
-    def attach(self, pslots):
-        """The engine tells the pending settle record which P slots the step's admitted rows took."""
-        if self.pending is not None:
-            self.pending = (np.asarray(pslots, dtype=np.int64),) + self.pending[1:]
-
-    def note_next_block(self, q_next):
-        """Complete the step's settle record with the next block's amplitude on the rows it admitted, and take
-        the verdict (one fixed-shape MAX on every rank)."""
-        pending, self.pending = self.pending, None
-        d = self.d
-        if pending is None:
-            return
-        pslots, retained_before, n_new, leak, cut, hq2, max2_matvec = pending
-        buf = np.zeros(1)
-        if len(pslots) and q_next.shape[0] > int(pslots.max()):
-            buf[0] = float(np.max(np.sum(np.abs(q_next[pslots]) ** 2, axis=1)))
-        _allreduce(d.comm if d.comm is not None and d.comm.size > 1 else None, buf, MPI.MAX)
-        d.settle_step(float(buf[0]), retained_before, n_new, leak, cut, hq2, max2_matvec)
 
 
 class _OutputBuffer:
@@ -615,12 +434,10 @@ class _MatrixEngine:
             return matrix.matvec(block, rows="P", out=self._out.get(matrix.n_p_local, block.shape[1]))
         w_k = matrix.matvec(block, rows="all")
         f_slots = np.flatnonzero(matrix.k_to_p_slot() < 0)
-        hq2 = math.fsum(np.sum(np.abs(w_k) ** 2, axis=0)) if d.support_freeze else 0.0
-        slots = admission.decide(f_slots, w_k[f_slots], hq2, matrix.keys_of)
+        slots = admission.decide(f_slots, w_k[f_slots], matrix.keys_of)
         # The verdict (how many rows were admitted) is replicated, so every rank takes the same branch.
         if int(d.allreduce_sum(len(slots))):
-            admitted = matrix.grow(matrix.keys_of(slots))
-            admission.attach(admitted)
+            matrix.grow(matrix.keys_of(slots))
         w_p = w_k[matrix.p_to_k_slot()]
         w_p[~matrix.alive()] = 0.0
         return w_p
@@ -658,8 +475,6 @@ class _ApplyEngine:
     their ids are row numbers of the applied block."""
 
     def __init__(self, matrix, admission, hop, basis, retained):
-        if admission.support.rule == "accumulated" and admission.support.prunes:
-            admission.support.weights = _KeyWeights()
         self.matrix = matrix
         self.admission = admission
         self.hop = hop
@@ -764,14 +579,10 @@ class _ApplyEngine:
         if d.frozen:
             return w_p
         f_ids = np.flatnonzero(~in_p)
-        if admission.support.weights is not None:
-            admission.support.weights.begin(applied)
-        hq2 = float(np.vdot(amps, amps).real) if d.support_freeze else 0.0
         with stage("decide"):
-            ids = admission.decide(f_ids, amps[f_ids], hq2, lambda sel: [applied.key_at(int(i)) for i in sel])
+            ids = admission.decide(f_ids, amps[f_ids], lambda sel: [applied.key_at(int(i)) for i in sel])
         if int(d.allreduce_sum(len(ids))):
             new = matrix.admit_keys([applied.key_at(int(i)) for i in ids])
-            admission.attach(new)
             w_new = np.zeros((matrix.n_p_local, x.shape[1]), dtype=complex)
             w_new[: w_p.shape[0]] = w_p
             new_keys = matrix.keys_of(matrix.p_to_k_slot()[new])
@@ -862,15 +673,12 @@ def block_lanczos_discovered(
     shifted=None,
     shifted_rtol=None,
     score_only=False,
-    score_gate=None,
-    quiet_window=None,
-    stop_at_freeze=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
 
     Returns ``(alphas, betas, widths, status, q_last)``: the padded ``(m, n, n)`` coefficient arrays, the
-    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"``, ``"quiet"``,
+    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"``,
     ``"exhausted"`` or ``"max_iter"``; ``"exhausted"`` = a frozen reort-off recurrence has used as many vectors as
     the support has determinants, so it sits on its rounding floor and cannot reach the tolerance) and this rank's rows of the last accepted block (P-slot order of the final matrix).
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
@@ -880,16 +688,7 @@ def block_lanczos_discovered(
     every shift's residual (the Galerkin residual or the deflation floor, whichever is larger) is below it, so
     "converged" then means the Green's function *and* the scoring solutions are. ``score_only`` stops on that residual
     alone (the Green's-function monitor is still called every block) and reports ``"scored"``: the coefficients are
-    then good for the scores, not for ``G``. ``score_gate()`` (collective) is asked once, when the Green's function
-    has converged on a frozen P: if it says no row is worth scoring, ``shifted`` is dropped (``shifted.skipped``) and
-    the run ends there. ``quiet_window`` (pruned growth that is not frozen yet; ``None``: off) ends the run with the
-    status ``"quiet"`` once that many consecutive blocks admitted nothing -- the growth has found its support and
-    only the restart on it (which the caller must run) is left to do. The test reads the replicated
-    ``support.step_counts``, so every rank leaves on the same block.
-    ``stop_at_freeze`` (``None``: off; else a replicated, rank-invariant callable) ends the run with the status
-    ``"frozen"`` on the first block after the support froze (the memory guard, the cap or the settle), provided it
-    returns true: the caller restarts from the seeds on the frozen P anyway, so the frozen continuation of the
-    growth would be discarded. The caller **must** run that restart.
+    then good for the scores, not for ``G``.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -906,10 +705,8 @@ def block_lanczos_discovered(
     h_norm_est = 0.0
     status = "max_iter"
     store = [x] if reort else None
-    freeze_step = None
     n_vectors = 0  # Krylov vectors produced since the support froze (replicated)
 
-    frozen_on_entry = d.frozen
     it = 0
     while it < max_blocks:
         n_curr = x.shape[1]
@@ -918,11 +715,6 @@ def block_lanczos_discovered(
             comm.Allreduce(MPI.IN_PLACE, probe, op=MPI.MAX)
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
-        if stop_at_freeze is not None and d.frozen and not frozen_on_entry and stop_at_freeze():
-            # ``d.frozen`` is replicated, so every rank leaves on the same block, before the frozen continuation
-            # (and its array-kernel handoff) that the restart would throw away.
-            status = "frozen"
-            break
         if d.frozen and not reort and hasattr(engine, "array_operator"):
             handed = engine.array_operator(n_curr)
             if handed is not None:
@@ -971,21 +763,11 @@ def block_lanczos_discovered(
             shifted.step(x, alpha, beta_prev)
             if diag["dropped"].size:
                 shifted.note_deflation(diag["dropped"])
-        if d.support_freeze and not d.frozen:
-            admission.note_next_block(x_next)
-            if d.frozen:
-                freeze_step = it
         if d.frozen and not reort and shifted is None:
             _arm_plateau(converged)
         done = converged(alphas[: it + 1], betas[: it + 1], verbose=verbose, block_widths=widths + [n_curr])
         if comm is not None:
             done = comm.bcast(bool(done), root=0)
-        if done and support.cap_hit and score_gate is not None and shifted is not None and not score_only:
-            # The Green's function converged on the frozen P: if no row can be swapped the scoring tail is wasted.
-            score_gate, gate = None, score_gate
-            if not gate():
-                shifted.skipped = True
-                shifted = None
         if shifted is not None and shifted_rtol is not None and (score_only or (done and support.cap_hit)):
             # The residual is a function of the coefficients, which ranks may disagree on in the last bits (mixed
             # BLAS kernels): decide on the worst rank's value, so every rank leaves on the same block. A deflation
@@ -1000,13 +782,6 @@ def block_lanczos_discovered(
             if comm is not None:
                 comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
             done = bool(worst[0] <= shifted_rtol)
-        if not done and quiet_window and support.prunes and not d.frozen and not score_only:
-            counts = support.step_counts
-            if len(counts) > quiet_window and not any(counts[len(counts) - quiet_window :]):
-                status = "quiet"
-                widths.append(n_curr)
-                it += 1
-                break
         if done:
             status = "scored" if score_only else "converged"
             widths.append(n_curr)
@@ -1031,9 +806,6 @@ def block_lanczos_discovered(
             store.append(x)
         widths.append(n_curr)
         it += 1
-    if status not in ("max_iter", "frozen") and freeze_step is not None and freeze_step == it - 1 and d.support_frozen:
-        # The support settled on the step the recurrence ended on anyway: nothing was dropped.
-        d.unfreeze_support()
     return alphas[:it], betas[:it], widths, status, x
 
 
@@ -1048,7 +820,6 @@ def start_discovered(
     eta=None,
     first_shell_tol=0.0,
     mode="discovered",
-    rule="amplitude",
 ):
     """The matrix, the support and the seed block on ``P0 = basis``.
 
@@ -1061,7 +832,7 @@ def start_discovered(
     cps = (basis.n_bytes + 7) // 8
     matrix = DistributedSparseMatrix(hop, cps, comm, keep_frontier=(mode == "discovered"))
     decisions = SupportDecisions(comm, cap, int(basis.size), memory_budget=memory_budget, memory_policy=memory_policy)
-    support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol, rule=rule)
+    support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol)
     local = list(basis.local_basis)
     if mode == "discovered":
         matrix.grow(local)
@@ -1071,73 +842,6 @@ def start_discovered(
     where = basis._keys.find_rows(p_keys)  # local positions of the P-slot keys in basis order
     q0 = np.ascontiguousarray(np.asarray(psi_dense_local, dtype=complex)[where])
     return matrix, support, q0
-
-
-#: The end-of-unit frontier probe applies ``H`` once, unfrozen and unchunked, to the block a settled unit ended on; it
-#: is skipped when the resident set is already this fraction of the unit's memory budget (it generates the whole
-#: out-of-P image of one block, the peak the frozen matrix exists to avoid).
-_FRONTIER_PROBE_RSS_FRACTION = 0.8
-
-
-class _PKeys:
-    """The slice of a ``Basis`` that :func:`gf_primitives.boundary_frontier` reads, for the matrix's ``P``."""
-
-    def __init__(self, basis, keys):
-        self._basis = basis
-        self._keys = keys
-
-    def redistribute_block(self, block):
-        return self._basis.redistribute_block(block)
-
-
-def settled_frontier(support, matrix, hop, basis, x_last, last_beta, slater_weight_min):
-    """What a settled unit left behind, as ``cap_info`` entries (amplitudes, not squares). Collective.
-
-    ``leak_settle`` and ``frontier_settle_matvec`` are the settling step's own record (weight on new rows and the
-    largest amplitude on one, in the matvec's units), taken from the trace at no cost. The rest is a **diagnostic,
-    opt-in probe** (``GF_SUPPORT_TRACE``, read on rank 0 and broadcast): ``frontier_end_matvec`` and ``leak_end`` are
-    the same two numbers measured by one unfrozen ``H`` applied to the last block the frozen recurrence accepted
-    (:func:`gf_primitives.boundary_frontier`), and ``frontier_end`` that amplitude in the units of the next block
-    (divided by the smallest singular value of the last ``beta``). ``x_last`` is the kernel's last block store
-    (this rank's rows in the matrix's P-slot order; its last ``p`` columns are the block, ``p`` the width
-    ``last_beta`` was formed from). It is never run for a unit frozen by the cap or held by the memory guard (the
-    caller checks), and is skipped at ``_FRONTIER_PROBE_RSS_FRACTION`` of the memory budget. Missing entries are
-    ``nan``. Every branch is decided on replicated data."""
-    comm = matrix.comm
-    out = {"leak_settle": float("nan"), "frontier_settle_matvec": float("nan"), "frontier_end": float("nan")}
-    out.update(frontier_end_matvec=float("nan"), leak_end=float("nan"))
-    if support.support_trace:
-        record = support.support_trace[len(support.support_trace) - 1]
-        out["leak_settle"] = float(record.leak)
-        out["frontier_settle_matvec"] = math.sqrt(record.max2_matvec)
-    probe = bool(config.GF_SUPPORT_TRACE.get())
-    if comm is not None and comm.size > 1:
-        probe = comm.bcast(probe, root=0)
-    if not probe or x_last is None or last_beta is None:
-        return out
-    budget = support.decisions.memory_budget
-    over = budget is not None and current_rss_bytes() > _FRONTIER_PROBE_RSS_FRACTION * budget
-    if comm is not None and comm.size > 1:
-        over = comm.allreduce(bool(over), op=MPI.LOR)
-    if over:
-        return out
-    last_beta = np.asarray(last_beta)
-    p = int(last_beta.shape[1])
-    block = _pad_rows(np.ascontiguousarray(x_last[:, x_last.shape[1] - p :]), matrix.n_p_local)
-    keys = matrix.p_keys()
-    store = ManyBodyState.from_keys(keys)
-    amps = np.zeros((len(store), p), dtype=complex)
-    amps[store.find_rows(keys)] = block
-    max2, weight = boundary_frontier(
-        hop, ManyBodyState.from_keys_and_amps(store, amps), _PKeys(basis, store), slater_weight_min, comm
-    )
-    out["frontier_end_matvec"] = math.sqrt(max2)
-    out["leak_end"] = weight
-    sv = np.linalg.svd(last_beta, compute_uv=False)
-    sv_min = float(sv[sv > 1e-12 * sv[0]].min()) if sv.size and sv[0] > 0 else 0.0
-    if sv_min > 0.0:
-        out["frontier_end"] = math.sqrt(max2) / sv_min
-    return out
 
 
 def _seed_block_on_final_slots(matrix, seed_keys, q0):
@@ -1160,7 +864,7 @@ def _refine_line(rec):
     """The one ``-v`` line of a swap refinement (a decline, a fall back, or the rounds it took)."""
     if rec.get("declined"):
         return f"GF refinement declined: {rec['declined']}"
-    head = f"GF refinement: {rec['rounds']} swap round(s), swapped {rec['swapped']}, remaining gain {rec['gain']}"
+    head = f"GF refinement: {rec['rounds']} round(s), admitted/swapped {rec['swapped']}, remaining gain {rec['gain']}"
     if rec.get("blocks"):
         head += f", blocks per recurrence {rec['blocks']}, deflation floor {max(rec['floor']):.1e}"
     if rec.get("fell_back"):
@@ -1185,20 +889,45 @@ def _needs_restart(support, n_seed):
     return support.prunes and support.retained_size > n_seed
 
 
-def _restart_after_early_stop(stopped_early):
-    """Whether a growth pass that stopped on the looser ``gf_growth_tol`` restarts on the final P. It must: the
-    coefficients it stopped at are not converged to the full tolerance, whether or not it admitted anything more.
-    A test seam, like :func:`_needs_restart`."""
-    return stopped_early
+#: Fraction of the final recurrence's blocks the peak-shift check keeps for its "before" value, and the fewest blocks
+#: at which dropping a tail says anything (below it the last block is not a tail).
+PEAK_SHIFT_TAIL_KEEP = 0.9
+PEAK_SHIFT_MIN_BLOCKS = 20
 
 
-def _growth_eval_meshes(eval_meshes, growth_tol):
-    """``eval_meshes`` with every axis tolerance relaxed to ``growth_tol`` (never tightened below its own), or
-    ``None`` when there are no meshes to carry tolerances (the monitor then keeps its full tolerance)."""
-    if not eval_meshes:
-        return None
-    own = getattr(eval_meshes, "tols", None) or [_gf_monitor_tol(0.0, eval_meshes)] * len(eval_meshes)
-    return EvalMeshes(list(eval_meshes), [max(float(growth_tol), t) for t in own])
+def peak_shift_check(alphas, betas, r, zs, complete=False):
+    """How far G still moves, at the Sigma-sensitive shifts, when the end of the recurrence is left out.
+
+    ``zs`` are the unit's shifts from :func:`gf_refinement.g0_zero_shifts` (peaks of ``|G0^-1|``, the Fermi level and
+    two Matsubara points), in the frame the coefficients live in. Returns ``{"n_shifts", "n_dropped", "tail_change",
+    "complete"}``: ``tail_change`` is the largest *per-shift* relative change ``|dG(z)| / |G(z)|`` when the last
+    ``n_dropped`` blocks are left out (per shift, not against the largest ``|G|``: a Matsubara point can be 30x larger
+    than the real axis and would hide its motion). ``complete`` marks a Krylov space that is used up, where G is exact
+    on the kept determinants and a tail change means nothing. NaN below ``PEAK_SHIFT_MIN_BLOCKS``.
+
+    This is a statement about the recurrence only. It repeats what the convergence monitor checks on its meshes and
+    says nothing about whether the determinant set is complete. Never raises: a diagnostic must not fail a unit.
+    ``alphas``/``betas`` are the trimmed, sanitised coefficients; rank-local and pure.
+    """
+    zs = np.asarray(zs, dtype=complex)
+    n = len(alphas)
+    out = {"n_shifts": int(zs.size), "n_dropped": 0, "tail_change": float("nan"), "complete": bool(complete)}
+    if complete or n < PEAK_SHIFT_MIN_BLOCKS or zs.size == 0:
+        return out
+    keep = max(1, int(PEAK_SHIFT_TAIL_KEEP * n))
+    try:
+        with np.errstate(all="ignore"):  # a corrupted tail gives NaN here, reported as such, not a warning
+            g_all = np.asarray(calc_G(alphas, betas, r, zs, 0.0, 0.0)).reshape(zs.size, -1)
+            g_cut = np.asarray(calc_G(alphas[:keep], betas[:keep], r, zs, 0.0, 0.0)).reshape(zs.size, -1)
+    except (np.linalg.LinAlgError, FloatingPointError, ValueError):
+        return out
+    scale = np.abs(g_all).max(axis=1)
+    change = np.abs(g_all - g_cut).max(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = np.where(scale > 0, change / scale, np.nan)
+    out["n_dropped"] = n - keep
+    out["tail_change"] = float(np.max(rel)) if np.all(np.isfinite(rel)) else float("nan")
+    return out
 
 
 def block_Green_discovered(
@@ -1214,15 +943,10 @@ def block_Green_discovered(
     info=None,
     memory_budget=None,
     memory_policy="tighten",
-    support_settle=True,
-    settle_ratio=None,
     matrix_mode="auto",
     prune_tol=None,
     first_shell_tol=None,
     refine=None,
-    growth_tol=None,
-    growth_quiet=None,
-    prune_rule=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
@@ -1238,14 +962,8 @@ def block_Green_discovered(
     cut and its first-shell cut. ``refine`` (a :class:`~impurityModel.ed.gf_refinement.RefineSpec` with ``rounds > 0``)
     swaps the least important retained determinants of a unit the cap froze for the most important discovered ones
     (``"discovered"`` mode only; the record lands in ``cap_info["refine"]``). The determinant cap is
-    ``basis.truncation_threshold``; ``prune_tol > 0`` turns on importance pruning. ``growth_tol``
-    (pruned growth only; ``None``: off) is the relative-change tolerance of the growth pass's own convergence
-    monitor: the pass stops once G has moved less than that on the evaluation meshes, and the restart on the
-    final P (always run after such a stop) converges G to the full tolerance. ``growth_quiet`` (pruned growth only;
-    ``None``: off) ends the growth pass once that many consecutive blocks admitted nothing, with the same restart.
-    ``prune_rule`` (``None``: ``_PRUNE_RULE``)
-    names the admission rule of the pruned growth: ``"amplitude"`` admits a frontier row when one block's amplitude
-    squared clears ``eta^2``, ``"accumulated"`` when the sum over the blocks that reach it does.
+    ``basis.truncation_threshold``; ``prune_tol > 0`` turns on importance pruning.
+    A frontier row is admitted when one block's amplitude squared clears ``eta^2``.
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
@@ -1264,11 +982,6 @@ def block_Green_discovered(
         cap_info["csr_seconds"] = 0.0
         cap_info["passes"] = None
         cap_info["matrix"] = None
-        cap_info["support_frozen"] = False
-        cap_info["settle_verdict"] = None
-        cap_info["support_trace"] = []
-        for key in ("leak_settle", "frontier_settle_matvec", "frontier_end", "frontier_end_matvec", "leak_end"):
-            cap_info[key] = float("nan")
     if len(basis) == 0 or n == 0:
         if cap_info is not None:
             cap_info["retained_size"] = 0
@@ -1304,7 +1017,9 @@ def block_Green_discovered(
             len(psi_arr),
             memory_budget,
             report,
-            refine is not None and refine.rounds > 0 and bool(refine.shifts),
+            # A pruned unit grows on the discovered-key matrix whether or not it refines: stored growth blocks cost
+            # a fraction of matrix-free ones (NiO unit 3 at 6 ranks: 40 s against 287 s of growth).
+            prune_tol > 0.0 or (refine is not None and refine.rounds > 0 and bool(refine.shifts)),
             # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds.
             (
                 2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0))
@@ -1320,8 +1035,6 @@ def block_Green_discovered(
                 f"budgets {format_bytes(report['budget_discovered'])} / {format_bytes(report['budget_retained'])}.",
                 flush=True,
             )
-    if prune_rule is not None and prune_rule not in _PUBLIC_PRUNE_RULES:
-        raise ValueError(f"prune_rule must be one of {_PUBLIC_PRUNE_RULES} or None, got {prune_rule!r}")
     matrix, support, q0 = start_discovered(
         hOp,
         basis,
@@ -1330,19 +1043,9 @@ def block_Green_discovered(
         memory_budget=memory_budget,
         memory_policy=memory_policy,
         eta=prune_tol if prune_tol > 0.0 else None,
-        rule=_PRUNE_RULE if prune_rule is None else prune_rule,
         first_shell_tol=first_shell_tol if prune_tol > 0.0 else 0.0,
         mode=matrix_mode,
     )
-    if support_settle and not resolved_reort and not support.prunes:
-        support.enable_support_freeze(
-            SETTLE_WINDOW,
-            DEFAULT_SETTLE_RATIO if settle_ratio is None else settle_ratio,
-            slaterWeightMin,
-            log=verbose and rank == 0,
-            trace=config.GF_SUPPORT_TRACE.get() and rank == 0,
-        )
-        support.monitor_dg = last_dg
     engine = (
         None if matrix_mode == "discovered" else lambda m, a: _ApplyEngine(m, a, hOp, basis, matrix_mode == "retained")
     )
@@ -1367,19 +1070,6 @@ def block_Green_discovered(
         if verbose and rank == 0:
             print(f"GF refinement declined: {why}", flush=True)
 
-    if refining and cap < 2**62 and not support.prunes and not resolved_reort:
-        # Without pruning the first run is on the final P: it carries the scoring accumulator, so a unit the cap
-        # freezes needs no second recurrence for round 0. (A unit that never hits the cap drops it unused.)
-        from impurityModel.ed.gf_refinement import scoring_plan
-        from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
-
-        plan, _why = scoring_plan(refine, q0, matrix, operator_real)
-        if plan is not None:
-            acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-    growth_meshes = _growth_eval_meshes(eval_meshes, growth_tol) if growth_tol and support.prunes else None
-    growth_flag = None
-    if growth_meshes is not None:
-        converged, growth_flag, _dm, _ldg = _make_gf_convergence_monitor(delta, slaterWeightMin, growth_meshes)
     alphas, betas, widths, status, _q_last = block_lanczos_discovered(
         matrix,
         support,
@@ -1389,39 +1079,19 @@ def block_Green_discovered(
         deflate_tol=DEFLATE_TOL_SEEDS,
         reort=resolved_reort,
         engine=engine,
-        shifted=acc,
-        shifted_rtol=None if plan is None else plan.stop_rtol,
-        score_gate=None if plan is None else _swappable_gate,
-        quiet_window=growth_quiet if support.prunes else None,
-        # The restart below is certain once a pruned growth froze on a support larger than the seeds': end the
-        # growth at the freeze instead of running a frozen continuation the restart discards.
-        stop_at_freeze=(
-            (lambda: _needs_restart(support, n_seed)) if support.prunes and acc is None else None
-        ),
     )
-    freeze_stop = status == "frozen"
-    quiet_stop = status == "quiet"
-    stopped_early = (growth_flag is not None and bool(growth_flag[0])) or quiet_stop
-    if growth_flag is not None:
-        converged_flag = growth_flag
-    # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap or the settle
+    # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
     passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
-    passes["growth_stop"] = "frozen" if freeze_stop else "quiet" if quiet_stop else ("tol" if stopped_early else "converged")
     passes.update(restart_blocks=0, restart_seconds=0.0)
-    if acc is not None and getattr(acc, "skipped", False):
-        plan, acc = None, None
-        _decline_nothing_swappable()
-    carried = acc is not None and support.cap_hit and not support.memory_frozen and not support.support_frozen
-    if carried:
-        acc.pad_rows(matrix.n_p_local)
-    else:
-        plan, acc = None, None
     if (
         refine is not None
         and refine.rounds > 0
-        and support.cap_hit
-        and not (refining and not support.memory_frozen and not support.support_frozen)
+        and (
+            (support.cap_hit and not (refining and not support.memory_frozen))
+            # a pruned unit below its cap that runs on another matrix mode: its refinement (grow mode) cannot start
+            or (support.prunes and not support.cap_hit and not refining)
+        )
     ):
         why = (
             f"matrix mode {matrix_mode} (the discovered matrix and the scoring accumulator did not fit, or the mode "
@@ -1430,34 +1100,79 @@ def block_Green_discovered(
             else (
                 "the memory guard froze the unit below the cap"
                 if support.memory_frozen
-                else "the support settled below the cap"
+                else "the growth ended below the cap"
             )
         )
         if cap_info is not None:
             cap_info["refine"] = {"declined": f"not attempted: {why}", "rounds": 0, "swapped": [], "gain": []}
         if verbose and rank == 0:
             print(f"GF refinement not attempted: {why}", flush=True)
-    if refining and support.cap_hit and not support.memory_frozen and not support.support_frozen and not carried:
+    # A pruned unit the cap did not freeze has room: its refinement only admits (grow mode); a capped one swaps.
+    grow_room = None
+    grow_ratio = K_OVER_P_ESTIMATE  # |K|/|P| at the entry to grow mode: global, so the same on every rank
+    if refining and support.prunes and not support.cap_hit:
+        # Discovered rows outside P exist only when |K| > |P|; both sizes are global (one Allreduce, every rank).
+        sizes = np.array([matrix.n_k_local, matrix.n_alive_local], dtype=np.int64)
+        if comm is not None and comm.size > 1:
+            comm.Allreduce(MPI.IN_PLACE, sizes, op=MPI.SUM)
+        room = max(cap - int(support.retained_size), 0) if cap < 2**62 else 2**62
+        grow_room = int(room) if sizes[0] > sizes[1] and room > 0 else None
+        grow_ratio = float(sizes[0]) / max(float(sizes[1]), 1.0)
+
+    def _grow_fits(n_add):
+        """Whether admitting ``n_add`` more determinants (global) keeps the discovered matrix and the scoring
+        accumulator inside the memory budget. Replicated; **collective** whenever a budget is set."""
+        budget = support.decisions.memory_budget
+        if budget is None:
+            return True
+        n_p, n_k = matrix.n_alive_local, matrix.n_k_local
+        n_ranks = comm.size if comm is not None else 1
+        add = int(np.ceil(REFINE_SKEW * n_add / n_ranks))
+        # The K rows an admitted determinant brings: the larger of the estimate and this unit's own measured ratio
+        # (SMO units 4/5/7: 4.0-4.4 against the 2.5 estimate), measured at the entry to grow mode.
+        ratio = max(K_OVER_P_ESTIMATE, grow_ratio)
+        fan = _sample_fanout(basis, hOp)
+        before = matrix_need_bytes(n_p, n_k, fan, n_k * n_ranks, n_ranks, len(psi_arr))
+        after = matrix_need_bytes(
+            n_p + add,
+            n_k + int(ratio * add),
+            fan,
+            (n_k + int(ratio * add)) * n_ranks,
+            n_ranks,
+            len(psi_arr),
+        )
+        n_shifts = 2 * len(refine.shifts)  # grow mode runs without the check shifts
+        # Only the accumulator's growth: the resident one is in the RSS already (it is freed after the admission).
+        acc_bytes = int(REFINE_SKEW * n_shifts * add * len(psi_arr) * 16)
+        over = np.array(
+            [current_rss_bytes() + (after - before) + acc_bytes > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64
+        )
+        if comm is not None and comm.size > 1:
+            comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
+        return not over[0]
+
+    if refining and (support.cap_hit or grow_room is not None) and not support.memory_frozen:
         from impurityModel.ed.gf_refinement import scoring_plan
         from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
 
-        plan, why = scoring_plan(refine, _seed_block_on_final_slots(matrix, *seeds_initial), matrix, operator_real)
+        plan, why = scoring_plan(
+            refine,
+            _seed_block_on_final_slots(matrix, *seeds_initial),
+            matrix,
+            operator_real,
+            verify=grow_room is None,
+        )
         if plan is None:
             if cap_info is not None:
                 cap_info["refine"] = {"declined": why, "rounds": 0, "swapped": [], "gain": []}
             if verbose and rank == 0:
                 print(f"GF refinement declined: {why}", flush=True)
-        elif not _swappable_gate():
+        elif grow_room is None and not _swappable_gate():
             plan = None
             _decline_nothing_swappable()
         else:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-    if (
-        freeze_stop
-        or _needs_restart(support, n_seed)
-        or _restart_after_early_stop(stopped_early)
-        or (acc is not None and not carried)
-    ):
+    if _needs_restart(support, n_seed) or acc is not None:
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
         # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P
@@ -1536,28 +1251,41 @@ def block_Green_discovered(
             g_cf,
             eval_meshes,
             _seed_block_on_final_slots,
+            room=grow_room,
+            fits=_grow_fits,
         )
         if cap_info is not None:
             cap_info["refine"] = outcome.record
+        if grow_room is not None:
+            # The admitted rows count: the size the unit reports (and a cap it now fills) is the final P's.
+            n_final = np.array([matrix.n_alive_local], dtype=np.int64)
+            if comm is not None and comm.size > 1:
+                comm.Allreduce(MPI.IN_PLACE, n_final, op=MPI.SUM)
+            support.decisions.global_count = int(n_final[0])
+            # Grow mode that ran out of room or memory is cap- or memory-bound exactly like a growth that froze there
+            # (replicated: the record's reason and the count are). The report, the re-solve and the advice read these.
+            if outcome.record.get("stopped") == "the next admission would exceed the memory budget":
+                support.decisions.cap_hit = support.decisions.memory_frozen = True
+            elif outcome.record.get("stopped") == "no room under the cap" or int(n_final[0]) >= cap:
+                support.decisions.cap_hit = True
         if outcome.result is not None:
             alphas, betas, widths, status, _q_last = outcome.result
         else:
             converged_flag, delta_min, last_dg, plateau_cell[0] = monitor_state
         if verbose and rank == 0:
             print(_refine_line(outcome.record), flush=True)
-    if status == "quiet":
-        raise RuntimeError("a quiet-stopped growth pass must be followed by the restart on the final support")
     seconds = time.perf_counter() - t0
     if status in ("converged", "invariant_subspace"):
         converged_flag[0] = True
-    if (support.cap_hit or support.support_frozen) and verbose and rank == 0:
+    if support.cap_hit and verbose and rank == 0:
         print(support.freeze_message(), flush=True)
     k_over_p = float("nan")
     # The retained and matrix-free modes prune too (the cut is in the policy), but they hold no K store to size.
-    if support.prunes and matrix_mode != "discovered" and verbose and rank == 0:
+    if (support.prunes or support.mode_ran == "none") and matrix_mode != "discovered" and verbose and rank == 0:
+        # The fall-back to matrix-free applies is a silent slowdown otherwise: say it, pruned or not.
         print(
-            f"GF pruned growth ({support.rule}): |P| = {support.retained_size:,}, matrix mode {support.mode_ran or matrix_mode}, "
-            f"admitted per depth {support.depth_histogram()}",
+            f"GF {'pruned growth' if support.prunes else 'growth'}: |P| = {support.retained_size:,}, "
+            f"matrix mode {support.mode_ran or matrix_mode}, admitted per depth {support.depth_histogram()}",
             flush=True,
         )
     if matrix_mode == "discovered" and support.prunes:
@@ -1569,7 +1297,7 @@ def block_Green_discovered(
         k_over_p = float(sizes[0]) / max(float(sizes[1]), 1.0)
         if verbose and rank == 0:
             print(
-                f"GF pruned growth ({support.rule}): |K| = {int(sizes[0]):,}, |P| = {int(sizes[1]):,}, "
+                f"GF pruned growth: |K| = {int(sizes[0]):,}, |P| = {int(sizes[1]):,}, "
                 f"|K|/|P| = {k_over_p:.2f}, admitted per depth {support.depth_histogram()}",
                 flush=True,
             )
@@ -1586,9 +1314,6 @@ def block_Green_discovered(
         cap_info["csr_fallback"] = bool(support.decisions.frozen and cap_info["engine"] != "none")
         cap_info["csr_seconds"] = seconds
         cap_info["passes"] = passes
-        cap_info["support_frozen"] = support.support_frozen
-        cap_info["settle_verdict"] = support.settle_verdict()
-        cap_info["support_trace"] = list(support.support_trace)
         cap_info["k_over_p"] = k_over_p
     n_blocks = len(alphas)
     if not converged_flag[0] and rank == 0:
@@ -1616,19 +1341,13 @@ def block_Green_discovered(
         if status == "converged" and plateau_cell[0][0]:
             info["status"] = "plateau"
     alphas, betas = _trim_blocks(alphas, betas, widths)
-    if cap_info is not None and support.support_frozen and not support.cap_hit:
-        # A settled unit only (both are replicated): a capped or memory-held unit is not a settle, and the
-        # probe's extra matvec is exactly what such a unit cannot afford.
-        cap_info.update(
-            settled_frontier(
-                support,
-                matrix,
-                hOp,
-                basis,
-                _q_last,
-                betas[len(betas) - 1] if len(betas) else None,
-                slaterWeightMin,
-            )
-        )
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
+    if cap_info is not None and refine is not None and refine.shifts:
+        # After the sanitising, so it describes the continued fraction that is returned. Local arithmetic on replicated
+        # coefficients, never raising: no rank can leave before the collectives above or below it.
+        passes["peak_shifts"] = peak_shift_check(
+            alphas, betas, r, [z for z, _w in refine.shifts], complete=status in ("invariant_subspace", "exhausted")
+        )
+    elif cap_info is not None and refine is not None and refine.note:
+        passes["peak_shifts_note"] = refine.note
     return alphas, betas, r

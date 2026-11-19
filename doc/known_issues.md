@@ -116,7 +116,7 @@ production runs use neither for tractability. `sigma_causality_tol` accepts that
 explicitly instead of aborting a multi-hour/multi-rank job over an artifact whose only cure is
 "spend more compute" or "smooth more."
 
-**What the run now tells you.** On a causality failure `calc_selfenergy` prints, per failing block, the worst point, `Im(G0^-1)` against `Im(G^-1)`, the nearest bath level (a violation within two broadenings of a bath pole is this artefact) and the support settle's own error estimate; if the settle can plausibly be blamed it solves the block's settled units once closure-only and says whether that cured it (`gf_settle_retry`, `doc/gf_support_pipeline.md`).
+**What the run now tells you.** On a causality failure `calc_selfenergy` prints, per failing block, the worst point, `Im(G0^-1)` against `Im(G^-1)`, the nearest bath level (a violation within two broadenings of a bath pole is this artefact) the cap or memory-guard state of the block's units and the knob to turn (`doc/gf_support_pipeline.md`).
 
 **If you need it gone for a specific run**, raise `delta` (broadens every other spectral
 feature too), or lower `slater_weight_min` (grows the ground state and, through the derived bounds, the

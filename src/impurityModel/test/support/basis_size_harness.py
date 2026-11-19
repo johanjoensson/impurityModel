@@ -5,18 +5,14 @@ production driver ``get_Greens_function`` on an :class:`~aim_fixtures.AIM`, repo
 
 * the **basis size** it needed -- the largest retained determinant count over its work units, read
   from the ``gf_unit_basis`` trace notes (never from a basis object the solver was handed: an
-  uncapped Lanczos recurrence does not track its support, and the per-point bicgstab maxima are
-  the only honest size of a rebuilt-and-discarded basis);
+  uncapped Lanczos recurrence does not track its support);
 * the **error** against the exact dense reference, on ``G`` and on ``Sigma`` -- ``Sigma`` is what the
   calculation is for, and it amplifies a small ``G`` error wherever ``|G|`` is small;
 * what the solver itself reports (convergence, cap hit), so a truncation error is never confused
   with a solver that simply stopped.
 
-Methods (``METHODS``): the two admission-free baselines (``lanczos-cap``, ``bicgstab-cap``), the two
-importance-pruned variants (``lanczos-pruned``, ``bicgstab-outer``) and the existing amplitude cutoff
-inside the matvec (``bicgstab-swm``, the control the pruned rules must beat). Per-frequency methods
-run **cold** (warm-start history 0): a warm start carries its extrapolation's support into each
-point's basis, which would measure the sweep, not the point.
+Methods (``METHODS``): the admission-free baseline (``lanczos-cap``) and the importance-pruned variant
+(``lanczos-pruned``).
 """
 
 import contextlib
@@ -24,7 +20,6 @@ import io
 import os
 import time
 from contextlib import contextmanager
-from dataclasses import replace
 
 import numpy as np
 from mpi4py import MPI
@@ -33,33 +28,19 @@ from impurityModel.ed import solver_trace
 from impurityModel.ed.greens_function import get_Greens_function
 from impurityModel.test.support.aim_fixtures import free_G_inverse, reference_G, self_energy
 
-METHODS = ("lanczos-cap", "lanczos-pruned", "bicgstab-cap", "bicgstab-outer", "bicgstab-swm")
+METHODS = ("lanczos-cap", "lanczos-pruned")
 NON_BINDING = 10**9  # a finite cap that never binds: installs the tracking proxy without truncating
-BICGSTAB_ATOL = "1e-11"
 
 
 @contextmanager
 def env(**values):
     """Set environment variables for the duration, restoring what was there (knobs are read lazily)."""
-    from impurityModel.ed import gf_admission, gf_solvers
-
-    # The warm-start history is a module constant now, not a knob: ``GF_BICGSTAB_WARM_HISTORY`` here sets it.
-    warm = values.pop("GF_BICGSTAB_WARM_HISTORY", None)
-    old_warm = gf_solvers._GF_BICGSTAB_WARM_HISTORY
-    shell_tol = values.pop("ADMIT_SHELL_TOL", None)
-    old_tuning = gf_admission._TUNING
     old = {k: os.environ.get(k) for k in values}
     try:
-        if shell_tol is not None:
-            gf_admission._TUNING = replace(old_tuning, shell_tol=float(shell_tol))
-        if warm is not None:
-            gf_solvers._GF_BICGSTAB_WARM_HISTORY = int(warm)
         for k, v in values.items():
             os.environ[k] = str(v)
         yield
     finally:
-        gf_solvers._GF_BICGSTAB_WARM_HISTORY = old_warm
-        gf_admission._TUNING = old_tuning
         for k, v in old.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -106,32 +87,16 @@ class Mesh:
 def _knobs(method, cap, eta, shell_tol=0.0):
     """Environment, ``get_Greens_function`` options and driver arguments that realize ``method`` at ``cap`` /
     threshold ``eta``."""
-    base = {"GF_BICGSTAB_ATOL": BICGSTAB_ATOL, "GF_BICGSTAB_RESIDUAL_CHECK": 0}
     shell = {"gf_first_shell_tol": float(shell_tol)} if shell_tol else {}
-    outer_shell = {"ADMIT_SHELL_TOL": float(shell_tol)} if shell_tol else {}
     if method == "lanczos-cap":
-        return dict(gf_method="lanczos", reort=True, slater=0.0, env=base, options={})
+        return dict(reort=True, slater=0.0, env={}, options={})
     if method == "lanczos-pruned":
         return dict(
-            gf_method="lanczos",
             reort=True,
             slater=0.0,
-            env={**base, "APPLY_ROW_CHUNKS": 1},
+            env={"APPLY_ROW_CHUNKS": 1},
             options={"gf_prune_tol": float(eta), **shell},
         )
-    cold = {**base, "GF_BICGSTAB_WARM_HISTORY": 0}
-    if method == "bicgstab-cap":
-        return dict(gf_method="bicgstab", reort=None, slater=0.0, env=cold, options={})
-    if method == "bicgstab-outer":
-        return dict(
-            gf_method="bicgstab",
-            reort=None,
-            slater=0.0,
-            env={**cold, **outer_shell},
-            options={"gf_admission": "outer", "gf_admit_tol": float(eta)},
-        )
-    if method == "bicgstab-swm":
-        return dict(gf_method="bicgstab", reort=None, slater=float(eta), env=cold, options={})
     raise ValueError(f"unknown method {method!r}; expected one of {METHODS}")
 
 
@@ -205,21 +170,27 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
     """One ``(method, cap, eta)`` cell: the basis it needed and how wrong it was.
 
     ``cap`` is the determinant budget (a finite value always: see ``NON_BINDING``); ``eta`` the
-    admission threshold of the pruned methods or the ``slaterWeightMin`` of ``bicgstab-swm``;
+    amplitude threshold of the pruned method;
     ``shell_tol`` > 0 lets the pruned methods drop weak rows of the seeds' first H-shell too
     (``gf_first_shell_tol``; 0 keeps it whole, which is what holds the ``Sigma`` tail exact).
     """
     spec = _knobs(method, cap, eta, shell_tol)
-    per_point = spec["gf_method"] == "bicgstab"
-    omega = (mesh.omega[mesh.sel_real] if per_point else mesh.omega) if mesh.has_real else None
-    mats = (mesh.matsubara[mesh.sel_mats] if per_point else mesh.matsubara) if mesh.has_mats else None
+    omega = mesh.omega if mesh.has_real else None
+    mats = mesh.matsubara if mesh.has_mats else None
     basis = aim.basis(sorted(aim.gs.keys()), truncation_threshold=cap, comm=comm if comm is not None else MPI.COMM_SELF)
+    psis = [aim.gs]
+    if (
+        comm is not None and comm.size > 1
+    ):  # one owner per determinant: a replicated copy would be summed ``size`` times
+        from impurityModel.test.support.gf_branch_oracle import distribute
+
+        psis = distribute(basis, psis)
     t0 = time.perf_counter()
     with env(**spec["env"]), solver_trace.tracing() as trace, contextlib.redirect_stdout(io.StringIO()):
         G_mats, G_real, report = get_Greens_function(
             matsubara_mesh=mats,
             omega_mesh=omega,
-            psis=[aim.gs],
+            psis=psis,
             es=[aim.e0],
             tau=1e-3,
             basis=basis,
@@ -233,26 +204,14 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
             occ_cutoff=0.0,
             slaterWeightMin=spec["slater"],
             sparse=True,
-            gf_method=spec["gf_method"],
             **spec["options"],
         )
     wall = time.perf_counter() - t0
     notes = trace.of_kind("gf_unit_basis")
-    # The per-frequency result is on the selected points already; the Lanczos family's is on the full
-    # mesh. Put both on the full mesh's indexing so one scorer serves them.
-    full_m = full_r = None
-    if mesh.has_mats:
-        if per_point:
-            full_m = np.full((len(mesh.matsubara),) + G_mats[0].shape[1:], np.nan, dtype=complex)
-            full_m[mesh.sel_mats] = G_mats[0]
-        else:
-            full_m = G_mats[0]
-    if mesh.has_real:
-        if per_point:
-            full_r = np.full((len(mesh.omega),) + G_real[0].shape[1:], np.nan, dtype=complex)
-            full_r[mesh.sel_real] = G_real[0]
-        else:
-            full_r = G_real[0]
+    if comm is not None and comm.size > 1:  # the result and the unit notes live on rank 0 only
+        G_mats, G_real, notes = comm.bcast((G_mats, G_real, notes) if comm.rank == 0 else None, root=0)
+    full_m = G_mats[0] if mesh.has_mats else None
+    full_r = G_real[0] if mesh.has_real else None
     cell = {"method": method, "cap": int(cap), "eta": float(eta), "shell_tol": float(shell_tol), "wall": wall}
     cell.update(_units(notes))
     cell.update(_errors(aim, mesh, full_m, full_r, aim.params.get("U", 8.0)))
@@ -262,7 +221,7 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
     return cell
 
 
-def closure_sizes(aim, mesh, methods=("lanczos-cap", "bicgstab-cap")):
+def closure_sizes(aim, mesh, methods=("lanczos-cap",)):
     """The uncapped basis each method needs, measured under a non-binding cap. ``{method: cell}``."""
     return {m: run_cell(aim, mesh, m) for m in methods}
 
@@ -300,7 +259,6 @@ def smallest_size_below(front, tol):
 
 DEFAULT_CAP_FRACTIONS = (0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.55, 0.7, 0.85)
 DEFAULT_ETAS = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5)
-DEFAULT_SWM_ETAS = (1e-3, 1e-4, 1e-5, 1e-6)
 TOLERANCES = (1e-1, 1e-2, 1e-3, 1e-4)
 
 
@@ -309,7 +267,6 @@ def run_grid(
     mesh,
     cap_fractions=DEFAULT_CAP_FRACTIONS,
     etas=DEFAULT_ETAS,
-    swm_etas=DEFAULT_SWM_ETAS,
     tie_shell=True,
     methods=METHODS,
     progress=None,
@@ -336,13 +293,9 @@ def run_grid(
 
     for cap in caps:
         add("lanczos-cap", cap=cap)
-        add("bicgstab-cap", cap=cap)
     for eta in etas:
         shell = eta if tie_shell else 0.0
         add("lanczos-pruned", eta=eta, shell_tol=shell)
-        add("bicgstab-outer", eta=eta, shell_tol=shell)
-    for eta in swm_etas:
-        add("bicgstab-swm", eta=eta)
     return {
         "closure": {m: c["size"] for m, c in closure.items()},
         "seed_size": closure["lanczos-cap"]["seed_size"],

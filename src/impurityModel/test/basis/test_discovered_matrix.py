@@ -277,3 +277,60 @@ def test_sorting_the_p_slots_numbers_them_in_key_order_before_the_columns_are_bu
     assert [_key(k) for k in ref.p_keys()] == keys
     X = _x_of(mat.p_keys())
     np.testing.assert_allclose(mat.matvec(X, rows="P"), ref.matvec(X, rows="P"), atol=1e-12)
+
+
+def _each_segment_cache_entry_is_its_own_owner_set(mat):
+    """Every cached entry belongs to a live segment and holds exactly that segment's owners."""
+    live = {id(packed): packed for _, _, packed, _ in mat._segments if len(packed)}
+    assert set(mat._segment_owner_cache) == set(live)
+    for key, (packed, flags) in mat._segment_owner_cache.items():
+        assert packed is live[key]
+        want = np.zeros(mat.size, dtype=bool)
+        want[np.unique(mat._decode(packed)[0])] = True
+        np.testing.assert_array_equal(flags, want)
+
+
+def _owners_from_scratch(mat):
+    present = np.zeros(mat.size, dtype=bool)
+    for _, _, packed, _ in mat._segments:
+        if len(packed):
+            present[np.unique(mat._decode(packed)[0])] = True
+    return present
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_owner_flags_cached_per_segment_equal_the_flags_recomputed_after_every_grow_and_compaction(comm):
+    """The all-rows exchange plan reuses each segment's owner set across epochs; it must never go stale."""
+    op = _operator()
+    admitted = _admitted(120)
+    mine = _owned(admitted, comm)
+    mat = DistributedSparseMatrix(op, 1, comm, batch=200)
+    third = max(1, len(mine) // 3)
+    for part in (mine[:third], mine[third : 2 * third], mine[2 * third :]):
+        mat.grow(part)
+        _rc, _cc, goff, ptab, use_ptab = mat._gather_tables("all")
+        assert not use_ptab
+        np.testing.assert_array_equal(mat._reached_owners(goff, ptab, use_ptab), _owners_from_scratch(mat))
+        _each_segment_cache_entry_is_its_own_owner_set(mat)
+    mat.drop_columns(np.arange(0, mat.n_p_local, 2))
+    mat.compact_p_slots()
+    _rc, _cc, goff, ptab, use_ptab = mat._gather_tables("all")
+    np.testing.assert_array_equal(mat._reached_owners(goff, ptab, False), _owners_from_scratch(mat))
+    _each_segment_cache_entry_is_its_own_owner_set(mat)
+    _check_matvec(mat, op, admitted, comm, exact_k=False)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_replaced_segments_are_not_kept_alive_by_the_owner_cache(comm):
+    """After the freeze's sort (every segment replaced) and a rows="P" plan, nothing but live segments is held."""
+    op = _operator()
+    mine = _owned(_admitted(120), comm)
+    mat = DistributedSparseMatrix(op, 1, comm, batch=200, keep_frontier=True)
+    third = max(1, len(mine) // 3)
+    for part in (mine[:third], mine[third:]):
+        mat.grow(part)
+        mat.exchange_plan(WIDTH, rows="all")
+    mat.sort_p_slots()
+    mat.exchange_plan(WIDTH, rows="P")
+    live = {id(packed) for _, _, packed, _ in mat._segments}
+    assert {id(p) for p, _f in mat._segment_owner_cache.values()} <= live

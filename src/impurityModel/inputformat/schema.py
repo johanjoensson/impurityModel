@@ -1006,71 +1006,14 @@ _TABLE_LIST += [
         "Green's-function kernel and eigensolver settings.",
         (
             Key(
-                "gf_method",
-                Kind.ENUM,
-                "lanczos",
-                "Green's-function kernel.",
-                # Mirrors config.GF_METHODS (this module is a leaf and cannot import it);
-                # test_gf_method_choices_match_the_registry pins the two together.
-                choices=("lanczos", "bicgstab"),
-            ),
-            Key(
-                "gf_admission",
-                Kind.AUTO_ENUM,
-                "auto",
-                "Basis-growth policy of the per-frequency kernel (gf_method = 'bicgstab'). 'all' admits "
-                "every determinant the solver produces; 'outer' solves on a frozen basis, scores the "
-                "residual outside it and admits only what clears gf_admit_tol, and records a measured "
-                "error bound in the diagnostics. 'auto' is 'all'. 'outer' needs gf_method = 'bicgstab'.",
-                # Mirrors config.GF_ADMISSIONS (this module is a leaf and cannot import it);
-                # test_gf_admission_choices_match_the_registry pins the two together.
-                choices=("auto", "all", "outer"),
-            ),
-            Key(
-                "gf_admit_tol",
-                Kind.DIMENSIONLESS,
-                None,
-                "Admission threshold of gf_admission = 'outer', relative to the seed norm. Absent takes "
-                "1e-4. Smaller admits more and is more accurate; the error "
-                "bound in the diagnostics reports what was left out. Only valid with gf_admission = "
-                "'outer'.",
-                minimum=0.0,
-            ),
-            Key(
-                "gf_settle",
-                Kind.AUTO_ENUM,
-                "auto",
-                "The support settle of the block-Lanczos Green's function: a sparse unit stops admitting new "
-                "determinants once, over 16 blocks, the largest amplitude its next block carries on a "
-                "determinant reached for the first time stays at or below gf_settle_ratio x slater_weight_min "
-                "and is not growing, and carries on as the exact recurrence on what it has (it drops the "
-                "determinants whose next-block amplitude stayed at or below that bound). 'auto' is on. 'off' "
-                "keeps every unit growing until it closes or hits a cap. Only "
-                "valid with gf_method = 'lanczos'.",
-                # test_gf_settle_choices_pin the mapping to SolverOptions (auto -> None, on -> True, off -> False).
-                choices=("auto", "on", "off"),
-            ),
-            Key(
-                "gf_settle_ratio",
-                Kind.DIMENSIONLESS,
-                None,
-                "The settle threshold as a MULTIPLE OF slater_weight_min (unlike gf_admit_tol, not a fraction "
-                "of the seed norm). 1 settles when every excluded determinant would have been pruned from the "
-                "next block anyway, larger settles sooner and drops amplitude up to ratio x slater_weight_min "
-                "per determinant, 0 is closure only. Absent takes 3. Only "
-                "valid with gf_method = 'lanczos' and the settle on.",
-                minimum=0.0,
-            ),
-            Key(
                 "gf_prune_tol",
                 Kind.DIMENSIONLESS,
                 None,
                 "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant "
                 "only if its largest amplitude on the normalised step block exceeds this, so a capped unit reaches "
                 "a greater H-depth where the amplitude is. A deferred determinant is not banned: it re-enters when "
-                "a stronger path reaches it. Replaces the support settle (gf_settle = 'on', gf_settle_ratio and "
-                "gf_settle_retry are refused with it). Absent is 1e-3 (pruning on) unless a "
-                "settle key is set; 0 switches it off. Only valid with gf_method = 'lanczos'.",
+                "a stronger path reaches it. Absent is 1e-3; 0 switches pruning "
+                "off (the unit then grows until it closes or hits the determinant cap).",
                 minimum=0.0,
             ),
             Key(
@@ -1083,36 +1026,6 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
-                "gf_growth_tol",
-                Kind.DIMENSIONLESS,
-                None,
-                "With gf_prune_tol: stop the matrix-free growth pass at this looser relative-change tolerance of G "
-                "(the restart from the seeds on the final support, which pruning always runs, converges G fully). "
-                "Absent: the growth converges fully. Not with gf_prune_tol = 0.",
-                minimum=0.0,
-            ),
-            Key(
-                "gf_growth_quiet",
-                Kind.COUNT,
-                None,
-                "With gf_prune_tol: end the growth pass once this many consecutive blocks admitted no determinant, "
-                "then restart from the seeds on the support found. A longer gap between admissions than the window "
-                "trims the support. 0 is off; absent takes the default (64). Not with gf_prune_tol = 0.",
-                minimum=0,
-            ),
-            Key(
-                "gf_prune_rule",
-                Kind.AUTO_ENUM,
-                "auto",
-                "With gf_prune_tol: when a frontier determinant is admitted. 'amplitude': one block's amplitude "
-                "clears gf_prune_tol. 'accumulated': its weight (amplitude squared) summed over the blocks that "
-                "reach it clears gf_prune_tol squared, so the support is found earlier in the growth. 'auto' takes "
-                "the default. Not with gf_prune_tol = 0.",
-                # Mirrors config.GF_PRUNE_RULES (this module is a leaf and cannot import it);
-                # test_gf_prune_rule_choices_match_the_registry pins the two together.
-                choices=("auto", "amplitude", "accumulated"),
-            ),
-            Key(
                 "gf_refine_rounds",
                 Kind.COUNT,
                 None,
@@ -1120,8 +1033,7 @@ _TABLE_LIST += [
                 "scoring the retained and the discovered determinants and swapping the least important retained "
                 "for the most important discovered ones at the same cap, then one recurrence on the final support. "
                 "Absent is 3; 0 is off. Needs the discovered matrix (more memory than the retained one) and costs "
-                "minutes per capped unit; a unit the cap does not bind is left alone. Only valid with gf_method = "
-                "'lanczos'.",
+                "minutes per capped unit; a unit the cap does not bind is left alone.",
                 minimum=0,
             ),
             Key(
@@ -1141,23 +1053,12 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
-                "gf_settle_retry",
-                Kind.AUTO_ENUM,
-                "auto",
-                "If the real-axis self-energy fails the causality check and the support settle can plausibly be "
-                "blamed (settled units, none held by a cap or the memory guard, not already closure-only), solve "
-                "those units again once with the closure-only recurrence and judge the new G. The attribution is "
-                "always printed; the retry never falls back to 'settle off'. 'auto' is OFF: the re-solve can take as "
-                "long as an unsettled Green's function. Only valid with gf_method = 'lanczos' and the settle on.",
-                choices=("auto", "on", "off"),
-            ),
-            Key(
                 "gf_tol",
                 Kind.DIMENSIONLESS,
                 None,
                 "Convergence tolerance of the block-Lanczos Green's function (relative change of G) on "
                 "every evaluation axis. Absent takes "
-                "max(slater_weight_min^2, 1e-9). Only valid with gf_method = 'lanczos'.",
+                "max(slater_weight_min^2, 1e-9).",
                 minimum=0.0,
             ),
             Key(
@@ -1167,7 +1068,7 @@ _TABLE_LIST += [
                 "The same tolerance on the real-frequency axis only. Absent takes "
                 "the gf_tol value. When only the Matsubara self-energy drives the DMFT loop, a looser "
                 "real-axis tolerance shortens every Green's-function unit without changing the "
-                "Matsubara accuracy. Only valid with gf_method = 'lanczos'.",
+                "Matsubara accuracy.",
                 minimum=0.0,
             ),
             Key(

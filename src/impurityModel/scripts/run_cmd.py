@@ -357,7 +357,7 @@ def render_template(calculation):
     lines += [
         "",
         "# [environment]        # any impurityModel.ed.config knob, by name",
-        "# GF_BICGSTAB_ATOL = 1e-9",
+        "# GF_GMRES_RESTART = 60",
     ]
     return "\n".join(lines)
 

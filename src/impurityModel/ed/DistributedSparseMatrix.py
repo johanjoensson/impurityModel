@@ -179,6 +179,7 @@ class DistributedSparseMatrix:
         self.n_applied = 0  # hop applications, one per admitted key (tests count it)
         self._tables = None
         self._flags = None
+        self._segment_owner_cache = {}
 
     # -- sizes ----------------------------------------------------------------------------------
 
@@ -442,6 +443,7 @@ class DistributedSparseMatrix:
         packed_all = np.concatenate([self._as_width(packed, wide) for _, _, packed, _ in self._segments])
         data_all = np.concatenate([data for _, _, _, data in self._segments])
         self._segments = []
+        self._segment_owner_cache = {}  # the old arrays must be freeable here
         new_counts = counts[order]
         new_ptr = np.zeros(n + 1, dtype=np.int64)
         np.cumsum(new_counts, out=new_ptr[1:])
@@ -480,6 +482,7 @@ class DistributedSparseMatrix:
             raise ValueError("build_columns needs every P slot live (compact_p_slots first)")
         keys = _PSlotKeys(self)  # one determinant object at a time, not a list of every P key
         self._segments = []
+        self._segment_owner_cache = {}
         col_begin = 0
         with stage("build_columns"):
             for batch_keys, counts, packed, data in self._batches(keys):
@@ -572,6 +575,7 @@ class DistributedSparseMatrix:
             segments.append(new)
             col_begin += n_keep
         self._segments = segments
+        self._segment_owner_cache = {}
         self._p_kslot = self._p_kslot[keep]
         self._k_pslot[:] = -1
         self._k_pslot[self._p_kslot] = np.arange(len(keep), dtype=np.int64)
@@ -631,34 +635,57 @@ class DistributedSparseMatrix:
 
     def _reached_owners(self, goff, ptab, use_ptab):
         present = np.zeros(self.size, dtype=bool)
+        if use_ptab:
+            # Depends on the K -> P table, which changes with the epoch: nothing to reuse (and no replaced
+            # segment's cache entry is kept alive through a frozen phase).
+            self._segment_owner_cache = {}
+            for _, _, packed, _ in self._segments:
+                if not len(packed):
+                    continue
+                owners, slots = self._decode(packed)
+                owners = owners[ptab[goff[owners] + slots] >= 0]
+                present[np.unique(owners)] = True
+            return present
+        # Every K row counts: a segment's owners never change once it is built, so each is decoded once and every
+        # later epoch (one per ``grow``) only decodes the segments added since (measured: 35 of 75 s of NiO unit 3's
+        # growth when this was recomputed over the whole matrix each epoch).
+        cache = {}
         for _, _, packed, _ in self._segments:
             if not len(packed):
                 continue
-            owners, slots = self._decode(packed)
-            if use_ptab:
-                owners = owners[ptab[goff[owners] + slots] >= 0]
-            present[np.unique(owners)] = True
+            hit = self._segment_owner_cache.get(id(packed))
+            if hit is None or hit[0] is not packed:
+                owners, _slots = self._decode(packed)
+                flags = np.zeros(self.size, dtype=bool)
+                flags[np.unique(owners)] = True
+                hit = (packed, flags)
+            cache[id(packed)] = hit
+            present |= hit[1]
+        self._segment_owner_cache = cache  # drops the segments a compaction replaced
         return present
 
     def exchange_plan(self, width, site="sparse_matrix", rows="P"):
         """The layout for blocks up to ``width`` columns wide returning ``rows`` (``"P"``, the default: the P
         rows, an operator's own; ``"all"``: every K row). **Collective** (three tiny collectives, plus the table
         gather when the epoch changed); build one per kernel call. ``site`` labels the trace note."""
-        row_counts, col_counts, goff, ptab, use_ptab = self._gather_tables(rows)
+        with stage("plan_tables"):
+            row_counts, col_counts, goff, ptab, use_ptab = self._gather_tables(rows)
         if self.comm is None:
             return _Layout(
                 rows, None, np.zeros(1, dtype=np.int64), goff, ptab, int(row_counts[0]), self.epoch, use_ptab
             )
-        flags = self._owner_flags(rows, goff, ptab, use_ptab)
-        plan = MatvecExchangePlan(
-            self.comm,
-            col_counts,
-            None,
-            flags,
-            int(width),
-            config.GS_MATVEC_EXCHANGE_BYTES.get(),
-            row_counts=row_counts,
-        )
+        with stage("plan_flags"):
+            flags = self._owner_flags(rows, goff, ptab, use_ptab)
+        with stage("plan_build"):
+            plan = MatvecExchangePlan(
+                self.comm,
+                col_counts,
+                None,
+                flags,
+                int(width),
+                config.GS_MATVEC_EXCHANGE_BYTES.get(),
+                row_counts=row_counts,
+            )
         base = np.full(self.size, -1, dtype=np.int64)
         for i, dest in enumerate(plan.destinations):
             base[dest] = int(plan.send_row_offsets[i])
@@ -692,7 +719,8 @@ class DistributedSparseMatrix:
             raise ValueError(f"block has {X.shape} rows, the matrix has {self.n_p_local} P slots")
         p = X.shape[1]
         if plan is None:
-            plan = self.exchange_plan(p, "block_apply", rows=rows)
+            with stage("plan_P" if rows == "P" else "plan_all"):
+                plan = self.exchange_plan(p, "block_apply", rows=rows)
         if plan.rows != rows or plan.epoch != self.epoch:
             raise ValueError("the layout is stale or was built for other rows")
         if out is None:
@@ -723,23 +751,25 @@ class DistributedSparseMatrix:
             self_view = ex.self_slot(wc)
             send_view[...] = 0.0
             self_view[...] = 0.0
-            scatter_discovered(
-                self._scatter_segments(squared),
-                alive,
-                X,
-                c0,
-                wc,
-                plan.base,
-                plan.goff,
-                plan.ptab,
-                plan.use_ptab,
-                plan.send_rows,
-                send_view,
-                self_view,
-                self._slot_bits,
-            )
-            ex.exchange(wc)
-            ex.accumulate(out[:, c0:c1], wc)
+            with stage("scatter_P" if rows == "P" else "scatter_all"):
+                scatter_discovered(
+                    self._scatter_segments(squared),
+                    alive,
+                    X,
+                    c0,
+                    wc,
+                    plan.base,
+                    plan.goff,
+                    plan.ptab,
+                    plan.use_ptab,
+                    plan.send_rows,
+                    send_view,
+                    self_view,
+                    self._slot_bits,
+                )
+            with stage("exchange"):
+                ex.exchange(wc)
+                ex.accumulate(out[:, c0:c1], wc)
         return out
 
     # -- the sparse-operator contract (what the eigensolvers and the array kernels read) ------------

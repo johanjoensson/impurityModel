@@ -479,99 +479,15 @@ def check_lanczos_band_resolution(d_g_band: float, tol: float) -> Diagnostic:
     )
 
 
-def check_bicgstab_convergence(
-    n_points: int,
-    n_unconverged: int,
-    max_rel_residual: float,
-    atol: float,
-    seed_overflow: bool = False,
-    n_gmres_fallbacks: int = 0,
-) -> Diagnostic:
-    r"""Surface the per-frequency BiCGSTAB Green's-function solver record.
-
-    The per-frequency driver (``gf_solvers.block_Green_bicgstab``) solves one linear
-    system per mesh point; each solve reports whether it drove the residual below the
-    ``atol`` it was asked for (after restarts).  A point left unconverged means ``G`` at
-    that frequency carries an error above ``atol`` — typically a real-axis point within
-    ~``delta`` of a pole.  ``seed_overflow`` flags points whose seed/warm-start support
-    alone exceeded ``truncation_threshold`` (the solve ran frozen on that support rather
-    than truncating the right-hand side).
-
-    Args:
-        n_points: Total per-frequency solves of this block.
-        n_unconverged: Solves that ended above ``atol`` (max_iter / stagnated restarts).
-        max_rel_residual: Worst final residual, relative to the seed norm.
-        atol: The residual tolerance the solves were asked for (the threshold reported).
-        seed_overflow: Whether any point's seed support alone exceeded the determinant cap.
-        n_gmres_fallbacks: Points BiCGSTAB left unconverged and the GMRES fallback re-solved
-            (``n_unconverged`` counts post-fallback failures only).
-
-    Returns:
-        Diagnostic: ``OK`` if every point converged (and no seed overflow), else ``WARN``
-        + ``needs_more_iterations``.
-    """
-    ok = n_unconverged == 0 and not seed_overflow
-    rescued = f" ({n_gmres_fallbacks} via GMRES fallback)" if n_gmres_fallbacks else ""
-    if ok:
-        message = f"all {n_points} per-frequency solves converged{rescued}"
-    else:
-        parts = []
-        if n_unconverged:
-            parts.append(f"{n_unconverged} of {n_points} per-frequency solves above atol{rescued}")
-        if seed_overflow:
-            parts.append("seed support exceeded truncation_threshold (solved frozen, RHS untruncated)")
-        message = "; ".join(parts)
-    return Diagnostic(
-        name="bicgstab",
-        severity=Severity.OK if ok else Severity.WARN,
-        value=float(max_rel_residual),
-        threshold=float(atol),
-        message=message,
-        suggestion=("" if ok else "raise GF_GMRES_RESTART, loosen delta, or raise truncation_threshold"),
-        needs_more_iterations=n_unconverged > 0,
-    )
-
-
-def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagnostic:
-    r"""Report the measured truncation error bar of a per-frequency Green's-function block.
-
-    Where :func:`check_basis_truncation` only says that a cap *bound*, this reports how much it
-    cost: ``max_bound`` is the largest elementwise bound on ``|G_exact - G|`` over the block's
-    per-frequency solves (``gf_primitives.resolvent_error_bound``, from the residual measured
-    outside the solve basis) and ``max_boundary`` the largest boundary residual norm
-    :math:`\lVert(1-P)HX\rVert` behind it. Purely informational -- a bound in ``G`` units has no
-    scale-free threshold of its own (it is compared with the ``G`` the caller cares about, or
-    propagated to ``Sigma``), so it never raises the report's severity.
-
-    Args:
-        max_bound: Worst elementwise ``G`` error bound over the block's solves.
-        max_boundary: Worst boundary-residual column norm over the block's solves.
-
-    Returns:
-        Diagnostic: always ``OK``; the bound is in ``value``.
-    """
-    return Diagnostic(
-        name="truncation_error_bound",
-        severity=Severity.OK,
-        value=float(max_bound),
-        threshold=float("nan"),
-        message=f"|G - G_exact| <= {max_bound:.2e} (boundary residual {max_boundary:.2e})",
-    )
-
-
 @dataclass(frozen=True)
 class UnitRecord:
     """One Green's-function work unit as the report names it: which operator group it solved, for which
-    thermal states, how large its support grew and whether (and where) it settled.
+    thermal states, how large its support grew and whether a limit stopped it.
 
     ``side`` is ``"addition"`` or ``"removal"``; ``states`` the thermal-state indices the unit stacks;
     ``e_minus_e0`` / ``boltzmann`` their energies above the ground state and normalised weights;
     ``seed_weight`` the summed ``|r|^2`` of its seeds (electrons added or removed, weighted); ``retained`` the
-    unit's final support (``None`` when untracked); ``settled`` / ``settle_step`` / ``n_blocks`` the settle
-    verdict and the unit's block count; ``frontier_over_swm`` / ``ratio`` / ``window`` the settle verdict's
-    numbers (``nan`` when the unit did not settle); ``leak_window`` is the weight that reached new rows over the
-    settling window and ``frontier_end_over_swm`` / ``leak_end`` what the end-of-unit probe measured (next-block
-    amplitude in units of ``slaterWeightMin``, weight on rows outside the support), ``nan`` where not measured.
+    unit's final support (``None`` when untracked); ``n_blocks`` the unit's block count.
     ``cap_hit`` / ``memory_frozen`` mark the lossy freezes."""
 
     unit: int
@@ -582,17 +498,9 @@ class UnitRecord:
     boltzmann: tuple
     seed_weight: float
     retained: Optional[int]
-    settled: bool
-    settle_step: Optional[int]
     n_blocks: Optional[int]
-    frontier_over_swm: float
-    ratio: float
-    window: int
     cap_hit: bool
     memory_frozen: bool
-    leak_window: float = float("nan")
-    frontier_end_over_swm: float = float("nan")
-    leak_end: float = float("nan")
 
     def describe(self) -> str:
         """``unit 4, removal, state 1 (E-E0 0.000, weight 0.33, seed 0.22 e)``: what a reader needs to find it."""
@@ -603,48 +511,6 @@ class UnitRecord:
             f"unit {self.unit}, {self.side}, state {states} "
             f"(E-E0 {gap}, weight {weight}, seed {self.seed_weight:.2f} e)"
         )
-
-
-def check_support_settled(records, slater_weight_min) -> Diagnostic:
-    r"""Report the units of one block whose support settled.
-
-    The settle rule (:class:`gf_primitives.FreezeRule`) stops a unit's support growing once, over a window of
-    blocks, the largest amplitude the normalised next block carries on a determinant reached for the first time
-    stays at or below ``ratio`` x ``slaterWeightMin`` and is not growing; the recurrence then carries on as the
-    exact one on the determinants it has. Units differ a lot (a unit that removes an electron into a closed spin
-    sector closes at a thousand determinants where its neighbour needs twenty thousand), so the row names the
-    smallest and the largest settled support by unit, state and seed weight rather than one number. It is an
-    ``OK``: what the settle drops are the determinants whose next-block amplitude stayed at or below
-    ``ratio x slaterWeightMin`` -- not a bound on the Green's function's error, which the measured default ratio
-    keeps inside the self-energy tolerances. It does not set ``needs_more_iterations`` or ``needs_more_states``.
-
-    Args:
-        records: The block's :class:`UnitRecord` entries (every unit that fed it, settled or not).
-        slater_weight_min: The amplitude cutoff the frontier is measured against (for the message).
-    """
-    tracked = [r for r in records if r.retained is not None]
-    settled = [r for r in tracked if r.settled]
-    if not settled:
-        return Diagnostic(name="support_settled", severity=Severity.OK, value=float("nan"), threshold=float("nan"),
-                          message="no unit settled its support")  # fmt: skip
-    small = min(settled, key=lambda r: r.retained)
-    large = max(settled, key=lambda r: r.retained)
-    worst = max(settled, key=lambda r: r.frontier_over_swm)
-    sides = sorted({r.side for r in settled})
-    scope = f"{len(settled)} of {len(tracked)} units"
-    return Diagnostic(
-        name="support_settled",
-        severity=Severity.OK,
-        value=float(worst.frontier_over_swm),
-        threshold=float(worst.ratio),
-        message=(
-            f"{scope} settled their support ({'/'.join(sides)}; slater_min {slater_weight_min:.3g}, "
-            f"gf_settle_ratio {worst.ratio:g}): supports "
-            f"{small.retained:,} ({small.describe()}) .. {large.retained:,} ({large.describe()}); "
-            "largest new-determinant amplitude in the next block "
-            f"{worst.frontier_over_swm:.2g} x slater_min over {worst.window} blocks"
-        ),
-    )
 
 
 def check_basis_truncation(

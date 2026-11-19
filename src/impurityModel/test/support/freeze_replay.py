@@ -1,7 +1,7 @@
-r"""Replay one archived solver call with the Green's-function support freeze (settle) switched, and grade it.
+r"""Replay one archived solver call with chosen Green's-function options, and grade it.
 
 The measurement rig behind ``doc/plans/gf_support_freeze_redesign.md``. One run = one (archive, cluster,
-iteration, ``slaterWeightMin``, freeze mode) point: the archived ``calc_selfenergy`` call is rebuilt through
+iteration, ``slaterWeightMin``, option set) point: the archived ``calc_selfenergy`` call is rebuilt through
 :mod:`real_workload` (same options, ``gf_tol``/``gf_real_tol`` from the archive), the self-energy causality guard
 is left non-fatal (``selfenergy.DEFAULT_CAUSALITY_TOL``) so the Sigma comes out whatever it is, and the arrays
 are written to an ``.npz``. :func:`grade` then compares two such runs against the acceptance rule of the plan:
@@ -14,11 +14,10 @@ are written to an ``.npz``. :func:`grade` then compares two such runs against th
 Run (one process per point; ``-n 3`` is what the numbers in the write-up used)::
 
     mpiexec -n 3 python -m impurityModel.test.support.freeze_replay run ARCHIVE.h5 --iteration 1 \
-        --swm 1e-8 --freeze off --out debug/gf_freeze/swm8_nofreeze
+        --swm 1e-8 --prune-tol 0 --out debug/gf_freeze/swm8_unpruned
     python -m impurityModel.test.support.freeze_replay grade debug/gf_freeze/swm8.npz \
-        debug/gf_freeze/swm8_nofreeze.npz
+        debug/gf_freeze/swm8_unpruned.npz
 
-``--freeze`` is ``on`` (the options' defaults), ``off`` (``gf_settle=False``) or a number (``gf_settle_ratio``).
 The archive path is always an argument: nothing here hard-codes a workload.
 """
 
@@ -132,16 +131,6 @@ def load_result(path):
         return {k: d[k] for k in d.files}
 
 
-def settle_options(mode):
-    """``(gf_settle, gf_settle_ratio, text)`` for ``--freeze``: ``on`` (the options' defaults), ``off``, or a ratio."""
-    if mode == "on":
-        return None, None, "on"
-    if mode == "off":
-        return False, None, "off"
-    ratio = float(mode)
-    return None, ratio, f"ratio {ratio:g}"
-
-
 class _UnitsDone(Exception):
     """Raised on every rank once the selected Green's-function units have been solved (``--units``)."""
 
@@ -205,33 +194,18 @@ def cap_policy(cap, gs_cap=None, gf_cap=None):
 
 
 def _solver_overrides(
-    gf_settle,
-    gf_settle_ratio,
     prune_tol,
     first_shell_tol,
     refine_rounds,
     refine_tol,
     refine_swap,
-    growth_tol=None,
-    growth_quiet=None,
 ):
-    """``SolverOptions`` fields a TOML replay overrides: :func:`real_workload.build_options`'s rule, on built options.
-
-    An explicit ``prune_tol`` replaces the settle (the sweep's option beats the input's record), so the settle
-    fields are then not touched.
-    """
+    """``SolverOptions`` fields a TOML replay overrides: :func:`real_workload.build_options`'s rule, on built options."""
     out = {}
-    if prune_tol is None:
-        if gf_settle is not None:
-            out["gf_settle"] = gf_settle
-        if gf_settle_ratio is not None:
-            out["gf_settle_ratio"] = gf_settle_ratio
-    else:
+    if prune_tol is not None:
         out["gf_prune_tol"] = prune_tol
     for key, value in (
         ("gf_first_shell_tol", first_shell_tol),
-        ("gf_growth_tol", growth_tol),
-        ("gf_growth_quiet", growth_quiet),
         ("gf_refine_rounds", refine_rounds),
         ("gf_refine_tol", refine_tol),
         ("gf_refine_swap", refine_swap),
@@ -273,7 +247,6 @@ def _run(
     iteration=1,
     cluster=None,
     swm=None,
-    freeze="on",
     comm=None,
     verbosity=1,
     matrix_mode="auto",
@@ -281,7 +254,6 @@ def _run(
     units=None,
     prune_tol=None,
     first_shell_tol=None,
-    prune_rule=None,
     cost_budget=None,
     refine_rounds=None,
     refine_tol=None,
@@ -291,8 +263,7 @@ def _run(
     refine_weighted=None,
     gs_cap=None,
     gf_cap=None,
-    growth_tol=None,
-    growth_quiet=None,
+    delta=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
@@ -304,28 +275,18 @@ def _run(
     ``units`` (a list of global unit indices, or ``"heaviest"``) solves
     only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each.
 
-    ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
-    the settle) and ``prune_rule`` (``amplitude``, ``accumulated`` or ``mass``) sets
-    ``gf_recurrence._PRUNE_RULE``, identically on
-    every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze;
+    ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``).
+    ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze;
     ``refine_stop_rtol`` / ``refine_max_shifts`` / ``refine_weighted`` set ``gf_refinement.REFINE_STOP_RTOL`` /
     ``REFINE_MAX_SHIFTS`` / ``REFINE_WEIGHTED`` (the residual the recurrence-fed scoring solutions must reach, the
     number of scoring shifts per block, and whether each shift's scores are weighted by ``|G0^-1|^2``), identically
-    on every rank. ``growth_tol`` (``gf_growth_tol``, needs pruning) stops the pruned growth pass at that looser
-    tolerance; the restart on the final support converges fully. ``growth_quiet`` (``gf_growth_quiet``, needs
-    pruning; ``0`` is off) ends it after that many consecutive blocks that admitted nothing.
+    on every rank.
     """
-    if prune_rule is not None:
-        from impurityModel.ed import gf_recurrence
-
-        gf_recurrence._PRUNE_RULE = prune_rule
     from impurityModel.ed import selfenergy
 
     selfenergy.DEFAULT_CAUSALITY_TOL = 1e9  # non-fatal: the Sigma comes out whatever it is
-    from impurityModel.test.support import real_workload as rw
-
-    gf_settle, gf_settle_ratio, mode = settle_options(freeze)
     from impurityModel.ed import gf_solvers
+    from impurityModel.test.support import real_workload as rw
 
     gf_solvers._MATRIX_MODE = matrix_mode  # harness switch, identical on every rank
     from impurityModel.ed import gf_refinement
@@ -355,15 +316,11 @@ def _run(
             cap=cap,
             cost_budget=cost_budget,
             solver_overrides=_solver_overrides(
-                gf_settle,
-                gf_settle_ratio,
                 prune_tol,
                 first_shell_tol,
                 refine_rounds,
                 refine_tol,
                 refine_swap,
-                growth_tol,
-                growth_quiet,
             ),
         )
         w_mesh, swm_used = inputs[3].w, inputs[1].slater_weight_min
@@ -373,6 +330,8 @@ def _run(
             raise SystemExit(f"archive records options this replay does not consume: {wl['ignored_attrs']}")
         if swm is not None:
             wl["slaterWeightMin"] = float(swm)
+        if delta is not None:
+            wl["delta"] = float(delta)
         w_mesh, swm_used = wl["w_mesh"], wl["slaterWeightMin"]
     if units is not None:
         _solve_only(units, comm)
@@ -391,12 +350,8 @@ def _run(
                 truncation_threshold=cap,
                 gf_tol="archive",
                 gf_real_tol="archive",
-                gf_settle=gf_settle,
-                gf_settle_ratio=gf_settle_ratio,
                 gf_prune_tol=prune_tol,
                 gf_first_shell_tol=first_shell_tol,
-                gf_growth_tol=growth_tol,
-                gf_growth_quiet=growth_quiet,
                 cost_budget=cost_budget,
                 gf_refine_rounds=refine_rounds,
                 gf_refine_tol=refine_tol,
@@ -418,24 +373,23 @@ def _run(
     np.savez(
         out + ".npz",
         w=w_mesh,
-        freeze=np.array(mode),
         swm=np.array(swm_used),
         wall=np.array(wall),
         **arrays,
     )
-    print(f"RESULT {out}: swm {swm_used:g} freeze {mode} wall {wall:.1f} s", flush=True)
+    print(f"RESULT {out}: swm {swm_used:g} wall {wall:.1f} s", flush=True)
     return arrays
 
 
 def run(*args, **kwargs):
     """:func:`_run`, with the module settings it overrides put back afterwards (see there for the arguments)."""
-    from impurityModel.ed import gf_recurrence, selfenergy
+    from impurityModel.ed import selfenergy
 
-    saved = gf_recurrence._PRUNE_RULE, selfenergy.DEFAULT_CAUSALITY_TOL
+    saved = selfenergy.DEFAULT_CAUSALITY_TOL
     try:
         return _run(*args, **kwargs)
     finally:
-        gf_recurrence._PRUNE_RULE, selfenergy.DEFAULT_CAUSALITY_TOL = saved
+        selfenergy.DEFAULT_CAUSALITY_TOL = saved
 
 
 run.__doc__ = _run.__doc__
@@ -449,13 +403,12 @@ def main(argv=None):
     r.add_argument("--iteration", type=int, default=1)
     r.add_argument("--cluster", default=None)
     r.add_argument("--swm", type=float, default=None)
-    r.add_argument("--freeze", default="on")
     r.add_argument("--matrix-mode", default="auto", choices=["auto", "discovered", "retained", "none"])
     r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
     r.add_argument("--gs-cap", default=None, type=int, help="ground-state determinant cap (separate from --gf-cap)")
     r.add_argument("--gf-cap", default=None, type=int, help="Green's-function unit cap (separate from --gs-cap)")
     r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
-    r.add_argument("--prune-tol", type=float, default=None, help="gf_prune_tol: pruned growth (replaces the settle)")
+    r.add_argument("--prune-tol", type=float, default=None, help="gf_prune_tol: pruned growth")
     r.add_argument("--refine-rounds", type=int, default=None, help="gf_refine_rounds: swap refinement of capped units")
     r.add_argument("--refine-tol", type=float, default=None, help="gf_refine_tol (needs --refine-rounds)")
     r.add_argument("--refine-swap", type=float, default=None, help="gf_refine_swap (needs --refine-rounds)")
@@ -471,10 +424,8 @@ def main(argv=None):
     )
     r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
-    r.add_argument("--growth-tol", type=float, default=None, help="gf_growth_tol (needs --prune-tol)")
-    r.add_argument("--growth-quiet", type=int, default=None, help="gf_growth_quiet (0 off; needs --prune-tol)")
     r.add_argument(
-        "--prune-rule", default=None, choices=["amplitude", "accumulated", "mass"], help="prune rule for the sweep"
+        "--delta", type=float, default=None, help="real-axis broadening replacing the archive's (archive replays)"
     )
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
@@ -501,7 +452,6 @@ def main(argv=None):
         a.iteration,
         a.cluster,
         a.swm,
-        a.freeze,
         MPI.COMM_WORLD,
         a.verbosity,
         a.matrix_mode,
@@ -509,7 +459,6 @@ def main(argv=None):
         units,
         a.prune_tol,
         a.first_shell_tol,
-        a.prune_rule,
         a.cost_budget,
         a.refine_rounds,
         a.refine_tol,
@@ -519,8 +468,7 @@ def main(argv=None):
         a.refine_weighted,
         a.gs_cap,
         a.gf_cap,
-        a.growth_tol,
-        a.growth_quiet,
+        a.delta,
     )
     return 0
 

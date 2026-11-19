@@ -1,9 +1,7 @@
 """Shared Green's-function test oracles: a small SIAM-6 model, its seeds/basis, and dense
 resolvent/capped-basis references.
 
-Promoted out of test_gf_bicgstab_driver.py once test_gmres.py (and the since-retired CIPSI
-driver's tests) started importing its helpers cross-file -- this is the canonical home for them
-now, with test_gf_bicgstab_driver.py itself importing back like any other consumer.
+Canonical home of the helpers the Green's-function test files import across files.
 """
 
 import itertools
@@ -12,7 +10,6 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.greens_function import _CappedBasisProxy, get_Greens_function
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, block_inner_cy
@@ -134,10 +131,6 @@ def _capped_solve_with(solver, cap, z, comm=None):
     return gram, proxy
 
 
-def _capped_solve(cap, z, comm=None):
-    return _capped_solve_with(block_bicgstab, cap, z, comm=comm)
-
-
 def _hyb_hop():
     return ManyBodyOperator(
         {
@@ -154,7 +147,7 @@ def _hyb_hop():
     )
 
 
-def _run_driver(gf_method, reort, comm=None, extra=None):
+def _run_driver(reort, comm=None, extra=None):
     state_bytes = [b"\xa0", b"\x50"]  # {0, 2} and {1, 3}
     basis = Basis(
         impurity_orbitals={0: [[0, 1]]},
@@ -190,7 +183,6 @@ def _run_driver(gf_method, reort, comm=None, extra=None):
         occ_cutoff=1e-6,
         slaterWeightMin=0.0,
         sparse=True,
-        gf_method=gf_method,
         **(extra or {}),
     )
     return gs_mat, gs_real, report

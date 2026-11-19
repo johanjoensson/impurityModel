@@ -96,7 +96,7 @@ def _describe_gf_cap(basis, cap, layout):
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
 
 
-def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, equal_widths=False):
+def _colors_affording(basis, unit_weights, width, reort, floor=None, equal_widths=False):
     """How many colors a GF stage may run so that every unit can afford ``floor`` determinants.
 
     ``floor`` is the unit cap for a cap the user set (or a basis without a policy); for an auto
@@ -117,7 +117,7 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, 
     replicates the ground-state basis into each color), so the floor is a target, not a guarantee.
     """
     if floor is None:
-        pinned = getattr(basis, "_auto_gf_caps", {}).get(_pin_key(reort, gf_method))
+        pinned = getattr(basis, "_auto_gf_caps", {}).get(_pin_key(reort))
         floor = pinned[0] if pinned is not None else int(basis.size)
     candidates = min(basis.comm.size, len(unit_weights))
     if candidates <= 1:
@@ -134,7 +134,6 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, 
                 ranks,
                 basis.comm,
                 safety=_gf_sizing_safety(),
-                method=gf_method,
                 resident_bytes=resident,
                 row_fanout=_row_fanout(basis),
             )
@@ -213,18 +212,18 @@ def _is_auto_gf(basis):
     return policy is not None and policy.from_memory and policy.gf is None
 
 
-def _pin_key(reort, gf_method):
+def _pin_key(reort):
     """What an auto GF cap is pinned per: the kernel, whose per-determinant cost it was sized for."""
-    return (bool(reort), str(gf_method))
+    return bool(reort)
 
 
-def _pinned_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
+def _pinned_auto_gf_cap(basis, rank_counts, width, reort, resident_bytes):
     """The calculation's auto GF cap for this kernel: sized by its first GF stage, reused after.
 
     A spectra or RIXS calculation runs several GF stages on one ground-state basis (IPS, PS, XAS,
     each adaptive incoming-energy round), and the resident set grows between them as caches are
     kept -- sizing each stage afresh would run parts of one spectrum at different caps. So the
-    first stage of each kernel (reort, method) pins its number on the ground-state basis (which
+    first stage of each kernel (reort on or off) pins its number on the ground-state basis (which
     lives exactly as long as the calculation), and later stages of that kernel reuse it. A later
     stage with wider units may not afford the pinned number even on one color spanning every
     rank; it is clamped to what that affords rather than trusted to a guard it may not have.
@@ -234,17 +233,17 @@ def _pinned_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_by
     if pins is None:
         pins = {}
         basis._auto_gf_caps = pins
-    key = _pin_key(reort, gf_method)
+    key = _pin_key(reort)
     if key not in pins:
-        pins[key] = (_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes), resident_bytes)
+        pins[key] = (_auto_gf_cap(basis, rank_counts, width, reort, resident_bytes), resident_bytes)
     cap, pinned_resident = pins[key]
     # The clamp is for width, not for memory drift: it is evaluated against the resident set the
     # pin was taken with, so a grown resident set does not move the calculation's cap.
     all_ranks = basis.comm.size if basis.comm is not None else 1
-    return min(cap, _auto_gf_cap(basis, [all_ranks], width, reort, gf_method, pinned_resident))
+    return min(cap, _auto_gf_cap(basis, [all_ranks], width, reort, pinned_resident))
 
 
-def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
+def _auto_gf_cap(basis, rank_counts, width, reort, resident_bytes):
     """The largest unit basis the smallest of ``rank_counts`` can afford, with what is resident.
 
     Applied to every unit of a stage: equal treatment of equivalent blocks does not depend on
@@ -259,7 +258,6 @@ def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
             ranks,
             basis.comm,
             safety=_gf_sizing_safety(),
-            method=gf_method,
             resident_bytes=resident_bytes,
             row_fanout=_row_fanout(basis),
         )
@@ -568,7 +566,6 @@ def run_units_distributed(
     verbose: bool = False,
     reduce_fn: Optional[Callable] = None,
     reort=None,
-    gf_method: str = "lanczos",
     unit_windows: Optional[list] = None,
     hOp: Optional[ManyBodyOperator] = None,
 ) -> list | bool | None:
@@ -597,8 +594,7 @@ def run_units_distributed(
     per-rank headroom, the run takes the static assignment instead (printed), where each seed goes
     only to the color that runs its unit.
 
-    ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
-    names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
+    ``reort`` is the GF reorthogonalization mode the kernel will run with; it only feeds the memory model
     that caps the number of simultaneous colors (each color's unit basis may fill the same
     ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency). ``hOp``, given with
     an auto GF cap, has the memory model priced at this workload's own matvec fan-out
@@ -630,9 +626,7 @@ def run_units_distributed(
         width = max((len(s) for s in unit_seeds), default=1)
         try:
             basis.truncation_threshold = (
-                _pinned_auto_gf_cap(basis, [1], width, reort, gf_method, resident)
-                if _is_auto_gf(basis)
-                else gf_cap(basis)
+                _pinned_auto_gf_cap(basis, [1], width, reort, resident) if _is_auto_gf(basis) else gf_cap(basis)
             )
             available = available_bytes_per_rank(basis.comm)
             _set_gf_memory_guard(
@@ -675,11 +669,9 @@ def run_units_distributed(
         # One rule for every cap: the most colors whose real packing lets each unit afford its floor
         # (the user's cap exactly; for auto, the GS basis size or this kernel's pinned cap).
         if _is_auto_gf(basis):
-            return _colors_affording(basis, unit_weights, width, reort, gf_method, equal_widths=equal_widths)
+            return _colors_affording(basis, unit_weights, width, reort, equal_widths=equal_widths)
         if np.isfinite(cap):
-            return _colors_affording(
-                basis, unit_weights, width, reort, gf_method, floor=int(cap), equal_widths=equal_widths
-            )
+            return _colors_affording(basis, unit_weights, width, reort, floor=int(cap), equal_widths=equal_widths)
         return None
 
     max_colors = colors_affording(equal_widths)
@@ -845,7 +837,7 @@ def run_units_distributed(
             # Replicated (derived from the verified-rank-invariant `unit_roots`), so every rank
             # makes the same collective memory-probe calls.
             rank_counts = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
-            cap = _pinned_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes)
+            cap = _pinned_auto_gf_cap(basis, rank_counts, width, reort, resident_bytes)
         split_basis.truncation_threshold = cap
         if np.isfinite(cap) and _may_lower_gf_cap(basis) and not _is_auto_gf(basis):
             unit_cap = max_unit_dets_within_budget(
@@ -854,7 +846,6 @@ def run_units_distributed(
                 reort,
                 ranks_per_color,
                 basis.comm,
-                method=gf_method,
                 resident_bytes=resident_bytes,
                 row_fanout=_row_fanout(basis),
             )
@@ -866,7 +857,6 @@ def run_units_distributed(
                     width,
                     reort,
                     ranks=ranks_per_color,
-                    method=gf_method,
                     row_fanout=_row_fanout(basis),
                 )
                 print(
@@ -977,6 +967,8 @@ def run_units_distributed(
         )
         if basis.comm.rank == 0:
             colour_ranks = [int(w) for w in np.diff(list(unit_roots) + [basis.comm.size])]
+            if timing:
+                print(plain_unit_summary(list(timing)), flush=True)
             for line in format_unit_timing(
                 list(timing), units_per_color, verbose=bool(verbose), colour_ranks=colour_ranks
             ):
@@ -1037,17 +1029,43 @@ def _take_unit_passes():
 
 
 def _passes_text(passes):
-    """``growth 32,769 blk/19.5k s (frozen), restart 65,529 blk/11.8k s, status plateau`` from a pass summary."""
+    """``growth 32,769 blk/19.5k s, restart 65,529 blk/11.8k s, status plateau`` from a pass summary."""
     if not passes or "growth_blocks" not in passes:
         return ""
-    stop = passes.get("growth_stop")
     parts = [
-        f"growth {passes['growth_blocks']:,} blk/{passes['growth_seconds']:.1f} s" + (f" ({stop})" if stop else ""),
+        f"growth {passes['growth_blocks']:,} blk/{passes['growth_seconds']:.1f} s",
         f"restart {passes.get('restart_blocks', 0):,} blk/{passes.get('restart_seconds', 0.0):.1f} s",
     ]
     if passes.get("status"):
         parts.append(f"status {passes['status']}")
+    peak = passes.get("peak_shifts")
+    freq = f"G at {peak['n_shifts']} self-energy-sensitive frequencies" if peak else ""
+    if peak and peak["n_shifts"]:
+        if peak.get("complete"):
+            parts.append(f"{freq}: Krylov space complete (exact for the kept determinants)")
+        elif peak["n_dropped"]:
+            parts.append(
+                f"{freq} changes by at most {peak['tail_change']:.1e} of its size without the last "
+                f"{peak['n_dropped']} Lanczos steps (tests the recurrence only, not the determinant cap)"
+            )
+    if passes.get("peak_shifts_note"):
+        parts.append(f"self-energy-sensitive frequencies not checked ({passes['peak_shifts_note']})")
     return ", " + ", ".join(parts)
+
+
+def plain_unit_summary(records):
+    """One sentence for a reader who does not know the scheduler: how many units ran and how long the slowest took.
+
+    ``records`` are the ``(unit, start, end[, passes])`` tuples of :func:`format_unit_timing`; the technical table
+    (colours, makespan, rank-seconds) follows it for anyone tuning the parallel layout. Pure.
+    """
+    if not records:
+        return ""
+    wall = max(r[2] for r in records)
+    longest = max(r[2] - r[1] for r in records)
+    return (
+        f"Green's function: {len(records)} work units finished in {wall:.1f} s " f"(the slowest took {longest:.1f} s)."
+    )
 
 
 def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=None):
@@ -1087,7 +1105,9 @@ def format_unit_timing(records, units_per_color, verbose=False, colour_ranks=Non
         f"#{u_long} {longest:.1f} s ({100.0 * longest / makespan if makespan > 0 else 0.0:.0f}% of the makespan) "
         f"on colour {colour_of[records.index((u_long, s_long, e_long))]}"
     ]
-    if verbose or any("growth_blocks" in p for p in passes_of):  # a unit's passes are the one thing the summary line cannot show
+    if verbose or any(
+        "growth_blocks" in p for p in passes_of
+    ):  # a unit's passes are the one thing the summary line cannot show
         lines.extend(
             f"  unit #{u}: colour {colour}, {start:.1f} -> {end:.1f} s ({end - start:.1f} s){_passes_text(passes)}"
             for (u, start, end), colour, passes in zip(records, colour_of, passes_of)

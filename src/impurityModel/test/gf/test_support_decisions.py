@@ -15,12 +15,10 @@ def test_the_policy_forwards_its_state_both_ways():
     policy = SupportPolicy(_seed_basis(), 10**9)
     d = policy.decisions
     assert policy.retained_size == d.global_count and not policy.cap_hit
-    policy.cap_hit = True  # gf_admission assigns it
+    policy.cap_hit = True  # the growth code assigns it
     assert d.cap_hit
     d.global_count += 5
     assert policy.retained_size == d.global_count
-    policy.note_step_cut(0.25)
-    assert d.pending_cut == 0.25
 
 
 def test_the_boundary_ranking_fills_exactly_the_free_slots():
@@ -32,15 +30,3 @@ def test_the_boundary_ranking_fills_exactly_the_free_slots():
     d.freeze_at_cap(3)
     assert d.frozen and d.cap_hit and d.global_count == 10
     assert d.stop_phrase() == "GF basis frozen at the cap at"
-
-
-def test_a_quiet_window_settles_the_support():
-    d = SupportDecisions(None, cap=10**9, global_count=100)
-    d.enable_support_freeze(4, 1.0, 1e-4)
-    for _ in range(4):
-        d.settle_step(1e-12, 100, 0, 0.0, 0.0, 1.0, 1e-12)
-    assert d.support_frozen and d.frozen and not d.cap_hit
-    assert d.settle_verdict()["step"] == 4
-    assert d.stop_phrase() == "GF unit support settled at"
-    d.unfreeze_support()
-    assert not d.frozen and d.settle_verdict() is None

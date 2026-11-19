@@ -34,8 +34,8 @@ def test_env_override_is_read_lazily(monkeypatch):
 
 def test_parsers_and_clamps(monkeypatch):
     """Each kind parses, and the declared minimum clamps."""
-    monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-6")
-    assert config.GF_BICGSTAB_ATOL.get() == pytest.approx(1e-6)
+    monkeypatch.setenv("GF_GMRES_RESTART", "7")
+    assert config.GF_GMRES_RESTART.get() == 7
 
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "0")  # minimum=1
     assert config.APPLY_ROW_CHUNKS.get() == 1
@@ -61,9 +61,9 @@ def test_derived_knobs_return_none_when_unset(monkeypatch):
 
 
 def test_empty_string_counts_as_unset_for_non_str(monkeypatch):
-    """`GF_BICGSTAB_ATOL=` falls back to the default rather than raising on float("")."""
-    monkeypatch.setenv("GF_BICGSTAB_ATOL", "")
-    assert config.GF_BICGSTAB_ATOL.get() == config.GF_BICGSTAB_ATOL.default
+    """`GF_GMRES_RESTART=` falls back to the default rather than raising on float("")."""
+    monkeypatch.setenv("GF_GMRES_RESTART", "")
+    assert config.GF_GMRES_RESTART.get() == config.GF_GMRES_RESTART.default
 
 
 def test_registry_is_keyed_by_name_and_grouped():
@@ -121,23 +121,6 @@ def test_the_generated_configuration_doc_is_in_sync_with_the_registry():
     )
 
 
-def test_gf_method_choices_match_the_registry():
-    """The TOML schema (a stdlib-only leaf that cannot import ``config``) and the CLI must accept
-    exactly :data:`config.GF_METHODS` -- a retired kernel must not stay selectable anywhere."""
-    from impurityModel.inputformat.schema import TABLES
-
-    key = next(k for k in TABLES["solver"].keys if k.name == "gf_method")
-    assert tuple(key.choices) == config.GF_METHODS
-
-
-def test_gf_admission_choices_match_the_registry():
-    """The TOML schema's ``auto`` plus exactly :data:`config.GF_ADMISSIONS` (the CLI reads the registry itself)."""
-    from impurityModel.inputformat.schema import TABLES
-
-    key = next(k for k in TABLES["solver"].keys if k.name == "gf_admission")
-    assert tuple(key.choices) == ("auto",) + config.GF_ADMISSIONS
-
-
 def test_sigma_method_choices_match_the_estimator_registry():
     """``config.SIGMA_METHODS`` names exactly the estimators ``sigma_estimators`` can build, and an
     unknown name is rejected rather than silently falling back to Dyson."""
@@ -148,11 +131,3 @@ def test_sigma_method_choices_match_the_estimator_registry():
         assert sigma_estimators.make_estimator(name).name == name
     with pytest.raises(ValueError, match="sigma_method"):
         sigma_estimators.make_estimator("improved")
-
-
-def test_gf_prune_rule_choices_match_the_registry():
-    """The TOML schema's ``auto`` plus exactly :data:`config.GF_PRUNE_RULES` (the CLI reads the registry itself)."""
-    from impurityModel.inputformat.schema import TABLES
-
-    key = next(k for k in TABLES["solver"].keys if k.name == "gf_prune_rule")
-    assert tuple(key.choices) == ("auto",) + config.GF_PRUNE_RULES

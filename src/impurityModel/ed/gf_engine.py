@@ -25,7 +25,6 @@ from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes, reset
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.symmetries import weighted_parts
 
-
 #: What the unit that just finished on this rank's colour did, for the unit-timing table (``gf_units``), which
 #: gathers it with the unit's start and end times. A side channel because the kernels return only the results.
 #: Set on every rank of the colour, unconditionally (never behind ``verbose``).
@@ -46,13 +45,8 @@ def _block_green_group(
     eval_meshes=None,
     conv_stats=None,
     unit_label=None,
-    support_settle=True,
-    settle_ratio=None,
     prune_tol=None,
     first_shell_tol=None,
-    growth_tol=None,
-    growth_quiet=None,
-    prune_rule=None,
     refine=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
@@ -145,13 +139,8 @@ def _block_green_group(
             # basis that did not come through it, which leaves the guard off.
             memory_budget=getattr(split_basis, "gf_memory_budget", None),
             memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
-            support_settle=support_settle,
-            settle_ratio=settle_ratio,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
-            growth_tol=growth_tol,
-            growth_quiet=growth_quiet,
-            prune_rule=prune_rule,
             refine=refine,
         )
         if info is not None and cap_info.get("status") is not None:
@@ -167,16 +156,13 @@ def _block_green_group(
             "cap": cap,
             "seed_size": seed_size,
             "memory_frozen": bool(cap_info.get("memory_frozen", False)),
-            "support_frozen": bool(cap_info.get("support_frozen", False)),
-            # The settle window's numbers (largest next-block amplitude on a new row, leak, cut), as it decided.
-            "settle_verdict": cap_info.get("settle_verdict"),
-            # What the settled unit left behind (``nan`` where not measured): see gf_recurrence.settled_frontier.
-            "frontier_end": cap_info.get("frontier_end", float("nan")),
-            "leak_end": cap_info.get("leak_end", float("nan")),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
             # Blocks and seconds of the first run and of the restart on the final P (gf_recurrence).
             "passes": cap_info.get("passes"),
+            # |K| / |P| of a discovered-matrix unit (nan elsewhere): what ``matrix_need_bytes`` prices at K_OVER_P_ESTIMATE.
+            "k_over_p": cap_info.get("k_over_p", float("nan")),
+            "engine": cap_info.get("engine"),
         }
         if cap_info.get("refine") is not None:
             cap_stats["refine"] = cap_info["refine"]
@@ -229,7 +215,6 @@ def _block_green_group(
         cap=float(cap) if np.isfinite(cap) else None,
         cap_hit=bool(cap_stats["cap_hit"]),
         csr_fallback=bool(cap_stats.get("csr_fallback", False)),
-        support_frozen=bool(cap_stats.get("support_frozen", False)),
         n_blocks=int(n_blocks) if n_blocks is not None else None,
         peak_rss_bytes=int(peak),
         peak_is_unit_transient=bool(peak_is_own),
@@ -243,25 +228,15 @@ def _block_green_group(
         # (the operator applied every block until the support froze, then its frozen continuation) and restart=
         # the rerun from the seeds on the final support, each with its own blocks and wall.
         passes = cap_stats.get("passes")
-        stop_mark = f" ({passes['growth_stop']})" if passes and passes.get("growth_stop") in ("quiet", "frozen") else ""
         csr = (
-            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s{stop_mark}"
+            f", growth={passes['growth_blocks']} blk/{passes['growth_seconds']:.1f} s"
             f", restart={passes['restart_blocks']} blk/{passes['restart_seconds']:.1f} s"
             if passes
             else ""
         )
-        verdict = cap_stats.get("settle_verdict")
-        # The literal ``support_frozen=True`` token is read by the cluster kits' log parsers; the words after it
-        # say what it is (a settle, not a cap) and where it happened.
-        stagnated = (
-            f", support_frozen=True (settled at block {verdict['step']} of {n_blocks}, "
-            f"frontier {verdict['max_amp_over_swm']:.2g} x slater_min)"
-            if cap_stats.get("support_frozen") and verdict
-            else (", support_frozen=True" if cap_stats.get("support_frozen") else "")
-        )
         print(
             f"  {label}: excited basis {retained_display} determinants "
-            f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "
+            f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{csr}) n_blocks={n_blocks} "
             f"{local_label}[min,max]=[{local_min:,},{local_max:,}] "
             f"color MAX VmHWM={format_bytes(peak)} ({peak_kind}) wall={seconds:.1f} s",
             flush=True,
@@ -325,14 +300,9 @@ def lanczos_unit_kernel(
     print_size=False,
     eval_meshes_for=None,
     refine_for=None,
-    support_settle=True,
-    settle_ratio=None,
     unit_ids=None,
     prune_tol=None,
     first_shell_tol=None,
-    growth_tol=None,
-    growth_quiet=None,
-    prune_rule=None,
     refine=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
@@ -366,20 +336,11 @@ def lanczos_unit_kernel(
     eval_meshes_for : callable, optional
         ``eval_meshes_for(unit)`` gives the frequencies the convergence monitor tests (see
         :func:`gf_convergence._gf_eval_meshes`); ``None`` leaves it on the Ritz-band fallback.
-    support_settle, settle_ratio
-        The support settle (:func:`gf_solvers.block_Green_sparse`): on/off and its threshold as a multiple of
-        ``slaterWeightMin`` (``None``: 3).
     unit_ids : list of int, optional
         The global unit number of each entry of ``units`` (a subset re-solve), used for the unit's log label and
         trace note; ``None``: the position.
     prune_tol, first_shell_tol : float, optional
         Importance-pruned growth (:func:`gf_solvers.block_Green_sparse`); ``None``: the knobs.
-    growth_tol : float, optional
-        The pruned growth pass's own looser convergence tolerance (the restart on the final P converges fully);
-        ``None``: off.
-    growth_quiet : int, optional
-        The pruned growth ends after this many consecutive blocks that admitted nothing (then the same restart);
-        ``None``: off.
     """
 
     def kernel(split_basis, u, seeds):
@@ -402,13 +363,8 @@ def lanczos_unit_kernel(
             eval_meshes=eval_meshes_for(unit) if eval_meshes_for is not None else None,
             conv_stats=conv_stats,
             unit_label=u if unit_ids is None else unit_ids[u],
-            support_settle=support_settle,
-            settle_ratio=settle_ratio,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
-            growth_tol=growth_tol,
-            growth_quiet=growth_quiet,
-            prune_rule=prune_rule,
             refine=refine_for(unit) if refine_for is not None else refine,
         )
         if print_size and unit_rank0:

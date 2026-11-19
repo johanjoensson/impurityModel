@@ -13,12 +13,11 @@ configurations (restrictions, caps) are judged by their own tests, which need a 
 
 Factors
 -------
-``method``   lanczos / bicgstab (``gf_method``)
-``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only). The sparse cells pin
+``sparse``   ManyBodyState kernel vs CSR/dense array kernel. The sparse cells pin
              the support freeze off (``gf_switches``): their sectors close, and the freeze would hand them to the
              array kernel the other value of this factor already covers
 ``group``    ``gf_units._EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
-``reort``    none / partial / full (lanczos only)
+``reort``    none / partial / full
 ``mesh``     Matsubara only / real axis only / both
 ``model``    ``nb1`` (small sectors: the dense <500 array branch) / ``nb2`` (792-det
              excited sectors: the array *operator* branch)
@@ -47,7 +46,6 @@ IW = 1j * np.pi * TAU * (2 * np.arange(10) + 1)
 W = np.linspace(-6.0, 6.0, 17)
 
 FACTORS: dict[str, list] = {
-    "method": ["lanczos", "bicgstab"],
     "sparse": [True, False],
     "group": [1, 2],
     "reort": [None, True],
@@ -58,10 +56,8 @@ FACTORS: dict[str, list] = {
 
 
 def _valid(cell):
-    """Exclude combinations the code rejects or silently ignores (they would be duplicates)."""
-    # sparse / reort are documented as ignored off the Lanczos path.
-    lanczos_only = cell.get("sparse") is False or cell.get("reort") is not None
-    return not (cell.get("method", "lanczos") != "lanczos" and lanczos_only)
+    """Every combination of the factors is a distinct, accepted cell."""
+    return True
 
 
 def _pairwise_cells(factors, valid):
@@ -153,9 +149,8 @@ def _run_cell(cell):
             slaterWeightMin=0.0,
             sparse=cell["sparse"],
             num_wanted=N_STATES,
-            gf_method=cell["method"],
-            # the sparse cells want the plain sparse Lanczos kernel, not the settled one
-            gf_settle=False if cell["method"] == "lanczos" and cell["sparse"] else None,
+            # the sparse cells want the plain, unpruned sparse Lanczos kernel
+            gf_prune_tol=0.0 if cell["sparse"] else None,
         )
 
     def check():

@@ -20,7 +20,7 @@ ENVIRONMENT_ONLY = """
 version = [1, 0]
 
 [environment]
-GF_BICGSTAB_ATOL = 1e-9
+GF_CSR_MEMORY_SAFETY = 0.5
 GF_GMRES_RESTART = 12
 """
 
@@ -30,17 +30,17 @@ def test_load_environment_reads_only_that_table(tmp_path):
     path = tmp_path / "impurityModel.toml"
     path.write_text(ENVIRONMENT_ONLY + '\n[hamiltonian.file]\npath = "nowhere.h0"\n')
     resolved = load_environment(path)
-    assert set(resolved) == {"GF_BICGSTAB_ATOL", "GF_GMRES_RESTART"}
+    assert set(resolved) == {"GF_CSR_MEMORY_SAFETY", "GF_GMRES_RESTART"}
     # Stored as strings, since that is what os.environ takes; compare by value, not spelling.
-    assert float(resolved["GF_BICGSTAB_ATOL"]) == pytest.approx(1e-9)
+    assert float(resolved["GF_CSR_MEMORY_SAFETY"]) == pytest.approx(0.5)
     assert int(resolved["GF_GMRES_RESTART"]) == 12
 
 
 def test_an_unknown_knob_name_gets_an_exact_suggestion(tmp_path):
     """Exact, not heuristic: the registry is enumerable, so a near miss can be named."""
     path = tmp_path / "in.toml"
-    path.write_text("[format]\nversion = [1, 0]\n[environment]\nGF_BICGSTAB_ATOLL = 1e-9\n")
-    with pytest.raises(InputError, match="Did you mean 'GF_BICGSTAB_ATOL'"):
+    path.write_text("[format]\nversion = [1, 0]\n[environment]\nGF_CSR_MEMORY_SAFETYY = 0.5\n")
+    with pytest.raises(InputError, match="Did you mean 'GF_CSR_MEMORY_SAFETY'"):
         load_environment(path)
 
 
@@ -72,31 +72,31 @@ def test_an_ambiguous_boolean_is_refused(tmp_path):
 
 def test_apply_environment_restores_on_exit():
     """Without this, self-consistency iteration two inherits iteration one's knobs."""
-    name = "GF_BICGSTAB_ATOL"
+    name = "GF_CSR_MEMORY_SAFETY"
     os.environ.pop(name, None)
-    with apply_environment({name: "1e-9"}):
-        assert os.environ[name] == "1e-9"
+    with apply_environment({name: "0.5"}):
+        assert os.environ[name] == "0.5"
     assert name not in os.environ
 
 
 def test_apply_environment_restores_a_previous_value():
-    name = "GF_BICGSTAB_ATOL"
-    os.environ[name] = "1e-7"
+    name = "GF_CSR_MEMORY_SAFETY"
+    os.environ[name] = "0.7"
     try:
-        with apply_environment({name: "1e-9"}):
-            assert os.environ[name] == "1e-9"
-        assert os.environ[name] == "1e-7"
+        with apply_environment({name: "0.5"}):
+            assert os.environ[name] == "0.5"
+        assert os.environ[name] == "0.7"
     finally:
         os.environ.pop(name, None)
 
 
 def test_an_already_set_variable_wins_when_override_is_false():
     """The rule impurityModel_interface already follows: a shell value beats a file value."""
-    name = "GF_BICGSTAB_ATOL"
-    os.environ[name] = "1e-7"
+    name = "GF_CSR_MEMORY_SAFETY"
+    os.environ[name] = "0.7"
     try:
-        with apply_environment({name: "1e-9"}, override=False) as skipped:
-            assert os.environ[name] == "1e-7"
+        with apply_environment({name: "0.5"}, override=False) as skipped:
+            assert os.environ[name] == "0.7"
             assert skipped == [name]
     finally:
         os.environ.pop(name, None)
@@ -104,11 +104,11 @@ def test_an_already_set_variable_wins_when_override_is_false():
 
 def test_the_knob_is_read_lazily_so_setting_it_late_still_works():
     """Why writing os.environ is enough, and no import ordering has to be arranged."""
-    knob = config.KNOBS["GF_BICGSTAB_ATOL"]
+    knob = config.KNOBS["GF_CSR_MEMORY_SAFETY"]
     os.environ.pop(knob.name, None)
     assert knob.get() == knob.default
-    with apply_environment({knob.name: "1e-9"}):
-        assert knob.get() == pytest.approx(1e-9)
+    with apply_environment({knob.name: "0.5"}):
+        assert knob.get() == pytest.approx(0.5)
     assert knob.get() == knob.default
 
 

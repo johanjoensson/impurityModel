@@ -346,7 +346,7 @@ result = calc_selfenergy(
     model,
     Meshes(iw=1j * matsubara_nu, w=real_mesh, delta=0.1),
     BasisOptions(nominal_occ={0: 8}, tau=0.002),
-    SolverOptions(gf_method="lanczos"),
+    SolverOptions(),
     comm=MPI.COMM_WORLD,
 )
 ```

@@ -199,7 +199,6 @@ def as_calc_selfenergy_args(inputs):
     solver = SolverOptions(
         dense_cutoff=inputs["dense_cutoff"],
         sparse_green=inputs["sparse_green"],
-        gf_method=inputs.get("gf_method", "lanczos"),
     )
     return dict(
         model=model,

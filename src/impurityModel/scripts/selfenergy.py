@@ -206,43 +206,9 @@ def apply_solver_overrides(solver, args):
     """``solver`` (an archive's recorded options) with the Green's-function flags that were passed.
 
     A flag left at its ``None`` default keeps the recorded value. The result is validated as a
-    whole, so a flag that contradicts the record (``--gf-method lanczos`` on a run recorded with
-    outer admission) is refused rather than half applied.
+    whole, so a flag that contradicts the record is refused rather than half applied.
     """
     overrides = given_options(args, "solver")
-    # A flag that switches the settle off, or leaves the block-Lanczos kernel, makes the archive's settle fields
-    # meaningless: clear the ones the command line did not set itself, or the options refuse the combination.
-    leaves_lanczos = overrides.get("gf_method", solver.gf_method) != "lanczos"
-    if overrides.get("gf_settle") is False or leaves_lanczos:
-        for name in ("gf_settle_ratio", "gf_settle_retry") + (("gf_settle",) if leaves_lanczos else ()):
-            overrides.setdefault(name, None)
-    # Pruned growth replaces the settle: the recorded settle fields the command line did not set are cleared.
-    if overrides.get("gf_prune_tol"):
-        for name in ("gf_settle_ratio", "gf_settle_retry"):
-            overrides.setdefault(name, None)
-        if solver.gf_settle is True:
-            overrides.setdefault("gf_settle", None)
-    # ...and a settle option the command line sets replaces a recorded pruning, the other way round.
-    if overrides.get("gf_prune_tol") is None and (
-        overrides.get("gf_settle") is True
-        or overrides.get("gf_settle_ratio") is not None
-        or overrides.get("gf_settle_retry") is True
-    ):
-        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol", "gf_growth_quiet", "gf_prune_rule"):
-            overrides.setdefault(name, None)
-    # ...and so does leaving the block-Lanczos kernel for the pruning and refinement fields.
-    if leaves_lanczos:
-        for name in (
-            "gf_prune_tol",
-            "gf_first_shell_tol",
-            "gf_growth_tol",
-            "gf_growth_quiet",
-            "gf_prune_rule",
-            "gf_refine_rounds",
-            "gf_refine_tol",
-            "gf_refine_swap",
-        ):
-            overrides.setdefault(name, None)
     return replace(solver, **overrides) if overrides else solver
 
 

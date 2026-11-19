@@ -391,6 +391,48 @@ def build_semicircle_siam(n_b=7, U=0.5, D=0.5, v=0.5, gs_keep=None):
     return ground_state(aim, keep=gs_keep)
 
 
+def build_two_channel_siam(n_b=5, U=0.5, eps_a=-0.5, eps_b=0.3, chain_a=None, chain_b=None, gs_keep=None):
+    """A half-filled spin-up impurity ``a`` beside an EMPTY spin-down impurity ``b``, coupled by ``U n_a n_b`` only.
+
+    Each chain is ``(levels, hops)``: site energies and hops (``hops[0]`` is the impurity link). Chain ``a`` sits
+    around the Fermi level and is half filled; chain ``b`` lies above it, so the ground state is the product of
+    ``a``'s Fermi sea and the empty ``b`` side: exact, a single determinant, with a causal reference. ``G_bb`` then
+    has its poles on chain ``b``'s modes, shifted by the response of ``a`` to the added electron, and the
+    determinants that carry such a pole (one ``b``-chain site, spread over ``a``'s configurations) are not seeds.
+    ``n_b`` is odd (half filling of ``a``).
+    """
+    if n_b % 2 == 0:
+        raise ValueError("n_b must be odd: the half-filled sector needs (1 + n_b) / 2 up electrons")
+    if chain_a is None:
+        chain_a = (list(np.linspace(0.6, -0.6, n_b)), [0.5] * n_b)
+    if chain_b is None:
+        chain_b = ([0.7, 0.6] + [0.8] * (n_b - 2), [0.3] + [0.25] * (n_b - 1))
+    n_imp = 2
+    h1 = np.zeros((n_imp * (1 + n_b),) * 2)
+    for m, eps, (levels, hops) in ((0, eps_a, chain_a), (1, eps_b, chain_b)):
+        h1[m, m] = eps
+        sites = [n_imp + m * n_b + k for k in range(n_b)]
+        for k, b in enumerate(sites):
+            h1[b, b] = levels[k]
+        h1[m, sites[0]] = h1[sites[0], m] = hops[0]
+        for k in range(n_b - 1):
+            h1[sites[k], sites[k + 1]] = h1[sites[k + 1], sites[k]] = hops[k + 1]
+    interaction = hubbard_terms(U)
+    n_up0 = (1 + n_b) // 2
+    aim = AIM(
+        operator_from(h1, interaction),
+        n_b,
+        {"U": U, "eps_a": eps_a, "eps_b": eps_b},
+        h1=h1,
+        interaction=interaction,
+        n_imp=n_imp,
+        n_electrons=n_up0,
+        sector0=(n_up0, 0),
+        eps_d=eps_a,
+    )
+    return ground_state(aim, keep=gs_keep)
+
+
 # --- exact changes of the bath basis -------------------------------------------------------------------
 #
 # A unitary change of the bath orbitals (impurity fixed, spin preserved) leaves H unitarily equivalent and

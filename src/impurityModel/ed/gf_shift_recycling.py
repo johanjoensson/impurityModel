@@ -381,9 +381,6 @@ class ShiftedGalerkin:
     cuts, diverged steps) is a matvec the caller makes.
     """
 
-    #: Set by the recurrence when its ``score_gate`` declined the scoring tail (the accumulator was dropped).
-    skipped = False
-
     def __init__(self, zs, n_rows=0):
         self.zs = np.asarray(zs, dtype=complex).reshape(-1)
         self.n_z = len(self.zs)

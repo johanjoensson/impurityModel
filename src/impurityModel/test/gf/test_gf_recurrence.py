@@ -1,7 +1,7 @@
 """``gf_recurrence``: the Green's-function recurrence on a discovered-key matrix, against the ManyBodyState
 kernel (``block_Green_sparse``) and the exact resolvent on the 14-orbital chain of the support-freeze tests.
 
-Pinned: the continued fraction equals the sparse kernel's at every cap, with the settle, and with importance
+Pinned: the continued fraction equals the sparse kernel's at every cap, with a cutoff, and with importance
 pruning (where the sparse kernel bans and this loop does not, so only the unpruned-equivalent limit is compared);
 the retained count equals the sparse kernel's where the rule is the same; two runs agree bit for bit; the result
 is the same at every rank count.
@@ -25,7 +25,6 @@ block_Green_discovered = functools.partial(_block_Green_discovered, matrix_mode=
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
     for name in (
-        "GF_SUPPORT_TRACE",
         "GF_SUPPORT_FREEZE",
         "APPLY_ROW_CHUNKS",
     ):
@@ -41,7 +40,7 @@ def _both(comm, **kw):
 @pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize("cap", [10**9, 2500, 900])
 def test_the_continued_fraction_equals_the_sparse_kernels(comm, cap):
-    (a0, b0, r0, i0), (a1, b1, r1, i1) = _both(comm, cap=cap, support_settle=False)
+    (a0, b0, r0, i0), (a1, b1, r1, i1) = _both(comm, cap=cap)
     np.testing.assert_allclose(_g((a1, b1, r1, i1)), _g((a0, b0, r0, i0)), atol=1e-9)
     assert i1["retained_size"] == i0["retained_size"]
     assert i1["cap_hit"] == i0["cap_hit"]
@@ -50,28 +49,27 @@ def test_the_continued_fraction_equals_the_sparse_kernels(comm, cap):
 
 @pytest.mark.parametrize("comm", COMMS)
 def test_uncapped_it_is_the_exact_resolvent(comm):
-    _s, (a1, b1, r1, i1) = _both(comm, cap=10**9, support_settle=False)
+    _s, (a1, b1, r1, i1) = _both(comm, cap=10**9)
     np.testing.assert_allclose(_g((a1, b1, r1, i1)), _exact_sector_g(seed=3), atol=1e-6)
 
 
 @pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize("swm", [1e-3, 1e-4])
-def test_a_settled_unit_is_no_farther_from_the_exact_g_than_the_sparse_kernels(comm, swm):
+def test_a_grown_unit_is_no_farther_from_the_exact_g_than_the_sparse_kernels(comm, swm):
     """At ``slaterWeightMin > 0`` this loop cuts only the frontier rows (the array kernel's semantics), where the
     sparse kernel also cuts the ``P`` rows and the next block, so the two differ by the cut amounts -- measured
     here against the exact resolvent, where this loop is the closer one."""
-    sparse, matrix = _both(comm, slater_min=swm, settle_ratio=1.0)
+    sparse, matrix = _both(comm, slater_min=swm)
     exact = _exact_sector_g(seed=3)
     err_sparse = abs(_g(sparse) - exact).max()
     err_matrix = abs(_g(matrix) - exact).max()
     assert err_matrix <= 1.5 * err_sparse + 1e-9
-    assert matrix[3]["support_frozen"] and sparse[3]["support_frozen"]
 
 
 @pytest.mark.parametrize("comm", COMMS)
 def test_two_runs_agree_bit_for_bit(comm):
-    one = run_chain(comm, kernel=block_Green_discovered, cap=2500, support_settle=False)
-    two = run_chain(comm, kernel=block_Green_discovered, cap=2500, support_settle=False)
+    one = run_chain(comm, kernel=block_Green_discovered, cap=2500)
+    two = run_chain(comm, kernel=block_Green_discovered, cap=2500)
     assert np.array_equal(one[0], two[0]) and np.array_equal(one[1], two[1])
 
 
@@ -96,7 +94,7 @@ def test_importance_pruning_without_the_ban_admits_at_least_what_the_banned_rule
 
 @pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize("mode", ["retained", "none"])
-@pytest.mark.parametrize("kw", [{"cap": 2500}, {"cap": 10**9}, {"cap": 10**9, "slater_min": 1e-3, "settle_ratio": 1.0}])
+@pytest.mark.parametrize("kw", [{"cap": 2500}, {"cap": 10**9}, {"cap": 10**9, "slater_min": 1e-3}])
 def test_every_matvec_mode_gives_the_same_green_function(comm, mode, kw):
     """The three modes differ in how ``H q`` is formed, not in what it is: the matrix over every discovered key,
     the operator applied to the block (with the ``P H P`` matrix built at the freeze), or the operator applied
@@ -106,7 +104,7 @@ def test_every_matvec_mode_gives_the_same_green_function(comm, mode, kw):
     np.testing.assert_allclose(_g(got), _g(ref), atol=1e-7)
     assert got[3]["engine"] == mode and ref[3]["engine"] == "discovered"
     assert got[3]["retained_size"] == ref[3]["retained_size"]
-    assert got[3]["cap_hit"] == ref[3]["cap_hit"] and got[3]["support_frozen"] == ref[3]["support_frozen"]
+    assert got[3]["cap_hit"] == ref[3]["cap_hit"]
     assert got[3]["matrix"] is None
 
 
@@ -116,14 +114,12 @@ def test_block_green_sparse_runs_the_recurrence_on_a_matrix(comm, monkeypatch):
     consumer of the frontier rows), and ``set_gf_switches(matrix_mode=...)`` forces one."""
     from impurityModel.test.support.gf_switches import set_gf_switches
 
-    routed = run_chain(comm, cap=2500, support_settle=False)
+    routed = run_chain(comm, cap=2500)
     assert routed[3]["engine"] == "retained"
-    direct = run_chain(
-        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode="retained"), cap=2500, support_settle=False
-    )
+    direct = run_chain(comm, kernel=functools.partial(_block_Green_discovered, matrix_mode="retained"), cap=2500)
     assert np.array_equal(routed[0], direct[0]) and np.array_equal(routed[1], direct[1])
     set_gf_switches(monkeypatch, matrix_mode="discovered")
-    assert run_chain(comm, cap=2500, support_settle=False)[3]["engine"] == "discovered"
+    assert run_chain(comm, cap=2500)[3]["engine"] == "discovered"
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -268,14 +264,12 @@ def test_auto_prices_retained_and_the_freeze_falls_back_to_matrix_free_when_p_do
     from impurityModel.ed.gf_recurrence import _ApplyEngine
 
     monkeypatch.setattr(_ApplyEngine, "_fits_now", lambda self: False)
-    auto = run_chain(comm, kernel=_block_Green_discovered, cap=2500, support_settle=False)
-    forced = run_chain(
-        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode="none"), cap=2500, support_settle=False
-    )
+    auto = run_chain(comm, kernel=_block_Green_discovered, cap=2500)
+    forced = run_chain(comm, kernel=functools.partial(_block_Green_discovered, matrix_mode="none"), cap=2500)
     assert auto[3]["engine"] == "none" and forced[3]["engine"] == "none"
     np.testing.assert_allclose(_g(auto), _g(forced), atol=1e-9)
     monkeypatch.undo()
-    fits = run_chain(comm, kernel=_block_Green_discovered, cap=2500, support_settle=False)
+    fits = run_chain(comm, kernel=_block_Green_discovered, cap=2500)
     assert fits[3]["engine"] == "retained"
     np.testing.assert_allclose(_g(fits), _g(forced), atol=1e-7)
 
@@ -302,7 +296,7 @@ def test_a_frozen_unreorthogonalized_run_that_cannot_converge_ends_exhausted(com
 
     monkeypatch.setattr(gf_recurrence, "_make_gf_convergence_monitor", never)
     alphas, betas, r, info = run_chain(
-        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode=mode), cap=2500, support_settle=False
+        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode=mode), cap=2500
     )
     assert info["cap_hit"], "premise: the support is frozen by the cap"
     assert info["status"] == "exhausted"
@@ -323,7 +317,7 @@ def test_a_plateau_verdict_reaches_info_status_in_every_matvec_mode(comm, mode, 
 
     monkeypatch.setattr(gf_recurrence, "_make_gf_convergence_monitor", _plateau_monitor_factory)
     alphas, betas, r, info = run_chain(
-        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode=mode), cap=2500, support_settle=False
+        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode=mode), cap=2500
     )
     assert info["status"] == "plateau"
 
@@ -339,3 +333,27 @@ def _plateau_monitor_factory(delta, slater_weight_min, eval_meshes=None):
     conv.plateau_hit = hit
     conv.arm_plateau = lambda: None
     return conv, flag, 1e-9, [None]
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_cap_far_above_the_unit_does_not_price_the_matrix_out(comm):
+    """The harness's 1e9 cap priced the discovered matrix at 4.7e12 B, so a pruned unit with room silently ran
+    ``retained`` and never refined. The price is the cap or ``GROWTH_PRICE_FACTOR`` times the starting basis."""
+    from impurityModel.ed.gf_recurrence import GROWTH_PRICE_FACTOR, choose_matrix_mode
+    from impurityModel.test.basis.test_sparse_matrix_build import _basis
+    from impurityModel.test.support.gf_chain_fixtures import N_ORB, chain_operator, chain_seeds
+
+    basis = _basis(sorted({d for s in chain_seeds() for d in s}), comm, n_orb=N_ORB)
+    op = chain_operator()
+    report = {}
+    assert choose_matrix_mode(basis, op, 3000, 2, 10**12, report) == "discovered"
+    huge = {}
+    budget = 10**12
+    assert choose_matrix_mode(basis, op, 10**9, 2, budget, huge) == "discovered"
+    assert huge["need_discovered"] < 1e-3 * budget
+    # The price is the starting basis times the factor when that is below the cap, and the cap when it is lower.
+    n_ranks = comm.size if comm is not None else 1
+    assert huge["n_p_local"] == max(len(basis.local_basis), int(GROWTH_PRICE_FACTOR * basis.size / n_ranks))
+    assert report["n_p_local"] == max(
+        len(basis.local_basis), int(min(3000, GROWTH_PRICE_FACTOR * basis.size) / n_ranks)
+    )

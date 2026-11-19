@@ -6,7 +6,6 @@ pulling in any many-body machinery.
 
 import math
 import re
-import warnings
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 
@@ -123,17 +122,11 @@ class BasisOptions:
             raise ValueError(f"cost_budget must be positive (or None to disable it), got {self.cost_budget}")
 
 
-#: The Green's-function support options a run uses when the options leave them unset (``gf_method="lanczos"``):
+#: The Green's-function support options a run uses when the options leave them unset (always):
 #: importance-pruned growth at this tolerance and this many swap-refinement rounds (a unit the cap does not bind is
 #: not refined). ``0`` switches either off. An unset option is an absent archive attribute and reads back as unset, so a replay uses these defaults.
 DEFAULT_GF_PRUNE_TOL = 1e-3
 DEFAULT_GF_REFINE_ROUNDS = 3
-#: The quiet window of pruned growth (``gf_growth_quiet``) a run uses when the option is unset and pruning is on:
-#: the growth pass ends after this many consecutive blocks that admitted no determinant. ``None``: off. Measured on a
-#: metal-like unit: 474 -> 48 growth blocks at the same support (window 16); 64 keeps the NiO supports that trickle.
-DEFAULT_GF_GROWTH_QUIET = 64
-#: The admission rule of pruned growth (``gf_prune_rule``) a run uses when the option is unset.
-DEFAULT_GF_PRUNE_RULE = "amplitude"
 
 
 @dataclass(frozen=True)
@@ -146,28 +139,15 @@ class SolverOptions:
         Use a dense eigensolver below this matrix size.
     sparse_green : bool
         Whether the Green's function uses the sparse block-Lanczos path.
-    gf_method : {"lanczos", "bicgstab"}
-        Green's-function kernel. See :func:`impurityModel.ed.greens_function.get_Greens_function`.
-    gf_admission : {"all", "outer"} or None
-        Basis-growth policy of the per-frequency ``"bicgstab"`` kernel: ``"all"`` admits everything
-        the solver produces, ``"outer"`` admits only determinants whose residual scores above
-        ``gf_admit_tol`` (:mod:`impurityModel.ed.gf_admission`), solving on a frozen basis between
-        rounds, and records a measured error bound. ``None`` (default) is ``"all"``. ``"outer"`` needs
-        ``gf_method="bicgstab"``.
-    gf_admit_tol : float or None
-        Admission threshold of ``gf_admission="outer"``, relative to the seed norm (amplitude
-        scorer). ``None`` takes 1e-4; tighter admits more and is
-        more accurate, and the error bound reports what was left out.
     gf_tol : float or None
         Convergence tolerance of the block-Lanczos Green's function (relative change of ``G``
         between checks) on every evaluation axis. ``None`` (default):
-        ``max(slaterWeightMin**2, 1e-9)``. ``gf_method="lanczos"`` only.
+        ``max(slaterWeightMin**2, 1e-9)``.
     gf_real_tol : float or None
         The same tolerance on the real-frequency axis only; ``None`` (default):
         the ``gf_tol`` value. A looser real-axis tolerance shortens the recurrence without
         touching the Matsubara accuracy. In RSPt the real-axis self-energy still feeds the next
         bath fit, so loosen it moderately (e.g. ``1e-6``) rather than drop it.
-        ``gf_method="lanczos"`` only.
     gf_min_weight : float or None
         Drop thermal states whose normalised Boltzmann weight is below this from the Green's
         function, the self-energy and its moments (whole degenerate manifolds only; the ground
@@ -176,66 +156,24 @@ class SolverOptions:
         a full set of Green's-function work units whatever its weight. The ground-state report and
         the returned ``thermal_rho`` / ``rhos`` keep the whole ensemble: they describe the thermal
         state itself, not the subset the Green's function was built from.
-    gf_settle : bool or None
-        Whether a sparse block-Lanczos Green's-function unit may stop admitting new determinants once its
-        frontier has fallen below the cutoff-scaled threshold (the support settle,
-        :class:`impurityModel.ed.gf_primitives.FreezeRule`) and carry on as the exact recurrence on what it
-        has. ``None`` (default) is on. It drops the determinants whose next-block amplitude stayed at or below
-        ``gf_settle_ratio x slater_weight_min``; switching it off keeps every unit growing until it closes or hits
-        a cap, which is far slower on a unit
-        whose support trickles. ``gf_method="lanczos"`` only.
-    gf_settle_ratio : float or None
-        The settle threshold as a **multiple of** ``slater_weight_min`` (not a fraction of the seed norm, unlike
-        ``gf_admit_tol``): a unit settles when, over 16 blocks, the largest amplitude the normalised next block
-        carries on a determinant reached for the first time stays at or below ``ratio x slater_weight_min`` and
-        is not growing. ``1`` settles when every excluded determinant would have been pruned from the next
-        block anyway, larger settles sooner, ``0`` is closure only (no new determinant at all). ``None``
-        (default): 3. Needs the settle on; ``gf_method="lanczos"`` only.
-    gf_settle_retry : bool or None
-        If the real-axis self-energy fails the causality check and the support settle can plausibly be blamed (the
-        block has settled units, none held by the cap or the memory guard, and they did not already run closure-only),
-        solve those units again once with the closure-only recurrence (``gf_settle_ratio = 0``) and judge the new
-        ``G``. The attribution is printed either way; the retry never falls back to "settle off". ``None`` (default)
-        is **off**: the closure-only re-solve can take as long as an unsettled Green's function (hours on a large
-        unit). Needs the settle on; ``gf_method="lanczos"`` only.
     gf_prune_tol : float or None
         Importance-pruned growth of the sparse block-Lanczos Green's function: a step admits a new determinant only
         if its largest amplitude on the normalised step block exceeds this (the ``mass`` prune rule reads it as a
         fraction of the step's frontier weight instead), so a capped unit reaches a greater H-depth where the
         amplitude is. A deferred determinant is not banned: it re-enters when a stronger path reaches it. ``None``
-        (default): :data:`DEFAULT_GF_PRUNE_TOL` (1e-3) for ``gf_method="lanczos"``, or off when a settle option
-        is set; ``0``: off. Exclusive with the support settle: it switches the settle off, and ``gf_settle=True``,
-        ``gf_settle_ratio`` and ``gf_settle_retry`` are refused with an explicit value.
+        (default): :data:`DEFAULT_GF_PRUNE_TOL` (1e-3); ``0``: off (the unit then
+        grows until it closes or hits the determinant cap).
     gf_first_shell_tol : float or None
         With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
         moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``:
         0 by default. Needs ``gf_prune_tol``.
-    gf_growth_tol : float or None
-        With pruned growth: the relative-change tolerance the growth pass converges to (looser than the full
-        ``gf_tol``). The restart from the seeds on the final support, which pruning always needs, then converges
-        ``G`` to the full tolerance, so a larger value ends the matrix-free growth earlier and the support it
-        finds is the one that earlier tolerance saw. ``None`` (default): the growth converges fully. In ``(0, 1)``.
-    gf_growth_quiet : int or None
-        With pruned growth: end the growth pass once this many consecutive blocks admitted no determinant, then
-        run the usual restart from the seeds on the support found. The support is complete in practice long before
-        the Green's function converges on a metal-like unit, and every further growth block costs a full operator
-        application. A heuristic: a determinant that would clear the cut after a longer gap is lost, so a window
-        shorter than the longest gap between admissions trims the support. ``>= 1``; ``0``: off; ``None``
-        (default): :data:`DEFAULT_GF_GROWTH_QUIET` (64) while pruning is on. Not with ``gf_prune_tol = 0``.
-    gf_prune_rule : {"amplitude", "accumulated"} or None
-        With pruned growth: when a frontier determinant is admitted. ``"amplitude"``: one block's amplitude
-        squared clears ``gf_prune_tol**2``. ``"accumulated"``: the amplitudes squared summed over the blocks that
-        reach it do, so a determinant reached many times below the cut still enters, and the support is found
-        earlier in the growth (which the quiet window exploits). ``None`` (default): :data:`DEFAULT_GF_PRUNE_RULE`.
-        Not with ``gf_prune_tol = 0``; ``gf_method="lanczos"`` only.
     gf_refine_rounds : int or None
         Swap refinement of a unit the determinant cap froze: up to this many rounds of scoring the retained and the
         discovered determinants on the discovered matrix and swapping the least important retained for the most
         important discovered ones at a fixed cap, then one recurrence on the final support. ``None`` (default):
-        :data:`DEFAULT_GF_REFINE_ROUNDS` (3) for ``gf_method="lanczos"``; ``0``: off.
+        :data:`DEFAULT_GF_REFINE_ROUNDS` (3); ``0``: off.
         A unit the cap does not bind, one the memory guard froze, and a complex Hamiltonian are left alone. Needs
         the discovered matrix (more memory than the retained one) and costs minutes per capped unit.
-        ``gf_method="lanczos"`` only.
     gf_refine_tol : float or None
         Stop refining when the estimated remaining first-order gain (the summed Epstein-Nesbet scores of the swap
         set) is below this fraction of the largest ``|G|`` on the scoring shifts. ``None``: 1e-3. Needs
@@ -254,22 +192,13 @@ class SolverOptions:
 
     dense_cutoff: int = config.DEFAULT_DENSE_CUTOFF
     sparse_green: bool = True
-    gf_method: str = "lanczos"
     sigma_method: str = "dyson"
-    gf_admission: Optional[str] = None
-    gf_admit_tol: Optional[float] = None
     gf_tol: Optional[float] = None
     gf_real_tol: Optional[float] = None
     gf_min_weight: Optional[float] = None
     sigma_causality_tol: Optional[float] = None
-    gf_settle: Optional[bool] = None
-    gf_settle_ratio: Optional[float] = None
-    gf_settle_retry: Optional[bool] = None
     gf_prune_tol: Optional[float] = None
     gf_first_shell_tol: Optional[float] = None
-    gf_growth_tol: Optional[float] = None
-    gf_growth_quiet: Optional[int] = None
-    gf_prune_rule: Optional[str] = None
     gf_refine_rounds: Optional[int] = None
     gf_refine_tol: Optional[float] = None
     gf_refine_swap: Optional[float] = None
@@ -277,61 +206,22 @@ class SolverOptions:
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
         # combination is refused here rather than silently ignored two layers down.
-        if self.gf_method not in config.GF_METHODS:
-            raise ValueError(
-                f"Unknown gf_method {self.gf_method!r}; expected one of {', '.join(map(repr, config.GF_METHODS))}"
-            )
-        if self.gf_admission is not None and self.gf_admission not in config.GF_ADMISSIONS:
-            raise ValueError(
-                f"gf_admission {self.gf_admission!r}: expected one of {', '.join(map(repr, config.GF_ADMISSIONS))}"
-            )
-        if self.gf_admit_tol is not None and not self.gf_admit_tol > 0.0:
-            raise ValueError(f"gf_admit_tol must be positive (got {self.gf_admit_tol!r}); omit it for the default")
-        if self.gf_admission == "outer" and self.gf_method != "bicgstab":
-            raise ValueError(
-                f"gf_admission='outer' is the basis-growth policy of the per-frequency kernel and needs "
-                f"gf_method='bicgstab' (got {self.gf_method!r})"
-            )
-        if self.gf_admit_tol is not None and self.gf_admission != "outer":
-            raise ValueError("gf_admit_tol only applies to gf_admission='outer' (it is set, but the policy is not)")
         for name in ("gf_tol", "gf_real_tol"):
             value = getattr(self, name)
             if value is None:
                 continue
             if not 0.0 < value < 1.0:
                 raise ValueError(f"{name} must lie in (0, 1) (got {value!r}); omit it for the default")
-            if self.gf_method != "lanczos":
-                raise ValueError(
-                    f"{name} is the block-Lanczos convergence tolerance; gf_method={self.gf_method!r} ignores it"
-                )
         if self.gf_min_weight is not None and not 0.0 < self.gf_min_weight < 1.0:
             raise ValueError(
                 f"gf_min_weight must lie in (0, 1) (got {self.gf_min_weight!r}); omit it to keep every state"
             )
         if self.sigma_causality_tol is not None and not self.sigma_causality_tol >= 0.0:
             raise ValueError(f"sigma_causality_tol must be >= 0 (got {self.sigma_causality_tol!r})")
-        for name in ("gf_settle", "gf_settle_ratio", "gf_settle_retry"):
-            if getattr(self, name) is not None and self.gf_method != "lanczos":
-                raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
-        if self.gf_settle_ratio is not None and 0.0 < self.gf_settle_ratio < 1.0:
-            warnings.warn(
-                f"gf_settle_ratio {self.gf_settle_ratio:g} is a MULTIPLE of slater_min, not a fraction: values below 1 "
-                "are nearly closure-only and make the Green's function several times slower",
-                stacklevel=2,
-            )
-        if self.gf_settle_ratio is not None and not (
-            math.isfinite(self.gf_settle_ratio) and self.gf_settle_ratio >= 0.0
-        ):
-            raise ValueError(
-                f"gf_settle_ratio must be >= 0 (got {self.gf_settle_ratio!r}); 0 is closure only, "
-                "omit it for the default"
-            )
-        for name in ("gf_prune_tol", "gf_first_shell_tol", "gf_growth_tol"):
+        for name in ("gf_prune_tol", "gf_first_shell_tol"):
             value = getattr(self, name)
             if value is None or (value == 0.0 and name == "gf_prune_tol"):
                 continue  # 0 is the explicit off
-            if self.gf_method != "lanczos":
-                raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
             if not (math.isfinite(value) and value >= 0.0):
                 raise ValueError(f"{name} must be non-negative and finite (got {value!r}); omit it for the default")
         if self.gf_refine_rounds is not None and (
@@ -340,98 +230,33 @@ class SolverOptions:
             or self.gf_refine_rounds < 0
         ):
             raise ValueError(f"gf_refine_rounds must be a non-negative integer (got {self.gf_refine_rounds!r})")
-        refining = bool(self.gf_refine_rounds)
         if (self.gf_refine_tol is not None or self.gf_refine_swap is not None) and self.gf_refine_rounds == 0:
             raise ValueError("gf_refine_tol / gf_refine_swap need gf_refine_rounds > 0 (refinement is switched off)")
-        if refining and self.gf_method != "lanczos":
-            raise ValueError("gf_refine_rounds applies only to gf_method='lanczos'; remove it or switch gf_method")
         if self.gf_refine_tol is not None and not (
             math.isfinite(self.gf_refine_tol) and 0.0 < self.gf_refine_tol < 1.0
         ):
             raise ValueError(f"gf_refine_tol must be in (0, 1) (got {self.gf_refine_tol!r})")
         if self.gf_refine_swap is not None and not (0.0 < self.gf_refine_swap <= 0.5):
             raise ValueError(f"gf_refine_swap must be in (0, 0.5] (got {self.gf_refine_swap!r})")
-        if self.gf_growth_tol is not None and not 0.0 < self.gf_growth_tol < 1.0:
-            raise ValueError(f"gf_growth_tol must lie in (0, 1) (got {self.gf_growth_tol!r}); omit it for off")
-        if self.gf_growth_quiet is not None and (
-            isinstance(self.gf_growth_quiet, bool)
-            or not isinstance(self.gf_growth_quiet, int)
-            or self.gf_growth_quiet < 0
-        ):
-            raise ValueError(f"gf_growth_quiet must be a non-negative integer (got {self.gf_growth_quiet!r})")
-        if self.gf_growth_quiet and self.gf_method != "lanczos":
-            raise ValueError("gf_growth_quiet applies only to gf_method='lanczos'; remove it or switch gf_method")
-        if self.gf_growth_quiet and self.gf_prune_tol == 0.0:
-            raise ValueError("gf_growth_quiet ends the growth of pruned growth; pruning is switched off")
-        if self.gf_prune_rule is not None:
-            if self.gf_prune_rule not in config.GF_PRUNE_RULES:
-                raise ValueError(
-                    f"gf_prune_rule {self.gf_prune_rule!r}: expected one of "
-                    f"{', '.join(map(repr, config.GF_PRUNE_RULES))}"
-                )
-            if self.gf_method != "lanczos":
-                raise ValueError("gf_prune_rule applies only to gf_method='lanczos'; remove it or switch gf_method")
-            if self.gf_prune_tol == 0.0:
-                raise ValueError("gf_prune_rule is the admission rule of pruned growth; pruning is switched off")
-        if self.gf_growth_tol is not None and self.gf_prune_tol == 0.0:
-            raise ValueError("gf_growth_tol shortens the growth of pruned growth; pruning is switched off")
         if self.gf_first_shell_tol is not None and self.gf_prune_tol == 0.0:
             raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; pruning is switched off")
-        if self.gf_prune_tol and (self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry):
-            raise ValueError(
-                "gf_prune_tol is exclusive with the support settle (gf_settle, gf_settle_ratio, gf_settle_retry): "
-                "pruned growth switches the settle off; remove the settle options"
-            )
-        if self.gf_settle_retry and self.gf_settle is False:
-            raise ValueError(
-                "gf_settle_retry on contradicts gf_settle off: the retry re-solves settled units; remove one of the two"
-            )
-        if self.gf_settle_ratio is not None and self.gf_settle is False:
-            raise ValueError(
-                "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off); "
-                "remove one of the two"
-            )
-
-    @property
-    def resolved_gf_growth_quiet(self):
-        """The quiet window a run uses; ``None`` is off (``0``, no pruning, or an unset option while
-        :data:`DEFAULT_GF_GROWTH_QUIET` is ``None``)."""
-        if not self.resolved_gf_prune_tol:
-            return None
-        if self.gf_growth_quiet is not None:
-            return self.gf_growth_quiet or None
-        return DEFAULT_GF_GROWTH_QUIET
-
-    @property
-    def resolved_gf_prune_rule(self):
-        """The admission rule a run uses (``"amplitude"`` or ``"accumulated"``); ``None`` without pruning or
-        while the option is unset (the kernel then uses its module default, which the replay rig may switch)."""
-        if not self.resolved_gf_prune_tol or self.gf_prune_rule is None:
-            return None
-        return self.gf_prune_rule
 
     @property
     def resolved_gf_prune_tol(self):
         """The pruned-growth tolerance a run uses; ``None`` leaves pruning off.
 
-        An unset ``gf_prune_tol`` is :data:`DEFAULT_GF_PRUNE_TOL` for ``gf_method="lanczos"``, except where the
-        options ask for the support settle (``gf_settle`` on, ``gf_settle_ratio``, ``gf_settle_retry``), which
-        pruning replaces: the explicit request wins and pruning is off (``0.0``).
+        An unset ``gf_prune_tol`` is :data:`DEFAULT_GF_PRUNE_TOL`.
         """
-        if self.gf_method != "lanczos":
-            return self.gf_prune_tol
         if self.gf_prune_tol is not None:
             return self.gf_prune_tol
-        if self.gf_settle is True or self.gf_settle_ratio is not None or self.gf_settle_retry:
-            return 0.0
         return DEFAULT_GF_PRUNE_TOL
 
     @property
     def resolved_gf_refine_rounds(self):
-        """The refinement rounds a run uses: :data:`DEFAULT_GF_REFINE_ROUNDS` when unset for ``"lanczos"``, else 0."""
+        """The refinement rounds a run uses: :data:`DEFAULT_GF_REFINE_ROUNDS` when unset."""
         if self.gf_refine_rounds is not None:
             return self.gf_refine_rounds
-        return DEFAULT_GF_REFINE_ROUNDS if self.gf_method == "lanczos" else 0
+        return DEFAULT_GF_REFINE_ROUNDS
 
 
 @dataclass(frozen=True)
@@ -581,36 +406,6 @@ OPTION_SPECS = (
     _spec("interaction_merges_blocks", "basis", "bool", "Interaction merges GF blocks"),
     _spec("dense_cutoff", "solver", "int", "Dense matrix size cutoff", token="dense_cutoff"),
     _spec("sparse_green", "solver", "bool", "Sparse Green's function", flags={"dense_green": False}),
-    _spec("gf_method", "solver", "enum", "Green's function method", token="gf_method", choices=config.GF_METHODS),
-    _spec(
-        "gf_admission",
-        "solver",
-        "enum",
-        "GF basis admission",
-        token="gf_admission",
-        choices=config.GF_ADMISSIONS,
-        auto_none="auto",
-        unset="auto",
-    ),
-    _spec(
-        "gf_admit_tol",
-        "solver",
-        "float",
-        "GF admission threshold",
-        token="gf_admit_tol",
-        unset="default",
-        positive=True,
-    ),
-    _spec("gf_settle", "solver", "onoff", "GF support settle", token="gf_settle", unset="on"),
-    _spec(
-        "gf_settle_ratio",
-        "solver",
-        "float",
-        "GF settle ratio (x slater_min)",
-        token="gf_settle_ratio",
-        unset="default",
-    ),
-    _spec("gf_settle_retry", "solver", "onoff", "GF settle retry", token="gf_settle_retry", unset="off"),
     _spec(
         "gf_prune_tol",
         "solver",
@@ -626,18 +421,6 @@ OPTION_SPECS = (
         "GF first-shell threshold",
         token="gf_first_shell_tol",
         unset="whole shell",
-    ),
-    _spec("gf_growth_tol", "solver", "float", "GF growth tolerance", token="gf_growth_tol", unset="full"),
-    _spec("gf_growth_quiet", "solver", "int", "GF growth quiet window", token="gf_growth_quiet", unset="default"),
-    _spec(
-        "gf_prune_rule",
-        "solver",
-        "enum",
-        "GF pruned growth admission rule",
-        token="gf_prune_rule",
-        choices=config.GF_PRUNE_RULES,
-        auto_none="auto",
-        unset="auto",
     ),
     _spec(
         "gf_refine_rounds",
@@ -730,62 +513,16 @@ _CLI = {
     "chain_restrict": ("--no-chain-restrict", "Disable chain occupation restrictions."),
     "dense_cutoff": ("--dense-cutoff", "Use a dense eigensolver below this size."),
     "sparse_green": ("--no-sparse-green", "Disable the sparse block-Lanczos path."),
-    "gf_method": (
-        "--gf-method",
-        "Green's-function kernel (default: lanczos, or the one recorded in the archive with --from-archive).",
-    ),
-    "gf_admission": (
-        "--gf-admission",
-        "Basis-growth policy of the per-frequency kernel (needs --gf-method bicgstab): 'all' admits "
-        "everything the solver produces, 'outer' admits only what scores above --gf-admit-tol and "
-        "reports a measured error bound. Default: 'all' (or the archive's, with --from-archive).",
-    ),
-    "gf_admit_tol": (
-        "--gf-admit-tol",
-        "Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
-    ),
-    "gf_settle": (
-        "--gf-settle",
-        "Support settle of the block-Lanczos Green's function: 'on' (the default) lets a unit stop admitting "
-        "determinants once its frontier is below --gf-settle-ratio x slater_weight_min, 'off' keeps every "
-        "unit growing until it closes or hits a cap.",
-    ),
-    "gf_settle_ratio": (
-        "--gf-settle-ratio",
-        "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: 3, or the archive's).",
-    ),
-    "gf_settle_retry": (
-        "--gf-settle-retry",
-        "On a real-axis self-energy causality failure the support settle can plausibly explain, solve the settled "
-        "units again once closure-only ('on') or not ('off', the default: the re-solve can take as long as an "
-        "unsettled Green's function). The attribution is printed either way.",
-    ),
     "gf_prune_tol": (
         "--gf-prune-tol",
         "Importance-pruned growth of the block-Lanczos Green's function: a step admits a new determinant only if "
         "its largest amplitude on the normalised step block exceeds this. Deferred determinants are not banned. "
-        "Replaces the support settle (default: 1e-3; 0 is off; an archive that did not set it replays with the default).",
+        "(default: 1e-3; 0 is off; an archive that did not set it replays with the default).",
     ),
     "gf_first_shell_tol": (
         "--gf-first-shell-tol",
         "With pruning on: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
         "the self-energy tail stays exact only then).",
-    ),
-    "gf_growth_tol": (
-        "--gf-growth-tol",
-        "With pruning on: stop the matrix-free growth pass at this looser relative-change tolerance in (0, 1); "
-        "the restart on the final support converges G fully (default: the growth converges fully).",
-    ),
-    "gf_growth_quiet": (
-        "--gf-growth-quiet",
-        "With pruning on: end the growth pass after this many consecutive blocks that admitted no determinant, then "
-        "restart on the support found (0 is off; default: see the option docs; a longer gap between admissions "
-        "than the window trims the support).",
-    ),
-    "gf_prune_rule": (
-        "--gf-prune-rule",
-        "With pruning on: when a frontier determinant is admitted. 'amplitude': one block's amplitude clears the "
-        "cut; 'accumulated': its weight summed over the blocks that reach it does (default: see the option docs).",
     ),
     "gf_refine_rounds": (
         "--gf-refine-rounds",

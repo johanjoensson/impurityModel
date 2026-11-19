@@ -44,7 +44,7 @@ def _basis(cap):
     )
 
 
-def _run(cap, gf_method="lanczos"):
+def _run(cap):
     get_Greens_function(
         matsubara_mesh=None,
         omega_mesh=np.linspace(-3.0, 3.0, 21),
@@ -62,7 +62,6 @@ def _run(cap, gf_method="lanczos"):
         occ_cutoff=1e-9,
         slaterWeightMin=0.0,
         sparse=True,
-        gf_method=gf_method,
     )
 
 
@@ -156,18 +155,6 @@ def test_a_binding_cap_is_marked_so_the_number_is_not_mistaken_for_a_demand(caps
     assert any("frozen at the cap" in row for row in rows), rows
     assert all(size <= 4 for size in _sizes(rows).values())
     assert summary is not None and "lower bound" in summary
-
-
-def test_the_two_drivers_report_under_different_headings(capsys):
-    """The block-Lanczos excited basis and the per-frequency rebuilt solve basis are different
-    constructions. Reporting both as "excited basis size" would invite comparing them."""
-    _run(NON_BINDING_CAP, gf_method="lanczos")
-    lanczos = capsys.readouterr().out
-    _run(NON_BINDING_CAP, gf_method="bicgstab")
-    bicgstab = capsys.readouterr().out
-    assert "Maximum excited basis size per unit:" in lanczos
-    assert "Maximum per-frequency solve basis size per unit:" in bicgstab
-    assert "Maximum excited basis size per unit:" not in bicgstab
 
 
 def test_a_unit_with_no_transition_weight_reports_zero_rather_than_nothing(capsys):

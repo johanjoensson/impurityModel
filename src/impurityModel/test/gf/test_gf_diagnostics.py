@@ -335,79 +335,12 @@ def test_the_self_energy_report_carries_the_ground_state_row():
     assert "check_ground_state_truncation(truncation, convergence)" in src
 
 
-def test_bicgstab_convergence_check():
-    """check_bicgstab_convergence itself has no direct test elsewhere -- only the driver's
-    own stats dict (test_gf_bicgstab_driver.py) is checked, never that the dict's
-    gmres_points/n_unconverged/seed_overflow fields actually drive this function's verdict
-    the way get_Greens_function's caller wires them (greens_function.py:728-735:
-    n_gmres_fallbacks=agg["gmres_points"])."""
-    ok = gd.check_bicgstab_convergence(n_points=20, n_unconverged=0, max_rel_residual=1e-9, atol=1e-8)
-    assert ok.severity == gd.Severity.OK
-    assert not ok.needs_more_iterations
-    assert "20" in ok.message and "GMRES" not in ok.message
-
-    rescued = gd.check_bicgstab_convergence(
-        n_points=20, n_unconverged=0, max_rel_residual=1e-9, atol=1e-8, n_gmres_fallbacks=3
-    )
-    assert rescued.severity == gd.Severity.OK  # rescued points still converged in the end
-    assert "3" in rescued.message and "GMRES" in rescued.message
-
-    warn = gd.check_bicgstab_convergence(n_points=20, n_unconverged=2, max_rel_residual=5e-6, atol=1e-8)
-    assert warn.severity == gd.Severity.WARN
-    assert warn.needs_more_iterations
-    assert "2 of 20" in warn.message
-    assert warn.value == 5e-6 and warn.threshold == 1e-8
-
-    overflow = gd.check_bicgstab_convergence(
-        n_points=5, n_unconverged=0, max_rel_residual=1e-9, atol=1e-8, seed_overflow=True
-    )
-    assert overflow.severity == gd.Severity.WARN  # converged, but the seed itself overflowed the cap
-    assert "truncation_threshold" in overflow.message
-
-
-def _record(unit, side, states, retained, settled=True, over=0.7, seed=0.22, block=0, ratio=3.0):
-    return gd.UnitRecord(
-        unit=unit, block=block, side=side, states=tuple(states), e_minus_e0=tuple(0.0 for _ in states),
-        boltzmann=tuple(1 / 3 for _ in states), seed_weight=seed, retained=retained, settled=settled,
-        settle_step=32 if settled else None, n_blocks=48, frontier_over_swm=over if settled else float("nan"),
-        ratio=ratio if settled else float("nan"), window=16 if settled else 0, cap_hit=False, memory_frozen=False,
+def test_a_unit_record_names_the_unit_in_words():
+    record = gd.UnitRecord(
+        unit=4, block=0, side="removal", states=(1,), e_minus_e0=(0.0,), boltzmann=(1 / 3,), seed_weight=0.22,
+        retained=1_014, n_blocks=48, cap_hit=False, memory_frozen=False,
     )  # fmt: skip
-
-
-def test_the_settled_row_names_the_smallest_and_largest_unit_and_is_never_a_warning():
-    records = [
-        _record(3, "removal", [0], 24_456, over=0.2),
-        _record(4, "removal", [1], 1_014, over=0.7, seed=0.22),
-        _record(5, "removal", [2], 24_224, over=0.4),
-        _record(6, "addition", [0], 13, settled=False),
-    ]
-    d = gd.check_support_settled(records, 1e-10)
-    assert d.name == "support_settled" and d.severity is gd.Severity.OK
-    assert d.value == pytest.approx(0.7) and d.threshold == 3.0
-    for text in ("3 of 4 units", "1,014 (unit 4, removal, state 1", "24,456 (unit 3", "seed 0.22 e",
-                 "gf_settle_ratio 3", "0.7 x slater_min over 16 blocks", "weight 0.33"):  # fmt: skip
-        assert text in d.message, text
-    assert not d.needs_more_iterations and not d.needs_more_states
-    assert "no unit settled" in gd.check_support_settled([_record(1, "removal", [0], 5, settled=False)], 1e-8).message
-
-
-def test_the_max_basis_table_note_agrees_with_the_row():
-    from impurityModel.ed import greens_function as gfm
-
-    records = [
-        _record(3, "removal", [0], 24_456),
-        _record(4, "removal", [1], 1_014),
-        _record(6, "addition", [0], 13, settled=False),
-    ]
-    notes = gfm._settle_notes(records)
-    assert set(notes) == {(0, 1)}, "only the pair with settled units is annotated"
-    assert "2 of 2 units settled" in notes[(0, 1)] and "smallest settled 1,014: unit 4" in notes[(0, 1)]
-    assert "settled row is unit 3" in notes[(0, 1)] and "closed" not in notes[(0, 1)]
-    closed = gfm._settle_notes([_record(3, "removal", [0], 24_456), _record(4, "removal", [1], 1_014, over=0.0)])
-    assert "2 of 2 units settled, 1 of them closed" in closed[(0, 1)]
-    assert "1,014" in gd.check_support_settled(records, 1e-10).message
-    rows = gfm._unit_basis_rows([[0, 1]], {(0, 1): (24_456, False), (0, 0): (13, False)}, notes)
-    assert rows[1][3] == notes[(0, 1)] and rows[0][3] == ""
+    assert record.describe() == "unit 4, removal, state 1 (E-E0 0.000, weight 0.33, seed 0.22 e)"
 
 
 def test_a_blocks_convergence_numbers_come_from_its_unconverged_units():

@@ -554,8 +554,8 @@ def test_auto_gf_colors_are_cut_until_every_unit_affords_the_ground_state_suppor
             cap_policy=me.CapPolicy(gs=10**12, gf=None, from_memory=True),
         )
 
-    assert gu._colors_affording(fake(whole), weights, 1, None, "lanczos") == 1
-    assert gu._colors_affording(fake(1), weights, 1, None, "lanczos") == min(comm.size, len(weights))
+    assert gu._colors_affording(fake(whole), weights, 1, None) == 1
+    assert gu._colors_affording(fake(1), weights, 1, None) == min(comm.size, len(weights))
 
 
 def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):
