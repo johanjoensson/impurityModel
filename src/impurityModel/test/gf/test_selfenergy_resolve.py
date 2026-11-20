@@ -58,7 +58,11 @@ def _run(refine, prune, units, comm=None, calls=None):
     def solve_gf(blocks, tight):
         calls.append((blocks, tight))
         n = len(blocks)
-        return None, (["new"] * n if comm_rank0 else None), (_Report([_unit(k) for k in range(n)]) if comm_rank0 else None)
+        return (
+            None,
+            (["new"] * n if comm_rank0 else None),
+            (_Report([_unit(k) for k in range(n)]) if comm_rank0 else None),
+        )
 
     out = selfenergy._resolve_failing_blocks(
         solve_gf, refine, prune, solved, judge=_judge(), comm=comm, report=Reporter(0, 0)
