@@ -946,6 +946,7 @@ def block_Green_discovered(
     matrix_mode="auto",
     prune_tol=None,
     first_shell_tol=None,
+    pt2_tol=None,
     refine=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
@@ -962,9 +963,15 @@ def block_Green_discovered(
     cut and its first-shell cut. ``refine`` (a :class:`~impurityModel.ed.gf_refinement.RefineSpec` with ``rounds > 0``)
     swaps the least important retained determinants of a unit the cap froze for the most important discovered ones
     (``"discovered"`` mode only; the record lands in ``cap_info["refine"]``). The determinant cap is
-    ``basis.truncation_threshold``; ``prune_tol > 0`` turns on importance pruning.
+    ``basis.truncation_threshold``; ``prune_tol > 0`` turns on importance pruning; ``pt2_tol`` (``None``: off) is the second-order rule that
+    replaces it (``doc/plans/pt2_growth_rule.md``).
     A frontier row is admitted when one block's amplitude squared clears ``eta^2``.
     """
+    pt2_tol = 0.0 if pt2_tol is None else float(pt2_tol)
+    if pt2_tol > 0.0:  # arguments only: replicated, and refused before any collective
+        if prune_tol is not None and float(prune_tol) > 0.0:
+            raise ValueError(f"pt2_tol replaces the amplitude rule prune_tol; got both ({pt2_tol!r}, {prune_tol!r})")
+        raise NotImplementedError("the second-order growth rule (pt2_tol) is plumbed but not implemented yet")
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
     n = len(psi_arr)

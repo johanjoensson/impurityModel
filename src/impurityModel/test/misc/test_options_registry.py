@@ -106,3 +106,46 @@ def test_an_integer_option_refuses_a_non_integer_with_a_value_error(word, text):
 def test_a_mixed_valence_dict_is_refused_by_the_archive_record():
     with pytest.raises(ValueError, match="mixed_valence"):
         options_to_attrs(BasisOptions(nominal_occ={2: 8}, mixed_valence={2: 1}), SolverOptions())
+
+
+def test_gf_pt2_tol_is_a_registered_solver_option_read_from_tokens_and_attrs():
+    _, solver, _ = parse_option_tokens(["gf_pt2_tol", "1e-3"])
+    assert solver == {"gf_pt2_tol": 1e-3}
+    opts = SolverOptions(**solver)
+    assert opts.gf_pt2_tol == 1e-3
+    assert opts.resolved_gf_prune_tol == 0.0  # the second-order rule replaces the amplitude rule
+    assert SolverOptions().gf_pt2_tol is None and SolverOptions().resolved_gf_prune_tol == 1e-3
+    _, solver_kwargs = options_from_attrs(options_to_attrs(BasisOptions(nominal_occ={0: 8}), opts))
+    assert SolverOptions(**solver_kwargs) == opts
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"gf_pt2_tol": 1e-3, "gf_prune_tol": 1e-3}, "replaces the amplitude rule"),
+        ({"gf_pt2_tol": 1e-3, "gf_prune_tol": 0.0}, "replaces the amplitude rule"),
+        ({"gf_pt2_tol": 1e-3, "gf_first_shell_tol": 0.0}, "first shell is kept whole"),
+        ({"gf_pt2_tol": 0.0}, r"must lie in \(0, 1\)"),
+        ({"gf_pt2_tol": 1.0}, r"must lie in \(0, 1\)"),
+        ({"gf_pt2_tol": float("nan")}, r"must lie in \(0, 1\)"),
+    ],
+)
+def test_gf_pt2_tol_refuses_a_contradiction_by_name(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_growth_recurrence_refuses_pt2_tol_until_the_rule_exists():
+    import numpy as np
+
+    from impurityModel.ed.gf_recurrence import block_Green_discovered
+
+    class _Basis:
+        comm = None
+        truncation_threshold = np.inf
+
+        def __len__(self):
+            return 1
+
+    with pytest.raises(ValueError, match="replaces the amplitude rule"):
+        block_Green_discovered(None, [object()], _Basis(), 0.1, prune_tol=1e-3, pt2_tol=1e-3)

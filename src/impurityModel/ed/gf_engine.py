@@ -47,6 +47,7 @@ def _block_green_group(
     unit_label=None,
     prune_tol=None,
     first_shell_tol=None,
+    pt2_tol=None,
     refine=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
@@ -141,6 +142,7 @@ def _block_green_group(
             memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            pt2_tol=pt2_tol,
             refine=refine,
         )
         if info is not None and cap_info.get("status") is not None:
@@ -303,6 +305,7 @@ def lanczos_unit_kernel(
     unit_ids=None,
     prune_tol=None,
     first_shell_tol=None,
+    pt2_tol=None,
     refine=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
@@ -341,6 +344,8 @@ def lanczos_unit_kernel(
         trace note; ``None``: the position.
     prune_tol, first_shell_tol : float, optional
         Importance-pruned growth (:func:`gf_solvers.block_Green_sparse`); ``None``: the knobs.
+    pt2_tol : float, optional
+        The second-order growth rule (replaces ``prune_tol``); ``None``: off.
     """
 
     def kernel(split_basis, u, seeds):
@@ -365,6 +370,7 @@ def lanczos_unit_kernel(
             unit_label=u if unit_ids is None else unit_ids[u],
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            pt2_tol=pt2_tol,
             refine=refine_for(unit) if refine_for is not None else refine,
         )
         if print_size and unit_rank0:

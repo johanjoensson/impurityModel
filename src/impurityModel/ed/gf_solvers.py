@@ -528,6 +528,7 @@ def block_Green_sparse(
     memory_policy="tighten",
     prune_tol=None,
     first_shell_tol=None,
+    pt2_tol=None,
     refine=None,
 ):
     """
@@ -552,7 +553,7 @@ def block_Green_sparse(
     ManyBodyState block-Lanczos kernel (``BlockLanczos.block_lanczos``), which this GF no longer runs.
 
     ``prune_tol`` / ``first_shell_tol``: importance-pruned growth (see :func:`gf_recurrence.block_Green_discovered`);
-    ``None``: no pruning, first shell kept whole.
+    ``None``: no pruning, first shell kept whole. ``pt2_tol``: the second-order growth rule (replaces ``prune_tol``).
 
     ``refine``: a :class:`gf_refinement.RefineSpec` with ``rounds > 0`` swap-refines a unit the cap froze; it needs
     the discovered matrix, so ``"auto"`` keeps that mode when it fits.
@@ -582,6 +583,7 @@ def block_Green_sparse(
         matrix_mode=_MATRIX_MODE,
         prune_tol=prune_tol,
         first_shell_tol=first_shell_tol,
+        pt2_tol=pt2_tol,
         refine=refine,
     )
 

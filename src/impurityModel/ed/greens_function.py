@@ -538,6 +538,7 @@ def _gf_solve_units(
     subset=None,
     gf_prune_tol=None,
     gf_first_shell_tol=None,
+    gf_pt2_tol=None,
     gf_refine=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
@@ -595,6 +596,7 @@ def _gf_solve_units(
         refine_for=refine_for,
         prune_tol=gf_prune_tol,
         first_shell_tol=gf_first_shell_tol,
+        pt2_tol=gf_pt2_tol,
         refine=gf_refine,
         unit_ids=None if subset is None else list(subset),
     )
@@ -841,6 +843,7 @@ def get_Greens_function(
     ensemble_es=None,
     gf_prune_tol: Optional[float] = None,
     gf_first_shell_tol: Optional[float] = None,
+    gf_pt2_tol: Optional[float] = None,
     gf_refine=None,
 ):
     """
@@ -858,7 +861,8 @@ def get_Greens_function(
     ``gf_refine`` (a :class:`gf_refinement.RefineSpec`, ``None``: off) swap-refines the units the cap froze.
     ``gf_prune_tol`` / ``gf_first_shell_tol`` set the importance-pruned growth of the sparse units (``None``: the
     default, :data:`DEFAULT_GF_PRUNE_TOL`, first shell whole; ``0`` switches pruning off, so the unit grows until it
-    closes or hits the determinant cap; see :class:`SolverOptions`)..
+    closes or hits the determinant cap; see :class:`SolverOptions`). ``gf_pt2_tol`` (``None``: off) is the second-order
+    growth rule, which replaces the amplitude rule (:class:`SolverOptions`).
 
     ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
     only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
@@ -875,7 +879,7 @@ def get_Greens_function(
     ``len(block)`` wide.
     """
     if gf_prune_tol is None:
-        gf_prune_tol = DEFAULT_GF_PRUNE_TOL
+        gf_prune_tol = 0.0 if gf_pt2_tol else DEFAULT_GF_PRUNE_TOL  # the second-order rule replaces the amplitude rule
     plan = _gf_lanczos_plan(
         psis,
         es,
@@ -906,6 +910,7 @@ def get_Greens_function(
         verbose_extra,
         gf_prune_tol=gf_prune_tol,
         gf_first_shell_tol=gf_first_shell_tol,
+        gf_pt2_tol=gf_pt2_tol,
         gf_refine=gf_refine,
     )
     return _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted)

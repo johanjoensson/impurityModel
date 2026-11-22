@@ -582,6 +582,7 @@ def calc_selfenergy(
     sparse_green = solver.sparse_green
     gf_prune_tol = solver.resolved_gf_prune_tol
     gf_first_shell_tol = solver.gf_first_shell_tol
+    gf_pt2_tol = solver.gf_pt2_tol
     gf_refine_rounds = solver.resolved_gf_refine_rounds
     gf_refine = RefineSpec(
         rounds=gf_refine_rounds,
@@ -801,6 +802,7 @@ def calc_selfenergy(
                 sparse=sparse_green,
                 gf_prune_tol=gf_prune_tol,
                 gf_first_shell_tol=gf_first_shell_tol,
+                gf_pt2_tol=gf_pt2_tol,
                 gf_refine=refine,
                 gf_tol=gf_tol,
                 gf_real_tol=gf_real_tol,
@@ -828,7 +830,7 @@ def calc_selfenergy(
         family_matsubara, family_realaxis, gf_report = _resolve_failing_blocks(
             solve_gf,
             gf_refine,
-            gf_prune_tol,
+            gf_prune_tol or gf_pt2_tol,  # either growth rule counts as pruned growth
             (family_matsubara, family_realaxis, gf_report),
             judge=dict(
                 iw=iw,

@@ -163,6 +163,13 @@ class SolverOptions:
         amplitude is. A deferred determinant is not banned: it re-enters when a stronger path reaches it. ``None``
         (default): :data:`DEFAULT_GF_PRUNE_TOL` (1e-3); ``0``: off (the unit then
         grows until it closes or hits the determinant cap).
+    gf_pt2_tol : float or None
+        Second-order importance rule for the pruned growth, **replacing** the amplitude rule: a frontier determinant is
+        scored by its coherent second-order weight, maximised over the unit's real-frequency window, and the growth
+        admits the highest scores until the score mass left out is at most this fraction (one collective tail cut).
+        A budget on the relative error of the unit's ``G``. In ``(0, 1)``; ``None`` (default): the amplitude rule.
+        Cannot be combined with ``gf_prune_tol`` (either value) or ``gf_first_shell_tol``: the first shell is kept
+        whole. See ``doc/plans/pt2_growth_rule.md``.
     gf_first_shell_tol : float or None
         With ``gf_prune_tol``: the same cut for the seeds' first H-shell, which is kept whole by default (the
         moments of G through ``H^2``, hence the self-energy tail, stay exact). ``>= 0``; ``None``:
@@ -199,6 +206,7 @@ class SolverOptions:
     sigma_causality_tol: Optional[float] = None
     gf_prune_tol: Optional[float] = None
     gf_first_shell_tol: Optional[float] = None
+    gf_pt2_tol: Optional[float] = None
     gf_refine_rounds: Optional[int] = None
     gf_refine_tol: Optional[float] = None
     gf_refine_swap: Optional[float] = None
@@ -238,6 +246,18 @@ class SolverOptions:
             raise ValueError(f"gf_refine_tol must be in (0, 1) (got {self.gf_refine_tol!r})")
         if self.gf_refine_swap is not None and not (0.0 < self.gf_refine_swap <= 0.5):
             raise ValueError(f"gf_refine_swap must be in (0, 0.5] (got {self.gf_refine_swap!r})")
+        if self.gf_pt2_tol is not None:
+            if not (math.isfinite(self.gf_pt2_tol) and 0.0 < self.gf_pt2_tol < 1.0):
+                raise ValueError(
+                    f"gf_pt2_tol must lie in (0, 1) (got {self.gf_pt2_tol!r}); omit it for the amplitude rule"
+                )
+            if self.gf_prune_tol is not None:
+                raise ValueError(
+                    "gf_pt2_tol replaces the amplitude rule gf_prune_tol; set one of them "
+                    f"(got gf_pt2_tol={self.gf_pt2_tol!r}, gf_prune_tol={self.gf_prune_tol!r})"
+                )
+            if self.gf_first_shell_tol is not None:
+                raise ValueError("gf_first_shell_tol does not apply to gf_pt2_tol: the first shell is kept whole")
         if self.gf_first_shell_tol is not None and self.gf_prune_tol == 0.0:
             raise ValueError("gf_first_shell_tol relaxes the first shell of pruned growth; pruning is switched off")
 
@@ -245,8 +265,11 @@ class SolverOptions:
     def resolved_gf_prune_tol(self):
         """The pruned-growth tolerance a run uses; ``None`` leaves pruning off.
 
-        An unset ``gf_prune_tol`` is :data:`DEFAULT_GF_PRUNE_TOL`.
+        An unset ``gf_prune_tol`` is :data:`DEFAULT_GF_PRUNE_TOL`, except under ``gf_pt2_tol``, whose rule replaces
+        the amplitude rule (``0.0``: the amplitude rule is off).
         """
+        if self.gf_pt2_tol is not None:
+            return 0.0
         if self.gf_prune_tol is not None:
             return self.gf_prune_tol
         return DEFAULT_GF_PRUNE_TOL
@@ -423,6 +446,14 @@ OPTION_SPECS = (
         unset="whole shell",
     ),
     _spec(
+        "gf_pt2_tol",
+        "solver",
+        "float",
+        "GF second-order growth tolerance",
+        token="gf_pt2_tol",
+        unset="off (amplitude rule)",
+    ),
+    _spec(
         "gf_refine_rounds",
         "solver",
         "int",
@@ -523,6 +554,12 @@ _CLI = {
         "--gf-first-shell-tol",
         "With pruning on: prune the seeds' first H-shell by this cut too (0 keeps it whole, the default; "
         "the self-energy tail stays exact only then).",
+    ),
+    "gf_pt2_tol": (
+        "--gf-pt2-tol",
+        "Second-order growth rule replacing the amplitude rule: admit the determinants with the highest coherent "
+        "second-order weight until the weight left out is at most this fraction (a budget on the relative error "
+        "of G). In (0, 1); not with --gf-prune-tol or --gf-first-shell-tol (default: off).",
     ),
     "gf_refine_rounds": (
         "--gf-refine-rounds",

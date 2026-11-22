@@ -1026,6 +1026,17 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_pt2_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "Second-order growth rule, replacing the amplitude rule gf_prune_tol: a frontier determinant is "
+                "scored by its coherent second-order weight over the unit's real-frequency window, and the growth "
+                "admits the highest scores until the score mass left out is at most this fraction (a budget on the "
+                "relative error of the unit's G). Absent: the amplitude rule. Not with gf_prune_tol or "
+                "gf_first_shell_tol.",
+                minimum=0.0,
+            ),
+            Key(
                 "gf_refine_rounds",
                 Kind.COUNT,
                 None,
