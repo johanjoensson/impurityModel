@@ -87,7 +87,7 @@ def test_a_failing_block_is_named_with_its_worst_point_and_the_cap_when_units_fr
 def test_without_frozen_units_the_advice_is_the_pruning_tolerance(fake_sigma):
     text = _call([_unit(0, 0)])
     assert (
-        "lower gf_prune_tol or slater_min" in text
+        "lower gf_prune_tol (gf_pt2_tol, when the second-order rule is on) or slater_min" in text
         and "Likely cause" in text
         and "froze at the determinant cap" not in text
     )
