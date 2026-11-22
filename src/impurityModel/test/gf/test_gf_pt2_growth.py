@@ -190,3 +190,27 @@ def test_the_capped_unit_books_the_rows_the_cap_let_in_not_the_candidates():
     rec = info["pt2"]
     n_seed = len({k for seed in _seeds() for k in seed.keys()})
     assert len(_keys(info)) == 12 and rec["first_shell_rows"] == 5 and rec["rule_rows"] == 12 - n_seed - 5
+
+
+def test_the_default_cadence_scores_late_and_may_leave_rows_a_dense_closure_has(monkeypatch):
+    """Documented limit, pinned: scoring every 4th block admits the first rows after the Krylov space is largely
+    used, so on this 18-determinant model the deferred rows carry no coherent weight and the unit ends 14 rows /
+    1.6e-3 in G (every block: the closure). tau bounds the error only at the finest cadence."""
+    _g1, tight = _run(1e-12)
+    monkeypatch.setattr(gf_growth_score, "PT2_SCORE_EVERY", 4)
+    g4, info = _run(1e-12)
+    assert len(_keys(info)) < len(_keys(tight))
+    assert abs(g4 - _g1).max() / abs(_g1).max() < 5e-3
+
+
+def test_a_finished_growth_releases_the_accumulator(monkeypatch):
+    made = []
+    real = GrowthScorer.__init__
+
+    def spy(self, *a, **k):
+        real(self, *a, **k)
+        made.append(self)
+
+    monkeypatch.setattr(GrowthScorer, "__init__", spy)
+    _run(1e-3)
+    assert made and all(sc.acc is None and sc._stash is None and not sc._alphas for sc in made)

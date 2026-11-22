@@ -194,6 +194,15 @@ class GrowthScorer:
         last = 0 if self.last_admission is None else self.last_admission
         return self.blocks - last >= max(PT2_QUIET_BLOCKS, last)
 
+    def release(self):
+        """Drop the accumulator, the stash and the coefficient lists (GBs on a large unit); the counters the report reads
+        stay."""
+        self.acc = None
+        self._stash = None
+        self._alphas = []
+        self._betas = []
+        self._beta_prev = None
+
     def note_decision(self, n_admitted):
         """Book a scored decision (replicated counts)."""
         self.scored += 1

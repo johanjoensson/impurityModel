@@ -787,6 +787,7 @@ def block_lanczos_discovered(
         betas[it, :k, :n_curr] = beta
         if support.scorer is not None:
             if d.frozen:  # the support froze in this step (the cap, the memory guard): nothing is scored any more
+                support.scorer.release()
                 support.scorer = None
             else:
                 support.scorer.fold(alpha, beta)
@@ -1169,7 +1170,9 @@ def block_Green_discovered(
         engine=engine,
     )
     growth_status = status
-    support.scorer = None  # the accumulator is GBs on a large unit: the restart and the refinement never read it
+    if pt2_scorer is not None:
+        pt2_scorer.release()  # the accumulator is GBs on a large unit: the restart and the refinement never read it
+    support.scorer = None
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
     passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}

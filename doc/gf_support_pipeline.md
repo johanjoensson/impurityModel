@@ -172,6 +172,14 @@ where a resonant minority of frontier rows exists (SMO, NiO) and neutral in rows
 frontier is resonant in the window), at a higher cost per row: on FCC Ni, 1.4-2.3x the wall at equal rows. See
 `doc/plans/pt2_growth_rule.md` for the measurements.
 
+Cadence limit. Rows are scored from the accumulator the recurrence has built, not from a re-solve on the grown `P`;
+scoring every 4th block therefore admits the first rows late, and on a model small enough for the Krylov space to be
+used up in a few blocks the deferred rows carry no coherent weight (SIAM-6: 14 of 18 rows, relative error 1.6e-3 at
+`gf_pt2_tol` -> 0; every block gives the closure). The budget bounds the error only at the finest cadence.
+Two further limits: the unit's scoring accumulator (|K| x 31 x width complex) is freed when growth ends; and with
+`gf_pt2_tol` set the spectra and off-diagonal drivers hand the unit's frequency mesh to the convergence monitor as
+well, so its stopping rule differs from a run without the option.
+
 Limits. A unit with no real-frequency evaluation mesh (Matsubara only), or one whose matrix mode is not `discovered`,
 falls back to the amplitude rule with `gf_prune_tol = 1e-3` and says so in its log. The re-solve of a failing block
 (`gf_prune_tol`) does not run under `gf_pt2_tol`. Refinement acts on cap-frozen units only. Unmeasured: complex

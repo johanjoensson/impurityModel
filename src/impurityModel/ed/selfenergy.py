@@ -296,8 +296,8 @@ def _attribute_block(block_i, block, failures, units, poles, delta, tol):
         lines.append(
             "  Likely cause: the determinant sets were cut too coarsely"
             + (" near a weakly coupled bath level" if pole_named else "")
-            + ". What to change: lower gf_prune_tol or slater_min (it can widen the excitation bounds the excited "
-            "bases inherit from the ground state), or raise delta (doc/known_issues.md)."
+            + ". What to change: lower gf_prune_tol (gf_pt2_tol, when the second-order rule is on) or slater_min "
+            "(it can widen the excitation bounds the excited bases inherit from the ground state), or raise delta (doc/known_issues.md)."
         )
     return lines
 
