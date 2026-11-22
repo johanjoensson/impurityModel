@@ -38,6 +38,7 @@ from impurityModel.ed.gf_convergence import (
     _make_gf_convergence_monitor,
     krylov_exhausted,
 )
+from impurityModel.ed.gf_growth_score import GrowthScorer, pt2_mesh
 from impurityModel.ed.gf_primitives import (
     SupportDecisions,
     _distributed_seed_qr,
@@ -73,12 +74,17 @@ class DiscoveredSupport:
     #: longer fit at the freeze continues matrix-free).
     mode_ran = None
 
-    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0):
+    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, pt2=False):
         self.matrix = matrix
         self.decisions = decisions
         self.comm = matrix.comm
-        self.prunes = eta is not None
-        self._eta = float(eta) if self.prunes else 0.0
+        #: The second-order growth rule (``gf_pt2_tol``) decides what is admitted after the first shell: it prunes, and
+        #: it replaces the amplitude cut ``eta``. Its :class:`~impurityModel.ed.gf_growth_score.GrowthScorer` lives
+        #: here for the growth pass only (``None`` before it and after it).
+        self.pt2 = bool(pt2)
+        self.scorer = None
+        self.prunes = eta is not None or self.pt2
+        self._eta = 0.0 if eta is None else float(eta)
         self._eta2 = self._eta**2
         self._shell_tol = float(first_shell_tol)
         self._shell_tol2 = self._shell_tol**2
@@ -380,6 +386,8 @@ class _Admission:
         first_shell = not sup._shell_admitted and int(d.allreduce_sum(len(slots))) > 0
         sup._shell_admitted = sup._shell_admitted or first_shell
         sup._shell_pending = first_shell
+        if sup.pt2 and not first_shell:
+            return self._second_order(keys_of, slots)
         sel = norms2 > (sup._shell_tol2 if first_shell else sup._eta2)
         slots, norms2 = slots[sel], norms2[sel]
         n_new = int(d.allreduce_sum(len(slots)))
@@ -387,6 +395,26 @@ class _Admission:
             d.global_count += n_new
             return slots
         return self._top_and_freeze(keys_of, slots, norms2)
+
+    def _second_order(self, keys_of, slots):
+        """The second-order rule (:mod:`~impurityModel.ed.gf_growth_score`): after the first shell, the frontier rows
+        whose score clears one global tail cut of mass ``tau``; nothing on a block that is not on the scoring cadence.
+        At the cap the candidates are ranked by score. Every collective is unconditional on the replicated cadence
+        (a rank with no frontier rows takes part with empty arrays)."""
+        sup, d = self.support, self.d
+        sc = sup.scorer
+        if not sc.due():
+            return slots[:0]
+        s, mass = sc.scores(slots, sup.matrix.k_diagonal().real[slots])
+        sel = (s > sc.cutoff(s)) & (s > 0.0)
+        sc.note_mass(mass)
+        slots, s = slots[sel], s[sel]
+        n_new = int(d.allreduce_sum(len(slots)))
+        sc.note_decision(n_new)
+        if d.global_count + n_new <= d.cap:
+            d.global_count += n_new
+            return slots
+        return self._top_and_freeze(keys_of, slots, s)
 
     def _top_and_freeze(self, keys_of, slots, norms2):
         """Admit the ``cap - retained`` most important candidates (whole near-tie groups, the boundary group
@@ -433,6 +461,8 @@ class _MatrixEngine:
         if d.frozen:
             return matrix.matvec(block, rows="P", out=self._out.get(matrix.n_p_local, block.shape[1]))
         w_k = matrix.matvec(block, rows="all")
+        if admission.support.scorer is not None:
+            admission.support.scorer.stash(w_k)
         f_slots = np.flatnonzero(matrix.k_to_p_slot() < 0)
         slots = admission.decide(f_slots, w_k[f_slots], matrix.keys_of)
         # The verdict (how many rows were admitted) is replicated, so every rank takes the same branch.
@@ -753,6 +783,11 @@ def block_lanczos_discovered(
                 shifted.step(x, alpha, beta_prev)
             break
         betas[it, :k, :n_curr] = beta
+        if support.scorer is not None:
+            if d.frozen:  # the support froze in this step (the cap, the memory guard): nothing is scored any more
+                support.scorer = None
+            else:
+                support.scorer.fold(alpha, beta)
         diverged, t_norm_max, h_norm_est = divergence_guard(
             spectral_norm(beta), spectral_norm(alpha), it == 0, t_norm_max, h_norm_est
         )
@@ -820,6 +855,7 @@ def start_discovered(
     eta=None,
     first_shell_tol=0.0,
     mode="discovered",
+    pt2=False,
 ):
     """The matrix, the support and the seed block on ``P0 = basis``.
 
@@ -832,7 +868,7 @@ def start_discovered(
     cps = (basis.n_bytes + 7) // 8
     matrix = DistributedSparseMatrix(hop, cps, comm, keep_frontier=(mode == "discovered"))
     decisions = SupportDecisions(comm, cap, int(basis.size), memory_budget=memory_budget, memory_policy=memory_policy)
-    support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol)
+    support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol, pt2=pt2)
     local = list(basis.local_basis)
     if mode == "discovered":
         matrix.grow(local)
@@ -971,7 +1007,6 @@ def block_Green_discovered(
     if pt2_tol > 0.0:  # arguments only: replicated, and refused before any collective
         if prune_tol is not None and float(prune_tol) > 0.0:
             raise ValueError(f"pt2_tol replaces the amplitude rule prune_tol; got both ({pt2_tol!r}, {prune_tol!r})")
-        raise NotImplementedError("the second-order growth rule (pt2_tol) is plumbed but not implemented yet")
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
     n = len(psi_arr)
@@ -1015,9 +1050,29 @@ def block_Green_discovered(
     resolved_reort = False if reort is None else bool(reort)
     if matrix_mode not in ("auto", "discovered", "retained", "none"):
         raise ValueError(f"matrix_mode must be 'auto', 'discovered', 'retained' or 'none', got {matrix_mode!r}")
-    if matrix_mode == "auto":
+    # The second-order rule needs a real-frequency window to score over and the discovered matrix (its frontier rows,
+    # ``H_ff`` and ``H X`` over every K row). A unit that cannot have them grows by the amplitude rule at its
+    # default, said in one line. Every input is replicated, so every rank takes the same branch.
+    pt2_asked = pt2_tol > 0.0
+    pt2_zs, pt2_why = (None, None)
+
+    def _fall_back(why):
+        nonlocal pt2_zs, pt2_why, prune_tol
+        from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
+
+        pt2_zs, pt2_why, prune_tol = None, why, DEFAULT_GF_PRUNE_TOL
+
+    if pt2_asked:
+        pt2_zs, why = pt2_mesh(eval_meshes)
+        if pt2_zs is None:
+            _fall_back(why)
+        elif matrix_mode in ("retained", "none"):
+            _fall_back(f"matrix mode {matrix_mode} was forced")
+
+    def _choose(pt2_on):
         report: dict = {}
-        matrix_mode = choose_matrix_mode(
+        refine_on = refine is not None and refine.rounds > 0
+        mode = choose_matrix_mode(
             basis,
             hOp,
             cap,
@@ -1026,14 +1081,19 @@ def block_Green_discovered(
             report,
             # A pruned unit grows on the discovered-key matrix whether or not it refines: stored growth blocks cost
             # a fraction of matrix-free ones (NiO unit 3 at 6 ranks: 40 s against 287 s of growth).
-            prune_tol > 0.0 or (refine is not None and refine.rounds > 0 and bool(refine.shifts)),
-            # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds.
-            (
-                2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0))
-                if refine is not None and refine.rounds > 0
-                else 0
-            ),
+            pt2_on or prune_tol > 0.0 or (refine is not None and refine.rounds > 0 and bool(refine.shifts)),
+            # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds. The
+            # second-order accumulator holds the mesh over every K row, priced as that many shifts over P rows.
+            (2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0)) if refine_on else 0)
+            + (int(np.ceil(len(pt2_zs) * K_OVER_P_ESTIMATE)) if pt2_on else 0),
         )
+        return mode, report
+
+    if matrix_mode == "auto":
+        matrix_mode, report = _choose(pt2_zs is not None)
+        if pt2_zs is not None and matrix_mode != "discovered":
+            _fall_back("the discovered matrix and the scoring accumulator did not fit")
+            matrix_mode, report = _choose(False)
         if verbose and rank == 0 and report:
             print(
                 f"GF matvec mode {matrix_mode}: {report['n_p_local']:,} local determinants x fan-out "
@@ -1042,6 +1102,12 @@ def block_Green_discovered(
                 f"budgets {format_bytes(report['budget_discovered'])} / {format_bytes(report['budget_retained'])}.",
                 flush=True,
             )
+    if pt2_asked and pt2_zs is None and verbose and rank == 0:
+        print(
+            f"GF second-order growth rule unavailable ({pt2_why}): this unit grows by the amplitude rule "
+            f"gf_prune_tol = {prune_tol:g}",
+            flush=True,
+        )
     matrix, support, q0 = start_discovered(
         hOp,
         basis,
@@ -1052,7 +1118,10 @@ def block_Green_discovered(
         eta=prune_tol if prune_tol > 0.0 else None,
         first_shell_tol=first_shell_tol if prune_tol > 0.0 else 0.0,
         mode=matrix_mode,
+        pt2=pt2_zs is not None,
     )
+    if pt2_zs is not None:
+        support.scorer = GrowthScorer(pt2_zs, pt2_tol, comm)
     engine = (
         None if matrix_mode == "discovered" else lambda m, a: _ApplyEngine(m, a, hOp, basis, matrix_mode == "retained")
     )
@@ -1087,6 +1156,7 @@ def block_Green_discovered(
         reort=resolved_reort,
         engine=engine,
     )
+    support.scorer = None  # the accumulator is GBs on a large unit: the restart and the refinement never read it
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
     passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
@@ -1117,7 +1187,7 @@ def block_Green_discovered(
     # A pruned unit the cap did not freeze has room: its refinement only admits (grow mode); a capped one swaps.
     grow_room = None
     grow_ratio = K_OVER_P_ESTIMATE  # |K|/|P| at the entry to grow mode: global, so the same on every rank
-    if refining and support.prunes and not support.cap_hit:
+    if refining and support.prunes and not support.pt2 and not support.cap_hit:
         # Discovered rows outside P exist only when |K| > |P|; both sizes are global (one Allreduce, every rank).
         sizes = np.array([matrix.n_k_local, matrix.n_alive_local], dtype=np.int64)
         if comm is not None and comm.size > 1:
@@ -1125,6 +1195,13 @@ def block_Green_discovered(
         room = max(cap - int(support.retained_size), 0) if cap < 2**62 else 2**62
         grow_room = int(room) if sizes[0] > sizes[1] and room > 0 else None
         grow_ratio = float(sizes[0]) / max(float(sizes[1]), 1.0)
+
+    if refining and support.pt2 and not support.cap_hit:
+        why = "second-order growth rule: refinement acts on cap-frozen units only"
+        if cap_info is not None:
+            cap_info["refine"] = {"declined": why, "rounds": 0, "swapped": [], "gain": []}
+        if verbose and rank == 0:
+            print(f"GF refinement declined: {why}", flush=True)
 
     def _grow_fits(n_add):
         """Whether admitting ``n_add`` more determinants (global) keeps the discovered matrix and the scoring

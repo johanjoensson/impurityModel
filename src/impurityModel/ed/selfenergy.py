@@ -830,7 +830,7 @@ def calc_selfenergy(
         family_matsubara, family_realaxis, gf_report = _resolve_failing_blocks(
             solve_gf,
             gf_refine,
-            gf_prune_tol or gf_pt2_tol,  # either growth rule counts as pruned growth
+            gf_prune_tol,  # 0 under gf_pt2_tol: the second-order rule has no finer setting to re-solve with
             (family_matsubara, family_realaxis, gf_report),
             judge=dict(
                 iw=iw,

@@ -135,7 +135,7 @@ def test_gf_pt2_tol_refuses_a_contradiction_by_name(kwargs, match):
         SolverOptions(**kwargs)
 
 
-def test_the_growth_recurrence_refuses_pt2_tol_until_the_rule_exists():
+def test_the_growth_recurrence_refuses_both_growth_rules_at_once():
     import numpy as np
 
     from impurityModel.ed.gf_recurrence import block_Green_discovered
