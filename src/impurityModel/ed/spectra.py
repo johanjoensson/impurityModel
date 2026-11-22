@@ -13,6 +13,7 @@ import impurityModel.ed.greens_function as gf
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import intersect_sector_window
 from impurityModel.ed.basis_transcription import comm_support_filter
+from impurityModel.ed.gf_convergence import _gf_eval_meshes
 from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -141,6 +142,7 @@ def simulate_spectra(
     l_valence,
     l_core=None,
     rixs_adaptive_tol=None,
+    gf_pt2_tol=None,
 ):
     """
     Simulate various spectra.
@@ -267,6 +269,7 @@ def simulate_spectra(
             **_shell_windows(l_valence, l_core, imp=(0, 1), val=(1, 0), con=(0, 1)),
             equivalence_groups=correlated_groups,
             unit_report_label=f"inverse photoemission, l={l_valence} (create)",
+            gf_pt2_tol=gf_pt2_tol,
         )
         if rank == 0:
             print("Photoemission Green's function..", flush=True)
@@ -285,6 +288,7 @@ def simulate_spectra(
             **_shell_windows(l_valence, l_core, imp=(1, 0), val=(1, 0), con=(0, 1)),
             equivalence_groups=correlated_groups,
             unit_report_label=f"photoemission, l={l_valence} (annihilate)",
+            gf_pt2_tol=gf_pt2_tol,
         )
         gsPS *= -1
         gs = gsPS + gsIPS
@@ -317,6 +321,7 @@ def simulate_spectra(
             occ_cutoff,
             **_shell_windows(l_valence, l_core, imp=(1, 1), val=(1, 0), con=(0, 1), core_imp=(1, 0)),
             unit_report_label=f"x-ray photoemission, core l={l_core} (annihilate)",
+            gf_pt2_tol=gf_pt2_tol,
         )
         gs *= -1
         if rank == 0:
@@ -352,6 +357,7 @@ def simulate_spectra(
             dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
             dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
             unit_report_label="NIXS",
+            gf_pt2_tol=gf_pt2_tol,
         )
         if rank == 0:
             print("#q-points = {:d}".format(np.shape(gs)[1]))
@@ -390,6 +396,7 @@ def simulate_spectra(
                 occ_cutoff,
                 **dN_XAS,
                 unit_report_label=f"XAS, core l={l_core} (projected operators)",
+                gf_pt2_tol=gf_pt2_tol,
             )
             if rank == 0:
                 print("#projected operators = {:d}".format(np.shape(gs)[1]))
@@ -420,6 +427,7 @@ def simulate_spectra(
                 reduction=reduction,
                 **dN_XAS,
                 unit_report_label=f"XAS, core l={l_core} (Cartesian tensor)",
+                gf_pt2_tol=gf_pt2_tol,
             )
             if rank == 0:
                 print("#Cartesian components = {:d}".format(chi.shape[1]))
@@ -604,6 +612,7 @@ def calc_spectra(
     extra_meshes=None,
     seed_transform=None,
     unit_report_label=None,
+    gf_pt2_tol=None,
     _unit_row_indices=None,
 ):
     """
@@ -659,6 +668,9 @@ def calc_spectra(
         manifold). Must be linear in ``seed`` and collective-safe: it is invoked in the
         identical order on every rank, so it may perform collectives on ``basis.comm``.
         Incompatible with ``equivalence_groups``.
+    gf_pt2_tol : float, optional
+        The second-order growth rule (``SolverOptions.gf_pt2_tol``), scoring over the mesh ``w`` at broadening
+        ``delta``; it replaces the amplitude default. ``None``: the amplitude rule.
     unit_report_label : str, optional
         When given, the completed calculation prints the maximum excited basis size each
         work unit reached -- one line per transition operator -- under a heading naming this
@@ -707,6 +719,7 @@ def calc_spectra(
             equivalence_groups=None,
             extra_meshes=extra_meshes,
             unit_report_label=unit_report_label,
+            gf_pt2_tol=gf_pt2_tol,
             _unit_row_indices=[first_index[label] for label in rep_order],
         )
         reduced_list = reduced if extra_meshes is not None else [reduced]
@@ -779,7 +792,11 @@ def calc_spectra(
         slaterWeightMin=slaterWeightMin,
         solver_verbose=verbose,
         print_size=verbose,
-        prune_tol=DEFAULT_GF_PRUNE_TOL,
+        prune_tol=0.0 if gf_pt2_tol else DEFAULT_GF_PRUNE_TOL,  # the second-order rule replaces the amplitude rule
+        pt2_tol=gf_pt2_tol,
+        eval_meshes_for=(
+            None if not gf_pt2_tol else lambda unit: _gf_eval_meshes(None, w, 0, delta, [es[ei] for ei in unit.chunk])
+        ),
     )
 
     results = gf.run_units_distributed(
@@ -905,6 +922,7 @@ def calc_spectra_tensor(
     dN_con,
     reduction=None,
     unit_report_label=None,
+    gf_pt2_tol=None,
 ):
     r"""One-body spectral tensor over Cartesian transition components (B2b).
 
@@ -998,6 +1016,8 @@ def calc_spectra_tensor(
         dN_con=dN_con,
         extra_restrictions=extra,
         unit_report_label=unit_report_label,
+        gf_pt2_tol=gf_pt2_tol,
+        eval_omega=w,
     )
     if comm is not None and comm.rank != 0:
         return np.empty((0, 0, 0), dtype=complex)

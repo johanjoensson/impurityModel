@@ -294,3 +294,45 @@ def test_the_excited_window_is_printed_once_per_distinct_window(capfd):
     )
     out = capfd.readouterr().out
     assert out.count("Excited restrictions:") == 1, out
+
+
+def test_offdiag_driver_hands_the_second_order_rule_and_its_window_to_the_growth(monkeypatch):
+    """``gf_pt2_tol`` + ``eval_omega`` reach ``block_Green_discovered`` as the rule and a real-frequency mesh, and
+    switch the amplitude default off; without them the driver is unchanged."""
+    from impurityModel.ed import gf_recurrence
+    from impurityModel.ed.greens_function import calc_Greens_function_with_offdiag
+
+    seen = []
+    real = gf_recurrence.block_Green_discovered
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs.get("pt2_tol"), kwargs.get("prune_tol"), kwargs.get("eval_meshes")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gf_recurrence, "block_Green_discovered", spy)
+    omega = np.linspace(-3.0, 3.0, 13)
+    for extra in ({}, {"gf_pt2_tol": 1e-3, "eval_omega": omega}):
+        seen.clear()
+        calc_Greens_function_with_offdiag(
+            HOP,
+            [ManyBodyOperator({((0, "a"),): 1.0}), ManyBodyOperator({((1, "a"),): 1.0})],
+            [ManyBodyState({SlaterDeterminant.from_bytes(GROUND): 1.0})],
+            [0.0],
+            _basis(NON_BINDING_CAP),
+            0.1,
+            occ_cutoff=1e-9,
+            slaterWeightMin=0.0,
+            verbose=False,
+            sparse=True,
+            dN_imp={0: (3, 3)},
+            dN_val={0: (0, 0)},
+            dN_con={0: (0, 0)},
+            **extra,
+        )
+        assert seen
+        pt2, prune, meshes = seen[0]
+        if extra:
+            assert pt2 == 1e-3 and prune == 0.0 and meshes is not None
+            assert np.allclose(np.unique(np.asarray(meshes[0]).real), omega)
+        else:
+            assert not pt2 and prune > 0.0

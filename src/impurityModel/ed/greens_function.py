@@ -989,6 +989,8 @@ def calc_Greens_function_with_offdiag(
     dN_con=None,
     extra_restrictions=None,
     unit_report_label=None,
+    gf_pt2_tol=None,
+    eval_omega=None,
 ):
     r"""
     Return block-Lanczos Green's-function coefficients for the given transition operators.
@@ -1022,6 +1024,12 @@ def calc_Greens_function_with_offdiag(
         Deviation from the real axis (broadening/resolution parameter).
     slaterWeightMin : float
         Restrict the number of product states by looking at ``|amplitudes|^2``.
+    gf_pt2_tol : float, optional
+        The second-order growth rule (see :class:`SolverOptions`); it replaces the amplitude default. It scores over
+        the real-frequency window ``eval_omega`` at broadening ``delta``; without ``eval_omega`` the unit has no
+        window and grows by the amplitude rule.
+    eval_omega : array, optional
+        The real frequencies the caller will evaluate ``G`` at (see ``gf_pt2_tol``).
     unit_report_label : str, optional
         When given, the completed calculation prints the maximum excited basis size its work
         units reached, under a heading naming this spectrum
@@ -1087,7 +1095,13 @@ def calc_Greens_function_with_offdiag(
         slaterWeightMin=slaterWeightMin,
         solver_verbose=verbose,
         print_size=verbose,
-        prune_tol=DEFAULT_GF_PRUNE_TOL,
+        prune_tol=0.0 if gf_pt2_tol else DEFAULT_GF_PRUNE_TOL,  # the second-order rule replaces the amplitude rule
+        pt2_tol=gf_pt2_tol,
+        eval_meshes_for=(
+            None
+            if not gf_pt2_tol or eval_omega is None
+            else lambda unit: _gf_eval_meshes(None, eval_omega, 0, delta, [es[ei] for ei in unit.chunk])
+        ),
     )
     results = run_units_distributed(
         block_basis,
