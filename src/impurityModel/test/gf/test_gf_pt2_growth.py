@@ -152,3 +152,13 @@ def test_the_stop_clock_is_twice_the_last_admission_and_at_least_the_quiet_floor
     assert not sc.quiet()
     sc.blocks = 20
     assert sc.quiet()  # the floor (16 quiet blocks) outweighs "twice the last admission" (8)
+
+
+def test_the_unit_reports_where_its_rows_came_from(capsys):
+    _g, info = _run(1e-12)
+    rec = info["pt2"]
+    assert rec["mesh_points"] == gf_growth_score.PT2_MESH_POINTS and rec["mesh_points_kept"] <= rec["mesh_points"]
+    assert rec["rule_rows"] > 0 and rec["stop"] == "twice its last admission"
+    n_seed = len({k for seed in _seeds() for k in seed.keys()})
+    assert rec["first_shell_rows"] + rec["rule_rows"] + n_seed == CLOSURE
+    assert "pt2" not in _run(None, prune_tol=1e-3)[1]

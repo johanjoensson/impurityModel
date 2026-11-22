@@ -1128,8 +1128,9 @@ def block_Green_discovered(
         mode=matrix_mode,
         pt2=pt2_zs is not None,
     )
+    pt2_scorer = None
     if pt2_zs is not None:
-        support.scorer = GrowthScorer(pt2_zs, pt2_tol, comm)
+        pt2_scorer = support.scorer = GrowthScorer(pt2_zs, pt2_tol, comm)
     engine = (
         None if matrix_mode == "discovered" else lambda m, a: _ApplyEngine(m, a, hOp, basis, matrix_mode == "retained")
     )
@@ -1164,6 +1165,7 @@ def block_Green_discovered(
         reort=resolved_reort,
         engine=engine,
     )
+    growth_status = status
     support.scorer = None  # the accumulator is GBs on a large unit: the restart and the refinement never read it
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
@@ -1380,6 +1382,33 @@ def block_Green_discovered(
             f"matrix mode {support.mode_ran or matrix_mode}, admitted per depth {support.depth_histogram()}",
             flush=True,
         )
+    if pt2_scorer is not None:
+        sc = pt2_scorer
+        n_rule = int(sc.admitted)
+        n_first = max(int(support.retained_size) - n_seed - n_rule, 0)
+        why_stop = (
+            "the cap"
+            if support.cap_hit
+            else ("twice its last admission" if growth_status == "quiet" else growth_status)
+        )
+        if cap_info is not None:
+            cap_info["pt2"] = {
+                "first_shell_rows": n_first,
+                "rule_rows": n_rule,
+                "mesh_points": int(sc.zs0.size),
+                "mesh_points_kept": int(sc.kept.size),
+                "blocks": int(sc.blocks),
+                "last_admission": sc.last_admission,
+                "stop": why_stop,
+            }
+        if verbose and rank == 0:
+            last = "never" if sc.last_admission is None else f"block {sc.last_admission}"
+            print(
+                f"GF second-order growth: {n_first:,} rows from the first shell, {n_rule:,} from the rule, "
+                f"{sc.kept.size} of {sc.zs0.size} mesh points kept, last admission {last} of {sc.blocks}, "
+                f"growth ended by {why_stop}",
+                flush=True,
+            )
     if matrix_mode == "discovered" and support.prunes:
         # A deferred row stays in K, so under pruning |K|/|P| is unbounded in principle: report it. The sums are
         # collective and the branch is replicated (mode and pruning are), never gated on the verbose rank.
