@@ -149,6 +149,35 @@ window trimmed less) but is ω-blind like `amplitude`, so it did not address the
 deferred-weight store per unit. A deferred determinant that matters at a pole of the bath is recovered by the grow mode
 of the refinement below.
 
+### Second-order growth (`gf_pt2_tol`, opt-in)
+
+`gf_pt2_tol` replaces the amplitude rule (setting both is an error). After the `slaterWeightMin` cut and the whole first
+shell, a frontier determinant `f` gets
+
+    s_f = max_k  sum_cols |rho_f(z_k)|^2 / |z_k - H_ff| / ||G_P(z_k)||,    rho = H X(z),  X = (z - H_PP)^-1 seed,
+
+over 31 uniform points `z_k` across the unit's own real-frequency window at the run's own broadening, and the growth
+admits rows in descending score until the score mass left out is at most `gf_pt2_tol` (one collective tail cut; at the
+cap the rows are ranked by score instead). There is no hand-placed frequency. `rho` costs no extra application of `H`:
+a `ShiftedGalerkin` over the K rows is stepped with the matvec output `H v`, which is linear in the block (module
+`gf_growth_score`). The frontier is scored on every 4th block (`PT2_SCORE_EVERY`); a row first reached at a block
+scores zero until the next scored block and is never banned. A mesh point that carries under 1e-3 of the score mass on
+each of the first 10 scored blocks is dropped from the accumulator. Growth ends at twice the block of the last
+admission, and at least 16 quiet blocks later; the restart on the final `P` is unchanged, so the retained set does not
+depend on that stop.
+
+Measured meaning of the budget: the relative error `max|dG| / max|G|` of the unit. Scoring every block it stayed inside
+the budget on everything measured; every 4th block reaches 1.6x it on paramagnetic NiO. It is the better rule per row
+where a resonant minority of frontier rows exists (SMO, NiO) and neutral in rows on a metal (FCC Ni, where most of the
+frontier is resonant in the window), at a higher cost per row: on FCC Ni, 1.4-2.3x the wall at equal rows. See
+`doc/plans/pt2_growth_rule.md` for the measurements.
+
+Limits. A unit with no real-frequency evaluation mesh (Matsubara only), or one whose matrix mode is not `discovered`,
+falls back to the amplitude rule with `gf_prune_tol = 1e-3` and says so in its log. The re-solve of a failing block
+(`gf_prune_tol`) does not run under `gf_pt2_tol`. Refinement acts on cap-frozen units only. Unmeasured: complex
+Hamiltonians, chunks wider than 2 states, cap-bound units other than SMO unit 7, Sigma on NiO and FCC Ni, NiO PM above
+about 50k rows, rank-count invariance on real archives, memory on NiO and FCC Ni.
+
 ### Swap refinement (`gf_refine_rounds`, default 3)
 
 For a unit the cap froze, up to `gf_refine_rounds` rounds of scoring the retained determinants (what their removal
