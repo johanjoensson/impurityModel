@@ -458,6 +458,25 @@ class ShiftedGalerkin:
         self._d_inv, self._zeta, self._p = d_inv, zeta, p
         self.n_steps += 1
 
+    def keep(self, mask):
+        """Drop every shift where the boolean ``mask`` (``(n_z,)``) is False, with its accumulated state. The kept
+        shifts continue exactly as they would have (the shifts do not interact); :attr:`zs` is the kept subset in
+        order. At least one shift must stay."""
+        mask = np.asarray(mask, dtype=bool).reshape(-1)
+        if mask.shape != (self.n_z,) or not mask.any():
+            raise ValueError(f"ShiftedGalerkin.keep: need a mask of {self.n_z} flags with at least one True")
+        self.zs = self.zs[mask]
+        self.n_z = int(mask.sum())
+        self.floor = self.floor[mask]
+        if self._d_inv is not None:
+            self._d_inv, self._zeta = self._d_inv[mask], self._zeta[mask]
+        if self._x_buf is not None:
+            self._x_buf = np.ascontiguousarray(self._x_buf[:, mask])
+            self._x = self._x_buf[: self.n_rows]
+        if self._p_buf is not None:
+            self._p_buf = np.ascontiguousarray(self._p_buf[:, mask])
+            self._p = self._p_buf[: self.n_rows]
+
     def note_deflation(self, sigma_dropped):
         """Account for a TSQR deflation that dropped singular values ``sigma_dropped`` at this step."""
         s = float(np.sum(np.abs(np.asarray(sigma_dropped, dtype=float))))

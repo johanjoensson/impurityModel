@@ -229,3 +229,94 @@ def test_a_second_first_block_needs_a_reset_and_growth_reuses_the_backing_array(
     buf = g._x_buf
     g.step(rng.standard_normal((12, 2)) + 0j, alpha, beta)  # ... and then grows inside the 25 % headroom
     assert g._x_buf is buf and g._x.shape[0] == 12 and np.shares_memory(g.solutions()[0], buf)
+
+
+def _accumulate(h, q0, steps, zs, mask_at=None, mask=None):
+    """Step a ShiftedGalerkin with ``w = H v`` (what the growth scorer does); return it with the dense T and V."""
+    g = ShiftedGalerkin(zs, N)
+    x, x_prev, beta_prev = q0, None, None
+    alphas, betas, widths, blocks = [], [], [], []
+    for i in range(steps):
+        alpha, x_next, beta, k = lanczos_step(
+            lambda v: h @ v, x, x_prev, beta_prev, scale=np.linalg.norm(h, 2), deflate_tol=DEFLATE_TOL_SEEDS
+        )
+        g.step(h @ x, alpha, beta_prev)
+        alphas.append(alpha)
+        widths.append(x.shape[1])
+        blocks.append(x)
+        if mask_at == i:
+            g.keep(mask)
+        if k <= 0:
+            break
+        betas.append(beta)
+        x_prev, beta_prev, x = x, beta, x_next
+    return g, alphas, betas, widths, blocks
+
+
+@pytest.mark.parametrize("deflating", [False, True])
+@pytest.mark.parametrize("drop", [False, True])
+def test_stepping_with_the_matvec_output_accumulates_H_X(deflating, drop):
+    """Linear in the Lanczos block: the accumulator stepped with ``w = H v`` holds ``H X`` exactly, before and after a
+    mesh point is dropped (the plan's 1e-10 check)."""
+    h = _hermitian(True)
+    q0 = _seeds(h, deflating)
+    mask = np.array([True, False, True, True])
+    g, alphas, betas, widths, blocks = _accumulate(h, q0, 6, ZS, 2 if drop else None, mask)
+    zs = np.asarray(ZS)[mask] if drop else np.asarray(ZS)
+    v = np.concatenate(blocks, axis=1)
+    t = _dense_t(alphas, betas[: len(alphas) - 1], widths)
+    e1 = np.zeros((t.shape[0], 2), dtype=complex)
+    e1[:2] = np.eye(2)
+    assert len(g.solutions()) == len(zs)
+    for z, rho in zip(zs, g.solutions()):
+        want = h @ (v @ np.linalg.solve(z * np.eye(t.shape[0]) - t, e1))
+        np.testing.assert_allclose(rho, want, atol=1e-10)
+
+
+def test_keep_refuses_an_empty_or_misshapen_mask():
+    g = ShiftedGalerkin(ZS, N)
+    with pytest.raises(ValueError):
+        g.keep(np.zeros(len(ZS), dtype=bool))
+    with pytest.raises(ValueError):
+        g.keep(np.ones(len(ZS) + 1, dtype=bool))
+
+
+@pytest.mark.parametrize("deflating", [False, True])
+def test_the_growth_scorer_scores_equal_the_dense_formula_row_by_row(deflating):
+    """``GrowthScorer`` fed the recurrence's blocks, ``alpha`` and ``beta`` and the matvec output scores every row as
+    ``max_k sum_c |(H X)_fc|^2 / |z_k - H_ff| / ||G(z_k)||`` with ``X = V (z - T)^-1 E_1`` -- the slot alignment, the
+    norm and the max over the mesh, against dense linear algebra."""
+    from impurityModel.ed.gf_growth_score import GrowthScorer
+
+    h = _hermitian(True)
+    q0 = _seeds(h, deflating)
+    sc = GrowthScorer(np.asarray(ZS), 1e-3, None, every=1)
+    x, x_prev, beta_prev = q0, None, None
+    alphas, betas, widths, blocks = [], [], [], []
+    for _ in range(5):
+        alpha, x_next, beta, k = lanczos_step(
+            lambda v: h @ v, x, x_prev, beta_prev, scale=np.linalg.norm(h, 2), deflate_tol=DEFLATE_TOL_SEEDS
+        )
+        sc.stash(h @ x)
+        sc.fold(alpha, beta)
+        alphas.append(alpha)
+        betas.append(beta)
+        widths.append(x.shape[1])
+        blocks.append(x)
+        if k <= 0:
+            break
+        x_prev, beta_prev, x = x, beta, x_next
+    n = len(alphas)
+    v = np.concatenate(blocks, axis=1)
+    t = _dense_t(alphas, betas[: n - 1], widths)
+    e1 = np.zeros((t.shape[0], 2), dtype=complex)
+    e1[:2] = np.eye(2)
+    diag = np.real(np.diag(h))
+    want = np.zeros(N)
+    for z in ZS:
+        r = np.linalg.solve(z * np.eye(t.shape[0]) - t, e1)
+        rho = h @ (v @ r)
+        gn = np.linalg.norm(e1.T @ r)
+        want = np.maximum(want, (np.abs(rho) ** 2).sum(axis=1) / abs(z - diag) / gn)
+    got, _mass = sc.scores(np.arange(N), diag)
+    np.testing.assert_allclose(got, want, rtol=1e-8)
