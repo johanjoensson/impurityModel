@@ -124,3 +124,31 @@ def test_the_retained_set_does_not_depend_on_the_rank_count(tau):
     g, info = _run(tau, comm=comm)
     assert _keys(info, comm) == _keys(serial)
     np.testing.assert_allclose(g, _run(tau)[0], atol=1e-9)
+
+
+@pytest.mark.parametrize("tau", [1e-3, 1e-12])
+def test_the_quiet_stop_ends_growth_early_and_leaves_the_basis_of_the_unstopped_run(tau, monkeypatch):
+    g_stop, stopped = _run(tau)
+    monkeypatch.setattr(gf_growth_score, "PT2_QUIET_BLOCKS", 10**9)
+    g_full, full = _run(tau)
+    assert stopped["passes"]["growth_blocks"] < full["passes"]["growth_blocks"]
+    assert _keys(stopped) == _keys(full)
+    np.testing.assert_allclose(g_stop, g_full, atol=1e-10)
+
+
+def test_the_stop_clock_is_twice_the_last_admission_and_at_least_the_quiet_floor():
+    sc = GrowthScorer(np.linspace(-1, 1, 3) + 0.1j, 1e-3, None)
+    sc.blocks = 15
+    assert not sc.quiet()
+    sc.blocks = 16
+    assert sc.quiet()  # nothing ever admitted: the floor alone
+    sc.last_admission = 20
+    sc.blocks = 39
+    assert not sc.quiet()
+    sc.blocks = 40
+    assert sc.quiet()
+    sc.last_admission = 4
+    sc.blocks = 19
+    assert not sc.quiet()
+    sc.blocks = 20
+    assert sc.quiet()  # the floor (16 quiet blocks) outweighs "twice the last admission" (8)

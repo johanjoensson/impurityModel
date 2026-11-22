@@ -39,6 +39,9 @@ PT2_SCORE_EVERY = 4
 #: :data:`PT2_DROP_BLOCKS` scored blocks that carry mass is dropped from the accumulator (``0``: never drop).
 PT2_DROP_SHARE = 1e-3
 PT2_DROP_BLOCKS = 10
+#: Growth ends once no row has been admitted for as many blocks as it took to reach the last admission, and for at
+#: least this many (a test that wants the unstopped run sets it very large).
+PT2_QUIET_BLOCKS = 16
 
 
 def pt2_mesh(eval_meshes, n_points=PT2_MESH_POINTS):
@@ -178,6 +181,13 @@ class GrowthScorer:
             if not self._live.all():
                 self.acc.keep(self._live)
                 self.kept = self.kept[self._live]
+
+    def quiet(self):
+        """Whether the growth is over (replicated): the blocks since the last admission (or since the start, when the
+        rule admitted nothing) are at least :data:`PT2_QUIET_BLOCKS` and at least the blocks that preceded it, i.e. the
+        run is twice as old as its last admission."""
+        last = 0 if self.last_admission is None else self.last_admission
+        return self.blocks - last >= max(PT2_QUIET_BLOCKS, last)
 
     def note_decision(self, n_admitted):
         """Book a scored decision (replicated counts)."""

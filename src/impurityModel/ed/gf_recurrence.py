@@ -708,7 +708,7 @@ def block_lanczos_discovered(
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
 
     Returns ``(alphas, betas, widths, status, q_last)``: the padded ``(m, n, n)`` coefficient arrays, the
-    per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"``,
+    per-block widths, why it stopped (``"converged"``, ``"quiet"``, ``"invariant_subspace"``, ``"diverged"``,
     ``"exhausted"`` or ``"max_iter"``; ``"exhausted"`` = a frozen reort-off recurrence has used as many vectors as
     the support has determinants, so it sits on its rounding floor and cannot reach the tolerance) and this rank's rows of the last accepted block (P-slot order of the final matrix).
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
@@ -800,6 +800,14 @@ def block_lanczos_discovered(
                 shifted.note_deflation(diag["dropped"])
         if d.frozen and not reort and shifted is None:
             _arm_plateau(converged)
+        if support.scorer is not None and support.scorer.quiet():
+            # The second-order rule admitted nothing for as long as it took to reach the last admission (and at
+            # least PT2_QUIET_BLOCKS): the growth is over. Replicated state, so every rank leaves on this block; the
+            # restart on the final P is the answer, as after any pruned growth.
+            status = "quiet"
+            widths.append(n_curr)
+            it += 1
+            break
         done = converged(alphas[: it + 1], betas[: it + 1], verbose=verbose, block_widths=widths + [n_curr])
         if comm is not None:
             done = comm.bcast(bool(done), root=0)
