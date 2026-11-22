@@ -162,3 +162,31 @@ def test_the_unit_reports_where_its_rows_came_from(capsys):
     n_seed = len({k for seed in _seeds() for k in seed.keys()})
     assert rec["first_shell_rows"] + rec["rule_rows"] + n_seed == CLOSURE
     assert "pt2" not in _run(None, prune_tol=1e-3)[1]
+
+
+def test_a_unit_that_never_grew_is_not_cut_by_the_quiet_stop(monkeypatch):
+    """Started on the closure there is no frontier: nothing is admitted and nothing is restarted, so the recurrence
+    must run to its own convergence -- the quiet stop would leave a truncated continued fraction."""
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.test.support import gf_oracles as O
+
+    closure = _keys(_run(1e-12)[1])
+
+    def run(pt2):
+        basis = Basis(O._IMP, O._BATHS, initial_basis=closure, truncation_threshold=np.inf, comm=None, verbose=False)
+        em = _gf_eval_meshes(None, OMEGA, 0, DELTA, [0.0])
+        a, b, r = block_Green_sparse(
+            _siam_6(), _seeds(), basis, DELTA, verbose=False, cap_info={}, prune_tol=0.0 if pt2 else 1e-3,
+            pt2_tol=pt2, eval_meshes=em,
+        )  # fmt: skip
+        return calc_G(a, b, r, OMEGA, 0.0, DELTA)
+
+    monkeypatch.setattr(gf_growth_score, "PT2_QUIET_BLOCKS", 2)
+    np.testing.assert_allclose(run(1e-3), run(None), atol=1e-9)
+
+
+def test_the_capped_unit_books_the_rows_the_cap_let_in_not_the_candidates():
+    _g, info = _run(1e-12, cap=12)
+    rec = info["pt2"]
+    n_seed = len({k for seed in _seeds() for k in seed.keys()})
+    assert len(_keys(info)) == 12 and rec["first_shell_rows"] == 5 and rec["rule_rows"] == 12 - n_seed - 5

@@ -108,6 +108,9 @@ class GrowthScorer:
         self._seen = 0
         #: Rows the rule admitted after the first shell (replicated, running).
         self.admitted = 0
+        #: Retained size at the start of the growth: a unit that has not grown past it has nothing to restart on, so
+        #: its recurrence must run to its own convergence, never be cut by the quiet stop.
+        self.n_start = None
 
     @property
     def zs(self):
@@ -182,10 +185,12 @@ class GrowthScorer:
                 self.acc.keep(self._live)
                 self.kept = self.kept[self._live]
 
-    def quiet(self):
+    def quiet(self, retained=None):
         """Whether the growth is over (replicated): the blocks since the last admission (or since the start, when the
         rule admitted nothing) are at least :data:`PT2_QUIET_BLOCKS` and at least the blocks that preceded it, i.e. the
         run is twice as old as its last admission."""
+        if self.n_start is not None and retained is not None and retained <= self.n_start:
+            return False
         last = 0 if self.last_admission is None else self.last_admission
         return self.blocks - last >= max(PT2_QUIET_BLOCKS, last)
 

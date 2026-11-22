@@ -410,11 +410,13 @@ class _Admission:
         sc.note_mass(mass)
         slots, s = slots[sel], s[sel]
         n_new = int(d.allreduce_sum(len(slots)))
-        sc.note_decision(n_new)
         if d.global_count + n_new <= d.cap:
             d.global_count += n_new
+            sc.note_decision(n_new)
             return slots
-        return self._top_and_freeze(keys_of, slots, s)
+        admitted = self._top_and_freeze(keys_of, slots, s)
+        sc.note_decision(int(d.allreduce_sum(len(admitted))))  # what the cap let in, not the candidates
+        return admitted
 
     def _top_and_freeze(self, keys_of, slots, norms2):
         """Admit the ``cap - retained`` most important candidates (whole near-tie groups, the boundary group
@@ -800,7 +802,7 @@ def block_lanczos_discovered(
                 shifted.note_deflation(diag["dropped"])
         if d.frozen and not reort and shifted is None:
             _arm_plateau(converged)
-        if support.scorer is not None and support.scorer.quiet():
+        if support.scorer is not None and support.scorer.quiet(support.retained_size):
             # The second-order rule admitted nothing for as long as it took to reach the last admission (and at
             # least PT2_QUIET_BLOCKS): the growth is over. Replicated state, so every rank leaves on this block; the
             # restart on the final P is the answer, as after any pruned growth.
@@ -1131,6 +1133,7 @@ def block_Green_discovered(
     pt2_scorer = None
     if pt2_zs is not None:
         pt2_scorer = support.scorer = GrowthScorer(pt2_zs, pt2_tol, comm)
+        pt2_scorer.n_start = support.retained_size
     engine = (
         None if matrix_mode == "discovered" else lambda m, a: _ApplyEngine(m, a, hOp, basis, matrix_mode == "retained")
     )
@@ -1389,7 +1392,11 @@ def block_Green_discovered(
         why_stop = (
             "the cap"
             if support.cap_hit
-            else ("twice its last admission" if growth_status == "quiet" else growth_status)
+            else (
+                ("twice its last admission" if sc.last_admission is not None else "its quiet floor")
+                if growth_status == "quiet"
+                else growth_status
+            )
         )
         if cap_info is not None:
             cap_info["pt2"] = {
