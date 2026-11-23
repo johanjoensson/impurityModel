@@ -111,6 +111,12 @@ class GrowthScorer:
         #: Retained size at the start of the growth: a unit that has not grown past it has nothing to restart on, so
         #: its recurrence must run to its own convergence, never be cut by the quiet stop.
         self.n_start = None
+        #: Why the rule was dropped mid-growth (the accumulator did not fit the measured K), or ``None``.
+        self.declined = None
+
+    def has_stash(self):
+        """Whether a matvec output is waiting to be folded (replicated: set on every unfrozen apply)."""
+        return self._stash is not None
 
     @property
     def zs(self):

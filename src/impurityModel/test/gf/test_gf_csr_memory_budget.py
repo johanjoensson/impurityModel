@@ -113,3 +113,45 @@ def test_the_serial_path_re_derives_them_too(monkeypatch):
     psi = ManyBodyState({basis.local_basis[0]: 1.0})
     results = run_units_distributed(basis, [[psi]] * 3, np.ones(3), lambda b, u, s: b.gf_memory_budget)
     assert results[0] > results[1] > results[2]
+
+
+class _Ranks26:
+    """A communicator that only reports its size: the decision's Allreduce is a no-op, every rank agrees."""
+
+    size = 26
+
+    def Allreduce(self, *args, **kwargs):
+        pass
+
+
+def _smo_heavy_unit_decision(monkeypatch, factor, refine_shifts):
+    """``choose_matrix_mode`` at the shape the SMO cubic run logged (26 ranks, 2.6M seed rows, auto cap 21.05M, fan-out
+    23.8, RSS 2.4 GiB, discovered budget 5.5 GiB)."""
+    import types
+
+    from impurityModel.ed import gf_recurrence, memory_estimate
+
+    gib = 2**30
+    monkeypatch.setattr(gf_recurrence, "GROWTH_PRICE_FACTOR", factor)
+    monkeypatch.setattr(gf_recurrence, "_sample_fanout", lambda basis, hop: 23.8)
+    monkeypatch.setattr(memory_estimate, "current_rss_bytes", lambda: int(2.4 * gib))
+    basis = types.SimpleNamespace(
+        comm=_Ranks26(),
+        is_distributed=True,
+        local_basis=range(100_000),
+        size=2_600_000,
+        gf_csr_memory_budget=int(6.6 * gib),
+    )
+    report = {}
+    mode = gf_recurrence.choose_matrix_mode(basis, None, 21_047_324, 1, int(5.5 * gib), report, True, refine_shifts)
+    return mode, report
+
+
+def test_a_unit_that_reaches_a_quarter_of_its_cap_is_not_priced_at_the_cap(monkeypatch):
+    """The SMO cubic units ended at 3.6-5.4M determinants of a 21M cap: priced at the cap (10 x the seeds) the matrix
+    plus the refinement accumulator needed 4.4 GiB of the 3.1 GiB of room and the unit ran matrix-free."""
+    mode, report = _smo_heavy_unit_decision(monkeypatch, 10, 60)
+    assert (mode, report["priced_from"]) == ("retained", "the cap"), "premise: the old price refuses"
+    mode, report = _smo_heavy_unit_decision(monkeypatch, 4, 60)
+    assert mode == "discovered" and report["priced_from"] == "4 x the seeds"
+    assert report["n_p_priced"] == 4 * 2_600_000

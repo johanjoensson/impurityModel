@@ -148,9 +148,10 @@ MATRIX_MEMORY_SAFETY = 0.75
 #: ``|K_local|`` as a multiple of ``|P_local|`` before the unit has measured it (the NiO estimate: 2.3-2.5).
 K_OVER_P_ESTIMATE = 2.5
 #: How many times its starting basis a unit's ``P`` is priced at when the cap is larger. Measured |P| / seeds: SMO
-#: units 1 and 4 2.2 and 3.3 (cap 4e6, |P| 161k and 409k); a unit that outgrows the price freezes on the memory
-#: guard, reported as such.
-GROWTH_PRICE_FACTOR = 10
+#: units 1 and 4 2.2 and 3.3 (cap 4e6, |P| 161k and 409k), SMO cubic heavy units 1.7 (|P| 3.6-4.4M of a 21M cap, which
+#: the factor 10 priced at the cap: every one ran matrix-free and refused the second-order rule); a unit that
+#: outgrows the price freezes on the memory guard, reported as such.
+GROWTH_PRICE_FACTOR = 4
 #: Bytes per stored element (a 16 B value and an 8 B packed row) and per K row (key, two slot arrays, the
 #: ``K -> P`` map and slack).
 _ELEMENT_BYTES = 24
@@ -226,6 +227,9 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     # 4.7e12 B and silently ran `retained`): price at the cap or at GROWTH_PRICE_FACTOR times the starting basis,
     # whichever is smaller. The growth itself is guarded by the measured memory (``_grow_fits``, the freeze guard).
     priced = min(float(cap), GROWTH_PRICE_FACTOR * float(basis.size)) if np.isfinite(cap) else None
+    priced_from = (
+        "none" if priced is None else ("the cap" if priced >= float(cap) else f"{GROWTH_PRICE_FACTOR} x the seeds")
+    )
     n_p = n_basis_local if priced is None else max(n_basis_local, int(priced / n_ranks))
     n_k = int(K_OVER_P_ESTIMATE * n_p)
     need_e = matrix_need_bytes(n_p, n_k, fanout, n_k * n_ranks, n_ranks, width)
@@ -242,6 +246,8 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     if report is not None:
         report.update(
             n_p_local=n_p,
+            n_p_priced=n_p * n_ranks,
+            priced_from=priced_from,
             n_k_local=n_k,
             fanout=fanout,
             need_discovered=need_e,
@@ -624,6 +630,43 @@ class _ApplyEngine:
         return w_p
 
 
+def _pt2_accumulator_fits(support, matrix, width):
+    """Whether the second-order accumulator over the **measured** ``K`` fits the memory budget. **Collective** whenever a
+    budget is set; replicated verdict. Called once, at the scorer's first fold, where the first shell is in and
+    ``matrix.n_k_local`` is real: the accumulator holds ``(|K|, n_z, p)`` and ``(|K|, n_z, w)`` complex arrays (``width`` is ``p + w``;
+    ``REFINE_SKEW`` is the buffers' own geometric over-allocation). Returns ``(fits, need_bytes, rss_bytes, budget_bytes)``; it grows with ``K`` after this,
+    which the measured guard (``SupportDecisions.over_memory_budget``) holds."""
+    budget = support.decisions.memory_budget
+    if budget is None:
+        return True, 0, 0, 0
+    scorer = support.scorer
+    need = int(REFINE_SKEW * len(scorer.zs) * int(width) * matrix.n_k_local * 16)
+    rss = current_rss_bytes()
+    over = np.array([rss + need > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64)
+    comm = matrix.comm
+    if comm is not None and comm.size > 1:
+        comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
+    return not over[0], need, rss, int(budget * MATRIX_MEMORY_SAFETY)
+
+
+def _decline_second_order(support, need, rss, budget):
+    """The second-order rule does not fit: drop its scorer and carry on in the same matrix mode by the amplitude rule at
+    its default (what a unit without the rule runs). Replicated; the caller made the verdict collectively. The reason
+    stays on the dropped scorer for the unit's report."""
+    from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
+
+    why = (
+        f"the scoring accumulator over the measured K needs {format_bytes(need)}/rank on top of RSS "
+        f"{format_bytes(rss)}, budget {format_bytes(budget)}"
+    )
+    support.scorer.declined = why
+    support.scorer.release()
+    support.scorer = None
+    support.pt2 = False
+    support._eta = float(DEFAULT_GF_PRUNE_TOL)
+    support._eta2 = support._eta**2
+
+
 def _arm_plateau(converged):
     """Let the convergence monitor ``converged`` stop on a plateau (:data:`gf_convergence._GF_PLATEAU_FACTOR`): only a
     frozen, unreorthogonalized recurrence calls this, the one that can sit on a rounding floor. A stand-in monitor
@@ -790,7 +833,14 @@ def block_lanczos_discovered(
                 support.scorer.release()
                 support.scorer = None
             else:
-                support.scorer.fold(alpha, beta)
+                if support.scorer.acc is None and support.scorer.has_stash():
+                    # First fold: the accumulator is about to be allocated over the measured K. Replicated cadence, so
+                    # every rank joins the collective on this block, empty or not.
+                    fits, need, rss, budget_b = _pt2_accumulator_fits(support, matrix, n_curr + q0.shape[1])
+                    if not fits:
+                        _decline_second_order(support, need, rss, budget_b)
+                if support.scorer is not None:
+                    support.scorer.fold(alpha, beta)
         diverged, t_norm_max, h_norm_est = divergence_guard(
             spectral_norm(beta), spectral_norm(alpha), it == 0, t_norm_max, h_norm_est
         )
@@ -1093,21 +1143,22 @@ def block_Green_discovered(
             # A pruned unit grows on the discovered-key matrix whether or not it refines: stored growth blocks cost
             # a fraction of matrix-free ones (NiO unit 3 at 6 ranks: 40 s against 287 s of growth).
             pt2_on or prune_tol > 0.0 or (refine is not None and refine.rounds > 0 and bool(refine.shifts)),
-            # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds. The
-            # second-order accumulator holds the mesh over every K row, priced as that many shifts over P rows.
-            (2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0)) if refine_on else 0)
-            + (int(np.ceil(len(pt2_zs) * K_OVER_P_ESTIMATE)) if pt2_on else 0),
+            # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds.
+            (2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0)) if refine_on else 0),
+            # The second-order accumulator is not priced here: its size is |K| x the mesh, and |K| is measured after the
+            # first shell (``_pt2_accumulator_fits``); a guessed |K| at the cap refused every SMO unit.
         )
         return mode, report
 
     if matrix_mode == "auto":
         matrix_mode, report = _choose(pt2_zs is not None)
         if pt2_zs is not None and matrix_mode != "discovered":
-            _fall_back("the discovered matrix and the scoring accumulator did not fit")
+            _fall_back("the discovered matrix did not fit")
             matrix_mode, report = _choose(False)
         if verbose and rank == 0 and report:
             print(
-                f"GF matvec mode {matrix_mode}: {report['n_p_local']:,} local determinants x fan-out "
+                f"GF matvec mode {matrix_mode}: {report['n_p_local']:,} local determinants "
+                f"(priced at {report['priced_from']}) x fan-out "
                 f"{report['fanout']:.1f}, need {format_bytes(report['need_discovered'])} (discovered) / "
                 f"{format_bytes(report['need_retained'])} (retained) on top of RSS {format_bytes(report['rss'])}; "
                 f"budgets {format_bytes(report['budget_discovered'])} / {format_bytes(report['budget_retained'])}.",
@@ -1388,7 +1439,16 @@ def block_Green_discovered(
             f"matrix mode {support.mode_ran or matrix_mode}, admitted per depth {support.depth_histogram()}",
             flush=True,
         )
-    if pt2_scorer is not None:
+    if pt2_scorer is not None and pt2_scorer.declined is not None:
+        if cap_info is not None:
+            cap_info["pt2"] = {"declined": pt2_scorer.declined}
+        if verbose and rank == 0:
+            print(
+                f"GF second-order growth rule unavailable ({pt2_scorer.declined}): the growth went on by the amplitude "
+                f"rule gf_prune_tol = {support._eta:g}",
+                flush=True,
+            )
+    elif pt2_scorer is not None:
         sc = pt2_scorer
         n_rule = int(sc.admitted)
         n_first = max(int(support.retained_size) - n_seed - n_rule, 0)

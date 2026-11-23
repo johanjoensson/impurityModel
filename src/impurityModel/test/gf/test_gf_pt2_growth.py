@@ -214,3 +214,69 @@ def test_a_finished_growth_releases_the_accumulator(monkeypatch):
     monkeypatch.setattr(GrowthScorer, "__init__", spy)
     _run(1e-3)
     assert made and all(sc.acc is None and sc._stash is None and not sc._alphas for sc in made)
+
+
+def _stub_support(budget, n_k, n_z=31):
+    import types
+
+    return types.SimpleNamespace(
+        decisions=types.SimpleNamespace(memory_budget=budget),
+        scorer=types.SimpleNamespace(zs=np.zeros(n_z)),
+    ), types.SimpleNamespace(n_k_local=n_k, comm=None)
+
+
+def test_the_accumulator_is_priced_on_the_measured_k_against_the_budget(monkeypatch):
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "current_rss_bytes", lambda: 1000)
+    support, matrix = _stub_support(None, 10**6)
+    assert gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0], "no budget: the guard is off"
+    need = int(gf_recurrence.REFINE_SKEW * 31 * 2 * 10**6 * 16)
+    edge = int((1000 + need) / gf_recurrence.MATRIX_MEMORY_SAFETY)
+    support, matrix = _stub_support(edge + 10, 10**6)
+    fits, got, rss, _budget = gf_recurrence._pt2_accumulator_fits(support, matrix, 2)
+    assert fits and got == need and rss == 1000
+    support, matrix = _stub_support(edge - 10, 10**6)
+    assert not gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0]
+    support, matrix = _stub_support(edge + 10, 2 * 10**6)  # the same budget, twice the measured K
+    assert not gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0]
+
+
+@pytest.mark.mpi
+def test_an_accumulator_that_does_not_fit_hands_the_unit_to_the_amplitude_rule_in_the_same_mode(monkeypatch):
+    """The verdict is taken at the first fold from the measured K; a refusal drops the scorer and the unit grows by
+    the amplitude rule at its default: the rows and G of a unit that asked for it, with the reason on the record."""
+    from impurityModel.ed import gf_recurrence
+    from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
+
+    calls = []
+
+    def refuse(support, matrix, width):
+        calls.append(width)
+        return False, 123, 456, 789
+
+    monkeypatch.setattr(gf_recurrence, "_pt2_accumulator_fits", refuse)
+    comm = MPI.COMM_WORLD
+    g, info = _run(1e-3, comm=comm if comm.size > 1 else None)
+    g_amp, info_amp = _run(None, comm=comm if comm.size > 1 else None, prune_tol=DEFAULT_GF_PRUNE_TOL)
+    assert len(calls) == 1, "decided once, at the first fold"
+    assert "123.0 B" in info["pt2"]["declined"] and "456.0 B" in info["pt2"]["declined"]
+    assert "declined" in info["pt2"] and "pt2" not in info_amp
+    np.testing.assert_allclose(g, g_amp, atol=1e-12)
+    c = comm if comm.size > 1 else None
+    assert _keys(info, c) == _keys(info_amp, c)
+
+
+def test_an_accumulator_that_fits_keeps_the_rule_and_is_priced_on_both_block_widths(monkeypatch):
+    from impurityModel.ed import gf_recurrence
+
+    widths = []
+
+    def fits(support, matrix, width):
+        widths.append(width)
+        return True, 0, 0, 0
+
+    monkeypatch.setattr(gf_recurrence, "_pt2_accumulator_fits", fits)
+    _g, info = _run(1e-12)
+    assert "declined" not in info["pt2"] and info["pt2"]["rule_rows"] > 0
+    assert widths == [2 * len(_seeds())], "ShiftedGalerkin holds (rows, n_z, p) and (rows, n_z, w): the sum of the two"
