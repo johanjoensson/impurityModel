@@ -30,7 +30,6 @@ Everything is driven by one umbrella command with sub-commands:
 impurityModel run             input.toml    [--check]   # any calculation, from one input file
 impurityModel init            [--calculation ...]       # print a commented starter input file
 impurityModel schema          [table]                   # the input-file key reference
-impurityModel spectra         <h0> [radial] [options]   # PS/XPS/NIXS/XAS/RIXS -> spectra.h5
 impurityModel selfenergy      <h0>          [options]   # Sigma(w)/Sigma(i nu), G_imp
 impurityModel susceptibility  <h0>          [options]   # chi(w)/chi(i nu) -> chi.h5
 impurityModel plot-spectra    spectra.h5    [options]   # plot from spectra.h5 (no re-solve)
@@ -82,17 +81,17 @@ straight to today's `-vv`; if a script parses stdout, re-check it against the ne
 
    | Format | Indices | Read by |
    | --- | --- | --- |
-   | `.h0` | flat, impurity block first, self-describing header | `spectra`\*, `selfenergy`, `susceptibility` |
-   | `.pickle` | labelled `(l,s,m)` / `(l,b)` operator dict | `spectra`, `selfenergy`, `susceptibility` |
-   | `.json` | crystal-field parameters | `spectra`, `selfenergy`, `susceptibility` |
-   | labelled `.dat` | labelled operator-term list | `spectra`, `selfenergy`, `susceptibility` |
+   | `.h0` | flat, impurity block first, self-describing header | `spectroscopy`\*, `selfenergy`, `susceptibility` |
+   | `.pickle` | labelled `(l,s,m)` / `(l,b)` operator dict | `spectroscopy`, `selfenergy`, `susceptibility` |
+   | `.json` | crystal-field parameters | `spectroscopy`, `selfenergy`, `susceptibility` |
+   | labelled `.dat` | labelled operator-term list | `spectroscopy`, `selfenergy`, `susceptibility` |
 
    `.h0` is what the RSPt interface's `build_h0` writes; it carries its own units, energy
    reference, orbital layout and basis, and is specified in
    [`h0_file_format.md`](h0_file_format.md). The labelled formats are read by
    `hamiltonian_io.py` and mapped to flat indices through `c2i`, which orders the orbitals
    differently — `hamiltonian_io.flat_h0_to_labelled` performs that relabelling for a `.h0`.
-   `spectra` builds spin–orbit coupling, the Coulomb interaction and the double counting in
+   A spectroscopy run builds spin–orbit coupling, the Coulomb interaction and the double counting in
    `(l,s,m)` labels; the file supplies the correlated valence shell and its bath, and the core
    shell — which has no bath of its own — is synthesized from the input file's parameters. In
    every format the impurity orbitals come first, then the bath orbitals.
@@ -104,9 +103,9 @@ straight to today's `-vv`; if a script parses stdout, re-check it against the ne
    dense matrix. `load_model` picks the reader by inspecting the file, not just its
    extension: a file with the `.h0` magic line is a `.h0` whatever it is called.
 
-   The `spectra` sub-command combines
-   it with the interaction (Slater–Condon `Fdd`/`Fpp`/`Fpd`/`Gpd`), spin–orbit coupling (`xi_2p`,
-   `xi_3d`), a magnetic field, and the double-counting correction at runtime.
+   A spectroscopy run combines
+   it with the interaction (Slater–Condon `F_vv`/`F_cc`/`F_cv`/`G_cv`), spin–orbit coupling,
+   a magnetic field, and the double-counting correction at runtime.
 2. **The radial file** *(optional)* — the radial mesh and the radial part of the correlated
    orbitals, used by the NIXS excitation. Omit it and NIXS is skipped; every other spectrum is
    independent of it.
@@ -117,51 +116,38 @@ archive.
 
 ## Running a spectra calculation
 
-The command is `impurityModel spectra <h0_filename> [radial_filename] [options]`.
-The key options (all have defaults; see `--help` for the full list):
+Spectra are calculated from an input file: `impurityModel run input.toml` with
+`calculation = "spectroscopy"`. `impurityModel init --calculation spectroscopy` prints a commented
+starter file and `impurityModel schema spectroscopy` lists every key. The `[spectroscopy]` tables
+choose the techniques and carry each one's mesh and broadening:
 
-| Option | Meaning |
+| Table | Meaning |
 | --- | --- |
-| `--ls 1 2` | Angular momenta of the correlated orbitals (here p and d). |
-| `--nBaths 0 10` | Bath states per angular momentum. |
-| `--nValBaths 0 10` | Valence (occupied) bath states per angular momentum. |
-| `--n0imps` | Nominal impurity occupation. |
-| `--unit eV\|Ry` | Unit of every energy-valued option below. Default `eV`; pass `Ry` to give RSPt-native Rydberg values directly instead of converting by hand -- see the warning below. |
-| `--Fdd --Fpp --Fpd --Gpd` | Slater–Condon Coulomb parameters. |
-| `--xi_2p --xi_3d` | Spin–orbit coupling strengths. |
-| `--chargeTransferCorrection` | Double-counting parameter. |
-| `--T 300` | Temperature (Kelvin) -- **not** affected by `--unit`. |
-| `--delta --deltaRIXS --deltaNIXS` | Broadenings (HWHM). |
-| `--nPsiMax` | Maximum number of eigenstates. |
-| `--truncation_threshold` | Determinant cap per basis: `auto` (default), `unlimited`, or an integer such as `2e6` (final, never lowered). See [How the determinant cap is decided](basis_and_restrictions.md#how-the-determinant-cap-is-decided). |
-| `--no-auto-block-structure` | Keep the hand-coded block structure instead of deriving it. |
+| `[spectroscopy]` | `w` (PES/XPS/XAS energy mesh), `w_loss`, `core_hole_broadening`, output file, cluster label. |
+| `[spectroscopy.pes]`, `.xps`, `.xas` | `enabled` switch per technique. |
+| `[spectroscopy.rixs]` | `enabled`, `w_in` (incoming-energy mesh), `final_state_broadening`, `adaptive_tol`. |
+| `[spectroscopy.nixs]` | `enabled`, `radial_file`, `q`, `l_final`, `l_initial`, `broadening`. |
 
-`selfenergy`/`susceptibility` take the analogous `--unit`, converting `--Fdd --xi --hField --tau
---w_min --w_max --delta`.
-
-**All of the above default to eV**, matching the `.h0` file's own internal convention (every
-amplitude is eV after `read_h0_file`, regardless of the file's own declared unit -- see
-[the h0 format spec](h0_file_format.md#numeric-contract)). A file that itself declares `"unit":
-"Ry"` is converted correctly on load; it is specifically these *command-line* parameters that
-were, before `--unit` existed, silently assumed to already be eV with no way to say otherwise
--- passing RSPt-native Rydberg values here without converting them by hand first produces
-Slater/SOC/double-counting energies roughly 13.6x too small, which typically erases fine
-multiplet splittings (e.g. the 2p spin-orbit splitting) rather than raising an error. `--unit
-Ry` removes the need for the by-hand conversion; passing an implausibly small `--xi_2p` under
-the `eV` default (below 1 eV, where no real transition-metal 2p core level lies) still prints a
-warning suggesting `--unit Ry`.
-
-Run it under MPI for anything nontrivial. A worked NiO L-edge invocation (the same run as
-`examples/NiO_10bath_spectra.toml`):
+Every energy is in `[units].energy` (default eV); the temperature, Slater–Condon parameters,
+spin–orbit coupling, double counting and the determinant cap (`truncation_threshold`, see
+[How the determinant cap is decided](basis_and_restrictions.md#how-the-determinant-cap-is-decided))
+have their own tables. A worked NiO L-edge run is `examples/NiO_10bath_spectra.toml`:
 
 ```bash
-h0_filename=h0/h0_NiO_10bath.pickle
-radial_filename=radialOrbitals/Ni3d.dat
-
-mpiexec -n 8 impurityModel spectra \
-    "$h0_filename" "$radial_filename" \
-    --nBaths 0 10 --nValBaths 0 10
+mpiexec -n 8 impurityModel run examples/NiO_10bath_spectra.toml
 ```
+
+From Python the same run is
+
+```python
+from impurityModel.api import calc_spectroscopy, save_spectra, load_spectroscopy_requests
+
+requests = load_spectroscopy_requests("impurityModel.toml")     # or build PESOptions, XASOptions, ... by hand
+result = calc_spectroscopy(model, requests, basis, solver, comm=comm)   # dict on rank 0, None elsewhere
+save_spectra(result, "spectra.h5")
+```
+
+and `calc_xas`, `calc_rixs`, `calc_pes`, `calc_xps`, `calc_nixs` calculate one spectrum alone.
 
 The runtime `GF_*` tuning knobs (solver method, memory caps, sector cache, adaptive RIXS
 sampling) are environment variables — see [`configuration.md`](configuration.md). For example,

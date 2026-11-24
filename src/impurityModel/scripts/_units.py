@@ -1,6 +1,6 @@
 """Shared eV/Ry unit conversion for CLI energy-valued arguments.
 
-``spectra``/``selfenergy``/``susceptibility`` all default to eV (the ``.h0`` format's own
+``selfenergy``/``susceptibility`` all default to eV (the ``.h0`` format's own
 internal convention -- see ``doc/h0_file_format.md``). ``--unit Ry`` lets a caller pass
 RSPt-native Rydberg values directly instead of converting by hand first, which is exactly the
 mistake this exists to remove: Finding 1 of the NiO tutorial investigation was Rydberg values

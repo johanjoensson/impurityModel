@@ -32,7 +32,6 @@ from impurityModel.ed.options import (
     PESOptions,
     RIXSOptions,
     SolverOptions,
-    SpectraOptions,
     XASOptions,
     XPSOptions,
 )
@@ -45,7 +44,6 @@ __all__ = [
     "PESOptions",
     "RIXSOptions",
     "SolverOptions",
-    "SpectraOptions",
     "XASOptions",
     "XPSOptions",
     "atomic_u4",

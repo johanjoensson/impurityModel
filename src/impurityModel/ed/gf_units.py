@@ -765,7 +765,7 @@ def run_units_distributed(
     # (`basis_split._pack_units` returns `None` subgroups at `n_colors <= 1`, and
     # `split_basis_and_redistribute_psi` then hands the caller's own object back). Writing the
     # unit cap onto it would therefore outlive this call and silently ratchet the caller's cap
-    # down -- `spectra.simulate_spectra` reuses ONE basis across IPS/PS/XAS/NIXS/RIXS, so each
+    # down -- `spectroscopy.calc_spectroscopy` reuses ONE basis across IPS/PS/XAS/NIXS/RIXS, so each
     # such call would tighten the next spectrum's basis, an order-dependent accuracy loss with
     # no opt-out. The cap is scoped to this GF phase instead: set below, restored in the
     # `finally` at the end of the function, on every path including an exception.

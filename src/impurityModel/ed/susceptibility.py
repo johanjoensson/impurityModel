@@ -293,7 +293,7 @@ def calc_susceptibility(
     extra_minus = [(-1j * np.asarray(matsubara_mesh), 0.0)] if matsubara_mesh is not None else None
 
     # chi(z) = G_+(z) + G_-(-z): the resonant branch on (w, delta) and the anti-resonant
-    # branch on (-w, -delta) — the PES/IPS mesh-negation pattern of simulate_spectra.
+    # branch on (-w, -delta) — the PES/IPS mesh-negation pattern of the spectra techniques.
     res_plus = spectra.calc_spectra(
         hOp, tops_plus, w=w, delta=delta, extra_meshes=extra_plus, seed_transform=make_transform("+"), **common
     )

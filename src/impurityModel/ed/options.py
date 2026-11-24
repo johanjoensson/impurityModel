@@ -22,7 +22,6 @@ __all__ = [
     "PESOptions",
     "RIXSOptions",
     "SolverOptions",
-    "SpectraOptions",
     "XASOptions",
     "XPSOptions",
     "describe_options",
@@ -287,7 +286,6 @@ class SolverOptions:
         return DEFAULT_GF_REFINE_ROUNDS
 
 
-@dataclass(frozen=True)
 class SpectraOptions:
     """Spectroscopy meshes, broadenings, polarizations and projectors for the spectra driver.
 

@@ -1,4 +1,4 @@
-"""Shared ``-v``/``-vv``/``-vvv`` verbosity flag for ``spectra``/``selfenergy``/``susceptibility``.
+"""Shared ``-v``/``-vv``/``-vvv`` verbosity flag for ``selfenergy``/``susceptibility``.
 
 Verbosity is rank-uniform: argparse runs identically on every rank, so ``args.verbose`` (and
 the ``resolve_verbosity`` result below) is the same integer everywhere -- never zero it out on

@@ -387,7 +387,7 @@ def test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi(monkeyp
     ``run_units_distributed`` then executes
     ``split_basis.truncation_threshold = min(cap, unit_cap)`` on that same object, so a
     Green's-function memory probe permanently rewrites the ground-state basis's cap. Callers
-    that reuse one basis for several spectra (``spectra.simulate_spectra`` calls
+    that reuse one basis for several spectra (``spectroscopy.calc_spectroscopy`` calls
     ``calc_spectra`` for IPS/PS/XAS/NIXS/RIXS on the same object) ratchet it down further on
     every call.
 

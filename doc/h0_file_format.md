@@ -5,9 +5,9 @@ The non-interacting impurity Hamiltonian as written by upstream tooling (`rspt2s
 two implementations live in separate repositories with no shared dependency, so nothing but
 this spec and the committed fixtures keeps them in agreement.
 
-Read by `impurityModel selfenergy`, `impurityModel susceptibility` and `impurityModel spectra`
+Read by `impurityModel selfenergy`, `impurityModel susceptibility` and spectroscopy runs (`impurityModel run`)
 (see the format × sub-command table in [`user_guide.md`](user_guide.md)) — see
-[Scope](#scope) for what `spectra` requires of the file.
+[Scope](#scope) for what spectroscopy requires of the file.
 
 ## Why the format exists
 

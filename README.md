@@ -92,12 +92,12 @@ mpirun -n 4 impurityModel run examples/NiO_CF_spectra.toml
 ```
 (similar crystal-field examples exist for MnO, FeO and CoO in the same folder).
 
-The input files wrap the command-line interface. You can also call it directly:
-```bash
-impurityModel spectra h0/h0_NiO_10bath.pickle radialOrbitals/Ni3d.dat --nBaths 0 10 --nValBaths 0 10
-```
-`impurityModel` has sub-commands `spectra`, `selfenergy`, `susceptibility`, `plot-spectra` and
-`plot-rixs` (run `impurityModel --help`, or `python -m impurityModel ...` if the console script
+From Python, the same calculation is `impurityModel.api.calc_spectroscopy` (or `calc_xas`,
+`calc_rixs`, ... for a single spectrum) followed by `save_spectra`; `load_spectroscopy_requests`
+reads the spectrum settings of an input file.
+
+`impurityModel` has sub-commands `run`, `init`, `schema`, `selfenergy`, `susceptibility`,
+`plot-spectra` and `plot-rixs` (run `impurityModel --help`, or `python -m impurityModel ...` if the console script
 is not on `PATH`).
 
 #### Output files

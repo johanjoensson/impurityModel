@@ -1,4 +1,4 @@
-"""TOML input format for the ``spectra`` / ``selfenergy`` / ``susceptibility`` calculations.
+"""TOML input format for the ``spectroscopy`` / ``selfenergy`` / ``susceptibility`` calculations.
 
 Three modules, split by layer so the leaves stay importable from outside this package
 (notably from ``impurityModel_interface``, which drives the solver from RSPt's ``green.inp``

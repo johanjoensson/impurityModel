@@ -20,7 +20,7 @@ def add_plot_arguments(parser):
         "-f",
         default="spectra.h5",
         type=str,
-        help="HDF5 file written by impurityModel.ed.spectra.simulate_spectra.",
+        help="HDF5 file written by impurityModel.ed.spectroscopy.calc_spectroscopy.",
     )
     parser.add_argument(
         "-o",

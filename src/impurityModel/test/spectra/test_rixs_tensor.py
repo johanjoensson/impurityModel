@@ -389,7 +389,7 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
 
 
 def test_rixs_tensor_adaptive_tolerance_enables_the_sampler(monkeypatch):
-    """``adaptive_wIn_tol`` (``SpectraOptions.rixs_adaptive_tol``) enables the sampler."""
+    """``adaptive_wIn_tol`` (``RIXSOptions.adaptive_tol``) enables the sampler."""
     op = _model()
     psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()

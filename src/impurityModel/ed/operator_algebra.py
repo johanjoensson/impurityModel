@@ -239,7 +239,7 @@ def op2Dict(nBaths, ops):
     The XAS/RIXS ``*_projectors`` options take projectors written in spin-orbital
     labels; this maps those labels to the flat indices (:func:`c2i`) the rest of the
     package uses, so that :func:`combineOp` can project a transition operator onto an
-    irrep and :func:`spectra.simulate_spectra` can report that irrep's contribution
+    irrep and :func:`spectroscopy.calc_spectroscopy` can report that irrep's contribution
     separately.
 
     Both spellings of a term are accepted:

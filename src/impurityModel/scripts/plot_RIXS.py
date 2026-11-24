@@ -1,6 +1,6 @@
 """
 Plot script for the RIXS Kramers-Heisenberg tensor written by
-:func:`impurityModel.ed.spectra.simulate_spectra`.
+:func:`impurityModel.ed.spectroscopy.calc_spectroscopy`.
 
 The tensor is contracted with the requested in/out polarization pairs at plot time (see
 :mod:`impurityModel.ed.polarization`), so different polarizations, dichroism, or an

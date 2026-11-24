@@ -23,7 +23,7 @@ from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
 from impurityModel.ed.gs_calc import GroundStateSpec, calc_gs
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.model import SpectraOptions, load_model
+from impurityModel.ed.model import load_model
 
 # Local stuff
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
@@ -66,8 +66,7 @@ def build_spectra_model(
     """Assemble the full interacting spectra model from a non-interacting ``h0`` file.
 
     Thin wrapper over :func:`model.load_model`'s multi-shell path
-    (:meth:`ImpurityModel.from_shells`), kept so :mod:`impurityModel.scripts.spectra` and its
-    tests do not need to build ``OrderedDict``s themselves. ``h0_filename`` accepts either a
+    (:meth:`ImpurityModel.from_shells`), kept so callers and tests do not need to build ``OrderedDict``s themselves. ``h0_filename`` accepts either a
     labelled ``.pickle``/``.json``/``.dat`` file or a self-describing flat ``.h0`` (see
     :func:`hamiltonian_io.read_h0_operator`).
 
@@ -132,128 +131,6 @@ def build_spectra_model(
     )
 
 
-def resolve_spectra_switches(options):
-    """Decide which spectra to compute, and the RIXS incoming mesh that goes with the answer.
-
-    Each technique has its own switch. A ``None`` switch reproduces the historical inference
-    exactly -- PES, XPS and XAS always; RIXS when its broadening is positive and its mesh
-    non-empty; NIXS when radial data was supplied -- so an API caller that sets none of them
-    sees no change. An explicit switch is authoritative, and what used to *disable* a
-    technique as a side effect becomes a requirement of an enabled one: a non-positive
-    broadening or an empty mesh is now an error rather than a silent skip, because a
-    broadening doubling as a feature flag is unguessable and gave RIXS two independent
-    switches with no stated precedence.
-
-    Parameters
-    ----------
-    options : impurityModel.ed.model.SpectraOptions
-
-    Returns
-    -------
-    switches : dict
-        ``{"pes": bool, "xps": bool, "xas": bool, "rixs": bool, "nixs": bool}``.
-    wIn : numpy.ndarray or list
-        The RIXS incoming-energy mesh, defaulted when unset and empty when RIXS is off.
-
-    Raises
-    ------
-    ValueError
-        If a technique is enabled but the data it needs is absent or non-physical.
-    """
-    rixs = options.rixs
-    if rixs is None:
-        rixs = options.deltaRIXS > 0 and (options.wIn is None or len(options.wIn) > 0)
-    elif rixs and options.deltaRIXS <= 0:
-        raise ValueError(
-            f"RIXS is enabled but deltaRIXS is {options.deltaRIXS}. A non-positive broadening "
-            "used to be how RIXS was switched off; now the switch is the switch, and a "
-            "broadening has to be a broadening."
-        )
-
-    nixs = options.nixs
-    if nixs is None:
-        nixs = options.radial is not None
-    elif nixs and options.radial is None:
-        raise ValueError(
-            "NIXS is enabled but no radial data was supplied. Supplying it used to be what "
-            "switched NIXS on; now it is a requirement of having switched NIXS on."
-        )
-    if nixs and options.deltaNIXS <= 0:
-        raise ValueError(f"NIXS is enabled but deltaNIXS is {options.deltaNIXS}.")
-
-    if options.wIn is not None:
-        wIn = options.wIn
-    elif rixs:
-        wIn = np.linspace(-10, 20, 50)
-    else:
-        wIn = []
-    if rixs and len(wIn) == 0:
-        raise ValueError("RIXS is enabled but its incoming-energy mesh is empty.")
-
-    switches = {
-        "pes": True if options.pes is None else options.pes,
-        "xps": True if options.xps is None else options.xps,
-        "xas": True if options.xas is None else options.xas,
-        "rixs": rixs,
-        "nixs": nixs,
-    }
-    if not any(switches.values()):
-        raise ValueError("Every spectrum is disabled, so there is nothing to compute.")
-    return switches, wIn
-
-
-def requests_from_legacy_options(options):
-    """The per-technique option objects a legacy :class:`SpectraOptions` bag asks for.
-
-    A temporary bridge: the bag is resolved exactly as before (:func:`resolve_spectra_switches`) and
-    split into one options object per enabled technique, in execution order.
-    """
-    from impurityModel.ed.options import NIXSOptions, PESOptions, RIXSOptions, XASOptions, XPSOptions
-
-    switches, w_in = resolve_spectra_switches(options)
-    w = options.w if options.w is not None else np.linspace(-25, 25, 3001)
-    w_loss = options.wLoss if options.wLoss is not None else np.linspace(-2.0, 12.0, 4000)
-    requests = []
-    if switches["pes"]:
-        requests.append(PESOptions(w=w, delta=options.delta))
-    if switches["xps"]:
-        requests.append(XPSOptions(w=w, delta=options.delta))
-    if switches["nixs"]:
-        requests.append(
-            NIXSOptions(
-                radial=options.radial,
-                w_loss=w_loss,
-                delta=options.deltaNIXS,
-                qs=options.qsNIXS,
-                l_final=options.liNIXS,
-                l_initial=options.ljNIXS,
-            )
-        )
-    if switches["xas"]:
-        requests.append(
-            XASOptions(
-                w=w,
-                delta=options.delta,
-                projectors=options.XAS_projectors,
-                epsilons=options.epsilons,
-            )
-        )
-    if switches["rixs"]:
-        requests.append(
-            RIXSOptions(
-                w_in=w_in,
-                w_loss=w_loss,
-                delta_intermediate=options.delta,
-                delta_final=options.deltaRIXS,
-                adaptive_tol=options.rixs_adaptive_tol,
-                projectors=options.RIXS_projectors,
-                epsilons_in=options.epsilonsRIXSin,
-                epsilons_out=options.epsilonsRIXSout,
-            )
-        )
-    return requests
-
-
 def _resolve_shell_roles(nBaths):
     """Return ``(l_valence, l_core)`` for a spectra model, from the bath counts.
 
@@ -296,11 +173,6 @@ def _resolve_shell_roles(nBaths):
         "alongside a core shell is not. Build the model through ImpurityModel.from_shells, which "
         "is told valence_l/core_l outright, rather than leaving them to be inferred."
     )
-
-
-def _legacy_requests(spectra_options):
-    """``(requests, auto_block_structure)`` of a legacy :class:`SpectraOptions` bag (temporary shim)."""
-    return requests_from_legacy_options(spectra_options), spectra_options.auto_block_structure
 
 
 def _group_of(technique):
@@ -642,10 +514,8 @@ def run_spectra(
     """:func:`calc_spectroscopy` followed by :func:`save_spectra` to ``output_filename``.
 
     The ground-state report files are named after ``output_filename`` (``ground_state-<stem>.txt``,
-    next to it). ``requests`` may also be a legacy :class:`SpectraOptions` bag (temporary).
+    next to it).
     """
-    if isinstance(requests, SpectraOptions):
-        requests, auto_block_structure = _legacy_requests(requests)
     result = calc_spectroscopy(
         model,
         requests,

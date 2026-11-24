@@ -10,7 +10,7 @@ BiCGSTAB/GMRES), the flat-unit distribution driver, and the two public entry poi
 Kramers-Heisenberg tensor that :mod:`polarization` contracts at plot time).
 
 Sits on top of :mod:`greens_function` (imported as ``gf``) like the rest of the spectra
-layer; :mod:`spectra` re-exports the two public drivers so ``simulate_spectra`` and existing
+layer; :mod:`spectra` re-exports the two public drivers so the spectra techniques and existing
 ``spectra.getRIXSmap_*`` callers reach them unchanged.
 """
 
@@ -583,7 +583,7 @@ def _rixs_map_flat(
         val_change={l_core: (0, 0), l_valence: (1, 0)},
         con_change={l_core: (0, 0), l_valence: (0, 1)},
         slater_weight_min=slaterWeightMin,
-        # The caller's filled/empty bath classification cutoff (simulate_spectra passes the
+        # The caller's filled/empty bath classification cutoff (the spectra techniques pass the
         # model's occ_cutoff, the one every other GF window uses); None keeps the builder's
         # default. RIXS used to always take that default, 1e-6 against 1e-12 elsewhere, so its
         # windows classified the same bath differently (review ledger C8).

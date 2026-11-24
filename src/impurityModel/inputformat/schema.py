@@ -10,7 +10,7 @@ The **kind** is what makes unit conversion safe. ``[units].energy`` converts eve
 kind :attr:`Kind.ENERGY` (and its list/vector forms) and nothing else, so a dimensionless
 count such as a target ``occupation`` or an inverse length such as the NIXS ``q`` cannot be
 silently scaled by 13.6. The hand-maintained ``_ENERGY_FIELDS`` tuples in
-:mod:`impurityModel.scripts.spectra` are exactly the rot this replaces.
+the removed ``impurityModel spectra`` command were exactly the rot this replaces.
 
 A leaf module: standard library only. No numpy, no MPI, no solver imports -- the knob
 registry that ``[environment]`` is validated against is consulted by the reader, not here.

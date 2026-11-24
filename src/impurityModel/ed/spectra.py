@@ -29,7 +29,7 @@ from impurityModel.ed.symmetries import (
 )
 
 # The transition-operator builders now live in their own physics module. They are re-exported
-# here (and referenced by the bare names below) so that simulate_spectra's calls resolve and
+# here (and referenced by the bare names below) so that the technique functions' calls resolve and
 # existing callers/tests that reach them via ``spectra.dipole_operators`` etc. keep working.
 from impurityModel.ed.transition_operators import (  # noqa: F401
     daggered_dipole_operators,

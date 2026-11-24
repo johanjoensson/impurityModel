@@ -1,6 +1,6 @@
 """
 Plot script for PS/XPS/NIXS/XAS(/RIXS fluorescence-yield) spectra written by
-:func:`impurityModel.ed.spectra.simulate_spectra`.
+:func:`impurityModel.ed.spectroscopy.calc_spectroscopy`.
 
 XAS (and RIXS, for the fluorescence-yield overlay) are stored as polarization *tensors*;
 this script contracts them with the requested polarizations at plot time (see
@@ -160,7 +160,7 @@ def _fluorescence_yield(wIn, wLoss, rixs_intensity, quasi_elastic_cutoff=0.2):
 def plot_spectra_in_file(filename, args=None):
     """
     Plot the spectra/tensors stored in ``filename`` (an
-    :func:`impurityModel.ed.spectra.simulate_spectra` output).
+    :func:`impurityModel.ed.spectroscopy.calc_spectroscopy` output).
 
     Parameters
     ----------
