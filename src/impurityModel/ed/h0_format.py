@@ -350,8 +350,11 @@ def _rot_from_header(header):
 def _operators_from_header(path, header):
     try:
         ops = operators_from_header(header.get("operators"))
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
         raise H0FormatError(f"{path}: malformed operators block: {exc}") from exc
+    n_imp = sum(len(orbs) for orbs in header.get("impurity_orbitals", {}).values())
+    if ops is not None and ops.n is not None and n_imp and ops.n != n_imp:
+        raise H0FormatError(f"{path}: the operators block is {ops.n}x{ops.n} but the impurity block has {n_imp} orbitals")
     return ops
 
 

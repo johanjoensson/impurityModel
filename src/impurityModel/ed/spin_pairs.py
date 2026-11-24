@@ -350,6 +350,24 @@ def _pairs_from_operators(impurity_orbitals, operators):
     return _pairs_from_splus_matrix(orbs, operators.s_plus)
 
 
+def _operators_inconsistency(impurity_orbitals, operators):
+    """Why a supplied spin operator set cannot be trusted for pairing, or ``None``.
+
+    A transposed ``S_+`` (really ``S_-``) is still a clean dn -> up permutation with the labels swapped, so
+    the pairing check alone cannot see it; ``[S_z, S_+] = S_+`` can.
+    """
+    n = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
+    if operators.s_plus.shape != (n, n):
+        return f"the supplied S_+ is {operators.s_plus.shape[0]}x{operators.s_plus.shape[1]} but the impurity has {n} orbitals"
+    if operators.sz is not None:
+        if operators.sz.shape != (n, n):
+            return f"the supplied S_z is {operators.sz.shape[0]}x{operators.sz.shape[1]} but the impurity has {n} orbitals"
+        sp, sz = operators.s_plus, operators.sz
+        if np.abs(sz @ sp - sp @ sz - sp).max() > 1e-6:
+            return "the supplied S_z and S_+ do not satisfy [S_z, S_+] = S_+ (S_+ transposed, or a different spin convention)"
+    return None
+
+
 def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls=None, operators=None):
     """``[(pairs, source)]`` in order of trust, and the reasons candidates were dropped."""
     imp_orbs = {orb for blocks in impurity_orbitals.values() for block in blocks for orb in block}
@@ -357,7 +375,10 @@ def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls=None
     supplied = _pairs_from_operators(impurity_orbitals, operators)
     rejected_first, candidates_first = [], []
     if operators is not None and operators.s_plus is not None and operators.source != "spherical":
-        if supplied is None:
+        inconsistent = _operators_inconsistency(impurity_orbitals, operators)
+        if inconsistent is not None:
+            rejected_first.append(f"operators: {inconsistent}")
+        elif supplied is None:
             rejected_first.append("operators: the supplied S_+ is not a clean dn -> up permutation (spin-orbit coupling?)")
         else:
             supplied = sorted((int(dn), int(up)) for dn, up in supplied)

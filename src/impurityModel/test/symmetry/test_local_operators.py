@@ -152,3 +152,46 @@ def test_h0_header_roundtrip(tmp_path):
     # a file without the block reads None
     write_h0_file(tmp_path / "y.h0", np.eye(6), impurity_orbitals={1: list(range(6))})
     assert read_h0_file(tmp_path / "y.h0").operators is None
+
+
+def test_a_transposed_s_plus_is_rejected_not_used_with_swapped_spin_labels():
+    # S_+^T is S_-: a clean permutation with dn and up swapped. [S_z, S_+] = S_+ is what exposes it.
+    ops = LocalOperators.from_spherical(np.eye(6), (1,))
+    bad = LocalOperators(sz=ops.sz, s_plus=ops.s_plus.T.copy(), source="rspt")
+    imp = {0: [list(range(6))]}
+    candidates, rejected = _impurity_candidates(imp, np.eye(6), 1e-6, (1,), bad)
+    assert all(src != "operators" for _, src in candidates)
+    assert any("[S_z, S_+]" in r for r in rejected)
+    good = LocalOperators(sz=ops.sz, s_plus=ops.s_plus, source="rspt")
+    candidates, _ = _impurity_candidates(imp, np.eye(6), 1e-6, (1,), good)
+    assert candidates[0][1] == "operators"
+
+
+def test_operators_of_the_wrong_size_are_refused(tmp_path):
+    from impurityModel.ed.h0_format import H0FormatError, read_h0_file, write_h0_file
+
+    small = LocalOperators.from_spherical(np.eye(2), (0,))
+    path = tmp_path / "x.h0"
+    write_h0_file(path, np.eye(6), impurity_orbitals={1: list(range(6))}, operators=small)
+    with pytest.raises(H0FormatError, match="orbitals"):
+        read_h0_file(path)
+    supplied = LocalOperators(sz=small.sz, s_plus=small.s_plus, source="rspt")
+    cands, rejected = _impurity_candidates({0: [list(range(6))]}, None, 1e-6, None, supplied)
+    assert any("impurity has 6 orbitals" in r for r in rejected)
+
+
+@pytest.mark.parametrize("block", [[1, 2], {"symmetry_ops": [[1]]}, {"sz": 3}])
+def test_a_malformed_operators_block_is_an_h0_format_error(tmp_path, block):
+    import json
+
+    from impurityModel.ed.h0_format import H0FormatError, read_h0_file, write_h0_file
+
+    path = tmp_path / "x.h0"
+    write_h0_file(path, np.eye(2), impurity_orbitals={0: [0, 1]})
+    lines = path.read_text().splitlines()
+    header = json.loads(lines[1])
+    header["operators"] = block
+    lines[1] = json.dumps(header)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(H0FormatError):
+        read_h0_file(path)
