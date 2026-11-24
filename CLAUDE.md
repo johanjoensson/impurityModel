@@ -95,7 +95,7 @@ Modules only import downward (see the layer diagram in `doc/architecture_overvie
 physics/operator-algebra (`operator_algebra`, `atomic_physics`) never imports solvers;
 the basis layer (`manybody_basis` + `basis_generation`/`basis_restrictions`/
 `basis_transcription`/`basis_split`) sits below the solvers (`groundstate`,
-`greens_function`, `spectra`, `selfenergy`); the CLIs (`get_spectra`, `selfenergy`)
+`greens_function`, `spectra`, `selfenergy`); the CLIs (`impurityModel run`, `selfenergy`)
 sit strictly on top. Dead-code greps must include `.pyx`/`.pxi`: the Cython kernels
 import Python modules at runtime.
 

@@ -164,13 +164,13 @@ eigendecompositions to disk across runs (`config.GF_SECTOR_CACHE_DIR`) — the o
 is the dominant cost, so it is paid once per material rather than once per run.
 
 On top of the per-`wIn` chain sits the **greedy adaptive sampler** (`_rixs_map_adaptive`,
-enabled by `SpectraOptions.rixs_adaptive_tol`, i.e. `--rixs-adaptive-tol` or `[spectroscopy.rixs].adaptive_tol`): a set-valued AAA rational interpolant predicts the
+enabled by `RIXSOptions.adaptive_tol`, i.e. `[spectroscopy.rixs].adaptive_tol`): a set-valued AAA rational interpolant predicts the
 map and only the incoming energies it cannot yet predict are actually solved (measured 28 of
 121 solves on NiO L3 at 1e-4 relative error).
 
 ## Spectra dispatch (`spectra.py`)
 
-`simulate_spectra(...)` is the orchestrator. Per spectrum:
+`spectroscopy.calc_spectroscopy(...)` is the orchestrator (one function per spectrum in `spectra_techniques.py`). Per spectrum:
 
 - **PS / XPS / NIXS** — per-operator spectra via `calc_spectra`.
 - **XAS** — the *projected* path (`calc_spectra`, per polarization) when an XAS projector
@@ -206,7 +206,7 @@ the solve it is judging.
 
 ## Where to start reading
 
-- Adding a spectrum type → `spectra.simulate_spectra` and `transition_operators.py`.
+- Adding a spectrum type → a technique function in `spectra_techniques.py`, its option class in `options.py`, and `transition_operators.py`.
 - Tuning GF performance/memory → `config.py` (every knob), then `get_Greens_function`.
 - A RIXS map is slow or wrong → `rixs._R1SolverChain.solve` and the tier modules
   (`gf_shift_recycling.py`).

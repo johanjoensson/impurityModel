@@ -582,7 +582,7 @@ available RAM (cgroup-aware) to size an auto GF cap at GF entry (`gf_units`), an
 is cut to fewer, larger colours until every unit can afford at least the ground-state basis
 size. See `doc/basis_and_restrictions.md`, "How the determinant cap is decided".
 
-## 7. Use case B — core-level spectroscopy (`get_spectra` / `spectra.py`)
+## 7. Use case B — core-level spectroscopy (`spectroscopy.py` / `spectra_techniques.py`)
 
 ### 7.1 One resolvent, many spectroscopies
 

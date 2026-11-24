@@ -98,7 +98,7 @@ whole run.
 Group keys are whatever the caller's `impurity_orbitals` dict is keyed by, and the two
 front-ends key it differently: `selfenergy` / the double-counting search group the
 impurity into symmetry manifolds and key them `0, 1, 2, ...`
-(`symmetries.group_orbitals_by_blocks`), while `get_spectra` keys whole shells by their
+(`symmetries.group_orbitals_by_blocks`), while `spectroscopy` keys whole shells by their
 angular momentum `l` (`model.py`). A label is always the key, never an inference from it.
 When the block structure splits one group further — a whole $3d$ shell auto-split into
 $e_g$ and $t_{2g}$ — the classes are told apart with a letter, `group 2.a` / `group 2.b`;

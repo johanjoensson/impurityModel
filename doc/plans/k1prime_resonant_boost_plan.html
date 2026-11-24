@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>k1prime_resonant_boost_plan</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<h1
+id="k1-resonance-boosted-admission-in-pruned-gf-growth-reasoning-and-implementation-plan">K1′:
+resonance-boosted admission in pruned GF growth — reasoning and
+implementation plan</h1>
+<p>Status 2026-11-18: <strong>superseded as a plan. The user chose a GF
+workflow redesign</strong> (see <code>gf_redesign_handover.md</code>);
+this file is kept as input to that research, not for implementation.
+Original status: design gated, not settled. Part A explains how the
+design was reached. Part B is the plan. Step 0 of Part B is a gate that
+two open measurements decide (E0c, running; the offline screen below
+already narrowed the candidates). Part B’s design is conditional on that
+gate. Companion documents:
+<code>doc/plans/gf_resonant_admission_design.md</code> (rev. 1–4) and
+<code>debug/smo_causality/FINDINGS.md</code> (every number quoted
+here).</p>
+<hr />
+<h2 id="part-a-how-the-design-was-reached">Part A — how the design was
+reached</h2>
+<h3 id="a1.-the-physical-requirement-an-untruncated-σ-is-herglotz">A1.
+The physical requirement: an untruncated Σ is Herglotz</h3>
+<p>Σ(z) = G0⁻¹(z) − G⁻¹(z). For the exact G of H = H0 + U and any
+stationary density matrix (here the exactly degenerate S = 3/2 quartet,
+thermal weights 1/4), Σ(ω + iδ) is a Herglotz function: Im Σ ≤ 0 on the
+whole real axis for every δ &gt; 0. G and G0 are built with the same h0
+− dc and the same δ (<code>solver_basis.py</code>,
+<code>sigma.py:312</code>). A mismatched double counting or chemical
+potential only shifts Σ by a real constant. So <strong>every point with
+Im Σ &gt; 0 is a truncation.</strong> Raising δ lowers the sensitivity
+to the truncation and does not remove it. It is not a fix.</p>
+<h3 id="a2.-why-the-error-lands-where-it-does-g0¹²-is-a-magnifier">A2.
+Why the error lands where it does: |G0⁻¹|² is a magnifier</h3>
+<p>A change δG in G moves Σ by G⁻¹ δG G⁻¹. Near a pole of the
+hybridisation Δ(ω) = Σ_m |V_m|²/(ω − ε_m + iδ), |G0⁻¹| ≈ |V_m|²/δ is
+large. Wherever Σ is small, |G⁻¹| ≈ |G0⁻¹| too. On SMO orbital 0,
+|G0⁻¹|² is 9.2 at ω = −0.28, against a median of 0.88 over the mesh. The
+acausal window, [−0.283, −0.277], sits on the strongest bath mode of
+orbital 0’s chain (ε_m = −0.2822, |V_m|² = 2.1e-2). Even a tiny error in
+G there becomes a sign error in Im Σ: Im G0⁻¹ ≈ 2.906 and Im G⁻¹ ≈ 2.899
+differ by +6.8e-3.</p>
+<h3 id="a3.-what-was-cleared-and-what-the-uncapped-run-truncates">A3.
+What was cleared, and what the uncapped run truncates</h3>
+<p>Arm A (production settings, no unit at the cap) has Im Σ = +6.8e-3 at
+−0.28. All of these were cleared by measurement: - continued-fraction
+termination (dropping the last 25 % of blocks changes G by exactly 0); -
+the restart, the mesh edge, off-diagonal elements,
+<code>lanczos_band</code>; - the excitation bound (holes ≤ 8 is the
+physical maximum here); - the chain window
+<code>[10,15,29,34]: (2,4)</code> (ΔG ≤ 2.8e-6 with the window off at
+the converged level).</p>
+<p>The ground state is untested but has a large margin. <strong>Pruning
+at η = 1e-3 alone explains the violation</strong>: the pruning-converged
+reference Σ_ref is causal at all 3,001 points, with Im Σ_ref(−0.28) =
+−3.0e-3.</p>
+<h3 id="a4.-what-pruning-drops-deep-weakly-coupled-chain-end-holes">A4.
+What pruning drops: deep, weakly coupled chain-end holes</h3>
+<p>Unit 7 (removal, block 0), P(1e-3) against P(3e-4): - P(3e-4) ⊇
+P(1e-3), at the same depth (about 1,770 growth blocks). The 708k extra
+rows were <em>seen</em> by the 1e-3 run at every depth, with |w|² ≈ 1e-7
+(below η² = 1e-6 at every visit). - They carry holes on the chain ends.
+With one hole on the four ε = −0.278 end sites, there are 10× more rows
+in P(3e-4); with two holes, 840× more. - <strong>Graft
+intervention.</strong> Restrict admission at 3e-4 to an allowlist: -
+P(1e-3) + the 207k chain-end rows gives ΔG7(−0.28) = 3.0e-6 (from
+2.7e-4); - P(1e-3) + the other 501k rows gives 2.75e-4, no change. - So
+the chain-end rows <em>cause</em> the −0.28 error and the rest do
+nothing there. - <strong>E0b.</strong> Only the 101k chain-end rows one
+H-move away from P(1e-3) ∪ seeds are needed, giving 3.02e-6. The needed
+rows are on the frontier and get <em>rejected</em> there. They are not
+deeper parents that pruning never reached.</p>
+<p>Geometry: orbital 0 → site 14 (V = 0.232) → 13 → 12 → 11 → 10, with
+hoppings 0.061, <strong>0.021</strong>, 0.058, <strong>0.017</strong>.
+The end site 10 is reached through two weak bonds.</p>
+<p><strong>The mechanism.</strong> The admission rule tests the per-step
+Krylov amplitude |w_k(r)|², the amount transferred into row r by one
+application of H. For a weakly coupled site that is small at every step.
+Its contribution to G at a resonant frequency comes from the resolvent:
+⟨r|(z − H)⁻¹|s⟩ ~ Σ_k w_k(r)·(stuff)/(z − E), and it accumulates over
+many steps and is enhanced by 1/δ on resonance. A per-step amplitude
+threshold measures the <em>transfer rate</em>, not the <em>resonant
+weight</em>. Weak coupling is exactly what makes a bath level a sharp
+pole of Δ, so the rule’s blind spot coincides with Σ’s most fragile
+frequencies.</p>
+<h3 id="a5.-what-this-rules-out-and-why">A5. What this rules out, and
+why</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>candidate</th>
+<th>why it was dropped</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>raise δ</td>
+<td>hides the truncation (A1)</td>
+</tr>
+<tr>
+<td>mass rule / fill the cap fast (breadth-first)</td>
+<td>user decision: pruning exists so growth gets enough H applications
+to carry holes and electrons deep into the bath; a seed-dense P stops
+after a few applications. A mass run agreed with the reference only at a
+4M cap.</td>
+</tr>
+<tr>
+<td>tighter fixed η</td>
+<td>3e-4 costs about 3.6× the support and is still acausal when capped
+(+2.1e-4 at the production cap of 618,681)</td>
+</tr>
+<tr>
+<td>successive difference η → η/√10</td>
+<td>about 2× the cost of the accumulated rule; at the production cap
+round 2 caps anyway; an opt-in verifier at best</td>
+</tr>
+<tr>
+<td>PT2 / <code>sigma_error</code> trigger</td>
+<td>returns 0 in retained mode (K = P) and is non-perturbative at a
+pole</td>
+</tr>
+<tr>
+<td>capped rules in general</td>
+<td>the best capped rule (1e-4) misses Im Σ(−0.28) by 43 %; growth
+length does not order accuracy</td>
+</tr>
+<tr>
+<td><strong>K1: boost by the row’s diagonal energy</strong> (EN-style |z
+− H_ff|)</td>
+<td><strong>E0a: dead.</strong> Rows sit at H_ff − E0 = +2.5 to +6.8
+(medians), against the removal resonance at +0.28; none of 700k within
+0.02. Correlation offsets swamp the one-body ε. This also kills
+Epstein–Nesbet ranking and C5 completion rounds on this model.</td>
+</tr>
+</tbody>
+</table>
+<p>What survives: the information that a row matters is
+<strong>one-body</strong> (which bath orbital holds the hole), not
+many-body (the row’s energy). That is K1′.</p>
+<h3 id="a6.-k1-and-a-correction-to-what-was-first-reported">A6. K1′, and
+a correction to what was first reported</h3>
+<p><strong>Idea.</strong> Give each bath orbital i a weight B_i ≥ 1 that
+measures how strongly a hole (removal) or particle (addition) on i feeds
+the frequencies where |G0⁻¹|² is large. At each growth step a frontier
+row r is admitted if |w_k(r)|² · B(r) &gt; η², with B(r) = max over the
+bath orbitals where r deviates from the reference of B_i. The reference
+is valence full and conduction empty.</p>
+<p><strong>Correction.</strong> The first version evaluated ŵ =
+|G0⁻¹|²/median at each bath <em>site’s</em> diagonal energy ε_i. It
+reported a sharp contrast: 9.6 at the chain ends (ε = −0.278) against
+0.06–0.48 elsewhere. That is the wrong basis. The poles of Δ are the
+bath <em>eigenmodes</em>. In the mode basis, orbital 0’s chain has three
+resonant modes:</p>
+<table>
+<thead>
+<tr>
+<th>mode ε_m</th>
+<th>|V_m|²</th>
+<th>ŵ(ε_m)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>−0.3045</td>
+<td>5.6e-3</td>
+<td>5.4</td>
+</tr>
+<tr>
+<td>−0.2822</td>
+<td>2.1e-2</td>
+<td>11.1</td>
+</tr>
+<tr>
+<td>−0.2706</td>
+<td>1.5e-2</td>
+<td>7.2</td>
+</tr>
+<tr>
+<td>−0.1757</td>
+<td>4.4e-3</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>−0.1521</td>
+<td>9.8e-3</td>
+<td>1.4</td>
+</tr>
+</tbody>
+</table>
+<p>The per-site weight r_i = Σ_m |U_im|² ŵ(ε_m) is 8.7 on site 10, the
+end, and 3.0 / 4.3 / 4.6 / 5.6 on sites 11–14. That is a contrast of
+about 2, not about 20. The site-energy contrast was partly a coincidence
+of the end site sitting near the strongest mode.</p>
+<p><strong>Offline screen</strong>
+(<code>debug/smo_acausal/screen_tables.py</code>). For each candidate
+table, what fraction of the needed 101k rows and of the 501k do-nothing
+rows is lifted over η² = 1e-6? It uses the 3e-4 run’s admission |w|²,
+which is about 1e-7 for both sets. It is a screen, not a
+confirmation.</p>
+<table>
+<thead>
+<tr>
+<th>table</th>
+<th>needed rows lifted</th>
+<th>do-nothing rows lifted</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>site energy L(ε_i), every chain</td>
+<td>0.75</td>
+<td>0.000</td>
+</tr>
+<tr>
+<td>mode-projected r_i, own chain 10–14 only</td>
+<td>0.23</td>
+<td>0.012 (6k rows)</td>
+</tr>
+<tr>
+<td>mode-projected, own chain + spin partner 29–33</td>
+<td>0.30</td>
+<td>0.016</td>
+</tr>
+<tr>
+<td>oracle: 10 on the four chain ends</td>
+<td>0.72</td>
+<td>0.000</td>
+</tr>
+<tr>
+<td>oracle: 10 on orbital 10 only</td>
+<td>0.32</td>
+<td>0.000</td>
+</tr>
+</tbody>
+</table>
+<p>Two findings: 1. The needed rows hold their chain-end hole on all
+four ends: 45k on 10 (orbital 0’s own chain, spin up), 25k on 15
+(orbital 1’s chain), 17k on 29 (orbital 5, spin partner of 0), and 17k
+on 34 (orbital 6). A table built from block 0’s own G0 can name only
+site 10. 2. A table that lifts 75 % of the needed rows and none of the
+rest exists, but it is the site-energy table, whose physical
+justification was just corrected.</p>
+<p>So the open question is physical. <strong>Does unit 7’s G at −0.28
+need the other chains’ end holes (15, 29, 34), which couple to orbital 0
+only through U?</strong> If it does, the boost has to use every block’s
+resonances (the resonant bath orbitals of the <em>whole</em> model), not
+the unit’s own block. If it doesn’t, the block’s own mode-projected
+table is the principled choice, but it lifts only about a quarter of the
+needed rows at a boost of about 9, and the boost would have to be
+stronger or shaped differently.</p>
+<p>E0c, the graft split, measures this directly (Part B, step 0).</p>
+<h3
+id="a7.-the-physics-argument-for-a-model-wide-table-refuted-by-e0c-2026-11-18">A7.
+The physics argument for a model-wide table — REFUTED by E0c
+(2026-11-18)</h3>
+<p>E0c: rows with a hole on orbital 10 alone fix −0.28 (3.03e-6); rows
+with holes only on 15/29/34 do nothing. The unit’s own chain suffices.
+The argument below is kept for the record.</p>
+<p>A removal excitation at ω = −0.28 creates a hole that propagates from
+orbital 0 into its chain. The orbital-0 spectral weight at −0.28 belongs
+to many-body states in which the hole sits mostly in the −0.28 mode of
+chain 10–14. In a correlated ground state, though, that excitation
+dresses itself through U with particle–hole pairs on the other e_g
+orbitals (1, 5, 6). Chain 29–33, the spin partner, has an identical
+spectrum (verified to 5e-16). The ends of chains 15–19 and 34–38 sit at
+the same ε = −0.278, but their mode weights in orbitals 1 and 6’s G0 are
+not computed yet. A pair whose hole sits in a resonant mode of
+<em>another</em> chain is nearly degenerate with the excitation itself,
+so its amplitude is resonantly enhanced in exactly the same way. That
+predicts the other ends do matter, and that the right table is
+model-wide: B_i from the resonant modes of the block that owns orbital
+i, evaluated against the <em>unit’s</em> frequency window. E0c tests
+this prediction.</p>
+<h3 id="a8.-why-k1-can-be-cheap-and-safe">A8. Why K1′ can be cheap and
+safe</h3>
+<ul>
+<li><strong>One-body data only:</strong> h_bath, the impurity–bath
+hoppings, G0⁻¹ on the mesh. These are computed once per Σ evaluation, on
+rank 0, the way <code>_refine_tables</code> does it. No extra H
+applications, no growth passes.</li>
+<li><strong>Per row it costs bit tests:</strong> mask the key against
+the resonant orbitals’ bits. Only rows in the band η²/B_max &lt; |w|² ≤
+η² need testing, a small slice of the frontier.</li>
+<li><strong>Floored at 1:</strong> where no bath level is a sharp pole
+(metals, NiO), every B_i is ≈ 1 and the rule reduces to the amplitude
+rule. A boost can only <em>add</em> rows, so accuracy cannot get worse;
+the risk is cost.</li>
+<li><strong>Keeps depth:</strong> it does not fill the cap with
+near-seed rows, which respects the user’s constraint. It changes
+<em>which</em> frontier rows are kept, not how many H applications
+growth gets.</li>
+<li><strong>Rank-invariant:</strong> B(r) depends only on the
+determinant and replicated tables.</li>
+</ul>
+<p>Cost on SMO unit 7: about +100k rows on a P of 337k (+30 %). The
+per-step growth cost scales with |P|.</p>
+<hr />
+<h2 id="part-b-implementation-plan">Part B — implementation plan</h2>
+<h3 id="step-0-gate-measurements-no-library-code">Step 0 — gate
+(measurements, no library code)</h3>
+<ol type="1">
+<li><strong>E0c graft split (running).</strong> Unit 7 at 3e-4,
+allowlist = P(1e-3) ∪ seeds plus one of:
+<ul>
+<li><ol type="a">
+<li>the 45,210 hop-1 rows with a hole on orbital 10;</li>
+</ol></li>
+<li><ol start="2" type="a">
+<li>the 55,910 hop-1 rows with chain-end holes only on 15, 29, 34.</li>
+</ol></li>
+</ul>
+ΔG7(−0.28) against <code>p1/e_u7_3e-4.pkl</code>, compared with 3.0e-6
+for both together. Outcomes:
+<ul>
+<li><ol type="a">
+<li>alone fixes it: own-block table, then step 0.2;</li>
+</ol></li>
+<li><ol start="2" type="a">
+<li>is needed: model-wide table (A7);</li>
+</ol></li>
+<li>neither alone works: model-wide table, and the max over orbitals
+stays.</li>
+</ul></li>
+<li><strong>Table shape, offline.</strong> With the outcome of 0.1,
+compute the candidate table from first principles: B_i = max over the
+blocks b that i couples into of Σ_m |U_im|² ŵ_b(ε_m), with ŵ_b =
+‖G0,b⁻¹‖²/median. Then repeat the screen. Shaping options, judged on the
+screen:
+<ul>
+<li>exponent: B_i^γ;</li>
+<li>max vs sum over a row’s deviated orbitals;</li>
+<li>resolving ŵ_b on the modes’ own Lorentzians rather than the nearest
+mesh point.</li>
+</ul>
+<strong>Reject</strong> any shape with a free parameter tuned to SMO
+that cannot be stated from physics.</li>
+<li><strong>E1 prototype</strong> (debug monkeypatch in
+<code>unit_replay.py</code>, <code>--boost TABLE</code>). It wraps
+<code>_Admission._pruned</code>, multiplying <code>norms2</code> by B(r)
+before the selection. Unit 7 at 1e-3, plus controls:
+<ul>
+<li>B ≡ c, a uniform boost with the same mean admitted count. This tells
+K1′ apart from “just lower η”;</li>
+<li>the own-block table vs the model-wide table;</li>
+<li>growth forced to 2× length (P must not change much);</li>
+<li>E1-stop: record the boosted rejected weight per step, and find where
+a stop criterion would have fired.</li>
+</ul>
+Pass: ΔG7 ≤ 1e-5 on [−0.32, −0.24]; |P| well below P(3e-4)’s 1.05M; the
+uniform control does not pass at the same |P|.</li>
+<li><strong>E2: all removal units 4–7 plus addition units 0–3</strong>,
+and assemble Σ. Pass: Σ causal at all 3,001 points; the spin linearity
+G5 = (2G4 + G7)/3 holds to the reference’s 8.4e-5. Then the production
+cap of 618,681: report whether units cap, and Σ there.</li>
+</ol>
+<p><strong>Decision point.</strong> The library work below starts only
+after step 0 passes, and after an adversarial physics + numerics review
+of this plan with the step 0 numbers filled in. If step 0 fails, K1′ is
+dropped, and the fallback is rev. 4’s K2/K3 list.</p>
+<h3 id="step-1-the-table-library-gf_refinement.py-selfenergy.py">Step 1
+— the table (library, <code>gf_refinement.py</code> +
+<code>selfenergy.py</code>)</h3>
+<ul>
+<li><code>resonance_boost_table(h_bath, v_full, g0_inv_of, omega_mesh, delta, blocks, n_orb, side)</code>
+in <code>gf_refinement.py</code> returns a float array of length n_orb
+(1 on the impurity orbitals).</li>
+<li>Computed in <code>selfenergy._refine_tables</code>, which already
+builds G0⁻¹ per block on rank 0 and broadcasts. The table rides in the
+same broadcast, so it stays replicated: a rank-local <code>eigh</code>
+would break rank invariance (the reason <code>_refine_tables</code>
+exists).</li>
+<li>Signed by side:
+<ul>
+<li>removal boosts holes in valence bath orbitals;</li>
+<li>addition boosts particles in conduction bath orbitals;</li>
+<li>each frequency is mapped by the same sign convention as
+<code>unit_refine_spec</code> (the removal frame is ω ↔︎ −ω).</li>
+</ul></li>
+<li>Floor at 1, cap at <code>B_MAX</code>, one named module constant
+with a docstring (no duplicated tolerance literals).</li>
+<li>Bits follow the MSB-first orbital convention
+(<code>orbital i = bit 7 − i % 8 of byte i // 8</code>). The table
+becomes a short list of (level, byte mask) pairs, so a row’s boost is
+the largest level whose mask hits a deviation.</li>
+</ul>
+<h3 id="step-2-the-admission-library-gf_recurrence.py">Step 2 — the
+admission (library, <code>gf_recurrence.py</code>)</h3>
+<ul>
+<li><code>_Admission._pruned</code>: before <code>sel</code>, rows with
+η²/B_max &lt; norms2 ≤ η² get norms2 ← norms2 · B(r).
+<ul>
+<li>B(r) comes from <code>keys_of(slots[band])</code>, only for that
+band.</li>
+<li>Applied to the amplitude and accumulated rules alike (under
+<code>accumulated</code>, to the totals). Not under the first shell,
+which uses <code>first_shell_tol</code>.</li>
+<li>The boosted norms2 also feeds <code>_top_and_freeze</code>, so at
+the cap the ranking prefers resonant rows. This is the cap-bound case’s
+selection, which no capped rule got right before (A5).</li>
+</ul></li>
+<li>The collective structure stays the same: no new collectives, and the
+same <code>allreduce_sum(len(slots))</code>.</li>
+<li>Retained and discovered modes both go through
+<code>_Admission</code>, so both get the boost.</li>
+<li>Diagnostics: count the rows admitted only because of the boost,
+packed into the existing reductions of <code>cap_stats</code> (no new
+collective). Add a log line per run listing the resonant bath orbitals
+with their B_i and the modes behind them, so a user can see which bath
+levels are being protected.</li>
+</ul>
+<h3 id="step-3-option-and-defaults">Step 3 — option and defaults</h3>
+<ul>
+<li><code>gf_prune_boost: {"auto", "off"}</code> in
+<code>options.py</code>, <code>auto</code> by default while pruning is
+on. That follows the user decision that pruning and refinement stay
+default ON. A knob read from the environment, if added, is registered
+uniform and checked by <code>config.assert_uniform</code>.</li>
+<li><code>off</code> reproduces today’s admission bit for bit (a test
+asserts it).</li>
+</ul>
+<h3 id="step-4-tests">Step 4 — tests</h3>
+<ol type="1">
+<li><strong>Table unit tests.</strong>
+<ul>
+<li>A synthetic star bath with one weakly coupled level at ω₀: that
+level’s B_i is maximal and the others are ≈ 1.</li>
+<li>A flat, metallic bath: every B_i is ≈ 1 (≤ 1 + ε).</li>
+<li>The side sign convention.</li>
+<li>Mode vs site basis: a rotated bath gives the same table after
+rotating back.</li>
+</ul></li>
+<li><strong>Mask tests:</strong> bits for orbitals 0, 7, 8, 63
+(MSB-first), and multi-byte keys.</li>
+<li><strong>Fixture test</strong> (inject-a-bug discipline): a small
+impurity + weak-end chain model where the 1e-3 amplitude rule leaves a
+measurable ΔG at the resonance against an unpruned oracle, and the boost
+removes it. With the boost disabled inside the test, the assertion must
+fail.</li>
+<li><strong><code>off</code> parity:</strong> P and G bitwise equal to
+the current rule.</li>
+<li><strong>MPI:</strong> targeted <code>-n 1</code>,
+<code>-n 2 --with-mpi</code>, <code>-n 3</code>, since admission feeds
+collectives and an empty rank must still take part. Parity of the
+admitted count across rank counts, within the layout noise the current
+rule already has.</li>
+<li><strong>Regressions:</strong> the NiO 5-bath and metal fixtures
+(<code>doc/gf_support_pipeline.md</code>) keep Σ, with |P| growth
+reported. The full gate (<code>-n 1/2/3</code>) runs once, at the end of
+the series.</li>
+</ol>
+<h3 id="step-5-validation-local-only">Step 5 — validation (local
+only)</h3>
+<ul>
+<li>End to end:
+<code>freeze_replay run debug/smo_causality/smo.h5 --iteration 1</code>
+at defaults. Σ causal at δ = 0.01, wall time against A’s 9.5k s.</li>
+<li>NiO 5-bath iteration 8 (Σ and wall time against 6.1 s / 20.7
+s).</li>
+<li>LMO: no local run. The new log line (resonant orbitals, rows
+admitted by the boost) is the check on the next user run.</li>
+<li>Adversarial review (physics + numerics, Opus) of the diff and the
+end-to-end numbers.</li>
+</ul>
+<h3
+id="commit-series-single-concern-each-after-step-0-and-its-review">Commit
+series (single concern each, after step 0 and its review)</h3>
+<ol type="1">
+<li><code>gf refinement: resonance boost table from the bath modes and G0^-1</code>
+(+ table tests)</li>
+<li><code>gf selfenergy: the boost table rides the replicated refine-table broadcast</code></li>
+<li><code>gf growth: resonant frontier rows admitted by boosted amplitude</code>
+(+ fixture, mask, parity tests)</li>
+<li><code>gf growth: rows admitted by the boost reported in cap_stats and the unit timing line</code></li>
+<li><code>options: gf_prune_boost (auto|off)</code> + docs
+(<code>doc/known_issues.md</code>: the SMO violation was a
+truncation)</li>
+</ol>
+<h3 id="not-addressed-by-k1-stays-open">Not addressed by K1′ (stays
+open)</h3>
+<ul>
+<li><strong>The −0.81 error.</strong> ΔG7 = 8.8e-4 at −0.81 persists in
+every graft, and it needs both row sets. It is a second truncation, not
+near a chain resonance of orbital 0. It is causal today, but it is the
+largest remaining ΔG.</li>
+<li><strong>The cap-bound case.</strong> K1′ improves the cap-time
+ranking, but whether the production cap holds enough rows is measured in
+E2, not assumed.</li>
+<li><strong>LMO’s slow growth.</strong> K1′ adds rows, so it does not
+make growth cheaper. Only the E1-stop result could.</li>
+</ul>
+</body>
+</html>
