@@ -211,6 +211,7 @@ def prepare_solver_basis(
     shell_ls=None,
     interaction_merges_blocks=True,
     bath_split=None,
+    operators=None,
 ):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
@@ -226,6 +227,9 @@ def prepare_solver_basis(
     ``shell_ls`` (``l`` of each column block of an ndarray ``rot_to_spherical``) marks a multi-shell impurity.
     Every orbital group must lie in one shell, and ``nominal_occ`` may be keyed
     by shell. ``None`` (or one shell) is the single-shell path, unchanged.
+
+    ``operators`` (a :class:`~impurityModel.ed.local_operators.LocalOperators`) supplies the spin ladder for the
+    impurity pairing when it did not come from ``rot_to_spherical`` (see :func:`spin_pairs.spin_layout`).
 
     ``interaction_merges_blocks=False`` takes the one-body Green's-function blocks as authoritative: an
     interaction coupling two of them is neglected (and reported on rank 0) instead of merging them.
@@ -370,7 +374,7 @@ def prepare_solver_basis(
         if deep_groups and len(deep_groups) < len(impurity_orbitals):
             seed_window = SeedWindow(deep_groups)
     spin_layout = resolve_spin_layout(
-        h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm, shell_ls=shell_ls
+        h, impurity_orbitals, bath_states, rot_to_spherical, n_spin_orbitals, comm=comm, shell_ls=shell_ls, operators=operators
     )
     return SolverBasis(
         h=h,

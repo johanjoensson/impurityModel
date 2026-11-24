@@ -243,7 +243,8 @@ def _block_model_inputs(model, hOp):
         conduction_baths[model.valence_shell] = [list(conduction_flat)]
     local_row = {o: k for k, o in enumerate(impurity_indices)}
     rotations = {a: rot[[local_row[o] for o in r]][:, slices[a]] for a, r in rows.items()}
-    operators = IndexedOperators(rows, rotations, {a: shell_ls[a] for a in rows})
+    supplied = model.operators.dipole if model.operators is not None else None
+    operators = IndexedOperators(rows, rotations, {a: shell_ls[a] for a in rows}, default_dipole=supplied)
     return impurity_orbitals, valence_baths, conduction_baths, dict(rotations), operators
 
 

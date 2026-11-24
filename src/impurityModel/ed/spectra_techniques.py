@@ -122,9 +122,13 @@ class IndexedOperators:
         ``{shell key: R_a}``, the ``(len(rows[a]), 2(2 l_a + 1))`` block of ``rot_to_spherical``.
     ls : Mapping
         ``{shell key: l}``, the angular momentum of each shell.
+    default_dipole : ndarray or None
+        ``(3, n_imp, n_imp)`` dipole supplied with the model (:attr:`LocalOperators.dipole`, RSPt's ``Dxyz``);
+        used whenever a call passes no ``explicit`` matrix, ahead of the atomic Gaunt dipole.
     """
 
-    def __init__(self, rows, rotations, ls):
+    def __init__(self, rows, rotations, ls, default_dipole=None):
+        self.default_dipole = None if default_dipole is None else np.asarray(default_dipole)
         self.rows = {k: list(v) for k, v in rows.items()}
         self.rotations = {k: np.asarray(v) for k, v in rotations.items()}
         self.ls = dict(ls)
@@ -167,6 +171,8 @@ class IndexedOperators:
 
     def dipole(self, vectors, core, valence, explicit=None):
         out = []
+        if explicit is None:
+            explicit = self.default_dipole
         for n in vectors:
             m = self._matrix(n, core, valence) if explicit is None else self._explicit(n, explicit, core, valence)
             out.append(self._dict(m, core, valence))

@@ -24,6 +24,7 @@ import numpy as np
 from impurityModel.ed import atomic_physics, h0_format
 from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator, get_noninteracting_hamiltonian_operator
 from impurityModel.ed.lie_algebra import tensors_to_operator
+from impurityModel.ed.local_operators import LocalOperators
 from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
 from impurityModel.ed.options import (
     BasisOptions,
@@ -179,6 +180,9 @@ class ImpurityModel:
         For a block model (ndarray ``rot_to_spherical`` with ``shell_ls``): the indices into
         ``shell_ls`` of the valence and of the core shell. The spectra driver needs them to say which
         shell the transition operators leave and enter; ``core_shell=None`` is a model without a core.
+    operators : LocalOperators or None, optional
+        One-body spin/orbital/dipole operators in the input basis, as supplied by RSPt or a ``.h0`` file.
+        ``None`` means :attr:`resolved_operators` rebuilds them from ``rot_to_spherical`` and ``shell_ls``.
     """
 
     h0: dict
@@ -193,6 +197,7 @@ class ImpurityModel:
     shell_ls: Optional[tuple] = None
     valence_shell: Optional[int] = None
     core_shell: Optional[int] = None
+    operators: Optional[LocalOperators] = None
 
     def __post_init__(self):
         # Derive the spin-orbital count from h0 when the caller did not supply it. h0 is a
@@ -208,6 +213,15 @@ class ImpurityModel:
         from impurityModel.ed.observables import resolve_shell_ls
 
         return tuple(resolve_shell_ls(self.rot_to_spherical, self.shell_ls))
+
+    @property
+    def resolved_operators(self) -> Optional[LocalOperators]:
+        """The supplied operator set, else the spherical one from ``rot_to_spherical``; ``None`` for a dict rotation."""
+        if self.operators is not None:
+            return self.operators
+        if isinstance(self.rot_to_spherical, dict):
+            return None
+        return LocalOperators.from_spherical(self.rot_to_spherical, self.resolved_shell_ls)
 
     @property
     def impurity_indices(self) -> list:
@@ -509,6 +523,7 @@ class ImpurityModel:
             u4=u4,
             rot_to_spherical=rot,
             bath_valence_conduction=bath_valence_conduction,
+            operators=parsed.operators,
         )
 
     @classmethod
@@ -784,6 +799,7 @@ class ImpurityModel:
         shell_ls=None,
         valence_shell: Optional[int] = None,
         core_shell: Optional[int] = None,
+        operators: Optional[LocalOperators] = None,
     ) -> "ImpurityModel":
         """Build a model from the full one-particle solver matrix ``H`` (impurity block first).
 
@@ -835,6 +851,7 @@ class ImpurityModel:
             shell_ls=tuple(int(l) for l in shell_ls) if shell_ls is not None else None,
             valence_shell=None if valence_shell is None else int(valence_shell),
             core_shell=None if core_shell is None else int(core_shell),
+            operators=operators,
         )
 
     @classmethod
@@ -851,6 +868,7 @@ class ImpurityModel:
         shell_ls=None,
         valence_shell: Optional[int] = None,
         core_shell: Optional[int] = None,
+        operators: Optional[LocalOperators] = None,
     ) -> "ImpurityModel":
         """Build a model from the impurity / hybridization / bath blocks.
 
@@ -869,7 +887,7 @@ class ImpurityModel:
             ``assemble_h0`` returns ``v_solver``).
         H_bath : numpy.ndarray
             Bath block, ``(n_bath, n_bath)``.
-        dc, u4, rot_to_spherical, bath_valence_conduction, shell_ls, valence_shell, core_shell
+        dc, u4, rot_to_spherical, bath_valence_conduction, shell_ls, valence_shell, core_shell, operators
             As in :meth:`from_solver_matrix`.
 
         Returns
@@ -896,6 +914,7 @@ class ImpurityModel:
             shell_ls=shell_ls,
             valence_shell=valence_shell,
             core_shell=core_shell,
+            operators=operators,
         )
 
 

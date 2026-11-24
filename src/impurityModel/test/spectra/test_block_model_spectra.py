@@ -142,6 +142,23 @@ def test_an_explicit_dipole_equal_to_the_atomic_one_changes_nothing_and_scales_q
         )
 
 
+def test_a_dipole_carried_by_the_model_equals_the_xas_option_and_the_option_overrides_it(labelled):
+    from impurityModel.ed.local_operators import LocalOperators
+
+    model, basis = labelled
+    block = _block_twin(model)
+    w = np.linspace(-6, 6, 41)
+    d = _atomic_dipole(block)
+    via_option = _run(block, [XASOptions(w=w, delta=0.3, dipole=3.0 * d)], basis)
+    ops = LocalOperators(sz=np.zeros((8, 8)), dipole=3.0 * d, source="rspt", frame="global")
+    carried = _run(_block_twin(model, operators=ops), [XASOptions(w=w, delta=0.3)], basis)
+    _assert_same(carried, via_option, ("XAS/tensor",))
+    # the run option wins over what the model carries
+    overridden = _run(_block_twin(model, operators=ops), [XASOptions(w=w, delta=0.3, dipole=d)], basis)
+    atomic = _run(block, [XASOptions(w=w, delta=0.3)], basis)
+    _assert_same(overridden, atomic, ("XAS/tensor",))
+
+
 def test_a_dipole_with_the_valence_and_core_blocks_swapped_is_not_the_atomic_spectrum(labelled):
     """The equalities above must be able to fail: a transposed (core <- valence) dipole gives another spectrum."""
     model, basis = labelled

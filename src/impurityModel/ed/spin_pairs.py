@@ -229,6 +229,7 @@ _GRADE_TEXT = {"su2": "SU(2)", "collinear": "collinear", "sz_only": "S_z only", 
 _SOURCE_TEXT = {
     "index": "index",
     "rotation": "rotation",
+    "operators": "supplied S_+",
     "matched_energies": "matched energies",
     "chain_position": "chain position",
 }
@@ -339,14 +340,36 @@ def _invalid_pairs(pairs, orbitals, cover):
     return None
 
 
-def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls=None):
+def _pairs_from_operators(impurity_orbitals, operators):
+    """Pairs from a supplied (not spherically rebuilt) ``S_+`` over the sorted impurity orbitals, or ``None``."""
+    if operators is None or operators.s_plus is None or operators.source == "spherical":
+        return None
+    orbs = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+    if operators.s_plus.shape[0] != len(orbs):
+        return None
+    return _pairs_from_splus_matrix(orbs, operators.s_plus)
+
+
+def _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls=None, operators=None):
     """``[(pairs, source)]`` in order of trust, and the reasons candidates were dropped."""
     imp_orbs = {orb for blocks in impurity_orbitals.values() for block in blocks for orb in block}
     index = impurity_spin_pairs(impurity_orbitals)
+    supplied = _pairs_from_operators(impurity_orbitals, operators)
+    rejected_first, candidates_first = [], []
+    if operators is not None and operators.s_plus is not None and operators.source != "spherical":
+        if supplied is None:
+            rejected_first.append("operators: the supplied S_+ is not a clean dn -> up permutation (spin-orbit coupling?)")
+        else:
+            supplied = sorted((int(dn), int(up)) for dn, up in supplied)
+            bad = _invalid_pairs(supplied, imp_orbs, True)
+            if bad is not None:
+                rejected_first.append(f"operators: {bad}")
+            else:
+                candidates_first.append((supplied, "operators"))
     rotation = _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol)
     if rotation is None:
         rotation = _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol, shell_ls)
-    rejected, candidates = [], []
+    rejected, candidates = rejected_first, candidates_first
     if rotation is None and rot_to_spherical is not None:
         rejected.append(
             "rotation: the spherical S_+ rotated to the solver basis is not a clean dn -> up permutation "
@@ -387,7 +410,9 @@ def _bath_pairs_positional(h, imp_pairs, impurity, n_orb, cut):
     return sorted(up_of.items()), None
 
 
-def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None, shell_ls=None):
+def spin_layout(
+    h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6, *, comm=None, shell_ls=None, operators=None
+):
     r"""Resolve the ``(dn, up)`` pairing of impurity and bath and grade how much of it ``H`` verifies.
 
     Total: always returns a :class:`SpinLayout`. With a ``comm`` the layout is resolved on rank 0
@@ -420,20 +445,23 @@ def spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, t
         Resolve on its rank 0 and broadcast.
     shell_ls : tuple of int, optional
         ``l`` of each column block of an ndarray ``rot_to_spherical`` holding several shells.
+    operators : LocalOperators, optional
+        A supplied operator set (RSPt, ``.h0`` file); its ``S_+`` is the first impurity-pair candidate, ahead of
+        the spherical rebuild, which an operator set with ``source="spherical"`` merely repeats.
 
     Returns
     -------
     SpinLayout
     """
     layout = (
-        _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol, shell_ls)
+        _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol, shell_ls, operators)
         if comm is None or comm.rank == 0
         else None
     )
     return layout if comm is None else comm.bcast(layout, root=0)
 
 
-def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol, shell_ls=None):
+def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol, shell_ls=None, operators=None):
     if not hasattr(h_op, "commutator"):
         h_op = ManyBodyOperator(dict(h_op))
     h = extract_tensors(h_op, n_orb=n_orb, two_body=False)[0]
@@ -441,7 +469,7 @@ def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, 
     impurity = sorted(impurity_orbs)
     scale = max((abs(v) for v in h_op.values()), default=0.0)
     cut = PARITY_TERM_TOL * scale
-    candidates, rejected = _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls)
+    candidates, rejected = _impurity_candidates(impurity_orbitals, rot_to_spherical, tol, shell_ls, operators)
     for imp_pairs, imp_source in candidates:
         if not imp_pairs:
             continue

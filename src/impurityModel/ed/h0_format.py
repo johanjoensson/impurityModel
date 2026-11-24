@@ -24,6 +24,8 @@ from typing import Optional
 
 import numpy as np
 
+from impurityModel.ed.local_operators import LocalOperators, operators_from_header, operators_to_header
+
 #: Highest format version this module understands.
 SPEC_VERSION = 1
 
@@ -125,6 +127,8 @@ class H0File:
         and the labels would mislead rather than approximate.
     producer : dict or None
         Which package and cluster wrote the file, for provenance.
+    operators : LocalOperators or None
+        The header's ``operators`` block (spin/orbital/dipole matrices in the impurity basis), if present.
     header : dict
         The raw header, for keys this dataclass does not promote.
     """
@@ -145,6 +149,7 @@ class H0File:
     fermi_energy: Optional[float] = None
     bath_geometry: Optional[str] = None
     producer: Optional[dict] = None
+    operators: Optional[LocalOperators] = None
     header: dict = field(default_factory=dict)
 
     @property
@@ -342,6 +347,14 @@ def _rot_from_header(header):
     return arr[..., 0] + 1j * arr[..., 1]
 
 
+def _operators_from_header(path, header):
+    try:
+        ops = operators_from_header(header.get("operators"))
+    except (ValueError, KeyError) as exc:
+        raise H0FormatError(f"{path}: malformed operators block: {exc}") from exc
+    return ops
+
+
 def read_h0_file(path):
     """Read a ``.h0`` file.
 
@@ -423,6 +436,7 @@ def read_h0_file(path):
         # Recorded in the file's own unit, like every other energy in it.
         fermi_energy=None if header.get("fermi_energy") is None else float(header["fermi_energy"]) * scale,
         bath_geometry=header.get("bath_geometry"),
+        operators=_operators_from_header(path, header),
         producer=header.get("producer"),
         header=header,
     )
@@ -492,7 +506,8 @@ def write_h0_file(
         ``"down_first"`` or ``"up_first"``. Added to ``required_features`` when given, so a
         reader that does not understand it must refuse rather than silently guess.
     **header_extra
-        Any further header keys (``basis``, ``rot_to_spherical``, ``interaction``, ...).
+        Any further header keys (``basis``, ``rot_to_spherical``, ``interaction``, ...). ``operators`` may be
+        a :class:`~impurityModel.ed.local_operators.LocalOperators`, written as the header's ``operators`` block.
 
     Raises
     ------
@@ -525,6 +540,9 @@ def write_h0_file(
     if rot is not None:
         rot = np.asarray(rot, dtype=complex)
         header["rot_to_spherical"] = [[[float(v.real), float(v.imag)] for v in row] for row in rot]
+    operators = header_extra.pop("operators", None)
+    if operators is not None:
+        header["operators"] = operators_to_header(operators)
     if spin_ordering is not None:
         header["required_features"].append("spin_ordering")
         header["spin_ordering"] = spin_ordering

@@ -15,6 +15,7 @@ from mpi4py import MPI
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.degeneracy import MANIFOLD_TOL, degenerate_groups
+from impurityModel.ed.local_operators import shell_operator_matrices, single_particle_lsj_matrices
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, block_inner_cy, inner
 from impurityModel.ed.utils import rotate_matrix
 
@@ -224,31 +225,7 @@ def get_Sz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
 
 
-def _single_particle_lsj_matrices(l):
-    r"""Single-particle ``L`` and ``S`` operator matrices in the spherical basis.
-
-    Layout: a ``2*(2l+1)`` space whose first ``2l+1`` orbitals are spin-down
-    (:math:`m_s=-1/2`, ``ml=-l..l``) and the next ``2l+1`` are spin-up — matching the
-    ``get_*_from_rho_spherical`` helpers.
-
-    Returns
-    -------
-    (lz, lplus, lminus, sz, splus, sminus) : tuple of np.ndarray
-        Each of shape ``(2*(2l+1), 2*(2l+1))``.
-    """
-    n = 2 * l + 1
-    mls = np.arange(-l, l + 1)
-    llp1 = l * (l + 1)
-    zeros = np.zeros((n, n))
-    eye = np.eye(n)
-    lz = np.diag(np.concatenate((mls, mls)).astype(float)).astype(complex)
-    sz = np.diag(np.concatenate((-0.5 * np.ones(n), 0.5 * np.ones(n)))).astype(complex)
-    lplus_block = np.diag([np.sqrt(llp1 - ml * (ml + 1)) for ml in mls[:-1]], k=-1)
-    lplus = np.block([[lplus_block, zeros], [zeros, lplus_block]]).astype(complex)
-    lminus = lplus.conj().T
-    splus = np.block([[zeros, zeros], [eye, zeros]]).astype(complex)
-    sminus = splus.conj().T
-    return lz, lplus, lminus, sz, splus, sminus
+_single_particle_lsj_matrices = single_particle_lsj_matrices
 
 
 def get_LS_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float:
@@ -782,13 +759,14 @@ def _multishell_casimir_operators(impurity_orbitals, rot_to_spherical, shell_ls,
     if rot.shape[0] != len(orbs):
         raise ValueError(f"rotation has {rot.shape[0]} rows for {len(orbs)} impurity orbitals")
     per_shell_ops, complete, totals = {}, True, [ManyBodyOperator() for _ in range(6)]
-    for a, (l_a, cols) in enumerate(zip(shell_ls, shell_column_slices(shell_ls))):
+    for a, (l_a, cols, comps) in enumerate(
+        zip(shell_ls, shell_column_slices(shell_ls), shell_operator_matrices(rot, shell_ls))
+    ):
         R_a = rot[:, cols]
         shell_complete = np.allclose(R_a.conj().T @ R_a, np.eye(R_a.shape[1]), atol=1e-8)
         complete = complete and shell_complete
         shell = []
-        for matrix in _single_particle_lsj_matrices(l_a):
-            comp = R_a @ matrix @ R_a.conj().T
+        for comp in comps:
             shell.append(
                 ManyBodyOperator(
                     {
