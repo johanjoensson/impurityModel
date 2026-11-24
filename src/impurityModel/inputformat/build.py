@@ -487,8 +487,8 @@ def _model_from_matrix_source(resolved, source, valence, core):
 def _build_model(resolved, header, notes, rank, verbose):
     """Construct the ImpurityModel through the existing dispatch points, never around them."""
     from impurityModel.ed.archive import load_selfenergy_archive
-    from impurityModel.ed.get_spectra import build_spectra_model
     from impurityModel.ed.model import load_model
+    from impurityModel.ed.spectroscopy import build_spectra_model
 
     shells = resolved.shells
     valence = next(shell for shell in shells if shell["role"] == "valence")

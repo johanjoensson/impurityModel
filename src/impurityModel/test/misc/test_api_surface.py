@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from impurityModel.ed.get_spectra import _resolve_shell_roles
+from impurityModel.ed.spectroscopy import _resolve_shell_roles
 
 
 def test_every_name_the_api_exports_resolves():

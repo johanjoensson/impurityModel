@@ -3,7 +3,6 @@
 import numpy as np
 import pytest
 
-from impurityModel.ed.get_spectra import requests_from_legacy_options
 from impurityModel.ed.options import (
     NIXSOptions,
     PESOptions,
@@ -12,6 +11,7 @@ from impurityModel.ed.options import (
     XASOptions,
     XPSOptions,
 )
+from impurityModel.ed.spectroscopy import requests_from_legacy_options
 
 RADIAL = (np.linspace(0, 1, 4), np.ones(4), np.ones(4))
 

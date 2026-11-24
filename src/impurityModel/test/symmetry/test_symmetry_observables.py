@@ -1477,7 +1477,7 @@ def test_compute_shell_observables_matches_many_body_casimir_path_with_rotation(
 
 def test_compute_shell_observables_single_key_dict_matches_no_dict():
     """A dict with exactly one shell (e.g. a plain d-shell spectra run, no core hole --
-    `get_spectra.py` always passes a dict, even with a single correlated l) must agree
+    `spectroscopy.py` always passes a dict, even with a single correlated l) must agree
     with the `impurity_orbitals=None` aggregate path, for both an identity and a
     non-trivial rotation. Every printer test above exercises `impurity_orbitals=None`
     (the never-actually-used-in-production case); production's *single*-shell case is

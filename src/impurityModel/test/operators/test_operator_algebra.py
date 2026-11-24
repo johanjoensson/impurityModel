@@ -7,7 +7,7 @@ from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
 from impurityModel.ed.operator_algebra import assert_hermitian, c2i, combineOp, daggerOp, iOpToMatrix, op2Dict
 from impurityModel.ed.transition_operators import dipole_operator
 
-# 2p first, then 3d with 10 bath states -- the shell order get_spectra uses, which makes the
+# 2p first, then 3d with 10 bath states -- the shell order spectroscopy uses, which makes the
 # dipole operator c^dagger_3d c_2p (absorption). The projectors below act on the 3d block.
 _NBATHS = OrderedDict([(1, 0), (2, 10)])
 _D_LABELS = [(2, s, m) for s in range(2) for m in range(-2, 3)]

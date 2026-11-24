@@ -345,7 +345,7 @@ def test_acceptance_gate_discovery_refines_pd_block_structure():
     op = ManyBodyOperator(terms)
 
     discovered = discovered_orbital_blocks(op, 16)
-    hand_coded = [list(range(6)), list(range(6, 16))]  # get_spectra.py p/d blocks
+    hand_coded = [list(range(6)), list(range(6, 16))]  # spectroscopy.py p/d blocks
 
     # Matches or refines the hand-coded structure (never coarsens it).
     assert blocks_refine_or_match(discovered, hand_coded)

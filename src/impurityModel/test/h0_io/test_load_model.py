@@ -83,7 +83,7 @@ def test_read_h0_operator_refuses_a_flat_file_without_basis_guarantees(tmp_path)
 
 def test_read_h0_operator_reads_a_flat_file_with_the_guarantees(tmp_path):
     """Unlike before, a `.h0` that declares basis/spin_ordering is now interpretable here --
-    it is what the spectra path (via `get_spectra.build_spectra_model`) now reads.
+    it is what the spectra path (via `spectroscopy.build_spectra_model`) now reads.
     """
     path = tmp_path / "model.h0"
     h = _flat_matrix()

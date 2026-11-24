@@ -2,11 +2,11 @@
 
 import inspect
 
-from impurityModel.ed import get_spectra
+from impurityModel.ed import spectroscopy
 
 
 def _spec_source():
-    src = inspect.getsource(get_spectra.run_spectra)
+    src = inspect.getsource(spectroscopy.calc_spectroscopy)
     start = src.index("gs_spec = GroundStateSpec(")
     return src[start : src.index(")\n    basis_setup", start)]
 
@@ -23,4 +23,4 @@ def test_the_spectra_ground_state_keeps_the_complete_multiplet():
 
 
 def test_run_spectra_accepts_the_solver_options():
-    assert "solver" in inspect.signature(get_spectra.run_spectra).parameters
+    assert "solver" in inspect.signature(spectroscopy.run_spectra).parameters

@@ -122,7 +122,7 @@ def build_selfenergy_inputs(
     # with ligand->d covalency; interior to the window, so the DC, not the window, sets it).
     #
     # NOTE: this is a d-ONLY valence model (h0_NiO pickle has only l=2; no explicit 2p core). The
-    # full 2p3d form dc[2] = Udd*n3d + Upd*n2p - c (the get_spectra path, using n0imp_p / Fpd /
+    # full 2p3d form dc[2] = Udd*n3d + Upd*n2p - c (the spectroscopy path, using n0imp_p / Fpd /
     # Gpd) includes the p-d mean field precisely because that model carries the explicit 2p-3d
     # Coulomb which cancels it; adding Upd*n2p here (no such interaction to cancel) over-subtracts
     # ~50 eV and fills the impurity to d10. The 2p3d parameters (n0imp_p, Fpd, Gpd) and the 2p

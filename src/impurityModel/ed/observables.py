@@ -454,7 +454,7 @@ def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None, shell
     (a cubic shell's t2g manifold has 6 spin-orbitals, the same count as a genuine l=1
     shell). By construction of every current caller:
 
-    * a **dict** (:func:`get_spectra`'s multi-shell path, ``dict(model.rot_to_spherical)``)
+    * a **dict** (:func:`spectroscopy`'s multi-shell path, ``dict(model.rot_to_spherical)``)
       is always keyed by the shell's own ``l``, one full spin-doubled shell per key;
     * a plain **ndarray** (the single-shell path, and every selfenergy run --
       ``prepare_solver_basis`` collapses it to one matrix even when it internally regroups
@@ -525,7 +525,7 @@ def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None, shell
                 f"impurity_orbitals partition {key!r} has {n} spin-orbitals, which is not "
                 "a spin-doubled l-shell (2*(2l+1)). rot_to_spherical is a dict, so every "
                 "partition is expected to be one full physical shell keyed by its own l "
-                "(the get_spectra.py contract); this partition breaks that contract."
+                "(the spectroscopy.py contract); this partition breaks that contract."
             )
         # Carry the dict key alongside the inferred l: the two coincide for every current
         # caller, but the rotation lookup below must use the *key* that indexed
@@ -836,7 +836,7 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_she
         The shell's ``l`` is inferred from the orbital count ``2*(2l+1)``.
     rot_to_spherical : np.ndarray or dict
         The spherical→computational rotation: a single ``2(2l+1)`` matrix, or a dict
-        ``{partition: matrix}`` (as in ``get_spectra``).
+        ``{partition: matrix}`` (as in ``spectroscopy``).
     per_shell : bool, default False
         When ``True``, also return the un-summed per-shell operators (see below). Every
         partition must be a full spin-doubled shell either way -- this does not change

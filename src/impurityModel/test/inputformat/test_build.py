@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from impurityModel.ed.get_spectra import build_spectra_model
+from impurityModel.ed.spectroscopy import build_spectra_model
 from impurityModel.inputformat.build import NO_ZEEMAN, build
 from impurityModel.inputformat.reader import InputError, load_input
 

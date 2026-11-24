@@ -47,7 +47,7 @@ wrong charge state, which is worse than not fixing anything at all.
      ``de0_max = energy_cut(basis.tau)`` a hundred times narrower than the window ``calc_gs``
      expands into.
    * Nothing is frozen (review J1/P1a). Both criteria used to freeze every bath-less group,
-     "exactly as get_spectra pins it" -- but get_spectra pins the *declared* X-ray core, and
+     "exactly as spectroscopy pins it" -- but spectroscopy pins the *declared* X-ray core, and
      ``calc_selfenergy`` freezes nothing, so with a bath-less shell the double counting was
      measured on a different state than the self-energy then solved (E0 -8.97 frozen vs -9.34
      unfrozen on the review's toy). Freezing exists for a shell with no orbital energies (the

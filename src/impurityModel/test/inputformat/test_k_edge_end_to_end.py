@@ -265,7 +265,7 @@ def test_a_k_edge_actually_solves_and_produces_weight(small_p_shell_h0, write, t
     import h5py
     from mpi4py import MPI
 
-    from impurityModel.ed.get_spectra import run_spectra
+    from impurityModel.ed.spectroscopy import run_spectra
 
     built = build(load_input(write(K_EDGE_RUN.format(h0=small_p_shell_h0.name), "k_edge_run.toml")))
     assert built.model.n_spin_orbitals == 10
@@ -288,7 +288,7 @@ def _k_edge_spectra(small_p_shell_h0, write, tmp_path, name, **basis_changes):
     import h5py
     from mpi4py import MPI
 
-    from impurityModel.ed.get_spectra import run_spectra
+    from impurityModel.ed.spectroscopy import run_spectra
 
     built = build(load_input(write(K_EDGE_RUN.format(h0=small_p_shell_h0.name), f"{name}.toml")))
     output = tmp_path / f"{name}.h5"
@@ -322,16 +322,16 @@ def test_one_member_auto_spectra_are_the_off_spectra(small_p_shell_h0, write, tm
 
 def test_the_spectra_ensemble_is_the_weighted_sum_of_the_members(small_p_shell_h0, write, tmp_path, monkeypatch):
     """Hot enough for several charge sectors: every written spectrum is sum_s c_s S_s of the members' own runs."""
-    from impurityModel.ed import spectra
+    from impurityModel.ed import spectroscopy
 
     seen = {}
-    real = spectra.merge_spectra_datasets
+    real = spectroscopy.merge_spectra_datasets
 
     def spy(parts, weights):
         seen["parts"], seen["weights"] = parts, list(weights)
         return real(parts, weights)
 
-    monkeypatch.setattr(spectra, "merge_spectra_datasets", spy)
+    monkeypatch.setattr(spectroscopy, "merge_spectra_datasets", spy)
     got = _k_edge_spectra(small_p_shell_h0, write, tmp_path, "hot", mixed_valence="on", tau=0.5)
     if got is None:
         return
@@ -352,11 +352,45 @@ def test_a_failing_ensemble_merge_raises_on_every_rank_and_writes_no_spectra(
     small_p_shell_h0, write, tmp_path, monkeypatch
 ):
     """The merge runs on rank 0 only; its failure must reach every rank (not leave them in the closing Barrier)."""
-    from impurityModel.ed import spectra
+    from impurityModel.ed import spectroscopy
 
     def boom(parts, weights):
         raise RuntimeError("injected merge failure")
 
-    monkeypatch.setattr(spectra, "merge_spectra_datasets", boom)
+    monkeypatch.setattr(spectroscopy, "merge_spectra_datasets", boom)
     with pytest.raises(Exception, match="injected merge failure"):
         _k_edge_spectra(small_p_shell_h0, write, tmp_path, "boom", mixed_valence="on", tau=0.5)
+
+
+def test_one_spectrum_alone_equals_the_same_spectrum_of_a_full_run_and_save_round_trips(
+    small_p_shell_h0, write, tmp_path
+):
+    """``calc_xas`` is ``calc_spectroscopy`` with one request: same tensor, and ``save_spectra`` is lossless."""
+    import h5py
+    from mpi4py import MPI
+
+    from impurityModel.ed.options import XASOptions
+    from impurityModel.ed.spectroscopy import calc_spectroscopy, calc_xas, requests_from_legacy_options, save_spectra
+
+    comm = MPI.COMM_WORLD
+    built = build(load_input(write(K_EDGE_RUN.format(h0=small_p_shell_h0.name), "one_spectrum.toml")))
+    requests = requests_from_legacy_options(built.spectra)
+    xas = next(r for r in requests if isinstance(r, XASOptions))
+    kwargs = dict(comm=comm, verbosity=0, cluster_label="one", report_dir=str(tmp_path))
+
+    full = calc_spectroscopy(built.model, requests, built.basis, **kwargs)
+    alone = calc_xas(built.model, xas, built.basis, **kwargs)
+    if comm.rank != 0:
+        assert full is None and alone is None
+        return
+    assert "XAS/tensor" in alone["datasets"]
+    assert not {"PS/spectra", "XPS/spectra", "RIXS/tensor"} & set(alone["datasets"])
+    np.testing.assert_allclose(alone["datasets"]["XAS/tensor"], full["datasets"]["XAS/tensor"], atol=1e-12, rtol=0)
+
+    target = tmp_path / "round_trip.h5"
+    save_spectra(full, str(target))
+    with h5py.File(target, "r") as f:
+        for name, data in full["datasets"].items():
+            assert np.array_equal(np.asarray(f[name]), data), name
+        assert np.array_equal(np.asarray(f["XAS/w"]), full["meshes"]["xas"]["w"])
+        assert np.array_equal(np.asarray(f["E"]), full["E"])

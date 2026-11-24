@@ -294,7 +294,7 @@ class SpectraOptions:
     Every field defaults to ``None`` for the arrays the driver fills in with its standard
     grids/polarizations (so an API caller can override just the pieces it cares about) and to
     the historical literal for the scalars. The frequency meshes are resolved once inside
-    :func:`impurityModel.ed.get_spectra.run_spectra`.
+    :func:`impurityModel.ed.spectroscopy.run_spectra`.
 
     Attributes
     ----------

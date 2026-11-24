@@ -603,7 +603,7 @@ def impurity_casimirs(ground_state_basis, rot_to_spherical, shell_ls=None):
         # L/S/J are shell-*total* operators, so aggregate the manifolds into the whole shell
         # (the sorted impurity_indices, which match the single rot_to_spherical matrix) and
         # retry. Only meaningful for a single shared rotation; a dict rotation is per-shell
-        # (get_spectra's multi-l case) and is already correct per partition.
+        # (spectroscopy's multi-l case) and is already correct per partition.
         if not isinstance(rot_to_spherical, dict):
             try:
                 return make_impurity_casimir_operators(

@@ -2,8 +2,9 @@ from collections import OrderedDict
 from unittest.mock import MagicMock, mock_open, patch
 
 import numpy as np
+import pytest
 
-from impurityModel.ed import hamiltonian_io, spectra, transition_operators
+from impurityModel.ed import hamiltonian_io, spectra, spectra_techniques, transition_operators
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 # --- tests for spectra.py ---
@@ -129,15 +130,15 @@ def test_calc_spectra(mock_therm_G, mock_run, mock_weights, mock_enum, mock_buil
     assert gs.shape == (10, 1)
 
 
-@patch("impurityModel.ed.spectra.inverse_photoemission_operators")
-@patch("impurityModel.ed.spectra.photoemission_operators")
-@patch("impurityModel.ed.spectra.calc_spectra")
-@patch("impurityModel.ed.spectra.calc_spectra_tensor")
-@patch("impurityModel.ed.spectra.component_symmetry_reduction")
-@patch("impurityModel.ed.spectra.extract_tensors")
-@patch("impurityModel.ed.spectra.dipole_operators")
-@patch("impurityModel.ed.spectra.nixs_operators")
-def test_simulate_spectra(
+@patch("impurityModel.ed.spectra_techniques.inverse_photoemission_operators")
+@patch("impurityModel.ed.spectra_techniques.photoemission_operators")
+@patch("impurityModel.ed.spectra_techniques.calc_spectra")
+@patch("impurityModel.ed.spectra_techniques.calc_spectra_tensor")
+@patch("impurityModel.ed.spectra_techniques.component_symmetry_reduction")
+@patch("impurityModel.ed.spectra_techniques.extract_tensors")
+@patch("impurityModel.ed.spectra_techniques.dipole_operators")
+@patch("impurityModel.ed.spectra_techniques.nixs_operators")
+def test_run_techniques(
     mock_getNIXS,
     mock_getDipole,
     mock_extract,
@@ -147,9 +148,17 @@ def test_simulate_spectra(
     mock_getPS,
     mock_getIPS,
 ):
+    from impurityModel.ed.options import NIXSOptions, PESOptions, XASOptions, XPSOptions
+    from impurityModel.ed.spectra_techniques import (
+        LabelledOperators,
+        ShellLayout,
+        SpectraTarget,
+        run_techniques,
+    )
+
     mock_calc_spectra.return_value = np.zeros((10, 1), dtype=complex)
-    # XAS now goes through the polarization-tensor path (unprojected dipole): calc_spectra_tensor
-    # returns the (n_w, m, m) chi tensor directly (no contraction inside simulate_spectra).
+    # XAS goes through the polarization-tensor path (unprojected dipole): calc_spectra_tensor
+    # returns the (n_w, m, m) chi tensor directly (no contraction inside the technique).
     mock_calc_spectra_tensor.return_value = np.zeros((10, 3, 3), dtype=complex)
     mock_extract.return_value = (np.zeros((1, 1), dtype=complex), None, 0)
     mock_reduction.return_value = None
@@ -158,49 +167,79 @@ def test_simulate_spectra(
     mock_getDipole.return_value = [{((0, "a"),): 1}]
     mock_getNIXS.return_value = [{((0, "a"),): 1}]
 
-    hOp = MagicMock(spec=ManyBodyOperator)
-    datasets = spectra.simulate_spectra(
-        es=[0.0],
+    basis = MagicMock()
+    basis.comm.rank = spectra.rank
+    target = SpectraTarget(
+        hOp=MagicMock(spec=ManyBodyOperator),
         psis=[MagicMock()],
-        hOp=hOp,
+        es=[0.0],
         tau=0.01,
-        w=np.linspace(-1, 1, 10),
-        delta=0.1,
-        epsilons=[[1, 0, 0]],
-        wLoss=np.linspace(-1, 1, 10),
-        deltaNIXS=0.1,
-        qsNIXS=[[1, 1, 1]],
-        liNIXS=2,
-        ljNIXS=2,
-        RiNIXS=np.array([1.0]),
-        RjNIXS=np.array([1.0]),
-        radialMesh=np.array([1.0]),
-        wIn=[],
-        deltaRIXS=0.1,
-        epsilonsRIXSin=[],
-        epsilonsRIXSout=[],
-        nBaths=OrderedDict([(2, 10), (1, 6)]),
-        XAS_projectors=None,
-        RIXS_projectors=None,
-        basis=MagicMock(),
+        basis=basis,
         occ_cutoff=0,
-        slaterWeightMin=1e-4,
+        slater_weight_min=1e-4,
         verbose=False,
-        l_valence=2,
-        l_core=1,
+        gf_pt2_tol=None,
+        layout=ShellLayout(valence_key=2, core_key=1, operators=LabelledOperators(OrderedDict([(2, 10), (1, 6)]))),
     )
-    # The solvers are collective, so the mocks are called on every rank; the h5 datasets and
-    # the file close, however, are written on the root rank only (simulate_spectra gates them
-    # on ``spectra.rank == 0``). Under ``mpiexec -n N`` this unmarked test runs on every rank,
-    # so the write assertions must be guarded or they fail on the non-root ranks.
+    w = np.linspace(-1, 1, 10)
+    datasets = run_techniques(
+        target,
+        [
+            XASOptions(w=w, delta=0.1),  # listed out of order on purpose
+            NIXSOptions(radial=(np.array([1.0]), np.array([1.0]), np.array([1.0])), w_loss=w, qs=[[1, 1, 1]]),
+            XPSOptions(w=w, delta=0.1),
+            PESOptions(w=w, delta=0.1),
+        ],
+    )
+    # The solvers are collective, so the mocks are called on every rank; the datasets are
+    # returned on the root rank only. Under ``mpiexec -n N`` this unmarked test runs on every rank,
+    # so the assertions must be guarded or they fail on the non-root ranks.
     assert mock_calc_spectra.called
     assert mock_calc_spectra_tensor.called
     if spectra.rank == 0:
         written = set(datasets)
         assert {"PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"} <= written
+        assert list(datasets) == ["PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"], "execution order"
         assert not any(name.endswith("thermal") for name in written)  # no legacy dataset names
     else:
         assert datasets == {}
+
+
+def test_a_core_technique_without_a_core_shell_raises_before_computing_anything():
+    from impurityModel.ed.options import PESOptions, XASOptions
+    from impurityModel.ed.spectra_techniques import LabelledOperators, ShellLayout, SpectraTarget, run_techniques
+
+    target = SpectraTarget(
+        hOp=MagicMock(spec=ManyBodyOperator),
+        psis=[],
+        es=[],
+        tau=0.01,
+        basis=MagicMock(),
+        occ_cutoff=0,
+        slater_weight_min=1e-4,
+        verbose=False,
+        gf_pt2_tol=None,
+        layout=ShellLayout(valence_key=2, core_key=None, operators=LabelledOperators(OrderedDict([(2, 10)]))),
+    )
+    with patch("impurityModel.ed.spectra_techniques.calc_spectra") as calc:
+        with pytest.raises(ValueError, match="core hole"):
+            run_techniques(target, [PESOptions(), XASOptions()])
+    assert not calc.called, "PES must not run before the missing core shell is reported"
+
+
+def test_a_duplicate_request_is_refused():
+    from impurityModel.ed.options import PESOptions
+    from impurityModel.ed.spectra_techniques import run_techniques
+
+    with pytest.raises(ValueError, match="more than one PES"):
+        run_techniques(MagicMock(), [PESOptions(), PESOptions()])
+
+
+def test_a_non_request_is_refused():
+    from impurityModel.ed.spectra_techniques import run_techniques
+
+    with pytest.raises(TypeError, match="not a spectrum request"):
+        run_techniques(MagicMock(), [object()])
 
 
 # --- tests for hamiltonian_io.py ---
@@ -361,12 +400,12 @@ def test_calc_spectra_extra_meshes_match_direct_calls():
 def test_merge_spectra_datasets_is_the_weighted_sum_and_keeps_dtypes():
     a = {"PS/spectra": np.array([[1.0 + 1j]]), "RIXS/tensor": np.array([2.0 + 0j], dtype=np.complex64), "P/x": "proj"}
     b = {"PS/spectra": np.array([[3.0 - 1j]]), "RIXS/tensor": np.array([4.0 + 0j], dtype=np.complex64), "P/x": "other"}
-    m = spectra.merge_spectra_datasets([a, b], [1.0, 3.0])  # weights are renormalised
+    m = spectra_techniques.merge_spectra_datasets([a, b], [1.0, 3.0])  # weights are renormalised
     np.testing.assert_allclose(m["PS/spectra"], [[0.25 * (1 + 1j) + 0.75 * (3 - 1j)]])
     assert m["RIXS/tensor"].dtype == np.complex64
     np.testing.assert_allclose(m["RIXS/tensor"], [3.5])
     assert m["P/x"] == "proj"
-    assert spectra.merge_spectra_datasets([a], [0.3])["PS/spectra"][0, 0] == a["PS/spectra"][0, 0]
+    assert spectra_techniques.merge_spectra_datasets([a], [0.3])["PS/spectra"][0, 0] == a["PS/spectra"][0, 0]
 
 
 def test_a_blocked_transition_window_falls_back_to_the_shared_window():

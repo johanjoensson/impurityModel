@@ -21,7 +21,7 @@ def blocks_as_positions(block_structure, impurity_indices):
 
     The canonical convention of a block structure is *positions*: ``blocks`` hold ``0..n_imp-1`` (the
     row/column of the impurity matrix the blocks were found in), never spin-orbital indices. Producers
-    that have the global indices (the ``get_spectra`` fallback) are translated here, and anything that
+    that have the global indices (the ``spectroscopy`` fallback) are translated here, and anything that
     is neither raises, so a mismatch is caught once instead of silently addressing the wrong rows.
 
     Parameters

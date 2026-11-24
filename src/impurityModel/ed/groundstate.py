@@ -924,7 +924,7 @@ def find_ground_state_sector(
     """
     config.assert_uniform(comm)  # public entry (review H-GS3)
     # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
-    # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
+    # such as spectroscopy, library users). A CapPolicy arrives already resolved and announced --
     # re-resolving it would reprint the cap line and restart the warning counts on every trial of
     # a double-counting search.
     if not isinstance(truncation_threshold, CapPolicy) or truncation_threshold.gs is None:

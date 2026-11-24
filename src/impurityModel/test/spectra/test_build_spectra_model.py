@@ -1,4 +1,4 @@
-"""``get_spectra.build_spectra_model`` / ``ImpurityModel.from_shells``: the multi-shell
+"""``spectroscopy.build_spectra_model`` / ``ImpurityModel.from_shells``: the multi-shell
 (core + correlated valence) spectra model, built from either a labelled or a flat ``.h0``
 file. The shells are named by role rather than fixed at 2p/3d.
 """
@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import h0_format
-from impurityModel.ed.get_spectra import build_spectra_model
 from impurityModel.ed.model import ImpurityModel, load_model
 from impurityModel.ed.operator_algebra import i2c
+from impurityModel.ed.spectroscopy import build_spectra_model
 
 FDD = [7.5, 0.0, 9.9, 0.0, 6.6]
 FPP = [0.0, 0.0, 0.0]

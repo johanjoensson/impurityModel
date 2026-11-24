@@ -1,7 +1,7 @@
 """The per-unit basis report a completed spectra calculation prints.
 
 ``calc_spectra``'s work units are transition operators: the photoemission and
-inverse-photoemission call sites are the annihilate and create blocks of a ``get_spectra`` run,
+inverse-photoemission call sites are the annihilate and create blocks of a ``spectroscopy`` run,
 and NIXS/XAS reach the same driver with their own operators. The report is opt-in
 (``unit_report_label``) because a caller that runs this driver several times for one result
 wants one report for the result, not one per call.

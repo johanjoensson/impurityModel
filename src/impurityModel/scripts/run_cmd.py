@@ -159,7 +159,7 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
     cluster = built.extra.get("cluster_label", "cluster")
 
     if resolved.calculation == "spectroscopy":
-        from impurityModel.ed.get_spectra import run_spectra
+        from impurityModel.ed.spectroscopy import run_spectra
 
         target = str(Path(outdir, output or "spectra.h5"))
         run_spectra(

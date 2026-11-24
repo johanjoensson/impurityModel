@@ -352,7 +352,7 @@ def test_an_f_shell_crystal_field_model_solves(write, tmp_path):
     import h5py
     from mpi4py import MPI
 
-    from impurityModel.ed.get_spectra import run_spectra
+    from impurityModel.ed.spectroscopy import run_spectra
 
     built = build(load_input(write(F_SHELL_SOLVE, "f_solve.toml")))
     assert built.model.n_spin_orbitals == 28

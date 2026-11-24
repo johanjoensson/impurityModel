@@ -378,7 +378,7 @@ def calc_gs(
     tau = basis_setup["tau"]
     layout = basis_setup.get("spin_layout")
     if layout is None:
-        # Not resolved by a driver (get_spectra): resolve here, once, from the full operator.
+        # Not resolved by a driver (spectroscopy): resolve here, once, from the full operator.
         blocks = [b for part in basis_setup["impurity_orbitals"].values() for b in part]
         bath = [b for baths in basis_setup["bath_states"] for part in baths.values() for b in part]
         n_orb = 1 + max(

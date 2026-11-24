@@ -1,7 +1,7 @@
 """``impurityModel spectra`` -- calculate PS/XPS/NIXS/XAS/RIXS spectra from an ``h0`` file.
 
-Builds the full interacting model with :func:`impurityModel.ed.get_spectra.build_spectra_model`
-and runs it through :func:`impurityModel.ed.get_spectra.run_spectra`, which writes ``spectra.h5``
+Builds the full interacting model with :func:`impurityModel.ed.spectroscopy.build_spectra_model`
+and runs it through :func:`impurityModel.ed.spectroscopy.run_spectra`, which writes ``spectra.h5``
 in the current directory. Contract the stored polarization tensors at plot time with
 ``impurityModel plot-spectra`` / ``plot-rixs``.
 """
@@ -13,8 +13,8 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.average import k_B
-from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
 from impurityModel.ed.model import BasisOptions, SpectraOptions
+from impurityModel.ed.spectroscopy import build_spectra_model, run_spectra
 from impurityModel.scripts._cap import add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity

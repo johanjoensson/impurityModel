@@ -7,14 +7,11 @@ parameter doubling as a feature flag is unguessable, so each technique now has a
 the data conditions became requirements rather than the way to say no.
 """
 
-import inspect
-
 import numpy as np
 import pytest
 
-from impurityModel.ed import spectra
-from impurityModel.ed.get_spectra import resolve_spectra_switches
 from impurityModel.ed.model import SpectraOptions
+from impurityModel.ed.spectroscopy import resolve_spectra_switches
 
 
 def test_the_default_options_reproduce_the_historical_behaviour():
@@ -70,14 +67,6 @@ def test_disabling_xas_does_not_touch_the_rixs_broadening():
     with_xas, _ = resolve_spectra_switches(SpectraOptions(rixs=True))
     without_xas, _ = resolve_spectra_switches(SpectraOptions(rixs=True, xas=False))
     assert with_xas["rixs"] == without_xas["rixs"] is True
-
-
-def test_simulate_spectra_accepts_a_switch_per_technique():
-    """The gating actually reaches the worker, not just the driver."""
-    parameters = inspect.signature(spectra.simulate_spectra).parameters
-    for technique in ("pes", "xps", "xas", "rixs", "nixs"):
-        assert technique in parameters
-        assert parameters[technique].default is True
 
 
 def test_the_switches_are_declared_on_the_option_group():

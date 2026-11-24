@@ -10,11 +10,11 @@ from impurityModel.ed import (
     dc_gap,
     dc_occupation,
     dc_peak,
-    get_spectra,
     groundstate,
     gs_ensemble,
     rixs,
     selfenergy,
+    spectroscopy,
     susceptibility,
 )
 
@@ -25,7 +25,7 @@ ENTRIES = [
     (groundstate.find_ground_state_sector, "comm"),
     (groundstate.solve_sector, "comm"),
     (selfenergy.calc_selfenergy, "comm"),
-    (get_spectra.run_spectra, "comm"),
+    (spectroscopy.calc_spectroscopy, "comm"),
     (susceptibility.calc_susceptibility, "basis.comm"),
     (susceptibility.calc_susceptibility_workflow, "comm"),
     (rixs.calc_map, "basis.comm"),

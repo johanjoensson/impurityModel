@@ -168,7 +168,7 @@ def test_a_hubbard_i_model_solves(write, tmp_path):
     import h5py
     from mpi4py import MPI
 
-    from impurityModel.ed.get_spectra import run_spectra
+    from impurityModel.ed.spectroscopy import run_spectra
 
     built = build(load_input(write(HUBBARD_I)))
     output = tmp_path / "hubbard_i.h5"

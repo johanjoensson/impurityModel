@@ -137,8 +137,8 @@ def test_the_reader_is_a_leaf_importable_without_the_solver():
         "import sys;"
         "import impurityModel.inputformat.reader;"
         "bad=[m for m in sys.modules if m.startswith(('impurityModel.scripts', 'mpi4py'))"
-        " or m.endswith(('.groundstate','.greens_function','.selfenergy','.get_spectra',"
-        "'.manybody_basis','.spectra','.susceptibility'))];"
+        " or m.endswith(('.groundstate','.greens_function','.selfenergy','.spectroscopy',"
+        "'.manybody_basis','.spectra','.spectra_techniques','.susceptibility'))];"
         "print(','.join(sorted(bad)))"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)

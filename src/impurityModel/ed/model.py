@@ -527,7 +527,7 @@ class ImpurityModel:
     ) -> "ImpurityModel":
         """Build a multi-shell (2p core + 3d correlated) interacting model from an ``h0`` file.
 
-        The spectra driver's construction (:func:`get_spectra.build_spectra_model`), moved
+        The spectra driver's construction (:func:`spectroscopy.build_spectra_model`), moved
         here so it goes through the same dispatch point (:func:`load_model`) as the
         self-energy/susceptibility paths. Unlike :meth:`from_h0_text`, this builds the *full*
         interacting single-index operator via :func:`hamiltonian_io.get_hamiltonian_operator`

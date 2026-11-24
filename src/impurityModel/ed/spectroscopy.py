@@ -1,8 +1,14 @@
-"""Library functions for calculating various spectra.
+"""The spectroscopy driver: solve the ground state once, calculate any combination of spectra.
 
-``build_spectra_model`` assembles the full interacting :class:`ImpurityModel` from a
-non-interacting ``h0`` file; ``run_spectra`` solves the ground state and writes ``spectra.h5``.
-The command-line interface lives in :mod:`impurityModel.scripts.spectra`.
+* :func:`calc_spectroscopy` takes a model and a list of per-technique option objects
+  (:class:`PESOptions`, :class:`XPSOptions`, :class:`NIXSOptions`, :class:`XASOptions`,
+  :class:`RIXSOptions`) and returns the datasets (rank 0), the way :func:`selfenergy.calc_selfenergy` does;
+  :func:`calc_xas`, :func:`calc_rixs`, ... are its one-spectrum forms.
+* :func:`save_spectra` writes the ``spectra.h5`` the plot scripts read; :func:`run_spectra` is both.
+* :func:`build_spectra_model` assembles the full interacting :class:`ImpurityModel` from a
+  non-interacting ``h0`` file.
+
+The techniques themselves are in :mod:`impurityModel.ed.spectra_techniques`.
 """
 
 import os
@@ -11,16 +17,24 @@ from collections import OrderedDict
 import h5py
 import numpy as np
 
-from impurityModel.ed import config, spectra
+from impurityModel.ed import config
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
 from impurityModel.ed.gs_calc import GroundStateSpec, calc_gs
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.model import load_model
+from impurityModel.ed.model import SpectraOptions, load_model
 
 # Local stuff
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
+from impurityModel.ed.spectra_techniques import (
+    LabelledOperators,
+    ShellLayout,
+    SpectraTarget,
+    merge_spectra_datasets,
+    ordered_requests,
+    run_techniques,
+)
 from impurityModel.ed.symmetries import (
     extract_tensors,
     impurity_block_structure,
@@ -284,55 +298,56 @@ def _resolve_shell_roles(nBaths):
     )
 
 
-def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_filename="spectra.h5", solver=None):
-    """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
+def _legacy_requests(spectra_options):
+    """``(requests, auto_block_structure)`` of a legacy :class:`SpectraOptions` bag (temporary shim)."""
+    return requests_from_legacy_options(spectra_options), spectra_options.auto_block_structure
 
-    Extracted verbatim from the historical ``get_spectra.main``: builds the many-body ground
-    state, derives (or keeps) the block structure, writes ``output_filename`` and calls
-    :func:`impurityModel.ed.spectra.simulate_spectra`.
+
+def _group_of(technique):
+    """The ``spectra.h5`` group a technique's datasets live under."""
+    return {"pes": "PS", "xps": "XPS", "nixs": "NIXS", "xas": "XAS", "rixs": "RIXS"}[technique]
+
+
+def _request_meshes(technique, request):
+    """The meshes of one request, keyed by the dataset name they are stored under."""
+    if technique in ("pes", "xps", "xas"):
+        return {"w": np.asarray(request.w)}
+    if technique == "rixs":
+        return {"wIn": np.asarray(request.w_in), "wLoss": np.asarray(request.w_loss)}
+    radial_mesh, r_final, r_initial = request.radial
+    return {
+        "wLoss": np.asarray(request.w_loss),
+        "qs": np.asarray(request.resolved_qs),
+        "r": np.asarray(radial_mesh),
+        "Ri": np.asarray(r_final),
+        "Rj": np.asarray(r_initial),
+    }
+
+
+def spectra_layout(model, requests, *, auto_block_structure=True, hOp=None, report=None):
+    """The :class:`ShellLayout` (and the block structure the ground state is solved in) of ``model``.
 
     Parameters
     ----------
     model : ImpurityModel
-        The full interacting model from :func:`build_spectra_model` (``bath_states`` set).
-    spectra_options : SpectraOptions
-        Meshes, broadenings, polarizations and (optional) NIXS radial data. ``None`` array
-        fields are filled with the historical default grids here.
-    basis : BasisOptions
-        Nominal occupation, determinant budget and ``tau = k_B * T``.
-    comm : mpi4py communicator
-        MPI communicator (``MPI.COMM_WORLD`` for the CLI).
-    output_filename : str, optional
-        Where to write the results. The path was hard-coded relative to the working directory,
-        which left a caller wanting them elsewhere with only ``os.chdir`` -- process-global,
-        and unsafe under MPI where every rank shares the interpreter's working directory.
-        Mirrors the keyword :func:`impurityModel.ed.susceptibility.calc_susceptibility_workflow`
-        already had.
-    solver : SolverOptions, optional
-        Supplies ``dense_cutoff`` to the ground-state solve, as it does for the self-energy. ``None``
-        (the library default for callers without a solver, e.g. ``scripts/spectra.py``) uses
-        ``config.GS_DENSE_CUTOFF``; the TOML front end passes its solver, whose default
-        (``config.DEFAULT_DENSE_CUTOFF``) is lower. Both are exact solves of the same Hamiltonian.
-    verbosity : int, optional
-        Printing level (rank-uniform; printing itself is gated on rank downstream).
-        ``None`` -> ``V_RESULT`` (0), the terse default.
-    """
-    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
-    # Replicated input: a malformed value raises on every rank before any collective.  The default is on.
-    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
-    rank = comm.rank if comm is not None else 0
-    if verbosity is None:
-        verbosity = V_RESULT
-    # The stage one-liners below are the provenance heartbeat users pipe to logs; they stay
-    # ungated (level V_RESULT) regardless of verbosity, so `report` here is only for the
-    # shared rank gate and formatting, not for hiding anything at the default level.
-    report = Reporter(verbosity, rank)
+        A model built through :meth:`ImpurityModel.from_shells` (or any model carrying ``valence_l``).
+    requests : sequence
+        The spectrum requests; only used to validate that core-level techniques have a core shell.
+    auto_block_structure : bool
+        Derive the block structure from the hybridization-dressed impurity matrix instead of one
+        block per shell.
 
-    hOp = ManyBodyOperator(model.h0)
+    Returns
+    -------
+    layout : ShellLayout
+    block_structure : BlockStructure
+        For the ground-state solve.
+    nBaths : OrderedDict
+        ``{l: n_bath}`` per shell.
+    """
+    hOp = ManyBodyOperator(model.h0) if hOp is None else hOp
     impurity_orbitals = model.impurity_orbitals
     valence_baths, conduction_baths = model.bath_states
-    rot_to_spherical = dict(model.rot_to_spherical)
-
     ls = list(impurity_orbitals.keys())
     nBaths = OrderedDict(
         (l, sum(len(b) for b in valence_baths[l]) + sum(len(b) for b in conduction_baths[l])) for l in ls
@@ -353,40 +368,6 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         inequivalent_blocks=list(range(n_shell_blocks)),
     )
 
-    # -- Spectra meshes / polarizations: fill the unset (None) fields with today's defaults. --
-    w = spectra_options.w if spectra_options.w is not None else np.linspace(-25, 25, 3001)
-    delta = spectra_options.delta
-    cartesian = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    epsilons = spectra_options.epsilons if spectra_options.epsilons is not None else cartesian
-    epsilonsRIXSin = spectra_options.epsilonsRIXSin if spectra_options.epsilonsRIXSin is not None else cartesian
-    epsilonsRIXSout = spectra_options.epsilonsRIXSout if spectra_options.epsilonsRIXSout is not None else cartesian
-    deltaRIXS = spectra_options.deltaRIXS
-    deltaNIXS = spectra_options.deltaNIXS
-    switches, wIn = resolve_spectra_switches(spectra_options)
-    wLoss = spectra_options.wLoss if spectra_options.wLoss is not None else np.linspace(-2.0, 12.0, 4000)
-    qsNIXS = (
-        spectra_options.qsNIXS
-        if spectra_options.qsNIXS is not None
-        else [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]
-    )
-    liNIXS, ljNIXS = spectra_options.liNIXS, spectra_options.ljNIXS
-    XAS_projectors = spectra_options.XAS_projectors
-    RIXS_projectors = spectra_options.RIXS_projectors
-
-    # NIXS needs the radial part of the correlated orbitals; it is optional. When no radial data
-    # was supplied the radial arrays stay None and simulate_spectra skips the NIXS block.
-    if spectra_options.radial is not None:
-        radialMesh, RiNIXS, RjNIXS = spectra_options.radial
-    else:
-        radialMesh = RiNIXS = RjNIXS = None
-
-    report(f"Number of spin-orbitals: {n_spin_orbitals}", level=V_RESULT)
-
-    # Default: derive the block structure from the hybridization-dressed impurity matrix
-    # (impurity_block_structure) rather than the hand-coded one. It matches or strictly refines
-    # the manual structure (e.g. SOC / crystal field splits each shell into sub-blocks) and
-    # fixes bath-mediated coupling. Pass auto_block_structure=False to keep the hand-coded one.
-    #
     # The solver works in the basis the model is given; nothing here rotates it. Choosing a good basis
     # is the caller's job (rspt2spectra / the interface). Which shell is which is carried by the model,
     # because from_shells was told. Only a model built some other way (an archive, a bare matrix) falls
@@ -396,20 +377,101 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     else:
         l_valence, l_core = _resolve_shell_roles(nBaths)
 
+    # Default: derive the block structure from the hybridization-dressed impurity matrix
+    # (impurity_block_structure) rather than the hand-coded one. It matches or strictly refines
+    # the manual structure (e.g. SOC / crystal field splits each shell into sub-blocks) and
+    # fixes bath-mediated coupling.
     correlated_block_structure = None
-    if spectra_options.auto_block_structure:
+    if auto_block_structure:
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
         h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
         block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
-        report(f"Auto-derived block structure: {len(block_structure.blocks)} blocks", level=V_RESULT)
+        if report is not None:
+            report(f"Auto-derived block structure: {len(block_structure.blocks)} blocks", level=V_RESULT)
         if l_valence in impurity_orbitals:
             d_indices = sorted(orb for block in impurity_orbitals[l_valence] for orb in block)
             correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
-            report(
-                f"{len(correlated_block_structure.inequivalent_blocks)} inequivalent PES/IPS classes "
-                f"for the l={l_valence} shell.",
-                level=V_RESULT,
-            )
+            if report is not None:
+                report(
+                    f"{len(correlated_block_structure.inequivalent_blocks)} inequivalent PES/IPS classes "
+                    f"for the l={l_valence} shell.",
+                    level=V_RESULT,
+                )
+    layout = ShellLayout(
+        valence_key=l_valence,
+        core_key=l_core,
+        operators=LabelledOperators(nBaths),
+        correlated_block_structure=correlated_block_structure,
+    )
+    ordered_requests(requests, layout)
+    return layout, block_structure, nBaths
+
+
+def calc_spectroscopy(
+    model,
+    requests,
+    basis,
+    solver=None,
+    *,
+    comm,
+    verbosity=V_RESULT,
+    cluster_label="cluster",
+    report_dir=None,
+    auto_block_structure=True,
+):
+    """Solve the ground state of ``model`` once and calculate the requested spectra.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+        The full interacting model from :func:`build_spectra_model` (``bath_states`` set).
+    requests : sequence
+        Spectrum requests: at most one :class:`PESOptions`, :class:`XPSOptions`, :class:`NIXSOptions`,
+        :class:`XASOptions` or :class:`RIXSOptions` each, in any order (they run in the order PES, XPS,
+        NIXS, XAS, RIXS). Each carries its own mesh and broadening.
+    basis : BasisOptions
+        Nominal occupation, determinant budget and ``tau = k_B * T``.
+    solver : SolverOptions, optional
+        Supplies ``dense_cutoff`` and ``gf_pt2_tol``. ``None`` uses ``config.GS_DENSE_CUTOFF`` and the
+        amplitude rule.
+    comm : mpi4py communicator
+        The communicator every collective runs on.
+    verbosity : int, optional
+        Printing level (rank-uniform; printing itself is gated on rank downstream).
+    cluster_label, report_dir : str, optional
+        Name and directory of the ground-state report files (``ground_state-<label>.txt/.json``).
+    auto_block_structure : bool, optional
+        See :func:`spectra_layout`.
+
+    Returns
+    -------
+    dict or None
+        On rank 0: ``{"E", "datasets", "meshes", "ensemble", "gs_info"}`` where ``datasets`` maps dataset
+        name (``PS/spectra``, ``XAS/tensor``, ...) to array and ``meshes`` maps technique name to its
+        meshes. ``None`` on the other ranks. Write it with :func:`save_spectra`.
+    """
+    config.assert_uniform(comm)  # collective: a rank-divergent env knob is an error, not a deadlock
+    # Replicated input: a malformed value raises on every rank before any collective.  The default is on.
+    mixed_valence, _mv_note = resolve_mixed_valence(basis.mixed_valence, driver_default="on")
+    requests = list(requests)
+    if not requests:
+        raise ValueError("no spectrum was requested, so there is nothing to compute")
+    rank = comm.rank if comm is not None else 0
+    # The stage one-liners below are the provenance heartbeat users pipe to logs; they stay
+    # ungated (level V_RESULT) regardless of verbosity, so `report` here is only for the
+    # shared rank gate and formatting, not for hiding anything at the default level.
+    report = Reporter(verbosity, rank)
+
+    hOp = ManyBodyOperator(model.h0)
+    impurity_orbitals = model.impurity_orbitals
+    valence_baths, conduction_baths = model.bath_states
+    rot_to_spherical = dict(model.rot_to_spherical)
+
+    report(f"Number of spin-orbitals: {model.n_spin_orbitals}", level=V_RESULT)
+    layout, block_structure, _nBaths = spectra_layout(
+        model, requests, auto_block_structure=auto_block_structure, hOp=hOp, report=report
+    )
+    l_core = layout.core_key
     # Measure how many physical processes the Hamiltonian contains.
     report(f"Hamiltonian contains {len(hOp)} terms.", level=V_RESULT)
     # Many body basis for the ground state
@@ -447,42 +509,21 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         "comm": comm,
     }
 
-    # Everything simulate_spectra needs besides the ground state; one member's run and the one-sector run share it.
     def spectra_of(member_es, member_psis, member_basis):
-        return spectra.simulate_spectra(
-            member_es,
-            member_psis,
-            hOp,
-            tau,
-            w,
-            delta,
-            epsilons,
-            wLoss,
-            deltaNIXS,
-            qsNIXS,
-            liNIXS,
-            ljNIXS,
-            RiNIXS,
-            RjNIXS,
-            radialMesh,
-            wIn,
-            deltaRIXS,
-            epsilonsRIXSin,
-            epsilonsRIXSout,
-            nBaths,
-            XAS_projectors,
-            RIXS_projectors,
-            member_basis,
-            basis.occ_cutoff,
-            basis.slater_weight_min,
-            verbosity >= 1,
-            correlated_block_structure=correlated_block_structure,
-            l_valence=l_valence,
-            l_core=l_core,
-            rixs_adaptive_tol=spectra_options.rixs_adaptive_tol,
+        """One member's spectra; the one-sector run and every ensemble member share it."""
+        target = SpectraTarget(
+            hOp=hOp,
+            psis=member_psis,
+            es=member_es,
+            tau=tau,
+            basis=member_basis,
+            occ_cutoff=basis.occ_cutoff,
+            slater_weight_min=basis.slater_weight_min,
+            verbose=verbosity >= 1,
             gf_pt2_tol=None if solver is None else solver.gf_pt2_tol,
-            **switches,
+            layout=layout,
         )
+        return run_techniques(target, requests)
 
     class _SpectraVisitor:
         def visit(self, _member, state):
@@ -497,25 +538,9 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         verbosity,
         spec=gs_spec,
         visitor=_SpectraVisitor(),
-        report_files=ReportFiles.for_label(
-            os.path.splitext(os.path.basename(output_filename))[0], os.path.dirname(output_filename) or None
-        ),
+        report_files=ReportFiles.for_label(cluster_label, report_dir),
     )
     ensemble = gs_info["ensemble"]
-
-    # Save some of the arrays. HDF5-format does not directly support dictionaries.
-    h5f = None
-    if rank == 0:
-        h5f = h5py.File(output_filename, "w")
-        h5f.create_dataset("E", data=es)
-        h5f.create_dataset("w", data=w)
-        h5f.create_dataset("wIn", data=wIn)
-        h5f.create_dataset("wLoss", data=wLoss)
-        h5f.create_dataset("qsNIXS", data=qsNIXS)
-        if radialMesh is not None:
-            h5f.create_dataset("r", data=radialMesh)
-            h5f.create_dataset("RiNIXS", data=RiNIXS)
-            h5f.create_dataset("RjNIXS", data=RjNIXS)
 
     report.banner("Spectra", level=V_RESULT)
     report(f"Considering {len(es)} eigenstate(s) for the spectra.", level=V_RESULT)
@@ -528,7 +553,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         if rank == 0:
             try:
                 weights = [m["weight"] for m in ensemble["members"]]
-                datasets = spectra.merge_spectra_datasets(gs_info["member_results"], weights)
+                datasets = merge_spectra_datasets(gs_info["member_results"], weights)
                 if len(weights) > 1:  # one member: the file is the one-sector file, bit for bit
                     datasets["ensemble/weights"] = np.asarray(weights)
                     datasets["ensemble/e0"] = np.asarray([m["e0"] for m in ensemble["members"]])
@@ -536,13 +561,101 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
             except Exception as exc:
                 failure = f"merging the sector-ensemble spectra failed: {exc!r}"
 
-    if h5f is not None:
-        for name, data in datasets.items():
-            h5f.create_dataset(name, data=data)
-        h5f.close()
     from impurityModel.ed.selfenergy import _raise_together
 
     _raise_together(comm, failure)
     if comm is not None:
         comm.Barrier()
     report("\nDone.", level=V_RESULT)
+    if rank != 0:
+        return None
+    meshes = {name: _request_meshes(name, request) for name, request in ordered_requests(requests)}
+    return {"E": es, "datasets": datasets, "meshes": meshes, "ensemble": ensemble, "gs_info": gs_info}
+
+
+def _single(request_type_name):
+    def calc(model, request, basis, solver=None, **kwargs):
+        return calc_spectroscopy(model, [request], basis, solver, **kwargs)
+
+    calc.__name__ = f"calc_{request_type_name}"
+    calc.__doc__ = (
+        f"Calculate the {request_type_name.upper()} spectrum alone: :func:`calc_spectroscopy` with one request.\n\n"
+        "Takes the same keyword arguments (``comm`` is required) and returns the same result."
+    )
+    return calc
+
+
+calc_pes = _single("pes")
+calc_xps = _single("xps")
+calc_nixs = _single("nixs")
+calc_xas = _single("xas")
+calc_rixs = _single("rixs")
+
+
+def save_spectra(result, filename):
+    """Write a :func:`calc_spectroscopy` result as the ``spectra.h5`` the plot scripts read.
+
+    Collective-free: call it on every rank; only the rank holding ``result`` (rank 0) writes.
+
+    The file holds ``E``, the datasets, the meshes of each requested technique under its own group
+    (``XAS/w``, ``RIXS/wIn``, ``RIXS/wLoss``, ...), and the historical top-level ``w``, ``wIn``,
+    ``wLoss``, ``qsNIXS`` (and ``r``, ``RiNIXS``, ``RjNIXS`` with NIXS) that the plot scripts read,
+    defaulted for a technique that was not requested.
+    """
+    if result is None:
+        return
+    meshes = result["meshes"]
+    pes_like = next((meshes[t]["w"] for t in ("pes", "xps", "xas") if t in meshes), np.linspace(-25, 25, 3001))
+    w_in = meshes["rixs"]["wIn"] if "rixs" in meshes else np.array([])
+    w_loss = next((meshes[t]["wLoss"] for t in ("rixs", "nixs") if t in meshes), np.linspace(-2.0, 12.0, 4000))
+    nixs = meshes.get("nixs")
+    unit = np.array([1, 1, 1]) / np.sqrt(3)
+    qs = nixs["qs"] if nixs else np.asarray([2 * unit, 7 * unit])
+    with h5py.File(filename, "w") as h5f:
+        h5f.create_dataset("E", data=result["E"])
+        h5f.create_dataset("w", data=pes_like)
+        h5f.create_dataset("wIn", data=w_in)
+        h5f.create_dataset("wLoss", data=w_loss)
+        h5f.create_dataset("qsNIXS", data=qs)
+        if nixs:
+            h5f.create_dataset("r", data=nixs["r"])
+            h5f.create_dataset("RiNIXS", data=nixs["Ri"])
+            h5f.create_dataset("RjNIXS", data=nixs["Rj"])
+        for technique, technique_meshes in meshes.items():
+            for name, mesh in technique_meshes.items():
+                h5f.create_dataset(f"{_group_of(technique)}/{name}", data=mesh)
+        for name, data in result["datasets"].items():
+            h5f.create_dataset(name, data=data)
+
+
+def run_spectra(
+    model,
+    requests,
+    basis,
+    comm,
+    *,
+    verbosity=None,
+    output_filename="spectra.h5",
+    solver=None,
+    auto_block_structure=True,
+):
+    """:func:`calc_spectroscopy` followed by :func:`save_spectra` to ``output_filename``.
+
+    The ground-state report files are named after ``output_filename`` (``ground_state-<stem>.txt``,
+    next to it). ``requests`` may also be a legacy :class:`SpectraOptions` bag (temporary).
+    """
+    if isinstance(requests, SpectraOptions):
+        requests, auto_block_structure = _legacy_requests(requests)
+    result = calc_spectroscopy(
+        model,
+        requests,
+        basis,
+        solver,
+        comm=comm,
+        verbosity=V_RESULT if verbosity is None else verbosity,
+        cluster_label=os.path.splitext(os.path.basename(output_filename))[0],
+        report_dir=os.path.dirname(output_filename) or None,
+        auto_block_structure=auto_block_structure,
+    )
+    save_spectra(result, output_filename)
+    return result
