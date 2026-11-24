@@ -154,6 +154,24 @@ def test_the_stop_clock_is_twice_the_last_admission_and_at_least_the_quiet_floor
     assert sc.quiet()  # the floor (16 quiet blocks) outweighs "twice the last admission" (8)
 
 
+def test_a_frontier_whose_score_mass_is_still_rising_keeps_the_growth_alive():
+    """The rule may admit nothing for many blocks while ``rho`` builds up (SMO unit 7: more than 16): a record of the
+    frontier's mass is activity, exactly as an admission is."""
+    from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
+
+    sc = GrowthScorer(np.linspace(-1, 1, 3) + 0.1j, 1e-3, None, drop=0.0)
+    sc.acc = ShiftedGalerkin(sc.zs0, 4)
+    for block, top in ((4, 1e-6), (8, 1e-5), (12, 1e-4), (16, 5e-5), (20, 2e-4)):
+        sc.blocks = block
+        sc.note_mass(np.array([0.0, top, top / 2]))
+        assert not sc.quiet()
+    assert sc.last_rise == 20 and sc.peak_mass == 2e-4
+    sc.blocks = 39
+    assert not sc.quiet()
+    sc.blocks = 40
+    assert sc.quiet()
+
+
 def test_the_unit_reports_where_its_rows_came_from(capsys):
     _g, info = _run(1e-12)
     rec = info["pt2"]

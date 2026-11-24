@@ -39,8 +39,11 @@ PT2_SCORE_EVERY = 4
 #: :data:`PT2_DROP_BLOCKS` scored blocks that carry mass is dropped from the accumulator (``0``: never drop).
 PT2_DROP_SHARE = 1e-3
 PT2_DROP_BLOCKS = 10
-#: Growth ends once no row has been admitted for as many blocks as it took to reach the last admission, and for at
-#: least this many (a test that wants the unstopped run sets it very large).
+#: Growth ends once the frontier has been inactive for as many blocks as it took to reach its last activity, and for
+#: at least this many (a test that wants the unstopped run sets it very large). Activity is an admission, or the
+#: frontier's score mass setting a new record: ``rho`` builds up with the Krylov space, so a frontier whose mass is
+#: still rising has rows on their way to the cut, however long it admits nothing (SMO: the first admission by the rule
+#: comes after more than 16 blocks, and stopping before it left 3e-2 in ``G`` against 1e-4).
 PT2_QUIET_BLOCKS = 16
 
 
@@ -101,6 +104,9 @@ class GrowthScorer:
         #: Decisions that scored the frontier, and the block of the last one that admitted a row (replicated).
         self.scored = 0
         self.last_admission = None
+        #: Largest per-point frontier score mass seen, and the block that set it (replicated: the mass is global).
+        self.peak_mass = 0.0
+        self.last_rise = None
         #: Mesh points still in the accumulator, as indices into the full mesh.
         self.kept = np.arange(self.zs0.size)
         self.dropped = False
@@ -177,9 +183,13 @@ class GrowthScorer:
         return collective_mass_cutoff(s, self.tau, self.comm)
 
     def note_mass(self, mass):
-        """Mesh-point drop from the global per-point mass of a scored decision (replicated, so every rank drops the
-        same points): after :data:`PT2_DROP_BLOCKS` scored blocks that carried mass, the points that held a share of
-        it below :data:`PT2_DROP_SHARE` on every one of them are removed from the accumulator."""
+        """Book the frontier's global per-point mass of a scored decision (replicated, so every rank acts alike): the
+        record the quiet stop reads (:data:`PT2_QUIET_BLOCKS`), then the mesh-point drop. After
+        :data:`PT2_DROP_BLOCKS` scored blocks that carried mass, the points that held a share of it below
+        :data:`PT2_DROP_SHARE` on every one of them are removed from the accumulator."""
+        top = float(mass.max(initial=0.0))
+        if top > self.peak_mass:
+            self.peak_mass, self.last_rise = top, self.blocks
         total = float(mass.sum())
         if self.drop <= 0.0 or self.dropped or not total > 0.0:
             return
@@ -192,12 +202,12 @@ class GrowthScorer:
                 self.kept = self.kept[self._live]
 
     def quiet(self, retained=None):
-        """Whether the growth is over (replicated): the blocks since the last admission (or since the start, when the
-        rule admitted nothing) are at least :data:`PT2_QUIET_BLOCKS` and at least the blocks that preceded it, i.e. the
-        run is twice as old as its last admission."""
+        """Whether the growth is over (replicated): the blocks since the last activity (an admission, or a record of
+        the frontier's score mass; the start, when there was neither) are at least :data:`PT2_QUIET_BLOCKS` and at
+        least the blocks that preceded it, i.e. the run is twice as old as its last activity."""
         if self.n_start is not None and retained is not None and retained <= self.n_start:
             return False
-        last = 0 if self.last_admission is None else self.last_admission
+        last = max(self.last_admission or 0, self.last_rise or 0)
         return self.blocks - last >= max(PT2_QUIET_BLOCKS, last)
 
     def release(self):
