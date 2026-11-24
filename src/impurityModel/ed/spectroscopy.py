@@ -544,27 +544,36 @@ def save_spectra(result, filename):
 
     Collective-free: call it on every rank; only the rank holding ``result`` (rank 0) writes.
 
-    The file holds ``E``, the datasets, the meshes of each requested technique under its own group
-    (``XAS/w``, ``RIXS/wIn``, ``RIXS/wLoss``, ...), and the historical top-level ``w``, ``wIn``,
-    ``wLoss``, ``qsNIXS`` (and ``r``, ``RiNIXS``, ``RjNIXS`` with NIXS) that the plot scripts read,
-    defaulted for a technique that was not requested.
+    The file holds ``E``, the datasets, and the mesh each spectrum was computed on stored with it
+    (``PS/w``, ``XPS/w``, ``XAS/w``, ``RIXS/wIn``, ``RIXS/wLoss``, ``NIXS/wLoss``, ...). The plot
+    scripts read those. The historical top-level ``w``, ``wIn``, ``wLoss`` and ``qsNIXS`` are kept
+    for older readers, but only where they are unambiguous: ``w`` when every requested PES/XPS/XAS
+    shares one mesh, ``wLoss`` when RIXS and NIXS do. They are never filled with a default for a
+    technique that was not run, and never hold one technique's mesh when another differs.
     """
     if result is None:
         return
     meshes = result["meshes"]
-    pes_like = next((meshes[t]["w"] for t in ("pes", "xps", "xas") if t in meshes), np.linspace(-25, 25, 3001))
-    w_in = meshes["rixs"]["wIn"] if "rixs" in meshes else np.array([])
-    w_loss = next((meshes[t]["wLoss"] for t in ("rixs", "nixs") if t in meshes), np.linspace(-2.0, 12.0, 4000))
+
+    def shared(techniques, name):
+        found = [np.asarray(meshes[t][name]) for t in techniques if t in meshes]
+        if found and all(m.shape == found[0].shape and np.array_equal(m, found[0]) for m in found):
+            return found[0]
+        return None
+
+    legacy = {
+        "w": shared(("pes", "xps", "xas"), "w"),
+        "wIn": shared(("rixs",), "wIn"),
+        "wLoss": shared(("rixs", "nixs"), "wLoss"),
+    }
     nixs = meshes.get("nixs")
-    unit = np.array([1, 1, 1]) / np.sqrt(3)
-    qs = nixs["qs"] if nixs else np.asarray([2 * unit, 7 * unit])
     with h5py.File(filename, "w") as h5f:
         h5f.create_dataset("E", data=result["E"])
-        h5f.create_dataset("w", data=pes_like)
-        h5f.create_dataset("wIn", data=w_in)
-        h5f.create_dataset("wLoss", data=w_loss)
-        h5f.create_dataset("qsNIXS", data=qs)
+        for name, mesh in legacy.items():
+            if mesh is not None:
+                h5f.create_dataset(name, data=mesh)
         if nixs:
+            h5f.create_dataset("qsNIXS", data=nixs["qs"])
             h5f.create_dataset("r", data=nixs["r"])
             h5f.create_dataset("RiNIXS", data=nixs["Ri"])
             h5f.create_dataset("RjNIXS", data=nixs["Rj"])

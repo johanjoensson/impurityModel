@@ -21,6 +21,7 @@ from impurityModel.scripts._plot_common import (
     export_curves,
     finish_plots,
     load_spectra_h5,
+    mesh_of,
     parse_orbital_selection,
 )
 
@@ -198,25 +199,25 @@ def plot_spectra_in_file(filename, args=None):
     if "PS/spectra" in data:
         print("Photo-emission spectroscopy (PS) spectrum")
         _plot_orbital_spectrum(
-            data["w"], data["PS/spectra"], "PS", r"$\omega$   (eV)", args.orbitals, args.export, "PS"
+            mesh_of(data, "PS", "w"), data["PS/spectra"], "PS", r"$\omega$   (eV)", args.orbitals, args.export, "PS"
         )
 
     if "XPS/spectra" in data:
         print("X-ray photo-emission spectroscopy (XPS) spectrum")
         _plot_orbital_spectrum(
-            data["w"], data["XPS/spectra"], "XPS", r"$\omega$   (eV)", args.orbitals, args.export, "XPS"
+            mesh_of(data, "XPS", "w"), data["XPS/spectra"], "XPS", r"$\omega$   (eV)", args.orbitals, args.export, "XPS"
         )
 
     if "NIXS/spectra" in data:
         print("NIXS spectrum")
-        _plot_nixs(data["wLoss"], data["NIXS/spectra"], data.get("qsNIXS"), args.export)
+        _plot_nixs(mesh_of(data, "NIXS", "wLoss"), data["NIXS/spectra"], data.get("qsNIXS"), args.export)
 
     if "XAS/tensor" in data:
         print("XAS spectrum (tensor)")
-        _plot_xas_tensor(data["w"], data["XAS/tensor"], args)
+        _plot_xas_tensor(mesh_of(data, "XAS", "w"), data["XAS/tensor"], args)
     elif "XAS/projected" in data:
         print("XAS spectrum (projected)")
-        _plot_xas_projected(data["w"], data["XAS/projected"], args.export)
+        _plot_xas_projected(mesh_of(data, "XAS", "w"), data["XAS/projected"], args.export)
 
     rixs_key = "RIXS/tensor" if "RIXS/tensor" in data else "RIXS/projected" if "RIXS/projected" in data else None
     if rixs_key is not None and not ("XAS/tensor" in data or "XAS/projected" in data):
@@ -228,7 +229,7 @@ def plot_spectra_in_file(filename, args=None):
     if rixs_key is not None and ("XAS/tensor" in data or "XAS/projected" in data):
         import matplotlib.pyplot as plt
 
-        wIn, wLoss = data["wIn"], data["wLoss"]
+        wIn, wLoss = mesh_of(data, "RIXS", "wIn"), mesh_of(data, "RIXS", "wLoss")
         if rixs_key == "RIXS/tensor":
             pols = args.pol if args.pol else ["x", "y", "z"]
             rixs = pol.intensity(pol.contract_rixs_tensor(data[rixs_key], pols, pols))
@@ -237,7 +238,7 @@ def plot_spectra_in_file(filename, args=None):
             rixs = np.sum(pol.intensity(data[rixs_key]), axis=(0, 1))
         fy, fy_qe = _fluorescence_yield(wIn, wLoss, rixs)
 
-        w = data["w"]
+        w = mesh_of(data, "XAS", "w")
         xas_key = "XAS/tensor" if "XAS/tensor" in data else "XAS/projected"
         if xas_key == "XAS/tensor":
             xas_total = np.sum(pol.intensity(pol.contract_spectra_tensor(data[xas_key], ["x", "y", "z"])), axis=1)

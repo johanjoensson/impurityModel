@@ -19,6 +19,7 @@ from impurityModel.scripts._plot_common import (
     export_curves,
     finish_plots,
     load_spectra_h5,
+    mesh_of,
 )
 
 
@@ -30,12 +31,13 @@ def _load_map(filename):
     (``RIXS/projected``, already polarization-resolved).
     """
     data = load_spectra_h5(filename)
-    if "wIn" not in data or "wLoss" not in data:
+    if ("RIXS/wIn" not in data and "wIn" not in data) or ("RIXS/wLoss" not in data and "wLoss" not in data):
         raise SystemExit(f"{filename} has no RIXS data (missing wIn/wLoss).")
+    w_in, w_loss = mesh_of(data, "RIXS", "wIn"), mesh_of(data, "RIXS", "wLoss")
     if "RIXS/tensor" in data:
-        return data["wIn"], data["wLoss"], data["RIXS/tensor"], True
+        return w_in, w_loss, data["RIXS/tensor"], True
     if "RIXS/projected" in data:
-        return data["wIn"], data["wLoss"], data["RIXS/projected"], False
+        return w_in, w_loss, data["RIXS/projected"], False
     raise SystemExit(f"{filename} has no RIXS/tensor or RIXS/projected dataset.")
 
 

@@ -250,3 +250,28 @@ def test_plot_spectra_reports_an_archive_with_nothing_to_plot(tmp_path):
         f.create_dataset("E", data=np.array([0.0]))
     with pytest.raises(SystemExit, match="switched off"):
         plot_spectra_in_file(str(filepath))
+
+
+def test_save_spectra_stores_each_mesh_with_its_spectrum_and_no_ambiguous_top_level(tmp_path):
+    """Differing PES/XAS meshes: each group keeps its own; the shared top-level ``w`` is not written."""
+    from impurityModel.ed.spectroscopy import save_spectra
+    from impurityModel.scripts._plot_common import load_spectra_h5, mesh_of
+
+    w_pes, w_xas = np.linspace(-25, 5, 7), np.linspace(-5, 15, 9)
+    result = {
+        "E": np.array([0.0]),
+        "datasets": {"PS/spectra": np.ones((7, 2)), "XAS/tensor": np.ones((9, 3, 3))},
+        "meshes": {"pes": {"w": w_pes}, "xas": {"w": w_xas}},
+    }
+    target = tmp_path / "s.h5"
+    save_spectra(result, str(target))
+    with h5py.File(target) as f:
+        assert "w" not in f and "wIn" not in f and "wLoss" not in f and "qsNIXS" not in f
+    data = load_spectra_h5(str(target))
+    np.testing.assert_array_equal(mesh_of(data, "PS", "w"), w_pes)
+    np.testing.assert_array_equal(mesh_of(data, "XAS", "w"), w_xas)
+
+    result["meshes"]["xas"]["w"] = w_pes
+    save_spectra(result, str(target))
+    with h5py.File(target) as f:
+        np.testing.assert_array_equal(f["w"][()], w_pes)

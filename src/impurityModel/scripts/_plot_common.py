@@ -162,6 +162,17 @@ def parse_orbital_selection(spec, norb):
     return picked
 
 
+def mesh_of(data, group, name):
+    """The mesh a spectrum was computed on: the one stored with it, else the legacy top-level one.
+
+    Files written before meshes were stored per spectrum only have the top-level ``w``/``wIn``/``wLoss``.
+    """
+    for key in (f"{group}/{name}", name):
+        if key in data:
+            return data[key]
+    raise SystemExit(f"The file has no {name} mesh for {group}.")
+
+
 def load_spectra_h5(filename):
     """
     Read a ``spectra.h5`` file into a flat dict of numpy arrays.
@@ -174,6 +185,16 @@ def load_spectra_h5(filename):
         for key in ("E", "w", "wIn", "wLoss", "qsNIXS", "r", "RiNIXS", "RjNIXS"):
             if key in h5f:
                 data[key] = np.array(h5f[key])
+        for group, names in (
+            ("PS", ("w",)),
+            ("XPS", ("w",)),
+            ("XAS", ("w",)),
+            ("RIXS", ("wIn", "wLoss")),
+            ("NIXS", ("wLoss",)),
+        ):
+            for name in names:
+                if group in h5f and name in h5f[group]:
+                    data[f"{group}/{name}"] = np.array(h5f[group][name])
         for group in ("PS", "XPS", "NIXS"):
             if group in h5f and "spectra" in h5f[group]:
                 data[f"{group}/spectra"] = np.array(h5f[group]["spectra"])
