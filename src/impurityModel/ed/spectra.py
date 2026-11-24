@@ -68,10 +68,12 @@ def _pes_ips_equivalence_groups(nBaths, l, block_structure):
     for cls_id, cls in enumerate(block_structure.identical_blocks):
         for b in cls:
             class_of_block[b] = cls_id
+    # (class, position in the block): orbitals of one block are distinct operators; only the k-th orbital
+    # of each of several identical blocks is equivalent.
     label_of_local = {}
     for b, block in enumerate(block_structure.blocks):
-        for local in block:
-            label_of_local[local] = class_of_block.get(b, b)
+        for position, local in enumerate(block):
+            label_of_local[local] = (class_of_block.get(b, b), position)
     return [label_of_local[local_of_global[c2i(nBaths, (l, s, m))]] for s in range(2) for m in range(-l, l + 1)]
 
 
