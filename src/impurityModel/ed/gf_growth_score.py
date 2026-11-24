@@ -28,6 +28,7 @@ from mpi4py import MPI
 from impurityModel.ed.gf_primitives import calc_G
 from impurityModel.ed.gf_shift_recycling import ShiftedGalerkin
 from impurityModel.ed.manybody_basis import collective_mass_cutoff
+from impurityModel.ed.SparseScatter import pt2_scores
 
 #: Points of the uniform scoring mesh over the unit's real-frequency window.
 PT2_MESH_POINTS = 31
@@ -35,6 +36,14 @@ PT2_MESH_POINTS = 31
 #: block keeps the relative error of ``G`` inside ``gf_pt2_tol`` on everything measured; every 4th block is about
 #: twice as cheap in growth and reaches 1.6 times it on paramagnetic NiO.
 PT2_SCORE_EVERY = 4
+#: Most matvec outputs held back before the accumulator is stepped with them in one sweep (between two scored
+#: decisions nothing reads it). Each is ``16 w`` bytes per K row, against the accumulator's ``16 n_z (p + w)``.
+PT2_FOLD_BATCH = 8
+#: Storage of the scoring accumulator. The scores rank rows against a tail cut and need no more than single precision:
+#: stored in ``complex64`` the retained sets of the exact models (semi7, two_channel9, tau 1e-2 .. 1e-4, both
+#: cadences) are those of ``complex128`` to within 9 rows of 14,243 and ``G`` is the same to three digits, at half the
+#: accumulator's memory. (A test that checks the accumulator against dense algebra sets ``complex``.)
+PT2_ACC_DTYPE = np.complex64
 #: A mesh point whose share of the frontier's score mass is below this on each of the first
 #: :data:`PT2_DROP_BLOCKS` scored blocks that carry mass is dropped from the accumulator (``0``: never drop).
 PT2_DROP_SHARE = 1e-3
@@ -96,6 +105,7 @@ class GrowthScorer:
         self.drop_blocks = int(PT2_DROP_BLOCKS if drop_blocks is None else drop_blocks)
         self.acc = None
         self._stash = None
+        self._queue = []
         self._alphas = []
         self._betas = []
         self._beta_prev = None
@@ -133,19 +143,24 @@ class GrowthScorer:
         self._stash = w_k
 
     def fold(self, alpha, beta):
-        """Step the accumulator with the stashed block, ``alpha`` and the previous ``beta`` of the step the recurrence
-        just accepted; ``beta`` (the ``(k, p)`` factor of its TSQR) is kept for the next fold and for ``||G_P||``."""
+        """Queue the stashed block with ``alpha`` and the previous ``beta`` of the step the recurrence just accepted;
+        ``beta`` (the ``(k, p)`` factor of its TSQR) is kept for the next fold and for ``||G_P||``. The accumulator
+        is stepped with the queue once the next decision scores (or after :data:`PT2_FOLD_BATCH` blocks): one sweep
+        over it for the whole queue (:meth:`ShiftedGalerkin.step_many`), so it is current exactly when it is read."""
         w = self._stash
         self._stash = None
         if w is None:
             return
         if self.acc is None:
-            self.acc = ShiftedGalerkin(self.zs, w.shape[0])
-        self.acc.step(w, alpha, self._beta_prev)
+            self.acc = ShiftedGalerkin(self.zs, w.shape[0], dtype=PT2_ACC_DTYPE)
         self._alphas.append(np.array(alpha, dtype=complex))
+        self._queue.append((w, self._alphas[-1], self._beta_prev))
         self._betas.append(np.array(beta, dtype=complex))
         self._beta_prev = self._betas[-1]
         self.blocks += 1
+        if self.blocks % self.every == 0 or len(self._queue) >= PT2_FOLD_BATCH:
+            self.acc.step_many(self._queue)
+            self._queue = []
 
     def due(self):
         """Whether the decision now scores the frontier (replicated): an accumulator exists and the block is on the
@@ -162,18 +177,15 @@ class GrowthScorer:
         """``(s, mass)``: the score of each frontier row (``slots`` are K slots, ``diag`` their ``H_ff``) and the
         global score mass of the rows per kept mesh point (what the mesh drop reads). **Collective** (``mass``)."""
         acc = self.acc
+        slots = np.ascontiguousarray(slots, dtype=np.int64)
+        s = np.zeros(len(slots))
+        mass = np.zeros(acc.n_z)
+        # One compiled pass, row by row: no (n_z, rows) temporary (three of them were 744 B per frontier row at 31
+        # points, three quarters of the accumulator's own row).
+        diag = np.ascontiguousarray(diag, dtype=float)
         gn = self.gnorm()
-        n_z = acc.n_z
-        sols = acc.solutions()
-        ok = slots < acc.n_rows  # a row reached after the last fold carries no mass yet
-        num = np.zeros((n_z, len(slots)))
-        if ok.any():
-            for kz in range(n_z):
-                num[kz, ok] = (np.abs(sols[kz][slots[ok]]) ** 2).sum(axis=1)
-        den = np.maximum(np.abs(acc.zs[:, None] - np.asarray(diag)[None, :]), 1e-12)
-        s_all = num / den / gn[:, None]
-        s = s_all.max(axis=0) if len(slots) else np.zeros(0)
-        mass = s_all.sum(axis=1)
+        for offset, x in acc.solution_chunks():
+            pt2_scores(x, offset, slots, diag, acc.zs, gn, s, mass)
         if self.comm is not None:
             self.comm.Allreduce(MPI.IN_PLACE, mass, op=MPI.SUM)
         return s, mass
@@ -211,10 +223,11 @@ class GrowthScorer:
         return self.blocks - last >= max(PT2_QUIET_BLOCKS, last)
 
     def release(self):
-        """Drop the accumulator, the stash and the coefficient lists (GBs on a large unit); the counters the report reads
-        stay."""
+        """Drop the accumulator, the stash, the queue and the coefficient lists (GBs on a large unit); the counters
+        the report reads stay."""
         self.acc = None
         self._stash = None
+        self._queue = []
         self._alphas = []
         self._betas = []
         self._beta_prev = None

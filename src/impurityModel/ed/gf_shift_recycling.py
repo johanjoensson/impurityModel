@@ -24,7 +24,7 @@ from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.gf_primitives import _distributed_seed_qr, _trim_blocks, guarded_proxy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
-from impurityModel.ed.SparseScatter import shifted_update
+from impurityModel.ed.SparseScatter import shifted_update, shifted_update_many
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
 
@@ -374,6 +374,9 @@ class ShiftedGalerkin:
     ``>= |Im z|`` (a Schur complement of ``z - T`` for Hermitian ``T``), so nothing breaks down at ``Im z != 0``.
     Only the Hermitian structure is used (``b^H`` above the diagonal): no complex symmetry anywhere.
 
+    ``dtype=np.complex64`` stores the directions and the solutions in single precision (half the memory and half
+    the memory traffic of a sweep); the small recurrences and the per-row arithmetic stay double.
+
     Rank-local and collective-free: ``v`` holds this rank's rows, ``alpha``/``beta`` are the replicated blocks.
     The scalar residual is exact for the relation *as the recurrence ran it*. A TSQR deflation drops a part
     ``sigma`` of ``w`` and leaves ``sigma / |Im z|`` unaccounted for: :meth:`note_deflation` accumulates that
@@ -381,8 +384,13 @@ class ShiftedGalerkin:
     cuts, diverged steps) is a matvec the caller makes.
     """
 
-    def __init__(self, zs, n_rows=0):
+    def __init__(self, zs, n_rows=0, dtype=complex):
         self.zs = np.asarray(zs, dtype=complex).reshape(-1)
+        #: Storage of the row chunks: ``complex`` or ``np.complex64``. The arithmetic is double either way; a
+        #: single-precision accumulator rounds what it stores and holds half the bytes.
+        self.dtype = np.dtype(dtype)
+        if self.dtype not in (np.dtype(np.complex64), np.dtype(np.complex128)):
+            raise ValueError(f"ShiftedGalerkin: dtype must be complex64 or complex128, not {self.dtype}")
         self.n_z = len(self.zs)
         self.floor = np.zeros(self.n_z)
         self.floor_exceeded = False
@@ -395,30 +403,58 @@ class ShiftedGalerkin:
         self.floor_exceeded = False
         self._d_inv = None  # (n_z, w, w)
         self._zeta = None  # (n_z, w, p)
-        # (capacity, n_z, .) backing arrays; _p / _x are their first n_rows rows. The shifts of a row are contiguous,
-        # which the fused update relies on; rows past n_rows are zero, so a row is admitted without a copy.
-        self._p_buf = self._x_buf = None
-        self._p = None  # (rows, n_z, w)
-        self._x = None  # (rows, n_z, p)
+        # Row chunks ``(rows_i, n_z, .)`` of the direction ``p`` and the solution ``x``, the same row partition in
+        # both; the first ``n_rows`` rows of their concatenation are in use and the rest are untouched zero pages.
+        # The shifts of a row are contiguous, which the fused update relies on. A growing support appends a chunk:
+        # nothing is ever copied, and no second buffer exists while one grows.
+        self._pc = []
+        self._xc = []
+        self._capacity = 0
         self.n_steps = 0
 
+    @property
+    def nbytes(self):
+        """Bytes of the row chunks (allocated; the rows past ``n_rows`` are not resident)."""
+        return int(sum(c.nbytes for c in self._pc) + sum(c.nbytes for c in self._xc))
+
     def pad_rows(self, n):
-        """Grow the stored blocks to ``n`` rows (zeros: a row admitted at this step carried no earlier mass). The
-        backing arrays grow geometrically (25 %), so a growing support is not copied every step; views from
-        :meth:`solutions` taken before a reallocation are detached from the accumulator."""
+        """Grow the stored blocks to ``n`` rows (zeros: a row admitted at this step carried no earlier mass). A chunk
+        of at least a quarter of the current capacity is appended when the rows run out, so the number of chunks
+        stays logarithmic in the growth; the stored rows are never moved."""
         if n <= self.n_rows:
             return
-        for name in ("_p", "_x"):
-            buf = getattr(self, name + "_buf")
-            if buf is None:
-                continue
-            if n > buf.shape[0]:
-                grown = np.zeros((max(n, buf.shape[0] + buf.shape[0] // 4),) + buf.shape[1:], dtype=complex)
-                grown[: self.n_rows] = buf[: self.n_rows]
-                buf = grown
-                setattr(self, name + "_buf", buf)
-            setattr(self, name, buf[:n])
+        if self._xc and n > self._capacity:
+            rows = max(n - self._capacity, self._capacity // 4)
+            for chunks in (self._pc, self._xc):
+                if chunks:
+                    chunks.append(np.zeros((rows,) + chunks[0].shape[1:], dtype=self.dtype))
+            self._capacity += rows
         self.n_rows = int(n)
+
+    def _row_chunks(self, chunks):
+        """``(offset, used rows)`` of every chunk that holds a row in use, with the chunk's used part."""
+        out, o = [], 0
+        for c in chunks:
+            used = min(c.shape[0], self.n_rows - o)
+            if used > 0:  # a rank that owned no row at the first block holds an empty first chunk
+                out.append((o, c[:used]))
+            o += c.shape[0]
+        return out
+
+    def _small(self, alpha, beta_prev, d_inv, zeta, w):
+        """``(d_inv, zeta, b^H)`` of the next block from the previous block's (the replicated small recurrences)."""
+        z = self.zs[:, None, None]
+        eye = np.eye(w, dtype=complex)
+        if beta_prev is None:
+            d = z * eye - alpha
+            zeta = np.broadcast_to(eye, (self.n_z, w, w)).copy()
+            b_h = np.zeros((1, w), dtype=complex)
+        else:
+            bd = beta_prev @ d_inv
+            d = z * eye - alpha - bd @ beta_prev.conj().T
+            zeta = bd @ zeta
+            b_h = np.ascontiguousarray(beta_prev.conj().T, dtype=complex)
+        return np.ascontiguousarray(np.linalg.inv(d)), np.ascontiguousarray(zeta, dtype=complex), b_h
 
     def step(self, v, alpha, beta_prev=None):
         """Fold block ``v`` (``(rows, w_j)``) with its ``alpha`` (``(w_j, w_j)``) and the previous ``beta``
@@ -427,41 +463,64 @@ class ShiftedGalerkin:
         if (beta_prev is None) != (self.n_steps == 0):
             raise ValueError("ShiftedGalerkin.step: beta_prev is None exactly on the first block (reset() to restart)")
         v = np.ascontiguousarray(v, dtype=complex)
-        self.pad_rows(v.shape[0])
-        if v.shape[0] < self.n_rows:
-            v = np.concatenate((v, np.zeros((self.n_rows - v.shape[0], v.shape[1]), dtype=complex)))
+        self.pad_rows(
+            v.shape[0]
+        )  # a block shorter than the accumulator is zero on the rows it lacks (the kernel's rule)
         w = v.shape[1]
-        z = self.zs[:, None, None]
-        eye = np.eye(w, dtype=complex)
-        if beta_prev is None:
-            d = z * eye - alpha
-            zeta = np.broadcast_to(eye, (self.n_z, w, w)).copy()
-            b_h = np.zeros((1, w), dtype=complex)
-        else:
-            bd = beta_prev @ self._d_inv
-            d = z * eye - alpha - bd @ beta_prev.conj().T
-            zeta = bd @ self._zeta
-            b_h = np.ascontiguousarray(beta_prev.conj().T, dtype=complex)
-        d_inv = np.linalg.inv(d)
-        zeta = np.ascontiguousarray(zeta, dtype=complex)
-        if self._x is None:
-            self._x_buf = np.zeros((self.n_rows, self.n_z, zeta.shape[2]), dtype=complex)
-            self._x = self._x_buf
-        capacity = self._x_buf.shape[0]
-        if beta_prev is None or self._p is None or self._p.shape[2] != w:
-            self._p_buf, _old_p_buf = np.zeros((capacity, self.n_z, w), dtype=complex), self._p_buf
-            p = self._p_buf[: self.n_rows]
-            p_prev = p if beta_prev is None else self._p  # a width change: the old p is read, a new one written
-        else:
-            p_prev = p = self._p
-        shifted_update(p_prev, p, self._x, v, b_h, np.ascontiguousarray(d_inv), zeta, beta_prev is None)
-        self._d_inv, self._zeta, self._p = d_inv, zeta, p
+        d_inv, zeta, b_h = self._small(alpha, beta_prev, self._d_inv, self._zeta, w)
+        if not self._xc:
+            self._xc = [np.zeros((self.n_rows, self.n_z, zeta.shape[2]), dtype=self.dtype)]
+            self._capacity = self.n_rows
+        prev = self._pc
+        if beta_prev is None or not prev or prev[0].shape[2] != w:
+            # The first block, or a width change: the old directions are read, new ones written.
+            self._pc = [np.zeros((c.shape[0], self.n_z, w), dtype=self.dtype) for c in self._xc]
+            if beta_prev is None:
+                prev = self._pc
+        first = beta_prev is None
+        for (o, p_prev), (_o, p), (_o2, x) in zip(
+            self._row_chunks(prev), self._row_chunks(self._pc), self._row_chunks(self._xc)
+        ):
+            shifted_update(p_prev, p, x, v[o : o + x.shape[0]], b_h, d_inv, zeta, first)
+        self._d_inv, self._zeta = d_inv, zeta
         self.n_steps += 1
+
+    def step_many(self, blocks):
+        """Fold several consecutive blocks, ``[(v, alpha, beta_prev), ...]`` in recurrence order, as :meth:`step` would
+        one by one, in a single sweep over the accumulator where the blocks allow it (all of the accumulator's
+        current block width and none the first of the recurrence); otherwise block by block.
+
+        The sweep reads and writes the whole accumulator and is bound by memory bandwidth, shared by every rank of a
+        node, so ``k`` blocks in one pass cost about what one block does."""
+        w = self._pc[0].shape[2] if self._pc else None
+        batched = (
+            len(blocks) > 1
+            and self.n_steps > 0
+            and all(b is not None and v.shape[1] == w and b.shape == (w, w) for v, _a, b in blocks)
+        )
+        if not batched:
+            for v, alpha, beta_prev in blocks:
+                self.step(v, alpha, beta_prev)
+            return
+        vs = [np.ascontiguousarray(v, dtype=complex) for v, _a, _b in blocks]
+        self.pad_rows(max(v.shape[0] for v in vs))
+        d_inv, zeta = self._d_inv, self._zeta
+        d_invs, zetas, b_hs = [], [], []
+        for _v, alpha, beta_prev in blocks:
+            d_inv, zeta, b_h = self._small(alpha, beta_prev, d_inv, zeta, w)
+            d_invs.append(d_inv)
+            zetas.append(zeta)
+            b_hs.append(b_h)
+        b_hs, d_invs, zetas = (np.ascontiguousarray(a, dtype=complex) for a in (b_hs, d_invs, zetas))
+        for (o, p), (_o, x) in zip(self._row_chunks(self._pc), self._row_chunks(self._xc)):
+            shifted_update_many(p, x, [v[o : o + x.shape[0]] for v in vs], b_hs, d_invs, zetas)
+        self._d_inv, self._zeta = d_inv, zeta
+        self.n_steps += len(blocks)
 
     def keep(self, mask):
         """Drop every shift where the boolean ``mask`` (``(n_z,)``) is False, with its accumulated state. The kept
         shifts continue exactly as they would have (the shifts do not interact); :attr:`zs` is the kept subset in
-        order. At least one shift must stay."""
+        order. At least one shift must stay. The chunks are narrowed one at a time (no second copy of the whole)."""
         mask = np.asarray(mask, dtype=bool).reshape(-1)
         if mask.shape != (self.n_z,) or not mask.any():
             raise ValueError(f"ShiftedGalerkin.keep: need a mask of {self.n_z} flags with at least one True")
@@ -469,13 +528,10 @@ class ShiftedGalerkin:
         self.n_z = int(mask.sum())
         self.floor = self.floor[mask]
         if self._d_inv is not None:
-            self._d_inv, self._zeta = self._d_inv[mask], self._zeta[mask]
-        if self._x_buf is not None:
-            self._x_buf = np.ascontiguousarray(self._x_buf[:, mask])
-            self._x = self._x_buf[: self.n_rows]
-        if self._p_buf is not None:
-            self._p_buf = np.ascontiguousarray(self._p_buf[:, mask])
-            self._p = self._p_buf[: self.n_rows]
+            self._d_inv, self._zeta = np.ascontiguousarray(self._d_inv[mask]), np.ascontiguousarray(self._zeta[mask])
+        for chunks in (self._pc, self._xc):
+            for i in range(len(chunks)):
+                chunks[i] = np.ascontiguousarray(chunks[i][:, mask])
 
     def note_deflation(self, sigma_dropped):
         """Account for a TSQR deflation that dropped singular values ``sigma_dropped`` at this step."""
@@ -490,11 +546,21 @@ class ShiftedGalerkin:
             return np.zeros((self.n_z, p))
         return np.linalg.norm(beta @ self._d_inv @ self._zeta, axis=1).astype(float)
 
+    def solution_chunks(self):
+        """``[(first row, (rows_i, n_z, p) array), ...]``: the accumulator's own solution chunks over the rows in use,
+        for a kernel that reads every shift of a row at once. They change under the next step."""
+        return self._row_chunks(self._xc)
+
     def solutions(self):
         """The per-shift solution blocks ``(rows, p)``: strided views of the accumulator's own array, not copies.
-        They change under the next :meth:`step` and are detached by a :meth:`pad_rows` reallocation; a view keeps
-        the whole ``(rows, n_z, p)`` array alive."""
-        return [self._x[:, i, :] for i in range(self.n_z)]
+        They change under the next :meth:`step`; a view keeps the whole ``(rows, n_z, p)`` array alive. An
+        accumulator that grew in chunks is first consolidated into one array (a copy, once; a later growth appends
+        to it), so a caller that reads the solutions of a grown support pays that copy and none other."""
+        if len(self._xc) > 1:
+            for name in ("_pc", "_xc"):
+                chunks = getattr(self, name)
+                setattr(self, name, [np.concatenate(chunks)] if chunks else [])
+        return [self._xc[0][: self.n_rows, i, :] for i in range(self.n_z)]
 
 
 def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwargs):

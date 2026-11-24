@@ -212,7 +212,7 @@ def test_the_fused_kernel_refuses_mismatched_shapes_and_accepts_read_only_input(
     shifted_update(*ro, False)  # read-only inputs are only read
 
 
-def test_a_second_first_block_needs_a_reset_and_growth_reuses_the_backing_array():
+def test_a_second_first_block_needs_a_reset_and_growth_appends_a_chunk_without_moving_rows():
     rng = np.random.default_rng(1)
     g = ShiftedGalerkin([0.3 + 0.1j, -0.2 - 0.1j])
     alpha = np.eye(2, dtype=complex)
@@ -225,10 +225,14 @@ def test_a_second_first_block_needs_a_reset_and_growth_reuses_the_backing_array(
     g.reset(10)
     g.step(rng.standard_normal((10, 2)) + 0j, alpha)
     beta = np.eye(2, dtype=complex)
-    g.step(rng.standard_normal((11, 2)) + 0j, alpha, beta)  # reallocates once (11 > capacity 10) ...
-    buf = g._x_buf
-    g.step(rng.standard_normal((12, 2)) + 0j, alpha, beta)  # ... and then grows inside the 25 % headroom
-    assert g._x_buf is buf and g._x.shape[0] == 12 and np.shares_memory(g.solutions()[0], buf)
+    first = g._xc[0]
+    g.step(rng.standard_normal((11, 2)) + 0j, alpha, beta)  # a chunk is appended (11 > capacity 10) ...
+    assert len(g._xc) == len(g._pc) == 2 and g._xc[0] is first, "the stored rows are never moved"
+    g.step(rng.standard_normal((12, 2)) + 0j, alpha, beta)  # ... and the next row lands inside it
+    assert len(g._xc) == 2 and g.n_rows == 12
+    sols = g.solutions()  # consolidates the chunks, once
+    assert len(g._xc) == 1 and sols[0].shape[0] == 12 and np.shares_memory(sols[0], g._xc[0])
+    assert g.nbytes == g._xc[0].nbytes + g._pc[0].nbytes
 
 
 def _accumulate(h, q0, steps, zs, mask_at=None, mask=None):
@@ -281,13 +285,17 @@ def test_keep_refuses_an_empty_or_misshapen_mask():
         g.keep(np.ones(len(ZS) + 1, dtype=bool))
 
 
+@pytest.mark.parametrize("storage, rtol", [(np.complex128, 1e-8), (np.complex64, 1e-5)])
 @pytest.mark.parametrize("deflating", [False, True])
-def test_the_growth_scorer_scores_equal_the_dense_formula_row_by_row(deflating):
+def test_the_growth_scorer_scores_equal_the_dense_formula_row_by_row(deflating, storage, rtol, monkeypatch):
     """``GrowthScorer`` fed the recurrence's blocks, ``alpha`` and ``beta`` and the matvec output scores every row as
     ``max_k sum_c |(H X)_fc|^2 / |z_k - H_ff| / ||G(z_k)||`` with ``X = V (z - T)^-1 E_1`` -- the slot alignment, the
     norm and the max over the mesh, against dense linear algebra."""
+    from impurityModel.ed import gf_growth_score
     from impurityModel.ed.gf_growth_score import GrowthScorer
 
+    # The accumulator's storage: single precision by default (the scores only rank rows), double to check the algebra.
+    monkeypatch.setattr(gf_growth_score, "PT2_ACC_DTYPE", storage)
     h = _hermitian(True)
     q0 = _seeds(h, deflating)
     sc = GrowthScorer(np.asarray(ZS), 1e-3, None, every=1)
@@ -319,4 +327,116 @@ def test_the_growth_scorer_scores_equal_the_dense_formula_row_by_row(deflating):
         gn = np.linalg.norm(e1.T @ r)
         want = np.maximum(want, (np.abs(rho) ** 2).sum(axis=1) / abs(z - diag) / gn)
     got, _mass = sc.scores(np.arange(N), diag)
-    np.testing.assert_allclose(got, want, rtol=1e-8)
+    assert sc.acc.dtype == storage
+    np.testing.assert_allclose(got, want, rtol=rtol)
+
+
+@pytest.mark.parametrize("width", [1, 2])
+def test_folding_several_blocks_in_one_sweep_equals_stepping_them_one_by_one(width):
+    """``step_many`` is ``step`` block after block: the batched sweep (one width, rows that grow from block to block)
+    and its block-by-block fallback (the first block of a recurrence, a width change in the queue)."""
+    rng = np.random.default_rng(3)
+
+    def block(rows, w, w_prev):
+        v = rng.standard_normal((rows, w)) + 1j * rng.standard_normal((rows, w))
+        a = rng.standard_normal((w, w))
+        b = None if w_prev is None else 0.3 * (rng.standard_normal((w, w_prev)) + 1j * rng.standard_normal((w, w_prev)))
+        return v, (a + a.T) / 2 + 0j, b
+
+    queue = [block(9, width, None), block(9, width, width), block(11, width, width), block(14, width, width)]
+    tail = [block(14, width, width), block(15, width, width)]
+    narrow = [block(15, 1, width)] if width > 1 else []
+    one, many = ShiftedGalerkin(ZS, 9), ShiftedGalerkin(ZS, 9)
+    for b in queue + tail + narrow:
+        one.step(*b)
+    many.step_many(queue[:1])
+    many.step_many(queue[1:])
+    many.step_many(tail + narrow)
+    assert many.n_steps == one.n_steps and many.n_rows == one.n_rows
+    for got, want in zip(many.solutions(), one.solutions()):
+        np.testing.assert_allclose(got, want, atol=1e-12)
+    np.testing.assert_allclose(many.residuals(np.eye(1)), one.residuals(np.eye(1)), atol=1e-12)
+
+
+def test_a_block_shorter_than_the_accumulator_is_zero_on_the_rows_it_lacks():
+    """Rows admitted earlier and absent from a block (never the engine's case, the kernel's contract): no padded copy
+    is made, and the result is that of the block padded with zeros."""
+    rng = np.random.default_rng(4)
+    v0 = rng.standard_normal((8, 2)) + 0j
+    v1 = rng.standard_normal((5, 2)) + 0j
+    alpha, beta = np.eye(2) * 0.2 + 0j, np.eye(2) * 0.4 + 0j
+    short, padded = ShiftedGalerkin(ZS, 8), ShiftedGalerkin(ZS, 8)
+    for g, v in ((short, v1), (padded, np.concatenate((v1, np.zeros((3, 2)))))):
+        g.step(v0, alpha, None)
+        g.step(v, alpha, beta)
+    for got, want in zip(short.solutions(), padded.solutions()):
+        np.testing.assert_array_equal(got, want)
+
+
+def test_an_accumulator_that_starts_with_no_rows_takes_the_rows_it_is_given_later():
+    """A rank that owns no determinant at the first block holds an empty first chunk; the rows it receives afterwards
+    must be folded and read like any other (they were skipped: the retained set depended on the rank count)."""
+    rng = np.random.default_rng(11)
+    blocks = []
+    for j in range(3):
+        a = rng.standard_normal((2, 2))
+        blocks.append((rng.standard_normal((5, 2)) + 0j, a + a.T, None if j == 0 else rng.standard_normal((2, 2)) + 0j))
+    late, full = ShiftedGalerkin(ZS, 0), ShiftedGalerkin(ZS, 5)
+    late.step(np.zeros((0, 2), dtype=complex), blocks[0][1], None)
+    full.step(np.zeros((5, 2), dtype=complex), blocks[0][1], None)
+    for v, alpha, beta in blocks[1:]:
+        late.step(v, alpha, beta)
+        full.step(v, alpha, beta)
+    assert late.n_rows == 5 and sum(x.shape[0] for _o, x in late.solution_chunks()) == 5
+    assert np.abs(full.solutions()[0]).max() > 0
+    for got, want in zip(late.solutions(), full.solutions()):
+        np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-14)
+
+
+def test_the_scores_of_an_accumulator_grown_in_chunks_equal_those_of_one_array():
+    """The scoring kernel is called once per row chunk with the chunk's first K slot: the scores and the per-point
+    mass are those of the consolidated accumulator, and a slot past its rows scores zero."""
+    from impurityModel.ed.gf_growth_score import GrowthScorer
+
+    rng = np.random.default_rng(5)
+    sc = GrowthScorer(np.asarray(ZS), 1e-3, None, every=1)
+    alpha, beta = np.eye(2) * 0.2 + 0j, np.eye(2) * 0.4 + 0j
+    for rows in (6, 9, 13, 20):
+        sc.stash(rng.standard_normal((rows, 2)) + 1j * rng.standard_normal((rows, 2)))
+        sc.fold(alpha, beta)
+    assert len(sc.acc._xc) > 2
+    slots = np.array([19, 0, 7, 25, 12, 5, 6], dtype=np.int64)
+    diag = rng.standard_normal(len(slots))
+    s, mass = sc.scores(slots, diag)
+    sols = sc.acc.solutions()
+    assert len(sc.acc._xc) == 1
+    s_one, mass_one = sc.scores(slots, diag)
+    np.testing.assert_array_equal(s, s_one)
+    np.testing.assert_allclose(mass, mass_one, rtol=1e-13)
+    gn = sc.gnorm()
+    ok = slots < 20
+    want = np.zeros((len(ZS), len(slots)))
+    for k, x in enumerate(sols):
+        want[k, ok] = (np.abs(x[slots[ok]].astype(complex)) ** 2).sum(axis=1) / np.abs(ZS[k] - diag[ok]) / gn[k]
+    np.testing.assert_allclose(s, want.max(axis=0), rtol=1e-12)
+    np.testing.assert_allclose(mass, want.sum(axis=1), rtol=1e-12)
+    assert s[3] == 0.0
+
+
+def test_a_single_precision_accumulator_holds_half_the_bytes_and_the_same_solutions_to_rounding():
+    h = _hermitian(True)
+    q0 = _seeds(h, False)
+    single, double = ShiftedGalerkin(ZS, N, dtype=np.complex64), ShiftedGalerkin(ZS, N)
+    x, x_prev, beta_prev = q0, None, None
+    for _ in range(5):
+        alpha, x_next, beta, _k = lanczos_step(
+            lambda v: h @ v, x, x_prev, beta_prev, scale=np.linalg.norm(h, 2), deflate_tol=DEFLATE_TOL_SEEDS
+        )
+        for g in (single, double):
+            g.step(x, alpha, beta_prev)
+        x_prev, beta_prev, x = x, beta, x_next
+    assert 2 * single.nbytes == double.nbytes and single.solutions()[0].dtype == np.complex64
+    for got, want in zip(single.solutions(), double.solutions()):
+        np.testing.assert_allclose(got, want, atol=1e-5 * np.abs(want).max())
+    with pytest.raises(ValueError, match="dtype"):
+        ShiftedGalerkin(ZS, N, dtype=float)

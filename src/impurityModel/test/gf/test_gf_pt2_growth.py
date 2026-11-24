@@ -231,7 +231,7 @@ def test_a_finished_growth_releases_the_accumulator(monkeypatch):
 
     monkeypatch.setattr(GrowthScorer, "__init__", spy)
     _run(1e-3)
-    assert made and all(sc.acc is None and sc._stash is None and not sc._alphas for sc in made)
+    assert made and all(sc.acc is None and sc._stash is None and not sc._queue and not sc._alphas for sc in made)
 
 
 def _stub_support(budget, n_k, n_z=31):
@@ -249,7 +249,7 @@ def test_the_accumulator_is_priced_on_the_measured_k_against_the_budget(monkeypa
     monkeypatch.setattr(gf_recurrence, "current_rss_bytes", lambda: 1000)
     support, matrix = _stub_support(None, 10**6)
     assert gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0], "no budget: the guard is off"
-    need = int(gf_recurrence.REFINE_SKEW * 31 * 2 * 10**6 * 16)
+    need = int(gf_recurrence.REFINE_SKEW * 31 * 2 * 10**6 * np.dtype(gf_growth_score.PT2_ACC_DTYPE).itemsize)
     edge = int((1000 + need) / gf_recurrence.MATRIX_MEMORY_SAFETY)
     support, matrix = _stub_support(edge + 10, 10**6)
     fits, got, rss, _budget = gf_recurrence._pt2_accumulator_fits(support, matrix, 2)
@@ -326,3 +326,14 @@ def test_the_diagonal_of_K_is_computed_once_per_determinant_and_equals_the_uncac
     assert len(made) > 2 and made[0][0] == 0
     assert any(b == n for b, n in made[1:]), "a call with no new slot computes nothing"
     assert any(0 < b < n for b, n in made[1:]), "a grown K computes only its new slots"
+
+
+def test_scores_are_current_on_the_cadence_whatever_the_fold_batch(monkeypatch):
+    """The accumulator is stepped with the queued blocks in one sweep before a scored decision reads it: the retained
+    set and G do not depend on how many blocks a sweep folds."""
+    monkeypatch.setattr(gf_growth_score, "PT2_SCORE_EVERY", 4)
+    g_batched, batched = _run(1e-6)
+    monkeypatch.setattr(gf_growth_score, "PT2_FOLD_BATCH", 1)
+    g_single, single = _run(1e-6)
+    assert _keys(batched) == _keys(single)
+    np.testing.assert_allclose(g_batched, g_single, atol=1e-12)

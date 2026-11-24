@@ -38,7 +38,7 @@ from impurityModel.ed.gf_convergence import (
     _make_gf_convergence_monitor,
     krylov_exhausted,
 )
-from impurityModel.ed.gf_growth_score import GrowthScorer, pt2_mesh
+from impurityModel.ed.gf_growth_score import PT2_ACC_DTYPE, GrowthScorer, pt2_mesh
 from impurityModel.ed.gf_primitives import (
     SupportDecisions,
     _distributed_seed_qr,
@@ -633,14 +633,14 @@ class _ApplyEngine:
 def _pt2_accumulator_fits(support, matrix, width):
     """Whether the second-order accumulator over the **measured** ``K`` fits the memory budget. **Collective** whenever a
     budget is set; replicated verdict. Called once, at the scorer's first fold, where the first shell is in and
-    ``matrix.n_k_local`` is real: the accumulator holds ``(|K|, n_z, p)`` and ``(|K|, n_z, w)`` complex arrays (``width`` is ``p + w``;
+    ``matrix.n_k_local`` is real: the accumulator holds ``(|K|, n_z, p)`` and ``(|K|, n_z, w)`` arrays of ``PT2_ACC_DTYPE`` (``width`` is ``p + w``;
     ``REFINE_SKEW`` is the buffers' own geometric over-allocation). Returns ``(fits, need_bytes, rss_bytes, budget_bytes)``; it grows with ``K`` after this,
     which the measured guard (``SupportDecisions.over_memory_budget``) holds."""
     budget = support.decisions.memory_budget
     if budget is None:
         return True, 0, 0, 0
     scorer = support.scorer
-    need = int(REFINE_SKEW * len(scorer.zs) * int(width) * matrix.n_k_local * 16)
+    need = int(REFINE_SKEW * len(scorer.zs) * int(width) * matrix.n_k_local * np.dtype(PT2_ACC_DTYPE).itemsize)
     rss = current_rss_bytes()
     over = np.array([rss + need > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64)
     comm = matrix.comm
