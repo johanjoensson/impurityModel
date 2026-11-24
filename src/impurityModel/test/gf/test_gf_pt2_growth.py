@@ -298,3 +298,31 @@ def test_an_accumulator_that_fits_keeps_the_rule_and_is_priced_on_both_block_wid
     _g, info = _run(1e-12)
     assert "declined" not in info["pt2"] and info["pt2"]["rule_rows"] > 0
     assert widths == [2 * len(_seeds())], "ShiftedGalerkin holds (rows, n_z, p) and (rows, n_z, w): the sum of the two"
+
+
+def test_the_diagonal_of_K_is_computed_once_per_determinant_and_equals_the_uncached_one():
+    """The rule reads ``H_ff`` of the frontier at every scored decision: only the slots appended since the last call
+    are computed, and the cached array is the one a fresh computation over all of ``K`` gives."""
+    made = []
+    from impurityModel.ed import DistributedSparseMatrix as dsm
+
+    real = dsm.DistributedSparseMatrix.k_diagonal
+
+    def spy(self):
+        before = len(self._k_diag)
+        out = real(self)
+        made.append((before, len(out)))
+        fresh = np.zeros(self.n_k_local, dtype=complex)
+        fresh[self._slot_of_pos] = self.hop.diagonal(self._kstore)
+        np.testing.assert_array_equal(out, fresh)
+        assert not out.flags.writeable
+        return out
+
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(dsm.DistributedSparseMatrix, "k_diagonal", spy)
+        _run(1e-12)
+    assert len(made) > 2 and made[0][0] == 0
+    assert any(b == n for b, n in made[1:]), "a call with no new slot computes nothing"
+    assert any(0 < b < n for b, n in made[1:]), "a grown K computes only its new slots"

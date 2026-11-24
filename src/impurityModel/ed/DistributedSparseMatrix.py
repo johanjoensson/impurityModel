@@ -171,6 +171,7 @@ class DistributedSparseMatrix:
         self._slot_of_pos = np.zeros(0, dtype=np.int64)
         self._pos_of_slot = np.zeros(0, dtype=np.int64)
         self._k_pslot = np.zeros(0, dtype=np.int64)  # K slot -> P slot, -1 outside P
+        self._k_diag = np.zeros(0, dtype=complex)  # <D|H|D> of the K slots computed so far (see k_diagonal)
         # P columns: segments (col_begin, indptr, packed rows, data), one per grow batch.
         self._segments = []
         self._alive = np.zeros(16, dtype=np.int8)
@@ -209,6 +210,7 @@ class DistributedSparseMatrix:
             + self._slot_of_pos.nbytes
             + self._pos_of_slot.nbytes
             + self._k_pslot.nbytes
+            + self._k_diag.nbytes
             + self._p_kslot.nbytes
             + self._alive.nbytes
             + (self._tables[1][3].nbytes if self._tables is not None else 0)
@@ -811,12 +813,23 @@ class DistributedSparseMatrix:
 
     def k_diagonal(self):
         """``<D|H|D>`` of every determinant of ``K``, ``(n_k_local,)`` complex in K-slot order, from the operator
-        (a stored column holds it only for the P columns). Rank-local."""
+        (a stored column holds it only for the P columns). Rank-local. The array is the matrix's own cache: read-only,
+        and replaced (not resized) when ``K`` grows."""
         self._need_keys("k_diagonal")
-        out = np.zeros(self.n_k_local, dtype=complex)
-        if self.n_k_local:
-            out[self._slot_of_pos] = self.hop.diagonal(self._kstore)
-        return out
+        n = self.n_k_local
+        if n > len(self._k_diag):
+            # K slots are append-only and a determinant's diagonal never changes: only the slots appended since the
+            # last call are computed (the growth rule asks at every scored decision; all of K each time was a quarter
+            # of the growth's wall time on SMO).
+            m = len(self._k_diag)
+            pos = np.sort(self._pos_of_slot[m:])
+            new = ManyBodyState.from_keys([self._kstore.key_at(int(q)) for q in pos]) if m else self._kstore
+            diag = np.empty(n, dtype=complex)
+            diag[:m] = self._k_diag
+            diag[self._slot_of_pos[pos]] = self.hop.diagonal(new)
+            diag.flags.writeable = False
+            self._k_diag = diag
+        return self._k_diag
 
     def toarray(self):
         """Dense ``(N, N)`` with this rank's columns filled and every other column zero: summed over the ranks it
