@@ -369,9 +369,14 @@ class XASOptions:
         Transition projectors. ``None`` stores the polarization-free Cartesian tensor.
     epsilons : sequence or None
         Polarization vectors; only read together with ``projectors``. ``None`` -> Cartesian x, y, z.
+        The frame: crystal (global Cartesian) coordinates when the model carries operators with
+        ``frame="global"`` (RSPt's), whose ``L`` fixes each shell's site rotation; otherwise the shells' local
+        frame, the one ``rot_to_spherical`` defines. The tensor's x, y, z axes follow the same rule.
     dipole : numpy.ndarray or None
         ``(3, n_imp, n_imp)`` x, y, z dipole matrices in the model's input basis, mapping core to valence
-        orbitals (RSPt's ``Dxyz``). ``None`` builds the atomic (Gaunt) dipole operator.
+        orbitals (RSPt's ``Dxyz``). ``None`` uses the model's own dipole if it fills the core->valence block,
+        else the atomic (Gaunt) dipole operator. An explicit matrix is taken as given: its x, y, z are whatever
+        frame it was built in (crystal axes for RSPt's ``Dxyz``).
     """
 
     w: np.ndarray = field(default_factory=_default_w)

@@ -29,7 +29,7 @@ from impurityModel.ed.archive import load_selfenergy_archive, write_selfenergy_g
 from impurityModel.ed.dc_record import dc_levels, dc_spread
 from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.greens_function import save_Greens_function
-from impurityModel.ed.local_operators import LocalOperators
+from impurityModel.ed.local_operators import LocalOperators, SiteFrame, site_frames
 from impurityModel.ed.memory_estimate import CapLedger, parse_truncation_threshold
 from impurityModel.ed.model import (
     BasisOptions,
@@ -101,6 +101,8 @@ __all__ = [
     "DoubleCountingUnreachable",
     "ImpurityModel",
     "LocalOperators",
+    "SiteFrame",
+    "site_frames",
     "Meshes",
     "NIXSOptions",
     "PESOptions",

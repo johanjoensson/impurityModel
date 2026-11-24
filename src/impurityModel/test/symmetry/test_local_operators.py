@@ -195,3 +195,77 @@ def test_a_malformed_operators_block_is_an_h0_format_error(tmp_path, block):
     path.write_text("\n".join(lines) + "\n")
     with pytest.raises(H0FormatError):
         read_h0_file(path)
+
+
+def _rotation(seed):
+    from scipy.spatial.transform import Rotation
+
+    return Rotation.random(random_state=seed).as_matrix()
+
+
+@pytest.mark.parametrize("shell_ls", [(1,), (2,), (3,), (1, 2)])
+def test_site_frames_recover_the_rotation_of_every_shell(shell_ls):
+    from impurityModel.ed.local_operators import site_frames
+
+    n = sum(2 * (2 * l + 1) for l in shell_ls)
+    rot = _random_unitary(n, seed=n)
+    r = _rotation(seed=len(shell_ls))
+    frames = site_frames(LocalOperators.from_spherical(rot, shell_ls, site_rotation=r), rot, shell_ls)
+    for frame in frames:
+        np.testing.assert_allclose(frame.rotation, r, atol=1e-12)
+        assert frame.residual < 1e-12
+    # the axis/angle reproduce the matrix (Rodrigues)
+    f = frames[0]
+    k = np.array([[0, -f.axis[2], f.axis[1]], [f.axis[2], 0, -f.axis[0]], [-f.axis[1], f.axis[0], 0]])
+    rebuilt = np.eye(3) + np.sin(f.angle) * k + (1 - np.cos(f.angle)) * k @ k
+    np.testing.assert_allclose(rebuilt, r, atol=1e-10)
+
+
+@pytest.mark.parametrize("kept", [6, 4, 2])
+def test_site_frames_of_a_partial_shell_are_exact(kept):
+    """Projected L components are not Frobenius-orthogonal; the least-squares fit still recovers R."""
+    from impurityModel.ed.local_operators import site_frames
+
+    rot = _random_unitary(10, seed=kept)[:kept, :]
+    r = _rotation(seed=kept)
+    frame = site_frames(LocalOperators.from_spherical(rot, (2,), site_rotation=r), rot, (2,))[0]
+    np.testing.assert_allclose(frame.rotation, r, atol=1e-10)
+
+
+def test_site_frames_give_the_identity_and_flag_a_non_rotation():
+    from impurityModel.ed.local_operators import site_frames
+
+    rot = np.eye(10, dtype=complex)
+    ops = LocalOperators.from_spherical(rot, (2,))
+    frame = site_frames(ops, rot, (2,))[0]
+    assert frame.is_identity and frame.residual < 1e-14 and "global frame" in frame.describe()
+    # the basis is not what rot_to_spherical says: L in another basis is no rotation of the reference
+    wrong = ops.rotated(_random_unitary(10, seed=7))
+    assert site_frames(replace_frame(wrong), rot, (2,))[0].residual > 1e-2
+    # no orbital operators, or an s shell: nothing to fit
+    assert site_frames(LocalOperators.from_spin_ordering(10), rot, (2,)) == [None]
+    assert site_frames(LocalOperators.from_spherical(np.eye(2), (0,)), np.eye(2), (0,)) == [None]
+
+
+def replace_frame(ops):
+    import dataclasses
+
+    return dataclasses.replace(ops, frame="global")
+
+
+def test_the_model_fits_frames_only_for_global_operators():
+    rot = np.eye(10, dtype=complex)
+    r = _rotation(seed=5)
+    common = dict(
+        h0={},
+        impurity_orbitals={0: list(range(10))},
+        rot_to_spherical=rot,
+        bath_states=({0: []}, {0: []}),
+        n_spin_orbitals=10,
+        shell_ls=(2,),
+    )
+    assert ImpurityModel(**common).site_frames() == [None]
+    local = LocalOperators.from_spherical(rot, (2,))
+    assert ImpurityModel(**common, operators=local).site_frames() == [None]
+    glob = LocalOperators.from_spherical(rot, (2,), site_rotation=r)
+    np.testing.assert_allclose(ImpurityModel(**common, operators=glob).site_frames()[0].rotation, r, atol=1e-12)

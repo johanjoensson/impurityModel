@@ -191,3 +191,85 @@ def test_missing_shell_roles_and_nixs_raise_on_every_rank(labelled):
     nixs = NIXSOptions(radial=(np.linspace(0.01, 5, 20), np.ones(20), np.ones(20)), l_final=1, l_initial=1)
     with pytest.raises(ValueError, match="NIXS"):
         _run(_block_twin(model), [nixs], basis)
+
+
+def test_polarisations_are_crystal_coordinates_when_the_operators_give_a_rotated_site_frame(labelled):
+    """RSPt's L is along the crystal axes; the Gaunt dipole is built in the shell's local frame. With a site
+    rotated by R, the XAS tensor in crystal coordinates is R T_local R^T."""
+    from scipy.spatial.transform import Rotation
+
+    from impurityModel.ed.local_operators import LocalOperators
+
+    model, basis = labelled
+    block = _block_twin(model)
+    w = np.linspace(-6, 6, 41)
+    r = Rotation.from_euler("zyz", (0.4, 0.9, -0.3)).as_matrix()
+    ops = LocalOperators.from_spherical(block.rot_to_spherical, block.shell_ls, site_rotation=r)
+    assert ops.frame == "global"
+    local = _run(block, [XASOptions(w=w, delta=0.3)], basis)
+    rotated = _run(_block_twin(model, operators=ops), [XASOptions(w=w, delta=0.3)], basis)
+    if COMM.rank == 0:
+        t_local = np.asarray(local["datasets"]["XAS/tensor"])
+        t_rot = np.asarray(rotated["datasets"]["XAS/tensor"])
+        axes = [k for k, size in enumerate(t_local.shape) if size == 3][:2]
+        assert len(axes) == 2, t_local.shape
+        moved = np.moveaxis(t_local, axes, (0, 1))
+        expected = np.einsum("ia,jb,ab...->ij...", r, r, moved)
+        np.testing.assert_allclose(np.moveaxis(t_rot, axes, (0, 1)), expected, atol=1e-8)
+        assert not np.allclose(t_rot, t_local, atol=1e-6)  # the rotation is visible
+
+
+def test_a_supplied_dipole_without_a_core_block_falls_back_to_the_gaunt_one(labelled):
+    """RSPt's Dxyz of a cluster without the core shell is valence-valence only: it must not silence the XAS."""
+    from impurityModel.ed.local_operators import LocalOperators
+
+    model, basis = labelled
+    block = _block_twin(model)
+    w = np.linspace(-6, 6, 41)
+    d = np.zeros((3, 8, 8), dtype=complex)
+    d[:, 2:, 2:] = 1e-4 * (np.arange(36).reshape(6, 6) + np.arange(36).reshape(6, 6).T)  # p-p only
+    ops = LocalOperators(dipole=d, source="rspt", frame="local")
+    carried = _run(_block_twin(model, operators=ops), [XASOptions(w=w, delta=0.3)], basis)
+    atomic = _run(block, [XASOptions(w=w, delta=0.3)], basis)
+    _assert_same(carried, atomic, ("XAS/tensor",))
+
+
+def test_the_spectra_report_names_the_frame_and_checks_a_supplied_dipole_against_gaunt(labelled):
+    """B4: a supplied core->valence block equal to i * Gaunt (momentum-type) has overlap 1 and phase 90 deg,
+    and gives the Gaunt spectrum (one edge: a common phase does not change the XAS)."""
+    from scipy.spatial.transform import Rotation
+
+    from impurityModel.ed.local_operators import LocalOperators
+
+    model, basis = labelled
+    block = _block_twin(model)
+    r = Rotation.from_euler("zyz", (0.4, 0.9, -0.3)).as_matrix()
+    frame_ops = LocalOperators.from_spherical(block.rot_to_spherical, block.shell_ls, site_rotation=r)
+    rotated = _block_twin(model, operators=frame_ops)
+    d = _atomic_dipole(rotated)  # Gaunt, already along the crystal axes
+    ops = dataclasses.replace(frame_ops, dipole=1j * d)
+    lines = []
+    layout, _, _ = spectra_layout(
+        _block_twin(model, operators=ops), [XASOptions(w=np.linspace(-1, 1, 3))], report=lambda m, **k: lines.append(m)
+    )
+    text = "\n".join(lines)
+    assert "crystal (global) coordinates" in text and "supplied core->valence block" in text
+    for overlap, phase in layout.operators.dipole_checks.values():
+        assert overlap == pytest.approx(1.0, abs=1e-10) and phase == pytest.approx(np.pi / 2, abs=1e-10)
+    w = np.linspace(-6, 6, 41)
+    supplied = _run(_block_twin(model, operators=ops), [XASOptions(w=w, delta=0.3)], basis)
+    gaunt = _run(rotated, [XASOptions(w=w, delta=0.3)], basis)
+    _assert_same(supplied, gaunt, ("XAS/tensor",))
+
+
+def test_a_supplied_orbital_set_that_is_no_rotation_is_refused_for_spectra(labelled):
+    from impurityModel.ed.local_operators import LocalOperators
+
+    model, basis = labelled
+    block = _block_twin(model)
+    ops = LocalOperators.from_spherical(block.rot_to_spherical, block.shell_ls, site_rotation=np.eye(3))
+    rng = np.random.default_rng(3)
+    noise = rng.normal(size=(8, 8))
+    ops = dataclasses.replace(ops, lz=ops.lz + 0.1 * (noise + noise.T))
+    with pytest.raises(ValueError, match="not a rotation"):
+        _run(_block_twin(model, operators=ops), [XASOptions(w=np.linspace(-1, 1, 3), delta=0.3)], basis)

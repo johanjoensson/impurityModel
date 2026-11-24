@@ -223,6 +223,23 @@ class ImpurityModel:
             return None
         return LocalOperators.from_spherical(self.rot_to_spherical, self.resolved_shell_ls)
 
+    def site_frames(self):
+        """Per shell of ``resolved_shell_ls``, the :class:`~impurityModel.ed.local_operators.SiteFrame` of the
+        supplied global-frame operators, or ``None``.
+
+        All ``None`` unless the model carries operators in the global frame (RSPt's ``ml``/``mlp``): then the
+        shell's local frame (the one ``rot_to_spherical`` defines) is fitted against them, so that a Gaunt dipole
+        built in the local frame can be expressed along the crystal axes.
+        """
+        shell_ls = self.resolved_shell_ls
+        if shell_ls is None:
+            return None
+        if self.operators is None or self.operators.frame != "global":
+            return [None] * len(shell_ls)
+        from impurityModel.ed.local_operators import site_frames
+
+        return site_frames(self.operators, self.rot_to_spherical, shell_ls)
+
     @property
     def impurity_indices(self) -> list:
         """Sorted flat list of impurity spin-orbital indices across all groups."""
@@ -784,6 +801,7 @@ class ImpurityModel:
             rot_to_spherical=raw["rot_to_spherical"],
             n_spin_orbitals=raw["n_spin_orbitals"],
             shell_ls=raw["shell_ls"],
+            operators=raw["operators"],
         )
 
     @classmethod

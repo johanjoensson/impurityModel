@@ -124,14 +124,43 @@ class IndexedOperators:
         ``{shell key: l}``, the angular momentum of each shell.
     default_dipole : ndarray or None
         ``(3, n_imp, n_imp)`` dipole supplied with the model (:attr:`LocalOperators.dipole`, RSPt's ``Dxyz``);
-        used whenever a call passes no ``explicit`` matrix, ahead of the atomic Gaunt dipole.
+        used whenever a call passes no ``explicit`` matrix, ahead of the atomic Gaunt dipole -- but only for a
+        core -> valence block it actually fills. RSPt's ``Dxyz`` of a cluster without the core shell has no such
+        block (it is the valence-valence optical matrix), and the Gaunt dipole stands in.
+    frames : Mapping or None
+        ``{shell key: (3, 3) rotation}`` taking the shell's local frame to the global (crystal) one
+        (:meth:`ImpurityModel.site_frames`). Polarisation vectors are then crystal coordinates for every dipole:
+        the supplied one already is, and the Gaunt one is evaluated at the local vector ``R^T n``. Without
+        frames the Gaunt dipole is in the local frame, as before.
+
+    Attributes
+    ----------
+    dipole_checks : dict
+        ``{(core, valence, k): (overlap, phase)}`` for every supplied-dipole transition built: the normalised
+        overlap ``|<G, S>| / (|G| |S|)`` of the supplied block ``S`` with the frame-rotated Gaunt block ``G`` for
+        polarisation ``k``, and the phase of ``<G, S>``. A momentum-type supplied dipole (RSPt's gradient matrix)
+        is ``i`` times a position-type one, so ``phase ~ +-pi/2`` is expected; an overlap well below one means
+        crystal-field mixing of the radial parts or a frame error.
     """
 
-    def __init__(self, rows, rotations, ls, default_dipole=None):
+    def __init__(self, rows, rotations, ls, default_dipole=None, frames=None):
         self.default_dipole = None if default_dipole is None else np.asarray(default_dipole)
         self.rows = {k: list(v) for k, v in rows.items()}
         self.rotations = {k: np.asarray(v) for k, v in rotations.items()}
         self.ls = dict(ls)
+        self.frames = {k: np.asarray(v, dtype=float) for k, v in (frames or {}).items() if v is not None}
+        self.dipole_checks = {}
+
+    def _local_vector(self, n, core, valence):
+        """The polarisation in the shells' local frame: ``R^T n`` (``n`` unchanged without a frame)."""
+        r_v, r_c = self.frames.get(valence), self.frames.get(core)
+        if r_v is not None and r_c is not None and not np.allclose(r_v, r_c, atol=1e-6):
+            raise ValueError(
+                "the core and valence shells have different local frames; a dipole transition is on one site"
+            )
+        r = r_v if r_v is not None else r_c
+        n = np.asarray(n, dtype=complex)
+        return n if r is None else r.T @ n
 
     def photoemission(self, key):
         return [{((int(i), "a"),): 1} for i in self.rows[key]]
@@ -153,7 +182,7 @@ class IndexedOperators:
         return d
 
     def _matrix(self, n, core, valence):
-        d = self._spherical_dipole(n, core, valence)
+        d = self._spherical_dipole(self._local_vector(n, core, valence), core, valence)
         return self.rotations[valence] @ d @ self.rotations[core].conj().T
 
     def _dict(self, matrix, core, valence):
@@ -169,12 +198,30 @@ class IndexedOperators:
         block = np.tensordot(np.asarray(n, dtype=complex), d, axes=(0, 0))
         return block[np.ix_(self.rows[valence], self.rows[core])]
 
+    def _fills_block(self, d, core, valence):
+        block = np.asarray(d)[:, self.rows[valence]][:, :, self.rows[core]]
+        return bool(np.any(np.abs(block) > 1e-14))
+
     def dipole(self, vectors, core, valence, explicit=None):
         out = []
-        if explicit is None:
+        supplied = explicit is None and self.default_dipole is not None
+        if explicit is None and supplied and self._fills_block(self.default_dipole, core, valence):
             explicit = self.default_dipole
-        for n in vectors:
-            m = self._matrix(n, core, valence) if explicit is None else self._explicit(n, explicit, core, valence)
+        else:
+            supplied = False
+        for k, n in enumerate(vectors):
+            if explicit is None:
+                m = self._matrix(n, core, valence)
+            else:
+                m = self._explicit(n, explicit, core, valence)
+                if supplied:
+                    g = self._matrix(n, core, valence)
+                    inner = np.vdot(g, m)
+                    norm = np.linalg.norm(g) * np.linalg.norm(m)
+                    self.dipole_checks[(core, valence, k)] = (
+                        float(abs(inner) / norm) if norm > 0 else 0.0,
+                        float(np.angle(inner)) if abs(inner) > 0 else 0.0,
+                    )
             out.append(self._dict(m, core, valence))
         return out
 

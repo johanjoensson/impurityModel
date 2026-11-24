@@ -117,7 +117,7 @@ def test_from_h0_file_matches_nio_workload_inputs():
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
 
 
-def _write_synthetic_archive(path, basis_kwargs=None, solver_kwargs=None):
+def _write_synthetic_archive(path, basis_kwargs=None, solver_kwargs=None, operators=None):
     """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) through the archive writer."""
     import h5py
 
@@ -151,6 +151,7 @@ def _write_synthetic_archive(path, basis_kwargs=None, solver_kwargs=None):
             h_dft=h_solver[:2, :2],
             h_bath=h_solver[2:, 2:],
             v=h_solver[:2, 2:],
+            operators=operators,
         )
 
 
@@ -429,3 +430,30 @@ def test_the_options_written_to_an_archive_are_the_options_read_back(tmp_path):
     _, _, basis, solver, _ = load_selfenergy_archive(str(archive))
     assert (basis.dN, basis.chain_restrict, basis.mixed_valence, basis.cost_budget) == (3, False, "auto", 2.0)
     assert (solver.gf_prune_tol, solver.gf_tol, solver.gf_refine_rounds) == (0.0, 1e-7, 0)
+
+
+def test_the_operator_set_round_trips_through_the_archive(tmp_path):
+    """RSPt's operators survive an offline rerun: spin pairing and the dipole's crystal frame depend on them."""
+    from impurityModel.ed.local_operators import LocalOperators
+
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive))
+    assert ImpurityModel.from_hdf5(str(archive)).operators is None  # absent: none stored, older archives too
+
+    rng = np.random.default_rng(0)
+    sz = np.diag([-0.5, 0.5]).astype(complex)
+    sp = np.array([[0, 0], [1, 0]], dtype=complex)
+    dip = rng.normal(size=(3, 2, 2)) + 1j * rng.normal(size=(3, 2, 2))
+    sym = (np.array([[0, 1], [1, 0]], dtype=complex), True)
+    ops = LocalOperators(sz=sz, s_plus=sp, dipole=dip, symmetry_ops=(sym,), source="rspt", frame="global")
+    _write_synthetic_archive(str(archive), operators=ops)
+    model, *_ = load_selfenergy_archive(str(archive))
+    got = model.operators
+    assert got.source == "rspt" and got.frame == "global"
+    np.testing.assert_array_equal(got.sz, sz)
+    np.testing.assert_array_equal(got.s_plus, sp)
+    np.testing.assert_array_equal(got.dipole, dip)
+    assert got.lz is None and got.l_plus is None
+    assert len(got.symmetry_ops) == 1 and got.symmetry_ops[0][1] is True
+    np.testing.assert_array_equal(got.symmetry_ops[0][0], sym[0])
+    np.testing.assert_array_equal(ImpurityModel.from_hdf5(str(archive)).operators.dipole, dip)

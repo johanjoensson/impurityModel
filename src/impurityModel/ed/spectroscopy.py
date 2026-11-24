@@ -205,6 +205,12 @@ def _is_block_model(model):
     return not isinstance(model.rot_to_spherical, dict)
 
 
+#: Largest residual of a site-frame fit (:func:`~impurityModel.ed.local_operators.site_frames`) that is
+#: accepted as "the supplied L is a rotation of the spherical one". RSPt prints its matrices with eight
+#: decimals and computes them to roundoff, so a genuine rotation fits far below this.
+SITE_FRAME_TOL = 1e-6
+
+
 def _block_model_inputs(model, hOp):
     """Shell-keyed solver inputs and the index-addressed operator provider of a block model.
 
@@ -244,7 +250,23 @@ def _block_model_inputs(model, hOp):
     local_row = {o: k for k, o in enumerate(impurity_indices)}
     rotations = {a: rot[[local_row[o] for o in r]][:, slices[a]] for a, r in rows.items()}
     supplied = model.operators.dipole if model.operators is not None else None
-    operators = IndexedOperators(rows, rotations, {a: shell_ls[a] for a in rows}, default_dipole=supplied)
+    # With operators in the global (crystal) frame, polarisation vectors are crystal coordinates for the Gaunt
+    # dipole too: each shell's local frame is fitted against the supplied L.
+    frames = model.site_frames() or [None] * len(shell_ls)
+    for a, frame in enumerate(frames):
+        if frame is not None and frame.residual > SITE_FRAME_TOL:
+            raise ValueError(
+                f"shell {a}: the supplied orbital operators are not a rotation of the spherical ones in the basis "
+                f"rot_to_spherical describes (residual {frame.residual:.2e}); the crystal frame of the polarisation "
+                "vectors cannot be determined"
+            )
+    operators = IndexedOperators(
+        rows,
+        rotations,
+        {a: shell_ls[a] for a in rows},
+        default_dipole=supplied,
+        frames={a: frames[a].rotation for a in rows if frames[a] is not None},
+    )
     return impurity_orbitals, valence_baths, conduction_baths, dict(rotations), operators
 
 
@@ -354,7 +376,42 @@ def spectra_layout(model, requests, *, auto_block_structure=True, hOp=None, repo
         correlated_block_structure=correlated_block_structure,
     )
     ordered_requests(requests, layout)
+    if block_model and report is not None:
+        _report_dipole_frame(model, block_operators, l_valence, l_core, report)
     return layout, block_structure, nBaths
+
+
+def _report_dipole_frame(model, operators, valence, core, report):
+    """Say which frame polarisation vectors are in and, for a supplied core->valence dipole, how it compares
+    with the frame-rotated Gaunt one (B4 of the Dxyz plan)."""
+    frames = model.site_frames() or []
+    rotated = [(a, f) for a, f in enumerate(frames) if f is not None]
+    if rotated:
+        report("Polarisation vectors are crystal (global) coordinates.", level=V_RESULT)
+        for a, f in rotated:
+            report(f"  shell {a} (l={model.resolved_shell_ls[a]}): {f.describe()}", level=V_RESULT)
+    else:
+        report("Polarisation vectors are in the shells' local frame (rot_to_spherical).", level=V_RESULT)
+    if core is None:
+        return
+    from impurityModel.ed.spectra import CARTESIAN
+
+    operators.dipole_checks.clear()
+    operators.dipole(CARTESIAN, core, valence)
+    if not operators.dipole_checks:
+        source = "supplied dipole has no core->valence block, " if operators.default_dipole is not None else ""
+        report(f"Dipole: {source}atomic (Gaunt) matrix elements, unit radial integral.", level=V_RESULT)
+        return
+    parts = ", ".join(
+        f"{axis}: overlap {ov:.3f}, phase {np.degrees(ph):+.1f} deg"
+        for axis, (_, _, k) in zip("xyz", sorted(operators.dipole_checks))
+        for ov, ph in [operators.dipole_checks[(core, valence, k)]]
+    )
+    report(
+        "Dipole: supplied core->valence block (RSPt's Dxyz). Against the frame-rotated Gaunt block: "
+        f"{parts} (a momentum-type matrix is +-90 deg; overlap < 1 is crystal-field mixing or a frame error).",
+        level=V_RESULT,
+    )
 
 
 def calc_spectroscopy(

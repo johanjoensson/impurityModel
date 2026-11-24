@@ -48,6 +48,7 @@ def write_selfenergy_group(
     h_dft,
     h_bath,
     v,
+    operators=None,
 ):
     """Write the solver problem into an open h5py group.
 
@@ -70,6 +71,10 @@ def write_selfenergy_group(
         Orbital layout of ``h_solver``.
     h_dft, h_bath, v : numpy.ndarray
         The blocks ``h_solver`` was assembled from (kept for inspection).
+    operators : LocalOperators, optional
+        The impurity block's one-body operators (RSPt's ``ms``, ``ml``, ``Dxyz``, ...) in the same basis as
+        ``rot_to_spherical``'s rows; written to the subgroup ``Operators`` (see :func:`_write_operators`), so an
+        offline rerun keeps the spin pairing and the crystal frame of the dipole.
     """
     group.attrs[_VERSION_ATTR] = ARCHIVE_VERSION
     group.attrs["tau"] = basis.tau
@@ -93,6 +98,47 @@ def write_selfenergy_group(
     _put(group, "DC", dc)
     _put(group, "U", u4)
     _put(group, "H solver", h_solver)
+    _write_operators(group, operators)
+
+
+#: Dataset names of the ``Operators`` subgroup, by :class:`LocalOperators` field.
+_OPERATOR_DATASETS = {"sz": "Sz", "s_plus": "S+", "lz": "Lz", "l_plus": "L+", "s_axis": "S axis", "dipole": "Dxyz"}
+
+
+def _write_operators(group, operators):
+    """The ``Operators`` subgroup: one dataset per present member, the symmetry operations stacked as
+    ``Symmetry reps`` ``(n_symm, n, n)`` with ``Symmetry antiunitary``, and ``source``/``frame`` attributes.
+    Absent means the run had no operator set (older archives too); the group is optional, so the archive
+    version is unchanged."""
+    if "Operators" in group:
+        del group["Operators"]
+    if operators is None:
+        return
+    sub = group.create_group("Operators")
+    sub.attrs["source"] = operators.source
+    sub.attrs["frame"] = operators.frame
+    for field, name in _OPERATOR_DATASETS.items():
+        value = getattr(operators, field)
+        if value is not None:
+            sub.create_dataset(name, data=value)
+    if operators.symmetry_ops:
+        sub.create_dataset("Symmetry reps", data=np.stack([u for u, _ in operators.symmetry_ops]))
+        sub.create_dataset("Symmetry antiunitary", data=np.array([a for _, a in operators.symmetry_ops], dtype=bool))
+
+
+def _read_operators(group):
+    """Inverse of :func:`_write_operators`; ``None`` when the group has no ``Operators``."""
+    if "Operators" not in group:
+        return None
+    from impurityModel.ed.local_operators import LocalOperators
+
+    sub = group["Operators"]
+    kwargs = {field: np.asarray(sub[name]) for field, name in _OPERATOR_DATASETS.items() if name in sub}
+    if "Symmetry reps" in sub:
+        reps = np.asarray(sub["Symmetry reps"])
+        anti = np.asarray(sub["Symmetry antiunitary"])
+        kwargs["symmetry_ops"] = tuple((reps[i], bool(anti[i])) for i in range(reps.shape[0]))
+    return LocalOperators(source=str(sub.attrs["source"]), frame=str(sub.attrs["frame"]), **kwargs)
 
 
 def read_archive_group(path, cluster=None, iteration=None) -> dict:
@@ -148,6 +194,7 @@ def read_archive_group(path, cluster=None, iteration=None) -> dict:
             if occ_source is not None
             else {0: int(attrs["nominal occupation"])}
         )
+        operators = _read_operators(g)
 
     basis_kwargs, solver_kwargs = options_from_attrs(attrs)
     basis_kwargs["nominal_occ"] = nominal_occ
@@ -164,6 +211,7 @@ def read_archive_group(path, cluster=None, iteration=None) -> dict:
         "iw_mesh": iw_mesh if iw_mesh.size else None,
         "w_mesh": w_mesh if w_mesh.size else None,
         "shell_ls": shell_ls,
+        "operators": operators,
         "delta": float(attrs["delta"]),
         "basis_kwargs": basis_kwargs,
         "solver_kwargs": solver_kwargs,
@@ -200,6 +248,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         rot_to_spherical=raw["rot_to_spherical"],
         n_spin_orbitals=raw["n_spin_orbitals"],
         shell_ls=raw["shell_ls"],
+        operators=raw["operators"],
     )
     meshes = Meshes(
         iw=1j * raw["iw_mesh"] if raw["iw_mesh"] is not None else None,

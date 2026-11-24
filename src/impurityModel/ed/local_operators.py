@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-__all__ = ["LocalOperators", "single_particle_lsj_matrices", "shell_operator_matrices"]
+__all__ = ["LocalOperators", "SiteFrame", "single_particle_lsj_matrices", "shell_operator_matrices", "site_frames"]
 
 _SOURCES = ("rspt", "file", "spherical", "index")
 _FRAMES = ("global", "local")
@@ -249,6 +249,93 @@ class LocalOperators:
         dx, dy, dz = self.dipole
         s = np.sqrt(0.5)
         return np.stack([s * (dx + 1j * dy), s * (dx - 1j * dy), dz])
+
+
+@dataclass(frozen=True)
+class SiteFrame:
+    r"""The proper rotation taking a shell's local frame (that of ``rot_to_spherical``) to the global one.
+
+    ``rotation[i, j]`` is the global component ``i`` of local axis ``j``: a vector operator transforms as
+    ``V_global_i = sum_j rotation[i, j] V_local_j``, the convention of :meth:`LocalOperators.from_spherical`'s
+    ``site_rotation``. ``residual`` is the largest element of ``L_global - rotation . L_local`` on the shell
+    block after the fit: roundoff when the supplied operators are a rotation of the spherical ones, of order
+    one when the basis is not what ``rot_to_spherical`` says.
+    """
+
+    rotation: np.ndarray
+    residual: float
+
+    @property
+    def angle(self) -> float:
+        """Rotation angle in radians."""
+        return float(np.arccos(np.clip((np.trace(self.rotation) - 1.0) / 2.0, -1.0, 1.0)))
+
+    @property
+    def axis(self) -> np.ndarray:
+        """Unit rotation axis (``z`` for the identity)."""
+        r = self.rotation
+        v = np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]])
+        norm = np.linalg.norm(v)
+        if norm > 1e-10:
+            return v / norm
+        if self.angle < 1e-6:
+            return np.array([0.0, 0.0, 1.0])
+        w, vecs = np.linalg.eigh(0.5 * (r + r.T))  # angle pi: the axis is the +1 eigenvector
+        return vecs[:, np.argmax(w)]
+
+    @property
+    def is_identity(self) -> bool:
+        return bool(np.allclose(self.rotation, np.eye(3), atol=1e-8))
+
+    def describe(self) -> str:
+        if self.is_identity:
+            return f"local frame = global frame (residual {self.residual:.1e})"
+        ax = ", ".join(f"{x:+.4f}" for x in self.axis)
+        return f"rotated by {np.degrees(self.angle):.3f} deg about ({ax}) relative to the global frame (residual {self.residual:.1e})"
+
+
+def _nearest_rotation(m):
+    u, _, vt = np.linalg.svd(m)
+    d = np.sign(np.linalg.det(u @ vt))
+    return u @ np.diag([1.0, 1.0, d]) @ vt
+
+
+def site_frames(supplied, rot_to_spherical, shell_ls):
+    r"""Per shell, the :class:`SiteFrame` that maps the spherical rebuild onto ``supplied``'s orbital vector.
+
+    ``supplied`` holds ``L`` in the global frame (RSPt's ``ml``/``mlp``); the reference is
+    :func:`shell_operator_matrices`, which is ``L`` in the frame ``rot_to_spherical`` defines. On the shell's
+    block, ``L_supplied_i = sum_j R_ij L_ref_j``; ``R`` is the least-squares solution in the Frobenius inner
+    product (the Gram matrix of the reference components is not diagonal for a partial shell), then the
+    nearest proper rotation. A shell with ``l = 0`` has no
+    orbital moment and gets ``None``, as does every shell when ``supplied`` has no ``lz``/``l_plus``.
+
+    Shells of one cluster may sit on different sites, so each gets its own frame.
+    """
+    lv = supplied.orbital_vector()
+    if lv is None:
+        return [None] * len(shell_ls)
+    rot = np.asarray(rot_to_spherical, dtype=complex)
+    out = []
+    for l, mats, cols in zip(shell_ls, shell_operator_matrices(rot, shell_ls), _shell_slices(shell_ls)):
+        if l == 0:
+            out.append(None)
+            continue
+        lz, lp = mats[0], mats[1]
+        ref = LocalOperators._cartesian(lz, lp)
+        r_a = rot[:, cols]
+        proj = r_a @ r_a.conj().T  # projector on the shell's (possibly partial) space
+        block = np.stack([proj @ v @ proj for v in lv])
+        gram = np.array([[np.real(np.vdot(ref[j], ref[k])) for k in range(3)] for j in range(3)])
+        if np.linalg.cond(gram) > 1e10:  # a projected space too small to carry the vector (e.g. one orbital)
+            out.append(None)
+            continue
+        overlap = np.array([[np.real(np.vdot(ref[j], block[i])) for j in range(3)] for i in range(3)])
+        m = overlap @ np.linalg.inv(gram)
+        r = _nearest_rotation(m)
+        resid = np.tensordot(r, ref, axes=(1, 0)) - block
+        out.append(SiteFrame(r, float(np.max(np.abs(resid)))))
+    return out
 
 
 def dipole_from_circular(dp, dm, dz):
