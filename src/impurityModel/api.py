@@ -63,7 +63,17 @@ from impurityModel.ed.selfenergy import (
     report_continuum_reference,
     sigma_inf_dc,
 )
+from impurityModel.ed.spectroscopy import (
+    calc_nixs,
+    calc_pes,
+    calc_rixs,
+    calc_spectroscopy,
+    calc_xas,
+    calc_xps,
+    save_spectra,
+)
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
+from impurityModel.inputformat.build import load_spectroscopy_requests
 from impurityModel.inputformat.reader import (
     apply_environment,
     find_environment_file,
@@ -102,8 +112,14 @@ __all__ = [
     "amf_dc",
     "apply_environment",
     "atomic_u4",
+    "calc_nixs",
+    "calc_pes",
+    "calc_rixs",
     "calc_selfenergy",
+    "calc_spectroscopy",
     "calc_susceptibility_workflow",
+    "calc_xas",
+    "calc_xps",
     "dc_levels",
     "dc_spread",
     "describe_options",
@@ -116,6 +132,7 @@ __all__ = [
     "fll_dc",
     "load_environment",
     "load_selfenergy_archive",
+    "load_spectroscopy_requests",
     "matrixToIOp",
     "nominal_dc",
     "options_from_attrs",
@@ -124,6 +141,7 @@ __all__ = [
     "parse_truncation_threshold",
     "report_continuum_reference",
     "save_Greens_function",
+    "save_spectra",
     "sigma_inf_dc",
     "write_selfenergy_group",
 ]

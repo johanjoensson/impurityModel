@@ -170,6 +170,7 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
             verbosity=verbosity,
             output_filename=target,
             solver=built.solver,
+            auto_block_structure=built.extra["auto_block_structure"],
         )
         return target
 

@@ -36,7 +36,7 @@ def test_every_example_declares_its_energy_unit(path):
 def test_every_spectroscopy_example_computes_something(path):
     """A file with every technique switched off would validate and produce an empty archive."""
     built = build(load_input(path))
-    assert any(getattr(built.spectra, name) for name in ("pes", "xps", "xas", "rixs", "nixs"))
+    assert built.spectra
 
 
 def test_the_examples_cover_all_three_calculations():

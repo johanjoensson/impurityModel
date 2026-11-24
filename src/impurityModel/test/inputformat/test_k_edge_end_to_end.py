@@ -370,11 +370,11 @@ def test_one_spectrum_alone_equals_the_same_spectrum_of_a_full_run_and_save_roun
     from mpi4py import MPI
 
     from impurityModel.ed.options import XASOptions
-    from impurityModel.ed.spectroscopy import calc_spectroscopy, calc_xas, requests_from_legacy_options, save_spectra
+    from impurityModel.ed.spectroscopy import calc_spectroscopy, calc_xas, save_spectra
 
     comm = MPI.COMM_WORLD
     built = build(load_input(write(K_EDGE_RUN.format(h0=small_p_shell_h0.name), "one_spectrum.toml")))
-    requests = requests_from_legacy_options(built.spectra)
+    requests = built.spectra
     xas = next(r for r in requests if isinstance(r, XASOptions))
     kwargs = dict(comm=comm, verbosity=0, cluster_label="one", report_dir=str(tmp_path))
 

@@ -145,20 +145,20 @@ def test_the_flat_and_labelled_paths_agree_on_what_omission_means(written, tmp_p
 
 
 @pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
-def test_the_switches_reach_the_spectra_options(written):
+def test_the_switches_reach_the_spectra_requests(written):
     text = SPECTROSCOPY + "\n[spectroscopy.rixs]\nenabled = true\n[spectroscopy.xps]\nenabled = false\n"
     built = build(load_input(written(text, h0=NIO_PICKLE)))
-    assert built.spectra.rixs is True
-    assert built.spectra.xps is False
-    assert built.spectra.nixs is False
-    assert len(built.spectra.wIn) == 50
+    kinds = {type(request).__name__ for request in built.spectra}
+    assert "RIXSOptions" in kinds
+    assert not {"XPSOptions", "NIXSOptions"} & kinds
+    rixs = next(request for request in built.spectra if type(request).__name__ == "RIXSOptions")
+    assert len(rixs.w_in) == 50
 
 
 @pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
-def test_rixs_off_leaves_an_empty_incoming_mesh(written):
+def test_rixs_off_leaves_no_rixs_request(written):
     built = build(load_input(written(SPECTROSCOPY, h0=NIO_PICKLE)))
-    assert built.spectra.rixs is False
-    assert len(built.spectra.wIn) == 0
+    assert "RIXSOptions" not in {type(request).__name__ for request in built.spectra}
 
 
 # ---------------------------------------------------------------- bath deduction
@@ -593,3 +593,15 @@ def test_the_refine_keys_reach_the_solver_options(written):
     assert (solver.gf_refine_rounds, solver.gf_refine_tol, solver.gf_refine_swap) == (3, 1e-4, 0.2)
     with pytest.raises(InputError, match="need gf_refine_rounds"):
         build(load_input(written(SELFENERGY + "\n[solver]\ngf_refine_rounds = 0\ngf_refine_swap = 0.2\n")))
+
+
+@pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
+def test_load_spectroscopy_requests_returns_what_build_puts_in_built_spectra(written):
+    from impurityModel.inputformat.build import load_spectroscopy_requests
+
+    text = SPECTROSCOPY + "\n[spectroscopy.rixs]\nenabled = true\n"
+    path = written(text, h0=NIO_PICKLE)
+    requests = load_spectroscopy_requests(path)
+    built = build(load_input(path))
+    assert [type(r) for r in requests] == [type(r) for r in built.spectra]
+    assert np.array_equal(requests[-1].w_in, built.spectra[-1].w_in)

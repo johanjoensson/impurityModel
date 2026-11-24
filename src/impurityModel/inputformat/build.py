@@ -52,8 +52,9 @@ class Built:
         The impurity problem.
     basis : impurityModel.ed.model.BasisOptions
     solver : impurityModel.ed.model.SolverOptions
-    spectra : impurityModel.ed.model.SpectraOptions or None
-        Only for a spectroscopy run.
+    spectra : list or None
+        The spectrum requests (:class:`PESOptions`, :class:`XPSOptions`, :class:`NIXSOptions`,
+        :class:`XASOptions`, :class:`RIXSOptions`, one per enabled technique) of a spectroscopy run.
     meshes : impurityModel.ed.model.Meshes or None
         Only for a self-energy or susceptibility run.
     extra : dict
@@ -741,43 +742,82 @@ def _solver_options_from(SolverOptions, table):
     return SolverOptions(**kwargs)
 
 
-def _build_spectra_options(resolved, notes):
-    from impurityModel.ed.model import SpectraOptions
+def _build_spectra_requests(resolved):
+    """The per-technique option objects a ``[spectroscopy]`` input asks for, in execution order.
+
+    One object per enabled technique (PES, XPS, NIXS, XAS, RIXS), each carrying its own mesh and
+    broadening; the same objects :func:`impurityModel.ed.spectroscopy.calc_spectroscopy` takes.
+    Reads only the ``spectroscopy*`` tables and the valence shell, so
+    :func:`load_spectroscopy_requests` can call it without a Hamiltonian.
+    """
+    from impurityModel.ed.options import NIXSOptions, PESOptions, RIXSOptions, XASOptions, XPSOptions
 
     table = resolved.tables["spectroscopy"]
     rixs = resolved.tables["spectroscopy.rixs"]
     nixs = resolved.tables["spectroscopy.nixs"]
     valence = next(shell for shell in resolved.shells if shell["role"] == "valence")
+    w = _mesh_array(table["w"])
+    delta = table["core_hole_broadening"]
 
-    radial = None
+    requests = []
+    if resolved.tables["spectroscopy.pes"]["enabled"]:
+        requests.append(PESOptions(w=w, delta=delta))
+    if resolved.tables["spectroscopy.xps"]["enabled"]:
+        requests.append(XPSOptions(w=w, delta=delta))
     if nixs["enabled"]:
         mesh, values = np.loadtxt(nixs["radial_file"]).T
-        radial = (mesh, values, np.copy(values))
+        requests.append(
+            NIXSOptions(
+                w_loss=_mesh_array(table["w_loss"]),
+                delta=nixs["broadening"],
+                qs=None if not nixs["q"] else [np.asarray(q, dtype=float) for q in nixs["q"]],
+                # NIXS is a valence probe: absent, both angular momenta are the valence shell's.
+                l_final=valence["l"] if nixs["l_final"] is None else nixs["l_final"],
+                l_initial=valence["l"] if nixs["l_initial"] is None else nixs["l_initial"],
+                radial=(mesh, values, np.copy(values)),
+            )
+        )
+    if resolved.tables["spectroscopy.xas"]["enabled"]:
+        requests.append(XASOptions(w=w, delta=delta))
+    if rixs["enabled"]:
+        requests.append(
+            RIXSOptions(
+                w_in=_mesh_array(rixs["w_in"]),
+                w_loss=_mesh_array(table["w_loss"]),
+                delta_intermediate=delta,
+                delta_final=rixs["final_state_broadening"],
+                adaptive_tol=rixs["adaptive_tol"],
+            )
+        )
+    return requests
 
-    # RIXS off still needs a mesh object of the right shape; an empty one is what the driver
-    # reads as "no incoming energies", and the switch above is what actually decides.
-    w_in = _mesh_array(rixs["w_in"]) if rixs["enabled"] else np.array([])
 
-    return SpectraOptions(
-        w=_mesh_array(table["w"]),
-        delta=table["core_hole_broadening"],
-        wLoss=_mesh_array(table["w_loss"]),
-        wIn=w_in,
-        deltaRIXS=rixs["final_state_broadening"],
-        deltaNIXS=nixs["broadening"],
-        qsNIXS=None if not nixs["q"] else [np.asarray(q, dtype=float) for q in nixs["q"]],
-        # NIXS is a valence probe: absent, both angular momenta are the valence shell's.
-        liNIXS=valence["l"] if nixs["l_final"] is None else nixs["l_final"],
-        ljNIXS=valence["l"] if nixs["l_initial"] is None else nixs["l_initial"],
-        radial=radial,
-        auto_block_structure=resolved.tables["solver"]["auto_block_structure"],
-        pes=resolved.tables["spectroscopy.pes"]["enabled"],
-        xps=resolved.tables["spectroscopy.xps"]["enabled"],
-        xas=resolved.tables["spectroscopy.xas"]["enabled"],
-        rixs=rixs["enabled"],
-        nixs=nixs["enabled"],
-        rixs_adaptive_tol=rixs["adaptive_tol"],
-    )
+def load_spectroscopy_requests(path, comm=None):
+    """The spectrum requests of an ``impurityModel.toml`` with a ``[spectroscopy]`` calculation.
+
+    For a caller that supplies the model itself (the RSPt interface) and wants only the technique
+    settings -- meshes, broadenings, which spectra -- from the file. The file is validated as a
+    whole, exactly as ``impurityModel run`` does, but no Hamiltonian is assembled and no
+    ground state is solved.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+    comm : MPI communicator, optional
+        Rank 0 parses and broadcasts; an error is raised on every rank.
+
+    Returns
+    -------
+    list
+        One option object per enabled technique, ready for
+        :func:`impurityModel.ed.spectroscopy.calc_spectroscopy`.
+    """
+    from impurityModel.inputformat.reader import InputError, load_input
+
+    resolved = load_input(path, comm)
+    if resolved.calculation != "spectroscopy":
+        raise InputError(f"{path}: calculation is {resolved.calculation!r}, not 'spectroscopy'")
+    return _build_spectra_requests(resolved)
 
 
 def _fermionic_matsubara(tau, n_points):
@@ -946,9 +986,10 @@ def build(resolved, comm=None, verbosity=0):
         meshes = None
         extra = {}
 
-    spectra_options = None
+    spectra_requests = None
     if resolved.calculation == "spectroscopy":
-        spectra_options = _build_spectra_options(resolved, notes)
+        spectra_requests = _build_spectra_requests(resolved)
+        extra["auto_block_structure"] = resolved.tables["solver"]["auto_block_structure"]
         extra.setdefault("cluster_label", resolved.tables["spectroscopy"]["cluster"])
         extra["output"] = resolved.tables["spectroscopy"]["output"]
     else:
@@ -966,7 +1007,7 @@ def build(resolved, comm=None, verbosity=0):
         model=model,
         basis=basis,
         solver=solver,
-        spectra=spectra_options,
+        spectra=spectra_requests,
         meshes=meshes,
         extra=extra,
         notes=notes,
