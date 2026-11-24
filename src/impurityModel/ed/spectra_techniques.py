@@ -20,13 +20,14 @@ provider (:class:`LabelledOperators` for the ``(l, s, m)``-labelled models of
 """
 
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.operator_algebra import arrayOp2Dict, combineOp
+from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
 from impurityModel.ed.options import NIXSOptions, PESOptions, RIXSOptions, XASOptions, XPSOptions
 from impurityModel.ed.rixs import calc_map, calc_tensor_map
 from impurityModel.ed.spectra import (
@@ -77,10 +78,17 @@ class LabelledOperators:
     def inverse_photoemission(self, key):
         return inverse_photoemission_operators(self.nBaths, l=key)
 
-    def dipole(self, vectors, core, valence):
+    def dipole(self, vectors, core, valence, explicit=None):
+        if explicit is not None:
+            raise ValueError(
+                "explicit dipole matrices are only supported for a block model (ImpurityModel.from_blocks / "
+                "from_solver_matrix); an (l, s, m)-labelled model builds the atomic dipole itself."
+            )
         return dipole_operators(self.nBaths, vectors, core, valence)
 
-    def daggered_dipole(self, vectors, core, valence):
+    def daggered_dipole(self, vectors, core, valence, explicit=None):
+        if explicit is not None:
+            raise ValueError("explicit dipole matrices need a block model; see LabelledOperators.dipole")
         return daggered_dipole_operators(self.nBaths, vectors, core, valence)
 
     def nixs(self, qs, l_final, l_initial, r_final, r_initial, radial_mesh):
@@ -95,6 +103,104 @@ class LabelledOperators:
 
     def pes_equivalence_groups(self, key, block_structure):
         return _pes_ips_equivalence_groups(self.nBaths, key, block_structure)
+
+
+class IndexedOperators:
+    """Transition operators of a block model, addressed through flat orbital indices.
+
+    The model carries no ``(l, s, m)`` labels: shells are given by the rows of the impurity block each
+    one owns and by its column block of ``rot_to_spherical`` (``O_input = R O_spherical R^dagger``). The
+    atomic dipole is built in the spherical basis and rotated, ``T_input = R_valence D R_core^dagger``;
+    a caller-supplied ``(3, n_imp, n_imp)`` matrix (RSPt's ``Dxyz``, already in the input basis) replaces
+    it. Photoemission operators are the annihilators of the shell's input-basis orbitals, in row order.
+
+    Parameters
+    ----------
+    rows : Mapping
+        ``{shell key: sorted impurity spin-orbital indices of that shell}``.
+    rotations : Mapping
+        ``{shell key: R_a}``, the ``(len(rows[a]), 2(2 l_a + 1))`` block of ``rot_to_spherical``.
+    ls : Mapping
+        ``{shell key: l}``, the angular momentum of each shell.
+    """
+
+    def __init__(self, rows, rotations, ls):
+        self.rows = {k: list(v) for k, v in rows.items()}
+        self.rotations = {k: np.asarray(v) for k, v in rotations.items()}
+        self.ls = dict(ls)
+
+    def photoemission(self, key):
+        return [{((int(i), "a"),): 1} for i in self.rows[key]]
+
+    def inverse_photoemission(self, key):
+        return [{((int(i), "c"),): 1} for i in self.rows[key]]
+
+    def _spherical_dipole(self, n, core, valence):
+        l_core, l_valence = self.ls[core], self.ls[valence]
+        local = OrderedDict([(l_core, 0), (l_valence, 0)])
+        if l_core == l_valence:
+            raise ValueError("a dipole transition needs two shells of different l")
+        t = dipole_operators(local, [n], l_core, l_valence)[0]
+        offset_valence = c2i(local, (l_valence, 0, -l_valence))
+        offset_core = c2i(local, (l_core, 0, -l_core))
+        d = np.zeros((2 * (2 * l_valence + 1), 2 * (2 * l_core + 1)), dtype=complex)
+        for ((i, _), (j, _)), value in t.items():
+            d[i - offset_valence, j - offset_core] = value
+        return d
+
+    def _matrix(self, n, core, valence):
+        d = self._spherical_dipole(n, core, valence)
+        return self.rotations[valence] @ d @ self.rotations[core].conj().T
+
+    def _dict(self, matrix, core, valence):
+        out = {}
+        for a, i in enumerate(self.rows[valence]):
+            for b, j in enumerate(self.rows[core]):
+                if abs(matrix[a, b]) > 1e-14:
+                    out[((int(i), "c"), (int(j), "a"))] = complex(matrix[a, b])
+        return out
+
+    def _explicit(self, n, explicit, core, valence):
+        d = np.asarray(explicit)
+        block = np.tensordot(np.asarray(n, dtype=complex), d, axes=(0, 0))
+        return block[np.ix_(self.rows[valence], self.rows[core])]
+
+    def dipole(self, vectors, core, valence, explicit=None):
+        out = []
+        for n in vectors:
+            m = self._matrix(n, core, valence) if explicit is None else self._explicit(n, explicit, core, valence)
+            out.append(self._dict(m, core, valence))
+        return out
+
+    def daggered_dipole(self, vectors, core, valence, explicit=None):
+        return [daggerOp(t) for t in self.dipole(vectors, core, valence, explicit=explicit)]
+
+    def nixs(self, *args, **kwargs):
+        raise NotImplementedError(
+            "NIXS needs the radial wave functions and an (l, s, m)-labelled model; it is not available on a "
+            "block model (ImpurityModel.from_blocks)."
+        )
+
+    def projector_operators(self, projectors):
+        raise NotImplementedError("projected spectra are not available on a block model")
+
+    def combine(self, left, right):
+        raise NotImplementedError("combine is only available on an (l, s, m)-labelled model")
+
+    def pes_equivalence_groups(self, key, block_structure):
+        """Symmetry-equivalence label of each shell orbital, from the shell's block structure.
+
+        ``block_structure`` indexes the shell's orbitals locally (position in ``rows[key]``).
+        """
+        class_of_block = {}
+        for cls_id, cls in enumerate(block_structure.identical_blocks):
+            for b in cls:
+                class_of_block[b] = cls_id
+        label_of_local = {}
+        for b, block in enumerate(block_structure.blocks):
+            for position, local in enumerate(block):
+                label_of_local[local] = (class_of_block.get(b, b), position)
+        return [label_of_local[k] for k in range(len(self.rows[key]))]
 
 
 @dataclass(frozen=True)
@@ -330,7 +436,7 @@ def xas_spectrum(target: SpectraTarget, options: XASOptions):
         # Projected operators are not a plain Cartesian linear combination -> keep the
         # per-operator path.
         epsilons = options.epsilons if options.epsilons is not None else CARTESIAN
-        tOps = ops.dipole(epsilons, l_core, l_valence)
+        tOps = ops.dipole(epsilons, l_core, l_valence, explicit=options.dipole)
         iBasisProjectors = ops.projector_operators(options.projectors)
         projectedTOps = []
         for proj in iBasisProjectors:
@@ -361,7 +467,7 @@ def xas_spectrum(target: SpectraTarget, options: XASOptions):
         # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
         # circular, dichroism, ...) is left to post-processing (impurityModel.ed.polarization),
         # so it never requires re-running the solve.
-        cartesian_ops = _prep_one_body(ops.dipole(CARTESIAN, l_core, l_valence))
+        cartesian_ops = _prep_one_body(ops.dipole(CARTESIAN, l_core, l_valence, explicit=options.dipole))
         n_orb = target.basis.num_spin_orbitals
         h_onebody = extract_tensors(target.hOp, n_orb=n_orb, two_body=False)[0]
         reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
@@ -409,8 +515,8 @@ def rixs_spectrum(target: SpectraTarget, options: RIXSOptions):
         # per-operator Kramers-Heisenberg path.
         epsilons_in = options.epsilons_in if options.epsilons_in is not None else CARTESIAN
         epsilons_out = options.epsilons_out if options.epsilons_out is not None else CARTESIAN
-        tOpsIn = ops.dipole(epsilons_in, l_core, l_valence)
-        tOpsOut = ops.daggered_dipole(epsilons_out, l_core, l_valence)
+        tOpsIn = ops.dipole(epsilons_in, l_core, l_valence, explicit=options.dipole)
+        tOpsOut = ops.daggered_dipole(epsilons_out, l_core, l_valence, explicit=options.dipole)
         iBasisProjectors = ops.projector_operators(options.projectors)
         projectedTOpsIn = []
         projectedTOpsOut = []
@@ -448,8 +554,8 @@ def rixs_spectrum(target: SpectraTarget, options: RIXSOptions):
         # Kramers-Heisenberg tensor over the 3 Cartesian in/out components once (R4 -- the
         # RIXS analogue of B2b). Polarization contraction (arbitrary/circular, dichroism,
         # ...) is left to post-processing (impurityModel.ed.polarization).
-        in_component_ops = _prep_one_body(ops.dipole(CARTESIAN, l_core, l_valence))
-        out_component_ops = _prep_one_body(ops.daggered_dipole(CARTESIAN, l_core, l_valence))
+        in_component_ops = _prep_one_body(ops.dipole(CARTESIAN, l_core, l_valence, explicit=options.dipole))
+        out_component_ops = _prep_one_body(ops.daggered_dipole(CARTESIAN, l_core, l_valence, explicit=options.dipole))
         C = calc_tensor_map(
             target.hOp,
             in_component_ops,

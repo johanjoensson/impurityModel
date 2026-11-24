@@ -187,6 +187,16 @@ def _flatten_bath_split(bath_split, impurity_indices, n_orb):
     return sorted(valence), sorted(conduction)
 
 
+def assemble_interacting_operator(h0, dc=None, u=None):
+    """``h0 - dc + U(u)`` as a :class:`ManyBodyOperator`; ``dc`` and ``u`` may be ``None`` (no term)."""
+    h = ManyBodyOperator(h0)
+    if dc is not None:
+        h = h - ManyBodyOperator(dc)
+    if u is not None:
+        h = h + ManyBodyOperator(u)
+    return h
+
+
 def prepare_solver_basis(
     h0,
     dc,
@@ -227,7 +237,7 @@ def prepare_solver_basis(
     raises ``ValueError``.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
-    h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
+    h_input = assemble_interacting_operator(h0, dc, u)
     # The *non-interacting part of the Hamiltonian actually diagonalised* -- h0 with the double
     # counting already removed, not the raw KS block. This is what the self-energy is extracted
     # against (`get_sigma`'s `h0op`, via `SolverBasis.h0_solve`), and the two must agree or the
@@ -237,7 +247,7 @@ def prepare_solver_basis(
     # The external CTHYB path shows the same contract from the other side -- RSPt subtracts
     # `sig_dc` from `hlda` before that solver is called (green_solver.F90:578-582) and still
     # subtracts it from `sig` afterwards.
-    h0_input = ManyBodyOperator(h0) - ManyBodyOperator(dc)
+    h0_input = assemble_interacting_operator(h0, dc, None)
 
     # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
     # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath

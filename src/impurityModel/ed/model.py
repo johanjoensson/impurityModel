@@ -175,6 +175,10 @@ class ImpurityModel:
         (block ``a`` is ``2(2 l_a + 1)`` wide; a partial shell has a rectangular block). ``None``
         means a single shell inferred from the column count, bit-identical to the pre-multishell
         behaviour. Same-``l`` shells are never merged.
+    valence_shell, core_shell : int or None, optional
+        For a block model (ndarray ``rot_to_spherical`` with ``shell_ls``): the indices into
+        ``shell_ls`` of the valence and of the core shell. The spectra driver needs them to say which
+        shell the transition operators leave and enter; ``core_shell=None`` is a model without a core.
     """
 
     h0: dict
@@ -187,6 +191,8 @@ class ImpurityModel:
     valence_l: Optional[int] = None
     core_l: Optional[int] = None
     shell_ls: Optional[tuple] = None
+    valence_shell: Optional[int] = None
+    core_shell: Optional[int] = None
 
     def __post_init__(self):
         # Derive the spin-orbital count from h0 when the caller did not supply it. h0 is a
@@ -776,6 +782,8 @@ class ImpurityModel:
         rot_to_spherical,
         bath_valence_conduction=None,
         shell_ls=None,
+        valence_shell: Optional[int] = None,
+        core_shell: Optional[int] = None,
     ) -> "ImpurityModel":
         """Build a model from the full one-particle solver matrix ``H`` (impurity block first).
 
@@ -803,6 +811,8 @@ class ImpurityModel:
         shell_ls : tuple of int, optional
             ``l`` of each spherical column block of an ndarray ``rot_to_spherical`` (multi-shell
             impurity); ``None`` is a single shell inferred from the column count.
+        valence_shell, core_shell : int, optional
+            Indices into ``shell_ls`` of the valence and core shell, for spectroscopy.
 
         Returns
         -------
@@ -823,6 +833,8 @@ class ImpurityModel:
             bath_states=bath_states,
             n_spin_orbitals=H.shape[0],
             shell_ls=tuple(int(l) for l in shell_ls) if shell_ls is not None else None,
+            valence_shell=None if valence_shell is None else int(valence_shell),
+            core_shell=None if core_shell is None else int(core_shell),
         )
 
     @classmethod
@@ -837,6 +849,8 @@ class ImpurityModel:
         rot_to_spherical,
         bath_valence_conduction=None,
         shell_ls=None,
+        valence_shell: Optional[int] = None,
+        core_shell: Optional[int] = None,
     ) -> "ImpurityModel":
         """Build a model from the impurity / hybridization / bath blocks.
 
@@ -855,7 +869,7 @@ class ImpurityModel:
             ``assemble_h0`` returns ``v_solver``).
         H_bath : numpy.ndarray
             Bath block, ``(n_bath, n_bath)``.
-        dc, u4, rot_to_spherical, bath_valence_conduction, shell_ls
+        dc, u4, rot_to_spherical, bath_valence_conduction, shell_ls, valence_shell, core_shell
             As in :meth:`from_solver_matrix`.
 
         Returns
@@ -880,6 +894,8 @@ class ImpurityModel:
             rot_to_spherical=rot_to_spherical,
             bath_valence_conduction=bath_valence_conduction,
             shell_ls=shell_ls,
+            valence_shell=valence_shell,
+            core_shell=core_shell,
         )
 
 

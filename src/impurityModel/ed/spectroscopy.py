@@ -24,10 +24,13 @@ from impurityModel.ed.gs_calc import GroundStateSpec, calc_gs
 from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
+from impurityModel.ed.observables import shell_column_slices, shell_index_of_orbitals
 
 # Local stuff
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
+from impurityModel.ed.solver_basis import _flatten_bath_split, assemble_interacting_operator
 from impurityModel.ed.spectra_techniques import (
+    IndexedOperators,
     LabelledOperators,
     ShellLayout,
     SpectraTarget,
@@ -36,6 +39,7 @@ from impurityModel.ed.spectra_techniques import (
     run_techniques,
 )
 from impurityModel.ed.symmetries import (
+    classify_bath_occupation,
     extract_tensors,
     impurity_block_structure,
 )
@@ -196,6 +200,68 @@ def _request_meshes(technique, request):
     }
 
 
+def _is_block_model(model):
+    """``True`` for a model built from blocks (ndarray ``rot_to_spherical``), not through ``from_shells``."""
+    return not isinstance(model.rot_to_spherical, dict)
+
+
+def _block_model_inputs(model, hOp):
+    """Shell-keyed solver inputs and the index-addressed operator provider of a block model.
+
+    Shells are the column blocks of ``rot_to_spherical`` (``model.shell_ls``); an impurity orbital belongs
+    to the shell holding its weight. The bath is attached to the valence shell. Keys are shell indices.
+    """
+    if model.valence_shell is None:
+        raise ValueError(
+            "a block model needs to know which shell is the valence shell for spectroscopy: pass valence_shell= "
+            "(and core_shell= when core-level techniques are wanted) to ImpurityModel.from_blocks / from_solver_matrix."
+        )
+    shell_ls = model.resolved_shell_ls
+    for name, shell in (("valence_shell", model.valence_shell), ("core_shell", model.core_shell)):
+        if shell is not None and not 0 <= shell < len(shell_ls):
+            raise ValueError(f"{name}={shell} is not an index into shell_ls={shell_ls}")
+    if model.core_shell is not None and model.core_shell == model.valence_shell:
+        raise ValueError("valence_shell and core_shell must name different shells")
+    rot = np.asarray(model.rot_to_spherical)
+    impurity_indices = model.impurity_indices
+    shell_of = shell_index_of_orbitals(rot, shell_ls)
+    slices = shell_column_slices(shell_ls)
+    rows = {a: [o for o, sa in zip(impurity_indices, shell_of) if sa == a] for a in range(len(shell_ls))}
+    rows = {a: r for a, r in rows.items() if r}
+    n_orb = model.n_spin_orbitals
+    if model.bath_states is not None:
+        valence_flat, conduction_flat = _flatten_bath_split(model.bath_states, impurity_indices, n_orb)
+    else:
+        h_matrix = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
+        valence_flat, conduction_flat = classify_bath_occupation(hOp, impurity_indices, n_orb=n_orb, h0_matrix=h_matrix)
+    impurity_orbitals = {a: [list(r)] for a, r in rows.items()}
+    valence_baths = {a: [[] for _ in impurity_orbitals[a]] for a in rows}
+    conduction_baths = {a: [[] for _ in impurity_orbitals[a]] for a in rows}
+    if valence_flat:
+        valence_baths[model.valence_shell] = [list(valence_flat)]
+    if conduction_flat:
+        conduction_baths[model.valence_shell] = [list(conduction_flat)]
+    local_row = {o: k for k, o in enumerate(impurity_indices)}
+    rotations = {a: rot[[local_row[o] for o in r]][:, slices[a]] for a, r in rows.items()}
+    operators = IndexedOperators(rows, rotations, {a: shell_ls[a] for a in rows})
+    return impurity_orbitals, valence_baths, conduction_baths, dict(rotations), operators
+
+
+def _model_inputs(model, hOp):
+    """``(impurity_orbitals, valence_baths, conduction_baths, rot_to_spherical dict)`` for the ground state."""
+    if _is_block_model(model):
+        return _block_model_inputs(model, hOp)[:4]
+    valence_baths, conduction_baths = model.bath_states
+    return model.impurity_orbitals, valence_baths, conduction_baths, dict(model.rot_to_spherical)
+
+
+def _model_hamiltonian(model):
+    """The full interacting operator: ``h0`` as is when ``dc``/``u4`` are absent, else ``h0 - dc + U(u4)``."""
+    if model.dc is None and model.u4 is None:
+        return ManyBodyOperator(model.h0)
+    return assemble_interacting_operator(model.h0, model.dc, model.u4)
+
+
 def spectra_layout(model, requests, *, auto_block_structure=True, hOp=None, report=None):
     """The :class:`ShellLayout` (and the block structure the ground state is solved in) of ``model``.
 
@@ -217,9 +283,13 @@ def spectra_layout(model, requests, *, auto_block_structure=True, hOp=None, repo
     nBaths : OrderedDict
         ``{l: n_bath}`` per shell.
     """
-    hOp = ManyBodyOperator(model.h0) if hOp is None else hOp
-    impurity_orbitals = model.impurity_orbitals
-    valence_baths, conduction_baths = model.bath_states
+    hOp = _model_hamiltonian(model) if hOp is None else hOp
+    block_model = _is_block_model(model)
+    if block_model:
+        impurity_orbitals, valence_baths, conduction_baths, _rot, block_operators = _block_model_inputs(model, hOp)
+    else:
+        impurity_orbitals = model.impurity_orbitals
+        valence_baths, conduction_baths = model.bath_states
     ls = list(impurity_orbitals.keys())
     nBaths = OrderedDict(
         (l, sum(len(b) for b in valence_baths[l]) + sum(len(b) for b in conduction_baths[l])) for l in ls
@@ -244,7 +314,9 @@ def spectra_layout(model, requests, *, auto_block_structure=True, hOp=None, repo
     # is the caller's job (rspt2spectra / the interface). Which shell is which is carried by the model,
     # because from_shells was told. Only a model built some other way (an archive, a bare matrix) falls
     # back to reading the roles off the bath counts.
-    if model.valence_l is not None:
+    if block_model:
+        l_valence, l_core = model.valence_shell, model.core_shell
+    elif model.valence_l is not None:
         l_valence, l_core = model.valence_l, model.core_l
     else:
         l_valence, l_core = _resolve_shell_roles(nBaths)
@@ -269,10 +341,15 @@ def spectra_layout(model, requests, *, auto_block_structure=True, hOp=None, repo
                     f"for the l={l_valence} shell.",
                     level=V_RESULT,
                 )
+    if block_model and any(type(r).__name__ == "NIXSOptions" for r in requests):
+        raise ValueError(
+            "NIXS needs the radial wave functions and an (l, s, m)-labelled model, so it is not available on a "
+            "block model (ImpurityModel.from_blocks / from_solver_matrix); build the model with from_shells."
+        )
     layout = ShellLayout(
         valence_key=l_valence,
         core_key=l_core,
-        operators=LabelledOperators(nBaths),
+        operators=block_operators if block_model else LabelledOperators(nBaths),
         correlated_block_structure=correlated_block_structure,
     )
     ordered_requests(requests, layout)
@@ -334,10 +411,8 @@ def calc_spectroscopy(
     # shared rank gate and formatting, not for hiding anything at the default level.
     report = Reporter(verbosity, rank)
 
-    hOp = ManyBodyOperator(model.h0)
-    impurity_orbitals = model.impurity_orbitals
-    valence_baths, conduction_baths = model.bath_states
-    rot_to_spherical = dict(model.rot_to_spherical)
+    hOp = _model_hamiltonian(model)
+    impurity_orbitals, valence_baths, conduction_baths, rot_to_spherical = _model_inputs(model, hOp)
 
     report(f"Number of spin-orbitals: {model.n_spin_orbitals}", level=V_RESULT)
     layout, block_structure, _nBaths = spectra_layout(
