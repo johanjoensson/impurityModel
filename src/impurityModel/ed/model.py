@@ -28,16 +28,26 @@ from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
 from impurityModel.ed.options import (
     BasisOptions,
     Meshes,
+    NIXSOptions,
+    PESOptions,
+    RIXSOptions,
     SolverOptions,
     SpectraOptions,
+    XASOptions,
+    XPSOptions,
 )
 
 __all__ = [
     "BasisOptions",
     "ImpurityModel",
     "Meshes",
+    "NIXSOptions",
+    "PESOptions",
+    "RIXSOptions",
     "SolverOptions",
     "SpectraOptions",
+    "XASOptions",
+    "XPSOptions",
     "atomic_u4",
 ]
 

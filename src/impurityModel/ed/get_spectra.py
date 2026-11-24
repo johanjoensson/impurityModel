@@ -188,6 +188,58 @@ def resolve_spectra_switches(options):
     return switches, wIn
 
 
+def requests_from_legacy_options(options):
+    """The per-technique option objects a legacy :class:`SpectraOptions` bag asks for.
+
+    A temporary bridge: the bag is resolved exactly as before (:func:`resolve_spectra_switches`) and
+    split into one options object per enabled technique, in execution order.
+    """
+    from impurityModel.ed.options import NIXSOptions, PESOptions, RIXSOptions, XASOptions, XPSOptions
+
+    switches, w_in = resolve_spectra_switches(options)
+    w = options.w if options.w is not None else np.linspace(-25, 25, 3001)
+    w_loss = options.wLoss if options.wLoss is not None else np.linspace(-2.0, 12.0, 4000)
+    requests = []
+    if switches["pes"]:
+        requests.append(PESOptions(w=w, delta=options.delta))
+    if switches["xps"]:
+        requests.append(XPSOptions(w=w, delta=options.delta))
+    if switches["nixs"]:
+        requests.append(
+            NIXSOptions(
+                radial=options.radial,
+                w_loss=w_loss,
+                delta=options.deltaNIXS,
+                qs=options.qsNIXS,
+                l_final=options.liNIXS,
+                l_initial=options.ljNIXS,
+            )
+        )
+    if switches["xas"]:
+        requests.append(
+            XASOptions(
+                w=w,
+                delta=options.delta,
+                projectors=options.XAS_projectors,
+                epsilons=options.epsilons,
+            )
+        )
+    if switches["rixs"]:
+        requests.append(
+            RIXSOptions(
+                w_in=w_in,
+                w_loss=w_loss,
+                delta_intermediate=options.delta,
+                delta_final=options.deltaRIXS,
+                adaptive_tol=options.rixs_adaptive_tol,
+                projectors=options.RIXS_projectors,
+                epsilons_in=options.epsilonsRIXSin,
+                epsilons_out=options.epsilonsRIXSout,
+            )
+        )
+    return requests
+
+
 def _resolve_shell_roles(nBaths):
     """Return ``(l_valence, l_core)`` for a spectra model, from the bath counts.
 

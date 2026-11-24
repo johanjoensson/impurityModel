@@ -17,9 +17,14 @@ __all__ = [
     "OPTION_SPECS",
     "BasisOptions",
     "Meshes",
+    "NIXSOptions",
     "OptionSpec",
+    "PESOptions",
+    "RIXSOptions",
     "SolverOptions",
     "SpectraOptions",
+    "XASOptions",
+    "XPSOptions",
     "describe_options",
     "options_from_attrs",
     "options_to_attrs",
@@ -354,6 +359,187 @@ class SpectraOptions:
     xas: Optional[bool] = None
     rixs: Optional[bool] = None
     nixs: Optional[bool] = None
+
+
+# ----------------------------------------------------------------------------------------------
+# One option class per spectrum.  Each owns its own mesh and broadening -- there is no shared bag in
+# which one number plays two roles -- and validates itself on construction, so a bad request raises
+# on every rank before any collective is entered.
+# ----------------------------------------------------------------------------------------------
+
+
+def _default_w():
+    return np.linspace(-25, 25, 3001)
+
+
+def _check_mesh(name, mesh):
+    if mesh is None or len(mesh) == 0:
+        raise ValueError(f"{name} is empty: a spectrum needs at least one mesh point")
+
+
+def _check_broadening(name, value):
+    if not (math.isfinite(value) and value > 0):
+        raise ValueError(f"{name} must be a positive finite broadening (got {value!r})")
+
+
+def _check_dipole(dipole):
+    if dipole is None:
+        return
+    shape = np.shape(dipole)
+    if len(shape) != 3 or shape[0] != 3 or shape[1] != shape[2]:
+        raise ValueError("dipole must have shape (3, n_imp, n_imp): the x, y, z transition matrices")
+
+
+@dataclass(frozen=True)
+class PESOptions:
+    """Valence photoemission + inverse photoemission (``PS/spectra``).
+
+    Attributes
+    ----------
+    w : numpy.ndarray
+        Real-energy mesh (eV). Default ``linspace(-25, 25, 3001)``.
+    delta : float
+        Broadening above the real axis (HWHM, eV).
+    """
+
+    w: np.ndarray = field(default_factory=_default_w)
+    delta: float = 0.2
+
+    def __post_init__(self):
+        _check_mesh("PES mesh w", self.w)
+        _check_broadening("PES delta", self.delta)
+
+
+@dataclass(frozen=True)
+class XPSOptions:
+    """Core-level x-ray photoemission (``XPS/spectra``). Needs a core shell.
+
+    Attributes
+    ----------
+    w : numpy.ndarray
+        Real-energy mesh (eV). Default ``linspace(-25, 25, 3001)``.
+    delta : float
+        Core-hole lifetime broadening (HWHM, eV).
+    """
+
+    w: np.ndarray = field(default_factory=_default_w)
+    delta: float = 0.2
+
+    def __post_init__(self):
+        _check_mesh("XPS mesh w", self.w)
+        _check_broadening("XPS delta", self.delta)
+
+
+@dataclass(frozen=True)
+class XASOptions:
+    """X-ray absorption (``XAS/tensor``, or ``XAS/projected`` when ``projectors`` is given). Needs a core shell.
+
+    Attributes
+    ----------
+    w : numpy.ndarray
+        Real-energy mesh (eV). Default ``linspace(-25, 25, 3001)``.
+    delta : float
+        Core-hole lifetime broadening (HWHM, eV).
+    projectors : dict or None
+        Transition projectors. ``None`` stores the polarization-free Cartesian tensor.
+    epsilons : sequence or None
+        Polarization vectors; only read together with ``projectors``. ``None`` -> Cartesian x, y, z.
+    dipole : numpy.ndarray or None
+        ``(3, n_imp, n_imp)`` x, y, z dipole matrices in the model's input basis, mapping core to valence
+        orbitals (RSPt's ``Dxyz``). ``None`` builds the atomic (Gaunt) dipole operator.
+    """
+
+    w: np.ndarray = field(default_factory=_default_w)
+    delta: float = 0.2
+    projectors: Any = None
+    epsilons: Any = None
+    dipole: Any = None
+
+    def __post_init__(self):
+        _check_mesh("XAS mesh w", self.w)
+        _check_broadening("XAS delta", self.delta)
+        _check_dipole(self.dipole)
+
+
+@dataclass(frozen=True)
+class RIXSOptions:
+    """Resonant inelastic x-ray scattering (``RIXS/tensor``, or ``RIXS/projected``). Needs a core shell.
+
+    Attributes
+    ----------
+    w_in : numpy.ndarray
+        Incoming-energy mesh (eV). Default ``linspace(-10, 20, 50)``.
+    w_loss : numpy.ndarray
+        Energy-loss mesh (eV). Default ``linspace(-2, 12, 4000)``.
+    delta_intermediate : float
+        Core-hole lifetime broadening of the intermediate state (HWHM, eV).
+    delta_final : float
+        Final-state lifetime broadening (HWHM, eV).
+    adaptive_tol : float or None
+        Stop tolerance of the greedy adaptive sampling of ``w_in``. ``None`` solves the whole grid.
+    projectors : dict or None
+        Transition projectors. ``None`` stores the polarization-free Kramers-Heisenberg tensor.
+    epsilons_in, epsilons_out : sequence or None
+        Polarization vectors; only read together with ``projectors``. ``None`` -> Cartesian x, y, z.
+    dipole : numpy.ndarray or None
+        As :attr:`XASOptions.dipole`.
+    """
+
+    w_in: np.ndarray = field(default_factory=lambda: np.linspace(-10, 20, 50))
+    w_loss: np.ndarray = field(default_factory=lambda: np.linspace(-2.0, 12.0, 4000))
+    delta_intermediate: float = 0.2
+    delta_final: float = 0.050
+    adaptive_tol: Optional[float] = None
+    projectors: Any = None
+    epsilons_in: Any = None
+    epsilons_out: Any = None
+    dipole: Any = None
+
+    def __post_init__(self):
+        _check_mesh("RIXS incoming-energy mesh w_in", self.w_in)
+        _check_mesh("RIXS energy-loss mesh w_loss", self.w_loss)
+        _check_broadening("RIXS delta_intermediate", self.delta_intermediate)
+        _check_broadening("RIXS delta_final", self.delta_final)
+        _check_dipole(self.dipole)
+
+
+@dataclass(frozen=True)
+class NIXSOptions:
+    """Non-resonant inelastic x-ray scattering (``NIXS/spectra``).
+
+    Attributes
+    ----------
+    w_loss : numpy.ndarray
+        Energy-loss mesh (eV). Default ``linspace(-2, 12, 4000)``.
+    delta : float
+        Broadening (HWHM, eV).
+    qs : sequence or None
+        Momentum-transfer vectors. ``None`` -> two default ``|q|`` along (1, 1, 1).
+    l_final, l_initial : int
+        Angular momenta of the final / initial orbitals of the excitation.
+    radial : tuple
+        ``(radial_mesh, R_final, R_initial)``: the radial integral's input. Required.
+    """
+
+    radial: Any
+    w_loss: np.ndarray = field(default_factory=lambda: np.linspace(-2.0, 12.0, 4000))
+    delta: float = 0.100
+    qs: Any = None
+    l_final: int = 2
+    l_initial: int = 2
+
+    def __post_init__(self):
+        if self.radial is None:
+            raise ValueError("NIXS needs radial data (radial_mesh, R_final, R_initial)")
+        _check_mesh("NIXS mesh w_loss", self.w_loss)
+        _check_broadening("NIXS delta", self.delta)
+
+    @property
+    def resolved_qs(self):
+        """The momentum transfers: the given ones, else the two default ``|q|``."""
+        if self.qs is not None:
+            return self.qs
+        return [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]
 
 
 # ----------------------------------------------------------------------------------------------
