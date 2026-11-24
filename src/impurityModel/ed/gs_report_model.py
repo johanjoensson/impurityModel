@@ -153,6 +153,11 @@ class OrbitalNaming:
                     class_of[impurity[pos]] = c
         spin_of, partner_of = {}, {}
         if layout is not None and layout.labelled:
+            # Spin from the labels (every labelled orbital, surplus bath sites of unequal chains included),
+            # partner from the pairs where one exists.
+            for o, w in getattr(layout, "two_sz", ()):
+                if o in role_of:
+                    spin_of[o] = "up" if w > 0 else "dn"
             for dn, up in layout.pairs:
                 for o in (dn, up):
                     if o not in role_of:

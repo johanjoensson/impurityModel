@@ -73,6 +73,7 @@ from impurityModel.ed.sector_truncation import (
 from impurityModel.ed.symmetries import (
     conserved_parities,
     parity_labels,
+    two_sz_weights,
 )
 from impurityModel.ed.truncation_flags import is_cap_bound
 
@@ -179,6 +180,12 @@ def manifold_deficit(plan, verdicts, es, psis, basis):
         if comm is not None:
             multiplicity = comm.bcast(multiplicity, root=0)
     return len(level), len(labels) * multiplicity
+
+
+def _plan_sz_weights(plan):
+    """The plan's ``{orbital: +-1}`` 2 S_z signs; from its pairs for a plan made before it carried them."""
+    weights = getattr(plan, "sz_weights", None)
+    return dict(weights) if weights is not None else two_sz_weights(plan.pairs)
 
 
 def _total_spin_casimir(plan):
@@ -488,8 +495,8 @@ def _label_blocks(plan, kept, basis, orbits, parities, n_orb):
     ``blocks`` maps each in-window node to the frozenset of nodes of its block.
     """
     sign = np.zeros(n_orb, dtype=np.int64)
-    for dn, up in plan.pairs:
-        sign[up], sign[dn] = 1, -1
+    for o, w in _plan_sz_weights(plan).items():
+        sign[o] = w
 
     def node_of(bits):
         par = parity_labels(bits, parities) if parities else np.zeros((len(bits), 0), dtype=np.int64)
@@ -602,7 +609,7 @@ def _solve_window_per_label(
         restrictions = list(basis.weighted_restrictions or [])
         two_szs = {n[0] for n in lab}
         if len(two_szs) == 1 and None not in two_szs:
-            restrictions = _label_window(basis, plan.pairs, next(iter(two_szs)))
+            restrictions = _label_window(basis, _plan_sz_weights(plan), next(iter(two_szs)))
         seed = basis.clone(
             initial_basis=[
                 d for d, nd in zip(basis.local_basis, node_of(_bits(basis.local_basis, n_orb))) if nd in lab

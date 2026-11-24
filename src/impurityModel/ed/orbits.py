@@ -396,8 +396,8 @@ def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
         layout = spin_layout or resolve_spin_layout(h_op, basis.impurity_orbitals, basis.bath_states, None, n_orb)
         index_imp = impurity_spin_pairs(basis.impurity_orbitals)
         index_bath = bath_spin_pairs(basis.bath_states)
-        sz_ok = layout.labelled and conserves_sz(h_op, layout.pairs, PARITY_TERM_TOL)
-        su2 = bool(sz_ok and layout.su2 and _spin_symmetric(h_op, layout.pairs))
+        sz_ok = layout.labelled and conserves_sz(h_op, layout.sz_weights, PARITY_TERM_TOL)
+        su2 = bool(sz_ok and layout.su2 and layout.paired and _spin_symmetric(h_op, layout.pairs))
         pairs = list(layout.pairs) if sz_ok else index_imp + index_bath
         notes = []
         generators = []
@@ -405,7 +405,7 @@ def build_orbits(h_op, basis, *, spin_layout=None, comm=None):
             generators = label_symmetries.symmetry_generators(
                 h_op,
                 list(layout.imp_pairs) if sz_ok else index_imp,
-                list(layout.bath_pairs) if sz_ok else index_bath,
+                list(layout.bath_pairs) if sz_ok and layout.bath_paired else index_bath,
                 n_orb,
                 restrictions=basis.restrictions,
                 weighted_restrictions=basis.weighted_restrictions,

@@ -11,7 +11,7 @@ import numpy as np
 # Local imports
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.observables import _single_particle_lsj_matrices, make_spin_operators, shell_column_slices
-from impurityModel.ed.symmetries import PARITY_TERM_TOL, bath_chains, conserves_sz, extract_tensors
+from impurityModel.ed.symmetries import PARITY_TERM_TOL, bath_chains, conserves_sz, extract_tensors, two_sz_weights
 
 #: Largest ``max |[H, S_+]|`` coefficient, relative to the largest coefficient of ``H``, for which
 #: total spin counts as a symmetry of ``H``. The commutator is exact operator algebra, so a symmetry
@@ -232,6 +232,8 @@ _SOURCE_TEXT = {
     "operators": "supplied S_+",
     "matched_energies": "matched energies",
     "chain_position": "chain position",
+    "chain_position_partial": "chain position, partial (dn and up chains differ in length)",
+    "labels": "S_z labels only (no dn/up pairing of the bath)",
 }
 
 
@@ -253,6 +255,15 @@ class SpinLayout:
     convention, ``"rotation"`` the rotated spherical ``S_+``, ``"matched_energies"`` equal-energy
     structural matching, ``"chain_position"`` the k-th site of the dn chain with the k-th of the up
     chain. ``rejected`` lists, verbatim, why the other candidates lost.
+
+    ``2 S_z`` needs one sign per orbital, not a pairing, and ``two_sz`` holds those signs. When every bath
+    orbital is paired (``bath_paired``) they follow from the pairs. A spin-polarised fit can leave the dn and
+    up chains of different lengths, so no pairing of the bath exists while ``H`` still conserves ``S_z``
+    exactly; then each bath orbital takes the spin of the impurity orbitals its hopping reaches,
+    ``bath_paired`` is ``False``, and ``bath_pairs`` is the partial chain-position pairing of the first
+    ``min(n_dn, n_up)`` sites of each chain (``bath_source="chain_position_partial"``), ``unpaired`` listing the
+    surplus sites. Everything that needs only ``S_z`` uses ``two_sz``; the bath ``S_+`` built from the partial
+    pairing is an unverified modelling choice, and the grade is at most ``"collinear"``.
     """
 
     imp_pairs: tuple
@@ -262,12 +273,50 @@ class SpinLayout:
     bath_source: str
     impurity_split: float
     rejected: tuple
+    two_sz: tuple = ()
+    bath_paired: bool = True
+    unpaired: tuple = ()
 
     def __post_init__(self):
         for name in ("imp_pairs", "bath_pairs"):
             object.__setattr__(self, name, tuple((int(dn), int(up)) for dn, up in getattr(self, name)))
         object.__setattr__(self, "impurity_split", float(self.impurity_split))
         object.__setattr__(self, "rejected", tuple(str(r) for r in self.rejected))
+        two_sz = self.two_sz or (() if self.grade == "none" else tuple(two_sz_weights(self.pairs).items()))
+        object.__setattr__(self, "two_sz", tuple(sorted((int(o), int(w)) for o, w in two_sz)))
+        object.__setattr__(self, "unpaired", tuple(sorted(int(o) for o in self.unpaired)))
+
+    @property
+    def sz_weights(self):
+        """``{orbital: +-1}``: the ``2 S_z`` sign of every labelled orbital (empty at grade ``"none"``)."""
+        return dict(self.two_sz)
+
+    def sz_operator(self, orbitals=None):
+        r"""``S_z = \tfrac12 \sum_i w_i n_i`` over the labelled orbitals (only those in ``orbitals`` if given).
+
+        Valid whether or not the bath is paired, unlike the ``S_z`` of :func:`make_spin_operators` on the pairs.
+        """
+        keep = None if orbitals is None else {int(o) for o in orbitals}
+        return ManyBodyOperator(
+            {((o, "c"), (o, "a")): 0.5 * w for o, w in self.two_sz if keep is None or o in keep}
+        )
+
+    def bath_spin_operators(self, impurity_orbitals):
+        """``(S_+, S_-, S_z)`` of the bath: ladders over the (possibly partial) bath pairs, ``S_z`` over every
+        labelled bath orbital, so the surplus sites of unequal chains still count in the longitudinal part."""
+        s_plus, s_minus, _ = make_spin_operators(self.bath_pairs)
+        imp = {int(o) for o in impurity_orbitals}
+        return s_plus, s_minus, self.sz_operator([o for o, _ in self.two_sz if o not in imp])
+
+    def sz_from_rho(self, rho, orbitals):
+        """``<S_z>`` over the labelled ``orbitals`` from a one-particle density matrix."""
+        keep = {int(o) for o in orbitals}
+        return float(sum(0.5 * w * np.real(rho[o, o]) for o, w in self.two_sz if o in keep))
+
+    @property
+    def paired(self):
+        """Whether every labelled orbital has a dn/up partner, so ``S_+`` covers the whole system."""
+        return self.labelled and self.bath_paired
 
     @property
     def su2(self):
@@ -308,7 +357,12 @@ class SpinLayout:
             if self.impurity_split > 0:
                 imp += f" (impurity spin split {self.impurity_split:.4g})"
             bath = f"bath pairs: {_SOURCE_TEXT[self.bath_source]}"
-            if self.grade != "su2" and self.bath_pairs:
+            if not self.bath_paired:
+                bath = (
+                    f"bath: S_z labels from the hopping, {len(self.bath_pairs)} dn/up pairs by chain position, "
+                    f"{len(self.unpaired)} surplus site(s) unpaired (transverse bath quantities are approximate)"
+                )
+            elif self.grade != "su2" and self.bath_pairs:
                 bath += " (not verified: transverse bath quantities are flagged)"
             exact = "SU(2) exact" if self.grade == "su2" else "S_z exact"
             head = f"spin layout: {_GRADE_TEXT[self.grade]} -- {exact}; {imp}; {bath}"
@@ -317,6 +371,11 @@ class SpinLayout:
 
     def sisb_note(self):
         """Suffix of the ``<S_imp.S_bath>`` row: which part of it depends on an unverified pairing, or ``None``."""
+        if not self.bath_paired and self.labelled:
+            return (
+                "(transverse part uses a partial bath dn/up pairing by chain position; "
+                f"{len(self.unpaired)} surplus bath site(s) unpaired contribute only to the S_z part)"
+            )
         if self.grade == "collinear":
             return f"(transverse part depends on the bath dn/up pairing, by {_SOURCE_TEXT[self.bath_source]})"
         if self.grade == "sz_only":
@@ -516,7 +575,62 @@ def _spin_layout(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, 
                 continue
             grade, split = _grade(h_op, h, imp_pairs, bath_pairs, tol)
             return SpinLayout(imp_pairs, bath_pairs, grade, imp_source, bath_source, split, rejected)
+    # No complete pairing of the bath. S_z may still be exact: label every bath orbital with the spin of the
+    # impurity orbitals its hopping reaches, and pair what can be paired (second pass, so a complete pairing
+    # under any impurity candidate always wins).
+    for imp_pairs, imp_source in candidates:
+        if not imp_pairs:
+            continue
+        layout, why = _labelled_layout(h_op, h, imp_pairs, imp_source, impurity, n_orb, cut, tol, rejected)
+        if layout is not None:
+            return layout
+        rejected.append(f"labels: {why}")
     return SpinLayout((), (), "none", "index", "index", 0.0, rejected)
+
+
+def _labelled_layout(h_op, h, imp_pairs, imp_source, impurity, n_orb, cut, tol, rejected):
+    """A :class:`SpinLayout` with ``S_z`` labels and a partial bath pairing, or ``(None, reason)``."""
+    weights = two_sz_weights(imp_pairs)
+    chains = bath_chains(h, impurity, n_orb, cut)
+    for i, chain in chains.items():
+        w = weights.get(i)
+        if w is None:
+            continue
+        for b in chain:
+            if weights.setdefault(b, w) != w:
+                return None, f"bath orbital {b} is reached by hopping from both a dn and an up impurity orbital"
+    if not conserves_sz(h_op, weights, PARITY_TERM_TOL):
+        return None, "the impurity pairing with spin labels from the hopping does not conserve S_z"
+    up_of, dn_of = {}, {}
+    for dn, up in imp_pairs:
+        for x, y in zip(chains[dn], chains[up]):
+            if up_of.setdefault(x, y) != y or dn_of.setdefault(y, x) != x:
+                up_of, dn_of = {}, {}
+                break
+        else:
+            continue
+        break
+    bath_pairs = sorted(up_of.items())
+    bath = {b for b in weights if b not in set(impurity)}
+    paired = {o for pair in bath_pairs for o in pair}
+    grade, split = _grade(h_op, h, imp_pairs, bath_pairs, tol)
+    if grade == "su2":  # unreachable with surplus sites (their hopping breaks [H, S_+] = 0); kept explicit
+        grade = "collinear"
+    return (
+        SpinLayout(
+            imp_pairs,
+            bath_pairs,
+            grade,
+            imp_source,
+            "chain_position_partial" if bath_pairs else "labels",
+            split,
+            rejected,
+            two_sz=tuple(weights.items()),
+            bath_paired=False,
+            unpaired=tuple(bath - paired),
+        ),
+        None,
+    )
 
 
 def _grade(h_op, h, imp_pairs, bath_pairs, tol):

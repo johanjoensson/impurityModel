@@ -175,6 +175,9 @@ class CertificationPlan:
     images: dict = field(default_factory=dict)
     #: The :class:`~impurityModel.ed.spin_pairs.SpinLayout` the spin labels were judged under.
     layout: object = None
+    #: ``{orbital: +-1}`` 2 S_z signs of the labels (``None`` when the labels carry no ``S_z``). Not derived
+    #: from ``pairs``: a spin-polarised bath can be labelled without being paired.
+    sz_weights: dict = None
 
 
 def _bits(dets, n_orb):
@@ -196,10 +199,11 @@ def _respects_sz(sp, sign):
     return bool(np.array_equal(image, -sign if sp.flips_spin else sign))
 
 
-def _label_window(basis, pairs, two_sz):
+def _label_window(basis, sz_weights, two_sz):
+    """``basis``'s weighted restrictions plus ``2 S_z = two_sz`` over ``sz_weights`` (``{orbital: +-1}`` or pairs)."""
     window = list(basis.weighted_restrictions or [])
     if two_sz is not None:
-        window.append(sz_weighted_restriction(pairs, two_sz))
+        window.append(sz_weighted_restriction(sz_weights, two_sz))
     return window
 
 
@@ -240,18 +244,21 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
             layout = resolve_spin_layout(h_op, basis.impurity_orbitals, basis.bath_states, None, n_orb)
         # The layout was judged on the solver basis' H; `h_op` here may differ (a chemical-potential
         # shift, say), so the two spin gates are re-run on it -- cheap, exact, and on rank 0 only.
-        sz_ok = layout.labelled and conserves_sz(h_op, layout.pairs, PARITY_TERM_TOL)
-        su2 = sz_ok and layout.su2 and _spin_symmetric(h_op, layout.pairs)
+        # The labels need one 2 S_z sign per orbital, not a pairing: a spin-polarised bath whose dn and up
+        # chains differ in length is labelled although it cannot be paired (SpinLayout.two_sz).
+        sz_ok = layout.labelled and conserves_sz(h_op, layout.sz_weights, PARITY_TERM_TOL)
+        su2 = sz_ok and layout.su2 and layout.paired and _spin_symmetric(h_op, layout.pairs)
         # Only pairs that make H conserve S_z may label; at grade "none" the index pairs remain as the
         # spatial-orbital candidates of the label symmetries, which is_symmetry then verifies.
         pairs = list(layout.pairs) if sz_ok else index_imp + index_bath
+        sz_weights = layout.sz_weights if sz_ok else None
         parities = conserved_parities(h_op)
         bits = _bits([SlaterDeterminant(d) for d in seed], n_orb).astype(np.int64)
         par = parity_labels(bits, parities) if parities else np.zeros((len(seed), 0), dtype=np.int64)
         if sz_ok:
             sign = np.zeros(n_orb, dtype=np.int64)
-            for dn, up in pairs:
-                sign[up], sign[dn] = 1, -1
+            for o, w in sz_weights.items():
+                sign[o] = w
             two_sz = bits @ sign
         labels = {
             det: ((int(two_sz[i]) if sz_ok else None), tuple(int(x) for x in par[i])) for i, det in enumerate(seed)
@@ -262,10 +269,11 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
             needed = [lab for lab in needed if lab[0] == two_min]
         orbit_of = {}
         if label_symmetries.CERTIFY_LABEL_SYMMETRY and len(needed) > 1:
+            # A partial bath pairing is not a spatial-orbital structure: the index pairs stand in, verified.
             generators = label_symmetries.symmetry_generators(
                 h_op,
                 list(layout.imp_pairs) if sz_ok else index_imp,
-                list(layout.bath_pairs) if sz_ok else index_bath,
+                list(layout.bath_pairs) if sz_ok and layout.bath_paired else index_bath,
                 n_orb,
                 restrictions=basis.restrictions,
                 weighted_restrictions=basis.weighted_restrictions,
@@ -274,14 +282,14 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
                 generators = [sp for sp in generators if _respects_sz(sp, sign)]
             if generators:
                 orbit_of = label_symmetries.label_orbits(needed, generators, parities)
-        return (labels, needed, pairs, su2, orbit_of, layout)
+        return (labels, needed, pairs, su2, orbit_of, layout, sz_weights)
 
     # A rank-0 failure is raised on every rank before the broadcast of the result.
     head = on_root(comm, _plan_head)
     if comm is not None:
         head = comm.bcast(head, root=0)
     # Decided on rank 0 and broadcast: which labels are expanded must be identical on every rank.
-    labels, needed, pairs, su2, orbit_of, layout = head
+    labels, needed, pairs, su2, orbit_of, layout, sz_weights = head
     mirrors = [lab for lab in needed if lab in orbit_of and orbit_of[lab][0] != lab]
     class_plans, jobs = {}, []
     for lab in needed:
@@ -289,7 +297,7 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
             continue
         # Collective: every rank builds the label's seed and its class plan, whatever its share.
         sub = basis.clone(
-            initial_basis=_label_keys(labels, lab, basis), weighted_restrictions=_label_window(basis, pairs, lab[0])
+            initial_basis=_label_keys(labels, lab, basis), weighted_restrictions=_label_window(basis, sz_weights, lab[0])
         )
         plan = seed_sectors.seed_class_plan(h_op, sub, max_seed=max_seed)
         class_plans[lab] = plan
@@ -314,7 +322,7 @@ def certification_plan(h_op, basis, *, max_seed=1000, spin_layout=None):
             jobs.append(CertificationJob(lab[0], lab[1], job.seed_class, job.n_seed, image_of=k))
     h_op.set_restrictions(basis.restrictions)
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
-    return CertificationPlan(jobs, labels, pairs, su2, class_plans, images, layout)
+    return CertificationPlan(jobs, labels, pairs, su2, class_plans, images, layout, sz_weights)
 
 
 def describe_plan(plan):
@@ -448,7 +456,7 @@ def _expand_job(
     """
     class_basis = basis.clone(
         initial_basis=_job_keys(plan, job, basis) if keys is None else list(keys.keys()),
-        weighted_restrictions=_label_window(basis, plan.pairs, job.two_sz),
+        weighted_restrictions=_label_window(basis, plan.sz_weights if plan.sz_weights is not None else plan.pairs, job.two_sz),
     )
     # A seed already at the ranking cap is ranked like any other: the cap would truncate it at once.
     capped = bool(rank) and ranking_cap is not None and class_basis.size < ranking_cap

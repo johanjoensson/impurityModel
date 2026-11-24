@@ -262,8 +262,10 @@ def sharpen_manifolds(blk, es, layout, casimirs, tol, comm=None, redistribute=No
     if not enabled or n == 0:
         return blk, info
     ops = []
-    if layout is not None and layout.labelled and layout.pairs:
-        ops.append(("Sz", make_spin_operators(layout.pairs)[2], True))
+    if layout is not None and layout.labelled and (getattr(layout, "two_sz", ()) or layout.pairs):
+        # S_z over the labels: with unequal dn/up bath chains the pairs leave the surplus sites out.
+        sz = layout.sz_operator() if hasattr(layout, "sz_operator") else make_spin_operators(layout.pairs)[2]
+        ops.append(("Sz", sz, True))
     l_ops, s_ops, j_ops = casimirs[:3] if casimirs is not None else (None, None, None)
     if l_ops is not None:
         if layout is None or layout.labelled:
@@ -831,8 +833,11 @@ def _evaluate(
             )
         else:
             imp_pairs, bath_pairs = spin_pairs
+            imp_orbs = [o for pair in imp_pairs for o in pair]
             ops_imp = make_spin_operators(imp_pairs)
-            ops_bath = make_spin_operators(bath_pairs)
+            # S_z of the bath over every labelled orbital: with unequal dn/up chains the pairs are partial
+            # and their S_z would leave out the surplus sites.
+            ops_bath = layout.bath_spin_operators(imp_orbs)
             sisb_op = spin_correlation_operator(ops_imp, ops_bath)
             sisb_raw = src.values("sisb")(lambda blk: sisb_op.apply_block(blk, 0, support_keep))
             sisb_values = np.real(sisb_raw)
@@ -846,7 +851,7 @@ def _evaluate(
                 sisb_z_values = np.real(sisb_z_raw)
                 sisb_z_thermal = np.real(thermal_observable_value(sisb_z_raw, es, tau))
                 sz_imp = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
-                sz_bath = get_Sz_from_rho_pairs(thermal_rho, bath_pairs)
+                sz_bath = layout.sz_from_rho(thermal_rho, [o for o, _ in layout.two_sz if o not in set(imp_orbs)])
                 sisb_z_connected = sisb_z_thermal - sz_imp * sz_bath
     except Exception as exc:
         # Deterministic + identical on every rank (collective Allreduce inside), so this raises

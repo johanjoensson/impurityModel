@@ -856,11 +856,22 @@ def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
     tuple
         A weighted restriction (see :func:`weighted_restriction`).
     """
+    return weighted_restriction(two_sz_weights(spin_pairs), two_sz_target, slack)
+
+
+def two_sz_weights(spin):
+    """``{orbital: +1 (up) | -1 (dn)}`` from ``(dn, up)`` pairs, or a copy of an already-built weight mapping.
+
+    ``2 S_z`` needs one sign per orbital, not a pairing: a spin-polarised bath whose dn and up chains differ
+    in length has the former and not the latter (:class:`~impurityModel.ed.spin_pairs.SpinLayout`).
+    """
+    if isinstance(spin, dict):
+        return {int(o): int(w) for o, w in spin.items()}
     weights = {}
-    for dn, up in spin_pairs:
-        weights[up] = 1
-        weights[dn] = -1
-    return weighted_restriction(weights, two_sz_target, slack)
+    for dn, up in spin:
+        weights[int(up)] = 1
+        weights[int(dn)] = -1
+    return weights
 
 
 def auto_block_structure(op, n_orb=None, orbitals=None):
@@ -1656,14 +1667,12 @@ def parity_labels(bits, parities):
 def conserves_sz(op, spin_pairs, tol=PARITY_TERM_TOL):
     r"""Whether every term of ``op`` conserves ``2 S_z = sum (n_up - n_dn)`` over ``spin_pairs``.
 
+    ``spin_pairs`` is ``(dn, up)`` pairs or a ``{orbital: +-1}`` weight mapping (:func:`two_sz_weights`).
     Exact: a term changes ``2 S_z`` by its created minus annihilated up orbitals, minus the same
-    for down orbitals. An orbital outside every pair carries no spin (weight 0), so a term moving an
-    electron between it and a paired orbital changes ``2 S_z`` by one.
+    for down orbitals. An orbital without a weight carries no spin (weight 0), so a term moving an
+    electron between it and a labelled orbital changes ``2 S_z`` by one.
     """
-    weight = {}
-    for dn, up in spin_pairs:
-        weight[dn] = -1
-        weight[up] = 1
+    weight = two_sz_weights(spin_pairs)
     items = list(op.items() if hasattr(op, "items") else dict(op).items())
     cut = tol * max((abs(amp) for _term, amp in items), default=0.0)
     for term, amp in items:

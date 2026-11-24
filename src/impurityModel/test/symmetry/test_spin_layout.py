@@ -136,17 +136,50 @@ def test_the_rotation_decides_when_a_density_density_u_cannot():
     assert "index: contradicts the rotation pairing" in layout.rejected
 
 
-def test_overlapping_chains_are_paired_only_if_consistent_and_unequal_chains_give_none():
-    op = _model(bath_shift=(0.0, 0.2))
-    # An extra bath site hanging on impurity orbital 0 only: its up partner chain is shorter.
+def _unequal_chains(op, link=0.0):
+    """``op`` plus one extra bath site hanging on the dn chain of impurity orbital 0 only, so the dn chain of
+    orbital 0 is one site longer than the up chain of its partner 5. ``link`` couples the extra site to the up
+    chain as well (a spin-mixing bath)."""
     extra = np.zeros((N_ORB + 1, N_ORB + 1), dtype=complex)
     s = N_ORB
     extra[s, s] = -2.0
     extra[_site(0, DEPTH - 1), s] = extra[s, _site(0, DEPTH - 1)] = 0.3
+    extra[_site(5, DEPTH - 1), s] = extra[s, _site(5, DEPTH - 1)] = link
     big = ManyBodyOperator(dict(op.items())) + tensors_to_operator(extra)
+    return big, s
+
+
+def test_unequal_chains_are_labelled_and_partially_paired_not_given_up():
+    """A spin-polarised fit can leave dn and up chains of different length: no pairing of the bath exists,
+    but H conserves S_z exactly. The layout keeps the S_z labels and pairs what can be paired."""
+    big, s = _unequal_chains(_model(bath_shift=(0.0, 0.2)))
     layout = spin_layout(big, WHOLE, ({0: [list(range(N_IMP, N_ORB + 1))]}, {0: []}), np.eye(N_IMP), N_ORB + 1)
-    assert layout.grade == "none"
+    assert layout.labelled and not layout.paired and not layout.bath_paired
+    assert layout.grade == "collinear"
+    assert layout.imp_pairs == PAIRS
+    assert layout.bath_source == "chain_position_partial"
+    assert layout.unpaired == (s,)
+    weights = layout.sz_weights
+    assert weights[s] == -1  # reached from the dn impurity orbital 0
+    assert all(weights[dn] == -1 and weights[up] == 1 for dn, up in layout.pairs)
+    assert len(weights) == N_ORB + 1
     assert any("differ in length" in r for r in layout.rejected)
+    from impurityModel.ed.symmetries import PARITY_TERM_TOL, conserves_sz
+
+    assert conserves_sz(big, weights, PARITY_TERM_TOL)
+    assert not conserves_sz(big, layout.pairs, PARITY_TERM_TOL)  # the pairs alone leave s without a spin
+    note = layout.provenance_note()
+    assert "S_z exact" in note and "1 surplus site(s) unpaired" in note
+    # S_z over the labels counts the surplus site; over the pairs it would not.
+    sz = layout.sz_operator()
+    assert ((s, "c"), (s, "a")) in dict(sz.items())
+
+
+def test_a_bath_site_reached_from_both_spins_still_gives_none():
+    big, _ = _unequal_chains(_model(bath_shift=(0.0, 0.2)), link=0.2)
+    layout = spin_layout(big, WHOLE, ({0: [list(range(N_IMP, N_ORB + 1))]}, {0: []}), np.eye(N_IMP), N_ORB + 1)
+    assert layout.grade == "none" and not layout.labelled
+    assert any("reached by hopping from both" in r for r in layout.rejected)
 
 
 def test_an_empty_bath_is_a_valid_layout():
@@ -183,3 +216,70 @@ def test_the_susceptibility_operators_follow_the_layout():
         _model() + tensors_to_operator(soc), _basis(WHOLE), np.eye(N_IMP, dtype=complex)
     )
     assert "transverse" in skipped and "transverse" not in ops
+
+
+def test_a_sector_with_unequal_chains_is_solved_exactly_under_the_sz_labels():
+    """End to end: the certifier labels by 2 S_z from the labels and builds every class window from them. A
+    window built from the partial pairs leaves out the surplus site and rejects every determinant (E = 0)."""
+    import itertools
+
+    from mpi4py import MPI
+
+    from impurityModel.ed.eigensolvers import Lowest
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
+    from impurityModel.ed.sector_certify import certification_plan
+    from impurityModel.ed.spin_pairs import spin_layout as resolve
+    from impurityModel.test.symmetry import test_seed_sectors as small
+
+    n_orb = small.N_ORB + 1
+    surplus = small.N_ORB
+    h = np.zeros((n_orb, n_orb), dtype=complex)
+    for spin in range(2):
+        for orbital, (energy, hopping) in enumerate(((-1.0, 0.2), (1.0, 1.5))):
+            i = orbital + 2 * spin
+            h[i, i] = energy
+            h[i + small.N_IMP, i + small.N_IMP] = -1.0 + 0.2 * spin  # spin-polarised bath: no matched energies
+            h[i, i + small.N_IMP] = h[i + small.N_IMP, i] = hopping
+    h[surplus, surplus] = -1.5
+    h[small.N_IMP, surplus] = h[surplus, small.N_IMP] = 0.4  # a second site on the dn chain of orbital 0 only
+    u_op = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(kanamori_u4(2, 4.0, 0.8)))
+    h_op = tensors_to_operator(h) + u_op
+    bath = ({0: [list(range(small.N_IMP, n_orb))]}, {0: []})
+    n_electrons = small.N_ELECTRONS + 1
+
+    layout = resolve(h_op, small.IMPURITY_ORBITALS, bath, None, n_orb)
+    assert layout.labelled and not layout.bath_paired and layout.unpaired == (surplus,)
+
+    dets = []
+    for occupied in itertools.combinations(range(n_orb), n_electrons):
+        chunk = 0
+        for orb in occupied:
+            chunk |= 1 << (63 - orb)
+        dets.append(SlaterDeterminant((chunk,)))
+    index = {det: i for i, det in enumerate(dets)}
+    h_op.set_restrictions(None)
+    h_op.set_weighted_restrictions(None)
+    dense = np.zeros((len(dets), len(dets)), dtype=complex)
+    for j, det in enumerate(dets):
+        for key, row in applyOp(h_op, ManyBodyState({det: 1.0}), cutoff=0).items():
+            dense[index[key], j] += row[0]
+    exact = float(np.linalg.eigvalsh(dense)[0])
+
+    result = solve_sector(
+        h_op,
+        small.IMPURITY_ORBITALS,
+        bath,
+        {0: 2},
+        tau=0,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Lowest(),
+        comm=MPI.COMM_WORLD,
+        verbose=False,
+        slaterWeightMin=0,
+        de2_min=0,
+        e_pt2_tol=1e-12,
+        spin_layout=layout,
+    )
+    assert float(np.min(np.real(result.es))) == pytest.approx(exact, abs=1e-8)
