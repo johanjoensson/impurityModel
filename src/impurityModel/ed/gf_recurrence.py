@@ -986,6 +986,12 @@ def _needs_restart(support, n_seed):
     return support.prunes and support.retained_size > n_seed
 
 
+#: Test seam, not a user knob: the block budget of the growth recurrence and of its restart. Every stop the
+#: recurrence can take must come from its own rules (the monitor, an invariant subspace, ``quiet``, ``closed``,
+#: ``stalled``, ``exhausted``); a test lowers this so a missing rule fails as ``"max_iter"`` instead of hanging.
+_GROWTH_MAX_BLOCKS = 10**7
+
+
 #: Fraction of the final recurrence's blocks the peak-shift check keeps for its "before" value, and the fewest blocks
 #: at which dropping a tail says anything (below it the last block is not a tail).
 PEAK_SHIFT_TAIL_KEEP = 0.9
@@ -1219,6 +1225,7 @@ def block_Green_discovered(
         deflate_tol=DEFLATE_TOL_SEEDS,
         reort=resolved_reort,
         engine=engine,
+        max_blocks=_GROWTH_MAX_BLOCKS,
     )
     growth_status = status
     if pt2_scorer is not None:
@@ -1347,6 +1354,7 @@ def block_Green_discovered(
             engine=engine,
             shifted=acc,
             shifted_rtol=None if plan is None else plan.stop_rtol,
+            max_blocks=_GROWTH_MAX_BLOCKS,
         )
         passes.update(restart_blocks=len(widths), restart_seconds=time.perf_counter() - t_restart)
     if acc is not None:
