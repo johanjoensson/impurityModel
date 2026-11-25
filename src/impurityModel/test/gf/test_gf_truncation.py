@@ -517,7 +517,10 @@ def test_csr_fallback_means_the_frozen_recurrence_ran_on_a_stored_matrix(monkeyp
         set_gf_switches(monkeypatch, matrix_mode=mode)
         assert _run_capped(cap)[1]["csr_fallback"] is want, (mode, cap)
     set_gf_switches(monkeypatch, matrix_mode="retained")
-    assert not _run_capped(1000)[1]["csr_fallback"], "a unit that never froze ran on no stored matrix"
+    _g, info = _run_capped(1000)
+    # Below the cap the fixture's 18 reachable determinants close the support, which freezes it as final: the frozen
+    # recurrence then runs on the stored matrix as after a cap freeze, without the unit being cap-bound.
+    assert info["closed"] and not info["cap_hit"] and info["csr_fallback"]
 
 
 def test_the_csr_fit_check_compares_the_estimate_with_the_budget(monkeypatch):

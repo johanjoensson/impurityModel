@@ -131,7 +131,12 @@ def test_the_quiet_stop_ends_growth_early_and_leaves_the_basis_of_the_unstopped_
     g_stop, stopped = _run(tau)
     monkeypatch.setattr(gf_growth_score, "PT2_QUIET_BLOCKS", 10**9)
     g_full, full = _run(tau)
-    assert stopped["passes"]["growth_blocks"] < full["passes"]["growth_blocks"]
+    # Where the growth reaches every determinant H can (tau 1e-12), the support closes and both runs end there, the
+    # closure stop coming no later than the quiet one.
+    if full["closed"]:
+        assert stopped["passes"]["growth_blocks"] <= full["passes"]["growth_blocks"]
+    else:
+        assert stopped["passes"]["growth_blocks"] < full["passes"]["growth_blocks"]
     assert _keys(stopped) == _keys(full)
     np.testing.assert_allclose(g_stop, g_full, atol=1e-10)
 
@@ -176,7 +181,8 @@ def test_the_unit_reports_where_its_rows_came_from(capsys):
     _g, info = _run(1e-12)
     rec = info["pt2"]
     assert rec["mesh_points"] == gf_growth_score.PT2_MESH_POINTS and rec["mesh_points_kept"] <= rec["mesh_points"]
-    assert rec["rule_rows"] > 0 and rec["stop"] == "twice its last admission"
+    # The rule admits every determinant H reaches (CLOSURE, below): the support closes, which ends the growth.
+    assert rec["rule_rows"] > 0 and rec["stop"] == "closed"
     n_seed = len({k for seed in _seeds() for k in seed.keys()})
     assert rec["first_shell_rows"] + rec["rule_rows"] + n_seed == CLOSURE
     assert "pt2" not in _run(None, prune_tol=1e-3)[1]

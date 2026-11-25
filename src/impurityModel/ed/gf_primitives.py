@@ -217,6 +217,9 @@ class SupportDecisions:
         self.memory_policy = memory_policy
         self.memory_frozen = False
         self.memory_warned = False
+        #: The support is closed under ``H``: every row the matvec reaches is already retained, so nothing can ever be
+        #: admitted and the support is final without being cap-bound (``cap_hit`` stays as it was).
+        self.closed = False
 
     def allreduce_sum(self, value):
         if self.comm is None or self.comm.size == 1:
@@ -278,6 +281,12 @@ class SupportDecisions:
         (:func:`~impurityModel.ed.manybody_basis.collective_first_keys`)."""
         return collective_first_keys(key_bytes, n_fill, self.comm)
 
+    def freeze_closed(self):
+        """The support is closed under ``H`` (a replicated verdict: no rank has a row outside it): it is final. Freezes
+        without marking the cap or the memory guard, which did not stop it."""
+        self.frozen = True
+        self.closed = True
+
     def freeze_at_cap(self, n_admitted_local):
         """Count what the overflow step admitted (summed over the ranks) and freeze at the cap."""
         self.global_count += self.allreduce_sum(n_admitted_local)
@@ -288,6 +297,8 @@ class SupportDecisions:
         """How the support stopped growing, as the opening of a log line: held or frozen at the cap."""
         if self.memory_frozen:
             return "GF basis held at"
+        if self.closed and not self.cap_hit:
+            return "GF basis closed under H at"
         return "GF basis frozen at the cap at"
 
     def freeze_message(self):
@@ -296,6 +307,11 @@ class SupportDecisions:
             return (
                 f"GF basis held at {self.global_count:,} determinants by the measured-memory guard; the Green's "
                 "function is exact on the retained subspace."
+            )
+        if self.closed and not self.cap_hit:
+            return (
+                f"GF basis closed under H at {self.global_count:,} determinants: every determinant H reaches is "
+                "retained, so the Green's function is that of the whole reachable space."
             )
         return (
             f"GF basis frozen at {self.global_count:,} determinants by the cap of {self.cap:,}; the Green's "

@@ -158,6 +158,8 @@ def _block_green_group(
             "cap": cap,
             "seed_size": seed_size,
             "memory_frozen": bool(cap_info.get("memory_frozen", False)),
+            # The support is the whole space H reaches from the seeds: final, and not limited by the cap.
+            "closed": bool(cap_info.get("closed", False)),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
             # Blocks and seconds of the first run and of the restart on the final P (gf_recurrence).

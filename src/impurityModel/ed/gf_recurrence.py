@@ -58,6 +58,7 @@ _FORWARDED = {
     "memory_frozen": "memory_frozen",
     "cap_hit": "cap_hit",
     "frozen": "frozen",
+    "closed": "closed",
 }
 
 
@@ -472,6 +473,13 @@ class _MatrixEngine:
         if admission.support.scorer is not None:
             admission.support.scorer.stash(w_k)
         f_slots = np.flatnonzero(matrix.k_to_p_slot() < 0)
+        if not int(d.allreduce_sum(len(f_slots))):
+            # K holds every row H reaches from P (deferred rows stay in it), so no row outside P on any rank is
+            # H P inside P: the support is final. Replicated count, so every rank freezes on this step.
+            d.freeze_closed()
+            w_p = w_k[matrix.p_to_k_slot()]
+            w_p[~matrix.alive()] = 0.0
+            return w_p
         slots = admission.decide(f_slots, w_k[f_slots], matrix.keys_of)
         # The verdict (how many rows were admitted) is replicated, so every rank takes the same branch.
         if int(d.allreduce_sum(len(slots))):
@@ -588,6 +596,19 @@ class _ApplyEngine:
             self._built = True
         return self.matrix, order
 
+    def _closed_under_h(self):
+        """Whether ``H P`` lies inside ``P``. This mode keeps no frontier (``K = P``), and a block's image says only
+        where *its* support goes, so the question is put to ``H`` applied to every row of ``P`` at once, with
+        random phases (an exact cancellation is then a measure-zero event). Asked only on a step whose own image
+        had no row outside ``P`` on any rank. **Collective**; replicated verdict."""
+        matrix = self.matrix
+        rng = np.random.default_rng(0x5EED + (matrix.comm.rank if matrix.comm is not None else 0))
+        probe = np.exp(2j * np.pi * rng.random((matrix.n_p_local, 1)))
+        probe[~matrix.alive()] = 0.0
+        applied = self._applied(probe)
+        outside = int(np.count_nonzero(applied.find_rows_in(matrix._kstore) >= matrix.n_k_local))
+        return not int(self.admission.d.allreduce_sum(outside))
+
     def apply(self, x):
         matrix, admission = self.matrix, self.admission
         d = admission.d
@@ -617,6 +638,9 @@ class _ApplyEngine:
         if d.frozen:
             return w_p
         f_ids = np.flatnonzero(~in_p)
+        if not int(d.allreduce_sum(len(f_ids))) and self._closed_under_h():
+            d.freeze_closed()
+            return w_p
         with stage("decide"):
             ids = admission.decide(f_ids, amps[f_ids], lambda sel: [applied.key_at(int(i)) for i in sel])
         if int(d.allreduce_sum(len(ids))):
@@ -781,6 +805,7 @@ def block_lanczos_discovered(
     status = "max_iter"
     store = [x] if reort else None
     n_vectors = 0  # Krylov vectors produced since the support froze (replicated)
+    n_seed = support.retained_size  # the support this recurrence started on (replicated)
 
     it = 0
     while it < max_blocks:
@@ -853,6 +878,13 @@ def block_lanczos_discovered(
                 shifted.note_deflation(diag["dropped"])
         if d.frozen and not reort and shifted is None:
             _arm_plateau(converged)
+        if d.closed and shifted is None and support.prunes and support.retained_size > n_seed:
+            # Closed after a pruned growth: nothing can be admitted any more, and the recurrence so far ran on a
+            # support that grew under it. Leave for the restart on the final P (as after ``quiet``). Replicated.
+            status = "closed"
+            widths.append(n_curr)
+            it += 1
+            break
         if support.scorer is not None and support.scorer.quiet(support.retained_size):
             # The second-order rule admitted nothing for as long as it took to reach the last admission (and at
             # least PT2_QUIET_BLOCKS): the growth is over. Replicated state, so every rank leaves on this block; the
@@ -1484,7 +1516,7 @@ def block_Green_discovered(
             print(
                 f"GF second-order growth: {n_first:,} rows from the first shell, {n_rule:,} from the rule, "
                 f"{sc.kept.size} of {sc.zs0.size} mesh points kept, last admission {last} of {sc.blocks}, "
-                f"growth ended by {why_stop}",
+                f"growth ended by {'closure under H' if why_stop == 'closed' else why_stop}",
                 flush=True,
             )
     if matrix_mode == "discovered" and support.prunes:
@@ -1504,6 +1536,7 @@ def block_Green_discovered(
         cap_info["cap_hit"] = support.cap_hit
         cap_info["retained_size"] = support.retained_size
         cap_info["memory_frozen"] = support.memory_frozen
+        cap_info["closed"] = support.closed  # the support is the whole space H reaches (final, not cap-bound)
         cap_info["proxy"] = support
         cap_info["engine"] = support.mode_ran or matrix_mode
         cap_info["status"] = "plateau" if status == "converged" and plateau_cell[0][0] else status

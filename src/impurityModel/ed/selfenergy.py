@@ -376,11 +376,15 @@ def _failing_blocks(*, family_matsubara, family_realaxis, iw, w, delta, estimato
 
 def _blocks_to_tighten(failing, units):
     """The failing blocks a tighter selection can still help: those with a unit that neither froze at the
-    determinant cap nor at the memory limit (a capped unit's support is final, whatever the budget)."""
+    determinant cap nor at the memory limit (a capped unit's support is final, whatever the budget) nor is closed
+    under ``H`` (it already holds every determinant ``H`` reaches: there is nothing left to select)."""
     return sorted(
         block_i
         for block_i in failing
-        if any(u.block == block_i and u.retained is not None and not (u.cap_hit or u.memory_frozen) for u in units)
+        if any(
+            u.block == block_i and u.retained is not None and not (u.cap_hit or u.memory_frozen or u.closed)
+            for u in units
+        )
     )
 
 

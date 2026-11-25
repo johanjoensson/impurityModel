@@ -687,6 +687,7 @@ def _gf_assemble(
                     n_blocks=conv_stats.get("n_blocks"),
                     cap_hit=bool(cap_stats.get("cap_hit", False)),
                     memory_frozen=bool(cap_stats.get("memory_frozen", False)),
+                    closed=bool(cap_stats.get("closed", False)),
                 )
             )
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])

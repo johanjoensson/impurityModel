@@ -29,9 +29,7 @@ from impurityModel.test.gf.test_gf_truncation import (
 )
 from impurityModel.test.support.gf_switches import set_gf_switches
 
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="a closed support never freezes: the growth recurrence has no stop but the monitor"
-)
+_NO_FULL_REORT_YET = pytest.mark.xfail(strict=True, reason="small frozen supports are not reorthogonalized yet")
 
 #: Far above any block count the stop rules need on the 18-determinant fixture, far below a hang.
 _BUDGET = 400
@@ -90,6 +88,7 @@ def test_a_closed_support_ends_without_the_monitor(mode, prune_tol, monkeypatch)
     assert not info["cap_hit"], "a closed support is not cap-bound"
 
 
+@_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_small_closed_support_is_solved_exactly(mode, monkeypatch):
     """Below ``GF_FULL_REORT_MAX`` the frozen recurrence is reorthogonalized: it ends on a genuine invariant subspace
@@ -102,6 +101,7 @@ def test_a_small_closed_support_is_solved_exactly(mode, monkeypatch):
     np.testing.assert_allclose(g, _dense_reference_on(info["proxy"].retained_keys()), atol=1e-10)
 
 
+@_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_large_closed_support_ends_exhausted(mode, monkeypatch):
     """Above the bound (forced here: ``GF_FULL_REORT_MAX = 0``) the frozen recurrence stays unreorthogonalized and
@@ -115,6 +115,7 @@ def test_a_large_closed_support_ends_exhausted(mode, monkeypatch):
 
 
 @pytest.mark.mpi
+@_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_closed_support_ends_on_every_rank(mode, monkeypatch):
     """Multi-rank (an empty rank at -n 3): closure is decided on the replicated frontier count, so every rank stops
@@ -126,3 +127,17 @@ def test_a_closed_support_ends_on_every_rank(mode, monkeypatch):
     _assert_ended_by_a_rule(info)
     assert len(set(comm.allgather((info["status"], info["passes"]["growth_blocks"], info["n_vectors"])))) == 1
     np.testing.assert_allclose(g, _dense_reference_on(info["proxy"].retained_keys(), comm), atol=1e-9)
+
+
+def test_a_closed_unit_is_not_re_solved_with_a_tighter_selection():
+    """A closed unit holds every determinant ``H`` reaches: the acausal-block re-solve has nothing to select."""
+    from impurityModel.ed.gf_diagnostics import UnitRecord
+    from impurityModel.ed.selfenergy import _blocks_to_tighten
+
+    def unit(block, **flags):
+        flags = {"cap_hit": False, "memory_frozen": False, "closed": False} | flags
+        return UnitRecord(0, block, "addition", (0,), (0.0,), (1.0,), 1.0, 18, 10, **flags)
+
+    failing = {0: [], 1: [], 2: []}
+    units = [unit(0), unit(1, closed=True), unit(2, cap_hit=True)]
+    assert _blocks_to_tighten(failing, units) == [0]

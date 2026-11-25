@@ -488,7 +488,8 @@ class UnitRecord:
     ``e_minus_e0`` / ``boltzmann`` their energies above the ground state and normalised weights;
     ``seed_weight`` the summed ``|r|^2`` of its seeds (electrons added or removed, weighted); ``retained`` the
     unit's final support (``None`` when untracked); ``n_blocks`` the unit's block count.
-    ``cap_hit`` / ``memory_frozen`` mark the lossy freezes."""
+    ``cap_hit`` / ``memory_frozen`` mark the lossy freezes; ``closed`` a support that is the whole space ``H``
+    reaches (final, and lossless)."""
 
     unit: int
     block: int
@@ -501,6 +502,7 @@ class UnitRecord:
     n_blocks: Optional[int]
     cap_hit: bool
     memory_frozen: bool
+    closed: bool = False
 
     def describe(self) -> str:
         """``unit 4, removal, state 1 (E-E0 0.000, weight 0.33, seed 0.22 e)``: what a reader needs to find it."""
