@@ -211,3 +211,38 @@ A frozen, unreorthogonalized recurrence on a support `P` cannot reach a toleranc
 `sum(widths) >= EXHAUSTED_VECTORS_OVER_P * |P|` (`gf_convergence.krylov_exhausted`, replicated on every rank).
 The status reaches `check_lanczos_convergence` as a WARN naming the rounding floor and the last relative change;
 compare that with `gf_tol` / `gf_real_tol`. The array continuation budgets in vectors, not blocks.
+
+## How every recurrence ends
+
+A unit must end by its own rules. The monitor is only one of them, and its tolerance can lie below an
+unreorthogonalized recurrence's rounding floor. On NiO 2p+3d with 0 bath states, the real-axis change sits at
+1e-8..1e-7 per check against 1e-9: `U` mixes about 1e-3 of 2p⁴3d¹⁰ into the ground state, and the support then
+holds two clusters 120 Ry apart. If no other stop can be reached, the unit runs forever.
+
+| status | where | what it means |
+|---|---|---|
+| `converged` | any | the monitor's tolerance held for two consecutive checks |
+| `plateau` | frozen, reort off | `G` stopped moving across two doublings of the block count (reported as `converged`) |
+| `invariant_subspace` | any | the block deflated to nothing: the continued fraction is exact |
+| `quiet` | growth, PT2 rule | the rule admitted nothing for twice the block of its last admission (at least `PT2_QUIET_BLOCKS`) |
+| `closed` | growth, pruned, after growing | `H P` lies inside `P` (no row outside `P` on any rank): nothing can be admitted any more |
+| `stalled` | growth | nothing admitted for `EXHAUSTED_VECTORS_OVER_P * |P|` vectors (a deferred frontier that never crosses the cut) |
+| `frozen_small` | growth | the support froze at most `GF_FULL_REORT_MAX` determinants: leave for the exact restart |
+| `exhausted` | frozen, reort off | `|P|` vectors without another verdict: the run is on its rounding floor |
+| `diverged` | any | the divergence guard truncated a corrupted tail |
+
+`closed`, `stalled` and `frozen_small` end the growth pass, and the driver restarts from the seeds on the final `P`.
+A closed support also freezes (`SupportDecisions.freeze_closed`: frozen, not `cap_hit`), so a unit that does not
+prune continues frozen in the same pass. It is reported as `closed` (cap_info, `UnitRecord`), and the
+acausal-block re-solve skips it: it already holds every determinant `H` reaches. Closure is a replicated count, of
+the `K` rows outside `P` in discovered mode, and in the retained/none modes (`K = P`) of an `H` probe over all of
+`P` with random phases.
+
+**Small supports are solved exactly.** A frozen support of at most `GF_FULL_REORT_MAX = 1000` determinants
+(`gf_convergence.full_reort_fits`) runs its recurrence with full reorthogonalization: the restart on the discovered
+path (also a refining unit's restart and its reruns), and the whole array/dense path. It ends on a genuine
+invariant subspace within `|P|` vectors, so `G` is the exact resolvent of `P H P` whatever the monitor says. Cost,
+measured at block width 4: 0.02 / 0.10 / 0.76 / 6.7 s at `|P|` = 250 / 500 / 1000 / 2000, against
+0.006 / 0.02 / 0.08 / 0.29 s unreorthogonalized. The tests of the unreorthogonalized frozen mechanics keep their small
+fixtures above the bound with `set_gf_switches(full_reort_max=0)`. The test seam `gf_recurrence._GROWTH_MAX_BLOCKS`
+turns a missing stop into `max_iter` (`test_gf_recurrence_termination.py`).
