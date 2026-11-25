@@ -394,6 +394,9 @@ class ShiftedGalerkin:
         self.n_z = len(self.zs)
         self.floor = np.zeros(self.n_z)
         self.floor_exceeded = False
+        #: The recurrence stepping this ended ``exhausted`` (|P| vectors, unreorthogonalized): the solutions are the
+        #: ones its rounding floor allowed, whether or not the scoring residual was met.
+        self.exhausted = False
         self.reset(n_rows)
 
     def reset(self, n_rows=0):
@@ -401,6 +404,7 @@ class ShiftedGalerkin:
         self.n_rows = int(n_rows)
         self.floor[:] = 0.0
         self.floor_exceeded = False
+        self.exhausted = False
         self._d_inv = None  # (n_z, w, w)
         self._zeta = None  # (n_z, w, p)
         # Row chunks ``(rows_i, n_z, .)`` of the direction ``p`` and the solution ``x``, the same row partition in

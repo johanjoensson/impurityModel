@@ -693,6 +693,8 @@ def refine_frozen_unit(
         record.setdefault("pass_seconds", []).append(time.perf_counter() - t_round)
         record.setdefault("blocks", []).append(len(result[2]))
         record.setdefault("floor", []).append(float(acc.floor.max(initial=0.0)))
+        # Whether this pass's scoring run stopped on |P| vectors instead of its residual (gf_recurrence "exhausted").
+        record.setdefault("exhausted", []).append(bool(getattr(acc, "exhausted", False)))
         if first_gain is None:
             first_gain = gain
         n_swap = int(_allreduce(comm, float(len(admit) if grow_only else len(retire)), MPI.SUM))

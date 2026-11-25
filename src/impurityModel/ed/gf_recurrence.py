@@ -946,11 +946,16 @@ def block_lanczos_discovered(
                 break
         # One block of lag: the block that fills the space is followed by the genuine breakdown (an invariant subspace,
         # detected at the top of the next iteration), which is the better verdict.
-        # A scoring run (``shifted``) has its own stop rule (``shifted_rtol``) and must reach it.
-        if d.frozen and not reort and shifted is None and krylov_exhausted(n_vectors - n_curr, d.global_count):
+        # A scoring run (``shifted``) stops here too: past |P| vectors an unreorthogonalized recurrence only re-finds
+        # ghost copies of what it has, and its Galerkin solutions, like G, are on their rounding floor. Without it a
+        # scoring run whose residual could not reach ``shifted_rtol`` ran until the block budget or the divergence
+        # guard (the shifted ``exhausted`` flag reports it).
+        if d.frozen and not reort and krylov_exhausted(n_vectors - n_curr, d.global_count):
             # Frozen P, no reorthogonalization, |P| vectors spent and the monitor still not satisfied: the run is
             # on its rounding floor. ``n_vectors`` and ``d.global_count`` are replicated (see _continue_on_array_kernel).
             status = "exhausted"
+            if shifted is not None:
+                shifted.exhausted = True
             widths.append(n_curr)
             it += 1
             break
@@ -1452,6 +1457,8 @@ def block_Green_discovered(
             n_live = np.array([matrix.n_alive_local], dtype=np.int64)
             if comm is not None and comm.size > 1:
                 comm.Allreduce(MPI.IN_PLACE, n_live, op=MPI.SUM)
+            # The run's |P| (its exhausted stop counts against it) is the support it runs on, not the pre-round count.
+            support.decisions.global_count = int(n_live[0])
             return block_lanczos_discovered(
                 matrix,
                 support,
@@ -1465,7 +1472,7 @@ def block_Green_discovered(
                 shifted_rtol=shifted_rtol,
                 score_only=score_only,
                 # A scoring run that cannot reach its residual must not outlive the Green's function by much.
-                max_blocks=4 * n_first + 100 if score_only else 10**7,
+                max_blocks=4 * n_first + 100 if score_only else _GROWTH_MAX_BLOCKS,
             )
 
         def g_cf(result, zs, framed=True):

@@ -228,7 +228,7 @@ holds two clusters 120 Ry apart. If no other stop can be reached, the unit runs 
 | `closed` | growth, pruned, after growing | `H P` lies inside `P` (no row outside `P` on any rank): nothing can be admitted any more |
 | `stalled` | growth | nothing admitted for `EXHAUSTED_VECTORS_OVER_P * |P|` vectors (a deferred frontier that never crosses the cut) |
 | `frozen_small` | growth | the support froze at most `GF_FULL_REORT_MAX` determinants: leave for the exact restart |
-| `exhausted` | frozen, reort off | `|P|` vectors without another verdict: the run is on its rounding floor |
+| `exhausted` | frozen, reort off, also a refinement's scoring run | `|P|` vectors without another verdict: the run is on its rounding floor (a scoring run sets `ShiftedGalerkin.exhausted`; the refinement record lists it per pass) |
 | `diverged` | any | the divergence guard truncated a corrupted tail |
 
 `closed`, `stalled` and `frozen_small` end the growth pass, and the driver restarts from the seeds on the final `P`.

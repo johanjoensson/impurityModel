@@ -149,3 +149,36 @@ def test_a_closed_unit_is_not_re_solved_with_a_tighter_selection():
     failing = {0: [], 1: [], 2: []}
     units = [unit(0), unit(1, closed=True), unit(2, cap_hit=True)]
     assert _blocks_to_tighten(failing, units) == [0]
+
+
+def _spy_recurrences(monkeypatch):
+    """Every recurrence the unit runs: ``(scoring, score_only, status, blocks)``."""
+    calls, real = [], gf_recurrence.block_lanczos_discovered
+
+    def spy(*args, **kw):
+        out = real(*args, **kw)
+        calls.append((kw.get("shifted") is not None, kw.get("score_only", False), out[3], len(out[2])))
+        return out
+
+    monkeypatch.setattr(gf_recurrence, "block_lanczos_discovered", spy)
+    return calls
+
+
+@pytest.mark.parametrize("comm", [None, pytest.param(MPI.COMM_WORLD, marks=pytest.mark.mpi)], ids=["serial", "mpi"])
+def test_a_scoring_run_whose_residual_cannot_be_met_ends_exhausted(comm, monkeypatch):
+    """Swap refinement of a unit the cap froze, above ``GF_FULL_REORT_MAX`` (forced), with a scoring residual no
+    recurrence can reach and a monitor that never converges: every scoring run ends ``exhausted`` after ``|P|`` vectors
+    (it ran to the block budget, and to the divergence guard in production), and the record says so."""
+    from impurityModel.test.gf import test_gf_swap_refinement as swap
+
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
+    set_gf_switches(monkeypatch, matrix_mode="discovered", full_reort_max=0)
+    _never_converging(monkeypatch)
+    calls = _spy_recurrences(monkeypatch)
+    _g, info = swap._run(10, swap.RefineSpec(rounds=2, tol=1e-12, swap=0.4, stop_rtol=1e-300), comm=comm)
+    scoring = [c for c in calls if c[0]]
+    assert scoring, calls
+    assert all(c[2] != "max_iter" for c in calls), calls
+    assert all(c[3] <= 2 * int(info["retained_size"]) + 4 for c in calls), (calls, info["retained_size"])
+    assert all(c[2] == "exhausted" for c in scoring), calls
+    assert any(info["refine"]["exhausted"]), info["refine"]
