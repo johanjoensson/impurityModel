@@ -18,6 +18,7 @@ from impurityModel.test.gf.test_gf_truncation import _excited_basis, _siam_6
 def _knobs_unset(monkeypatch):
     monkeypatch.delenv("GF_CSR_MEMORY_SAFETY", raising=False)
     monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY", raising=False)
+    monkeypatch.delenv("GF_SHARED_MEMORY_PER_NODE", raising=False)  # the tests patch current_rss_bytes
 
 
 def test_the_csr_budget_is_the_guard_formula_at_its_own_fraction():

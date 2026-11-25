@@ -21,7 +21,7 @@ from impurityModel.ed.basis_transcription import (
 from impurityModel.ed.BlockLanczosCore import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
+from impurityModel.ed.memory_estimate import emit_memory_warning, format_bytes, gf_resident_bytes, gf_resident_note
 
 
 def build_qr(psi):
@@ -231,7 +231,7 @@ class SupportDecisions:
         """
         if self.memory_budget is None or self.memory_warned:
             return False
-        rss = current_rss_bytes()
+        rss = gf_resident_bytes()
         if self.comm is not None and self.comm.size > 1:
             rss = self.comm.allreduce(rss, op=MPI.MAX)
         if rss < self.memory_budget:
@@ -241,7 +241,7 @@ class SupportDecisions:
             cap_text = f"GF cap {self.cap:,}" if self.cap < 2**62 else "no GF cap"
             emit_memory_warning(
                 f"WARNING determinant cap: a Green's-function unit stopped growing at {self.global_count:,} "
-                f"determinants ({cap_text}): measured {format_bytes(rss)}/rank reached the "
+                f"determinants ({cap_text}): measured {format_bytes(rss)}/rank ({gf_resident_note()}) reached the "
                 f"{format_bytes(self.memory_budget)} memory budget.",
                 root=root,
                 kind="gf-memory",

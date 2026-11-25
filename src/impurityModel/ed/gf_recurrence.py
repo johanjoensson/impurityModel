@@ -47,7 +47,7 @@ from impurityModel.ed.gf_primitives import (
     calc_G,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
+from impurityModel.ed.memory_estimate import format_bytes, gf_resident_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
 
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
@@ -221,7 +221,7 @@ def choose_matrix_mode(
     report's ``rss`` and needs are the worst rank's. **Collective.**
     """
     from impurityModel.ed.gf_solvers import _frozen_matrix_need
-    from impurityModel.ed.memory_estimate import current_rss_bytes
+    from impurityModel.ed.memory_estimate import gf_resident_bytes
 
     comm = basis.comm if basis.is_distributed else None
     if memory_budget is None:
@@ -245,7 +245,7 @@ def choose_matrix_mode(
     csr_budget = getattr(basis, "gf_csr_memory_budget", None)
     csr_budget = memory_budget if csr_budget is None else max(memory_budget, csr_budget)
     e_budget = csr_budget * MATRIX_MEMORY_SAFETY / config.GF_CSR_MEMORY_SAFETY.get()
-    rss = current_rss_bytes()
+    rss = gf_resident_bytes()
     over = np.array([rss + need_e > e_budget, rss + need_csr > csr_budget, rss, need_e, need_csr], dtype=np.int64)
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
@@ -257,7 +257,7 @@ def choose_matrix_mode(
         need_seed = matrix_need_bytes(n_p, n_k, fanout, n_k * n_ranks, n_ranks, width) + int(
             REFINE_SKEW * 2 * refine_shifts * n_p * width * 16
         )
-        again = np.array([current_rss_bytes() + need_seed > e_budget], dtype=np.int64)
+        again = np.array([gf_resident_bytes() + need_seed > e_budget], dtype=np.int64)
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, again, op=MPI.MAX)
         if not again[0]:
@@ -584,7 +584,7 @@ class _ApplyEngine:
         need = _frozen_matrix_need(
             int(worst[0]), float(worst[1]), int(d.global_count), comm.size if comm is not None else 1, self._width
         )
-        over = np.array([current_rss_bytes() + need > csr_budget], dtype=np.int64)
+        over = np.array([gf_resident_bytes() + need > csr_budget], dtype=np.int64)
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
         return not over[0]
@@ -671,7 +671,7 @@ def _pt2_accumulator_fits(support, matrix, width):
     n_thin = len(scorer.kept[::2])
     per_point = REFINE_SKEW * int(width) * matrix.n_k_local * np.dtype(PT2_ACC_DTYPE).itemsize
     need_full, need_thin = int(per_point * n_full), int(per_point * n_thin)
-    rss = current_rss_bytes()
+    rss = gf_resident_bytes()
     room = budget * MATRIX_MEMORY_SAFETY
     worst = np.array(
         [rss + need_full > room, rss + need_thin > room, rss + need_thin > budget, rss, need_full], dtype=np.int64
@@ -1355,7 +1355,7 @@ def block_Green_discovered(
         # Only the accumulator's growth: the resident one is in the RSS already (it is freed after the admission).
         acc_bytes = int(REFINE_SKEW * n_shifts * add * len(psi_arr) * 16)
         over = np.array(
-            [current_rss_bytes() + (after - before) + acc_bytes > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64
+            [gf_resident_bytes() + (after - before) + acc_bytes > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64
         )
         if comm is not None and comm.size > 1:
             comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)

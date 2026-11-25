@@ -329,7 +329,7 @@ def test_run_units_distributed_never_runs_a_color_that_cannot_afford_the_cap_mpi
     available, resident = 800 * 2**20, 237 * 2**20
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
-    monkeypatch.setattr(gu, "current_rss_bytes", lambda: resident)
+    monkeypatch.setattr(gu, "gf_resident_bytes", lambda: resident)
 
     # Derive the operating point from the model instead of hard-coding one. An earlier version
     # hard-coded 200,000, which silently stopped discriminating the moment the fanout constant
@@ -539,7 +539,7 @@ def test_auto_gf_colors_are_cut_until_every_unit_affords_the_ground_state_suppor
 
     comm = MPI.COMM_WORLD
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
-    monkeypatch.setattr(gu, "current_rss_bytes", lambda: 0)
+    monkeypatch.setattr(gu, "gf_resident_bytes", lambda: 0)
     probe, _, _ = _policy_basis(comm, 10, None)
     nso = probe.num_spin_orbitals
     whole = me.max_unit_dets_within_budget(nso, 1, None, comm.size, comm, resident_bytes=0)
@@ -584,7 +584,7 @@ def test_every_gf_stage_of_a_calculation_runs_at_one_auto_cap(monkeypatch):
     basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
     resident = {"bytes": 0}
-    monkeypatch.setattr(gu, "current_rss_bytes", lambda: resident["bytes"])
+    monkeypatch.setattr(gu, "gf_resident_bytes", lambda: resident["bytes"])
     stages = []
     for grown in (0, 1 * 2**20):
         resident["bytes"] = grown
@@ -1535,3 +1535,34 @@ def test_split_payload_grouping_preserves_enumeration_order_per_destination():
         np.testing.assert_array_equal(rows, np.flatnonzero(dest == g))
         assert list(rows) == sorted(rows), "rows within a destination must stay in table order"
     assert sum(len(rows) for rows in groups.values()) == dest.size
+
+
+@pytest.mark.mpi
+def test_the_gf_units_charge_shared_memory_over_the_whole_calculations_ranks_on_the_node(monkeypatch):
+    """With ``GF_SHARED_MEMORY_PER_NODE`` the kernels measure inside the accounting block, over the full communicator's
+    ranks on the node (a colour counts only its own); without it, and after the stage, they measure ``VmRSS``."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+    )
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {}, width=1)]
+    )
+    expected = me.ranks_per_node(comm) if comm.size > 1 else 1
+    for knob, want in (("0", None), ("1", expected)):
+        monkeypatch.setenv("GF_SHARED_MEMORY_PER_NODE", knob)
+        seen = []
+
+        def kernel(split_basis, u, seeds, seen=seen):
+            seen.append(me._GF_SHARED_MEMORY_RANKS[0])
+
+        run_units_distributed(basis, [[psi], [psi]], np.array([1.0, 1.0]), kernel, verbose=False)
+        assert seen and all(s == want for s in seen), (knob, seen)
+        assert me._GF_SHARED_MEMORY_RANKS[0] is None

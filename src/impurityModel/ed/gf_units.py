@@ -32,9 +32,10 @@ from impurityModel.ed.memory_estimate import (
     _node_available_bytes,
     _resident_adjusted_budget,
     available_bytes_per_rank,
-    current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
+    gf_resident_bytes,
+    gf_shared_memory_accounting,
     max_unit_dets_within_budget,
     ranks_per_node,
     release_freed_heap,
@@ -122,7 +123,7 @@ def _colors_affording(basis, unit_weights, width, reort, floor=None, equal_width
     candidates = min(basis.comm.size, len(unit_weights))
     if candidates <= 1:
         return None
-    resident = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    resident = basis.comm.allreduce(gf_resident_bytes(), op=MPI.MAX)
     affordable = {}
 
     def afford(ranks):
@@ -334,7 +335,7 @@ def _refresh_unit_budgets(target, color_comm, node_ranks):
     Returns ``(available, resident)`` as used.
     """
     available = _node_available_bytes() // max(1, node_ranks)
-    resident = current_rss_bytes()
+    resident = gf_resident_bytes()
     if color_comm is not None and color_comm.size > 1:
         both = np.array([available, -resident], dtype=np.int64)
         color_comm.Allreduce(MPI.IN_PLACE, both, op=MPI.MIN)
@@ -607,6 +608,17 @@ def run_units_distributed(
         for unit ``u``, or ``True`` when ``reduce_fn`` consumed the results. ``None`` on other
         ranks. The split communicator is freed collectively before returning.
     """
+    # Collective on ``basis.comm`` the first time (cached on the communicator after): every rank enters here. The
+    # whole calculation's ranks on the node, not a colour's: shared memory is one pool per node.
+    node_ranks = 1 if basis.comm is None or basis.comm.size <= 1 else ranks_per_node(basis.comm)
+    with gf_shared_memory_accounting(node_ranks):
+        return _run_units_distributed(
+            basis, unit_seeds, unit_weights, kernel, verbose, reduce_fn, reort, unit_windows, hOp
+        )
+
+
+def _run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose, reduce_fn, reort, unit_windows, hOp):
+    """The body of :func:`run_units_distributed`, inside its shared-memory accounting block."""
     n_units = len(unit_seeds)
     if hOp is not None and _is_auto_gf(basis) and _row_fanout(basis) is None:
         # The auto cap is sized below from the sparse path's per-determinant cost, whose largest
@@ -622,7 +634,7 @@ def run_units_distributed(
             getattr(basis, "gf_memory_policy", None),
             getattr(basis, "gf_csr_memory_budget", None),
         )
-        resident = current_rss_bytes()
+        resident = gf_resident_bytes()
         width = max((len(s) for s in unit_seeds), default=1)
         try:
             basis.truncation_threshold = (
@@ -688,7 +700,7 @@ def run_units_distributed(
     basis.comm.Allreduce(local_psi_rows, psi_rows, op=MPI.SUM)
     seed_rows = int(psi_rows.sum())
     max_psi_rows = int(psi_rows.max()) if psi_rows.size else 0
-    entry_rss = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    entry_rss = basis.comm.allreduce(gf_resident_bytes(), op=MPI.MAX)
     headroom = _resident_adjusted_budget(_gf_sizing_safety(), available_bytes_per_rank(basis.comm), entry_rss)
     _subgroups, procs = _pack_units(
         unit_weights, basis.comm.size, basis.split_threshold, max_colors, equal_widths=equal_widths
@@ -800,7 +812,7 @@ def run_units_distributed(
     # conditional keeps the gate's rank-invariance from mattering (CLAUDE.md -- never gate a
     # collective on state that could differ). Without this the per-unit cap below cannot bind
     # at all; see `max_unit_dets_within_budget`'s `resident_bytes`.
-    resident_bytes = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    resident_bytes = basis.comm.allreduce(gf_resident_bytes(), op=MPI.MAX)
     # Collective on basis.comm (same function max_unit_dets_within_budget calls below); sampled
     # here, unconditionally, purely to report it -- reconstructing this crash needed inverting
     # the color-count bound to recover a number the process had in hand the whole

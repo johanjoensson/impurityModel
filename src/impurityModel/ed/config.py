@@ -192,6 +192,25 @@ ROUTING_HASH = Knob(
     every rank must agree (:func:`assert_uniform`). Any other value aborts the process.""",
 )
 
+GF_SHARED_MEMORY_PER_NODE = Knob(
+    name="GF_SHARED_MEMORY_PER_NODE",
+    kind="bool",
+    default=False,
+    group="units",
+    doc="""Charge shared memory once per node, not once per rank, in the Green's-function units' memory
+    guard and in every GF fit check that reads the resident set (the discovered/retained matrix mode, the
+    second-order scoring accumulator, grow mode, the frozen CSR, the colour count and the per-unit budgets).
+    Off, a rank's resident set is ``VmRSS``, which counts every shared-memory page the rank has touched;
+    under an MPI whose intra-node transport is a node-wide shared pool every rank counts the same pages, so
+    the guard over-reads each rank by up to the whole pool (the LMO ground state: 1.6 GiB of a 2.3 GiB
+    ``VmRSS`` was shared memory). On, a rank is charged ``RssAnon + RssFile`` plus the node's ``Shmem``
+    (``/proc/meminfo``) divided by the ranks on the node: the sum over the node's ranks is then the node's
+    real use, which is what the OOM killer and ``MemAvailable`` (the budgets' source) measure. It is
+    conservative where the node holds shared memory of other processes (tmpfs), and per-rank ``RssFile``
+    still counts the shared libraries once per rank. Only the GF stage is affected; the ground-state
+    (CIPSI) guards keep ``VmRSS``.""",
+)
+
 GF_CSR_MEMORY_SAFETY = Knob(
     name="GF_CSR_MEMORY_SAFETY",
     kind="float",
@@ -556,6 +575,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_RESTART,
     ROUTING_HASH,
     GF_CSR_MEMORY_SAFETY,
+    GF_SHARED_MEMORY_PER_NODE,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
     IMPMOD_MATVEC_PROF,
