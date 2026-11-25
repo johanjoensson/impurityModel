@@ -120,6 +120,9 @@ class GrowthScorer:
         #: Mesh points still in the accumulator, as indices into the full mesh.
         self.kept = np.arange(self.zs0.size)
         self.dropped = False
+        #: Whether the mesh was halved to fit the memory (:meth:`thin`).
+        self.thinned = False
+        #: Per kept point: whether it carried a share of the mass on a scored block (the mesh drop's mask).
         self._live = np.zeros(self.zs0.size, dtype=bool)
         self._seen = 0
         #: Rows the rule admitted after the first shell (replicated, running).
@@ -129,6 +132,16 @@ class GrowthScorer:
         self.n_start = None
         #: Why the rule was dropped mid-growth (the accumulator did not fit the measured K), or ``None``.
         self.declined = None
+
+    def thin(self):
+        """Keep every other mesh point (31 -> 16, the ends kept), before the accumulator exists: half its memory,
+        measured on SMO unit 7 at twice the error of ``G`` for 9 % fewer rows (``pt2-accumulator-efficiency``).
+        Replicated; the caller decides it collectively."""
+        if self.acc is not None:
+            raise RuntimeError("the scoring mesh can only be thinned before the accumulator is allocated")
+        self.kept = self.kept[::2]
+        self._live = np.zeros(self.kept.size, dtype=bool)
+        self.thinned = True
 
     def has_stash(self):
         """Whether a matvec output is waiting to be folded (replicated: set on every unfrozen apply)."""

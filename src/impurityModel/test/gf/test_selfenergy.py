@@ -688,11 +688,12 @@ def test_greens_function_moments_hubbard_atom():
 
 
 @pytest.mark.parametrize(
-    "solver_kwargs,prune,rounds",
+    "solver_kwargs,prune,rounds,pt2",
     [
-        ({}, 1e-3, 3),  # the defaults: pruned growth and swap refinement
-        (dict(gf_prune_tol=0.0, gf_refine_rounds=0), 0.0, 0),  # the explicit off: no swaps, but the shift tables stay
-        (dict(gf_prune_tol=5e-4, gf_refine_rounds=1), 5e-4, 1),
+        ({}, 0.0, 3, 1e-3),  # the defaults: the second-order growth rule (no amplitude rule) and swap refinement
+        (dict(gf_prune_tol=0.0, gf_refine_rounds=0), 0.0, 0, None),  # explicit off: no swaps, the shift tables stay
+        (dict(gf_prune_tol=5e-4, gf_refine_rounds=1), 5e-4, 1, None),
+        (dict(gf_pt2_tol=0.0), 1e-3, 3, None),  # the second-order rule off: the amplitude rule's default
     ],
 )
 @patch("impurityModel.ed.selfenergy.save_Greens_function")
@@ -700,7 +701,7 @@ def test_greens_function_moments_hubbard_atom():
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
 @patch("impurityModel.ed.sigma_estimators.get_sigma")
 def test_calc_selfenergy_hands_the_default_pruning_and_refinement_to_the_green_function(
-    mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf, solver_kwargs, prune, rounds
+    mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf, solver_kwargs, prune, rounds, pt2
 ):
     mock_calc_gs.side_effect = _fake_calc_gs(
         [np.array([1.0])],
@@ -719,6 +720,7 @@ def test_calc_selfenergy_hands_the_default_pruning_and_refinement_to_the_green_f
         pass
     kwargs = mock_get_gf.call_args.kwargs
     assert kwargs["gf_prune_tol"] == prune
+    assert kwargs["gf_pt2_tol"] == pt2
     assert (None if kwargs["gf_refine"] is None else kwargs["gf_refine"].rounds) == rounds
     if rounds is not None:
         # The acceptance test's check shifts reach the units: one table per block, on both axes.

@@ -130,16 +130,14 @@ seeds plus part of the first shell fill it), the cap's own top-K selection is al
 selects the same set. The synthetic metal of `doc/plans/gf_relevant_support.md` section 10 shows this at every cap
 where breadth-first fails there.
 
-**The growth pass.** Only the cap and the memory guard freeze the support (the frozen continuation
-then runs and is discarded by the restart): the growth pass runs the
-operator until the Green's-function monitor converges at the full tolerance, and that `G` is then discarded by the
-restart on the final support (the exact block Lanczos of `P H P`). The growth pass has no early stop of its own: the
-options `gf_growth_tol` (a looser tolerance for the growth monitor), `gf_growth_quiet` (end the growth after a window
-of blocks that admitted nothing, default 64) and the internal stop at the freeze were removed in 2026-11 as part of the
-redesign to one path. They were a measured speedup (metal: 474 -> 48 growth blocks at the same support with a window of
-16; LMO Mn8: 2380 growth blocks against 2181 restart blocks, the growth admitting 2.4 % of the final support after
-block 1); the speedup is given up on purpose and a replacement stop rule is to be tuned against the monitor. The unit
-line prints `growth=<blocks> blk/<s> s, restart=<blocks> blk/<s> s` so a run shows the split.
+**The growth pass.** The cap and the memory guard freeze the support. A pruned unit whose support grew past the
+seeds then leaves the growth at once with the status `frozen` (`stop_at_freeze`): the driver restarts from the seeds
+on the final support (the exact block Lanczos of `P H P`) anyway, so the frozen continuation would only be discarded
+(LMO unit 5: 2,066 such blocks after a freeze at block 3, repeated by a 2,080-block restart). Otherwise the growth runs
+until one of the stops in "How every recurrence ends" below. The options `gf_growth_tol` (a looser tolerance for the
+growth monitor) and `gf_growth_quiet` (end the growth after a window of blocks that admitted nothing, default 64) were
+removed in 2026-11 as part of the redesign to one path; the PT2 rule's `quiet` stop and the `stalled` stop replace the
+latter. The unit line prints `growth=<blocks> blk/<s> s, restart=<blocks> blk/<s> s` so a run shows the split.
 
 **The admission rule.** One rule: a frontier determinant is admitted when one block's amplitude squared clears
 `gf_prune_tol**2`. The `accumulated` rule (the weight summed over the blocks that reach a determinant) and the `mass`
@@ -149,10 +147,11 @@ window trimmed less) but is ω-blind like `amplitude`, so it did not address the
 deferred-weight store per unit. A deferred determinant that matters at a pole of the bath is recovered by the grow mode
 of the refinement below.
 
-### Second-order growth (`gf_pt2_tol`, opt-in)
+### Second-order growth (`gf_pt2_tol`, default 1e-3)
 
-`gf_pt2_tol` replaces the amplitude rule (setting both is an error). After the `slaterWeightMin` cut and the whole first
-shell, a frontier determinant `f` gets
+The default growth rule since 2026-11-25 (`gf_pt2_tol` unset is 1e-3; `0`, or setting `gf_prune_tol` /
+`gf_first_shell_tol`, asks for the amplitude rule). It replaces the amplitude rule (setting both is an error). After
+the `slaterWeightMin` cut and the whole first shell, a frontier determinant `f` gets
 
     s_f = max_k  sum_cols |rho_f(z_k)|^2 / |z_k - H_ff| / ||G_P(z_k)||,    rho = H X(z),  X = (z - H_PP)^-1 seed,
 
@@ -180,8 +179,16 @@ Two further limits: the unit's scoring accumulator (|K| x 31 x width complex) is
 `gf_pt2_tol` set the spectra and off-diagonal drivers hand the unit's frequency mesh to the convergence monitor as
 well, so its stopping rule differs from a run without the option.
 
-Limits. A unit with no real-frequency evaluation mesh (Matsubara only), or one whose matrix mode is not `discovered`,
-falls back to the amplitude rule with `gf_prune_tol = 1e-3` and says so in its log. The re-solve of a failing block
+Memory. The rule needs the discovered-key matrix and its accumulator, and gives way in this order so that it runs
+whenever it can: a discovered matrix that does not fit at the growth price (`GROWTH_PRICE_FACTOR` x the seeds) is priced
+again at the seeds alone, and runs if it fits there (the measured guard then freezes the growth where the memory runs
+out); an accumulator over the measured K that does not fit `MATRIX_MEMORY_SAFETY` of the guard's budget runs on every
+other mesh point (16 of 31: half the memory, measured on SMO unit 7 at twice the error of `G`), first inside that room,
+then inside the whole budget. The unit line names the rule that grew it, and whether the mesh was halved.
+
+Limits. A unit with no real-frequency evaluation mesh (Matsubara only), one whose matrix mode is not `discovered`, or
+one without the memory for even the halved mesh, falls back to the amplitude rule with `gf_prune_tol = 1e-3` and says
+so in its log. The re-solve of a failing block
 (`gf_prune_tol`) does not run under `gf_pt2_tol`. Refinement acts on cap-frozen units only. Unmeasured: complex
 Hamiltonians, chunks wider than 2 states, cap-bound units other than SMO unit 7, Sigma on NiO and FCC Ni, NiO PM above
 about 50k rows, rank-count invariance on real archives, memory on NiO and FCC Ni.
@@ -227,11 +234,12 @@ holds two clusters 120 Ry apart. If no other stop can be reached, the unit runs 
 | `quiet` | growth, PT2 rule | the rule admitted nothing for twice the block of its last admission (at least `PT2_QUIET_BLOCKS`) |
 | `closed` | growth, pruned, after growing | `H P` lies inside `P` (no row outside `P` on any rank): nothing can be admitted any more |
 | `stalled` | growth | nothing admitted for `EXHAUSTED_VECTORS_OVER_P * |P|` vectors (a deferred frontier that never crosses the cut) |
+| `frozen` | growth, pruned, after growing | the cap or the memory guard froze the support: leave for the restart, which replaces the frozen continuation |
 | `frozen_small` | growth | the support froze at most `GF_FULL_REORT_MAX` determinants: leave for the exact restart |
 | `exhausted` | frozen, reort off, also a refinement's scoring run | `|P|` vectors without another verdict: the run is on its rounding floor (a scoring run sets `ShiftedGalerkin.exhausted`; the refinement record lists it per pass) |
 | `diverged` | any | the divergence guard truncated a corrupted tail |
 
-`closed`, `stalled` and `frozen_small` end the growth pass, and the driver restarts from the seeds on the final `P`.
+`closed`, `stalled`, `frozen` and `frozen_small` end the growth pass, and the driver restarts from the seeds on the final `P`.
 A closed support also freezes (`SupportDecisions.freeze_closed`: frozen, not `cap_hit`), so a unit that does not
 prune continues frozen in the same pass. It is reported as `closed` (cap_info, `UnitRecord`), and the
 acausal-block re-solve skips it: it already holds every determinant `H` reaches. Closure is a replicated count, of

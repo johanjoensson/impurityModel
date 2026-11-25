@@ -48,7 +48,7 @@ from impurityModel.ed.gf_primitives import (
     calc_G,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
+from impurityModel.ed.memory_estimate import format_bytes, gf_resident_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
 
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
@@ -202,7 +202,9 @@ def _sample_fanout(basis, hop):
 REFINE_SKEW = 1.25
 
 
-def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_discovered=True, refine_shifts=0):
+def choose_matrix_mode(
+    basis, hop, cap, width, memory_budget, report=None, want_discovered=True, refine_shifts=0, pt2=False
+):
     """The matvec mode of a unit, decided once and collectively before its first step.
 
     ``"discovered"`` when ``want_discovered`` (a consumer of the frontier rows: the importance probe, swap
@@ -214,10 +216,14 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     receives the numbers the decision used. ``refine_shifts`` (the number of scoring shifts a refinement will
     accumulate, conjugates included) adds the accumulator's ``2 * shifts * |P_local| * width`` complex entries, times
     :data:`REFINE_SKEW` for the routing hash's imbalance, to the price of the discovered mode: a unit whose matrix
-    fits but matrix plus accumulator does not runs the retained mode, without a refinement. **Collective.**
+    fits but matrix plus accumulator does not runs the retained mode, without a refinement. ``pt2`` (the second-order
+    growth rule asked for; replicated): a matrix that does not fit at that price is priced again at the starting basis
+    alone, and runs ``"discovered"`` if it fits there -- the rule needs the frontier rows, and the measured guard then
+    freezes the growth where the memory runs out (fewer determinants, the rule kept: ``priced_from`` says so). The
+    report's ``rss`` and needs are the worst rank's. **Collective.**
     """
     from impurityModel.ed.gf_solvers import _frozen_matrix_need
-    from impurityModel.ed.memory_estimate import current_rss_bytes
+    from impurityModel.ed.memory_estimate import gf_resident_bytes
 
     comm = basis.comm if basis.is_distributed else None
     if memory_budget is None:
@@ -241,10 +247,25 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     csr_budget = getattr(basis, "gf_csr_memory_budget", None)
     csr_budget = memory_budget if csr_budget is None else max(memory_budget, csr_budget)
     e_budget = csr_budget * MATRIX_MEMORY_SAFETY / config.GF_CSR_MEMORY_SAFETY.get()
-    rss = current_rss_bytes()
-    over = np.array([rss + need_e > e_budget, rss + need_csr > csr_budget], dtype=np.int64)
+    rss = gf_resident_bytes()
+    over = np.array([rss + need_e > e_budget, rss + need_csr > csr_budget, rss, need_e, need_csr], dtype=np.int64)
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
+    rss, need_e, need_csr = int(over[2]), int(over[3]), int(over[4])  # the worst rank's, for the report
+    if pt2 and want_discovered and over[0] and priced is not None and n_p > n_basis_local:
+        # The second-order rule: price the matrix at the seeds (``n_basis_local``) before giving the rule up. ``pt2``,
+        # ``over`` and ``priced`` are replicated, so every rank joins this reduction or none does.
+        n_p, n_k = n_basis_local, int(K_OVER_P_ESTIMATE * n_basis_local)
+        need_seed = matrix_need_bytes(n_p, n_k, fanout, n_k * n_ranks, n_ranks, width) + int(
+            REFINE_SKEW * 2 * refine_shifts * n_p * width * 16
+        )
+        again = np.array([gf_resident_bytes() + need_seed > e_budget], dtype=np.int64)
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, again, op=MPI.MAX)
+        if not again[0]:
+            over[0] = 0
+            priced_from = "the seeds (the second-order rule; the memory guard bounds the growth)"
+            need_e = need_seed
     if report is not None:
         report.update(
             n_p_local=n_p,
@@ -572,7 +593,7 @@ class _ApplyEngine:
         need = _frozen_matrix_need(
             int(worst[0]), float(worst[1]), int(d.global_count), comm.size if comm is not None else 1, self._width
         )
-        over = np.array([current_rss_bytes() + need > csr_budget], dtype=np.int64)
+        over = np.array([gf_resident_bytes() + need > csr_budget], dtype=np.int64)
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
         return not over[0]
@@ -656,22 +677,39 @@ class _ApplyEngine:
 
 
 def _pt2_accumulator_fits(support, matrix, width):
-    """Whether the second-order accumulator over the **measured** ``K`` fits the memory budget. **Collective** whenever a
-    budget is set; replicated verdict. Called once, at the scorer's first fold, where the first shell is in and
-    ``matrix.n_k_local`` is real: the accumulator holds ``(|K|, n_z, p)`` and ``(|K|, n_z, w)`` arrays of ``PT2_ACC_DTYPE`` (``width`` is ``p + w``;
-    ``REFINE_SKEW`` is the buffers' own geometric over-allocation). Returns ``(fits, need_bytes, rss_bytes, budget_bytes)``; it grows with ``K`` after this,
-    which the measured guard (``SupportDecisions.over_memory_budget``) holds."""
+    """How the second-order accumulator over the **measured** ``K`` fits the memory budget: ``(verdict, need_bytes,
+    rss_bytes, budget_bytes)``, ``verdict`` one of ``"full"`` (the whole mesh), ``"thin"`` (every other point,
+    :meth:`GrowthScorer.thin`) or ``"decline"`` (the amplitude rule takes over). **Collective** whenever a budget is
+    set; replicated verdict, and the bytes are the worst rank's. Called once, at the scorer's first fold, where the
+    first shell is in and ``matrix.n_k_local`` is real: the accumulator holds ``(|K|, n_z, p)`` and ``(|K|, n_z, w)``
+    arrays of ``PT2_ACC_DTYPE`` (``width`` is ``p + w``; ``REFINE_SKEW`` is the buffers' own geometric over-allocation). It grows
+    with ``K`` after this, which the measured guard (``SupportDecisions.over_memory_budget``) holds.
+
+    The rule gives way in this order, so it runs whenever it can: the whole mesh inside ``MATRIX_MEMORY_SAFETY`` of the
+    guard's budget (room left for the growth), else the halved mesh inside it, else the halved mesh inside the whole
+    budget (the guard then freezes the growth sooner: fewer determinants, the rule kept), else no rule."""
     budget = support.decisions.memory_budget
     if budget is None:
-        return True, 0, 0, 0
+        return "full", 0, 0, 0
     scorer = support.scorer
-    need = int(REFINE_SKEW * len(scorer.zs) * int(width) * matrix.n_k_local * np.dtype(PT2_ACC_DTYPE).itemsize)
-    rss = current_rss_bytes()
-    over = np.array([rss + need > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64)
+    n_full = len(scorer.zs)
+    n_thin = len(scorer.kept[::2])
+    per_point = REFINE_SKEW * int(width) * matrix.n_k_local * np.dtype(PT2_ACC_DTYPE).itemsize
+    need_full, need_thin = int(per_point * n_full), int(per_point * n_thin)
+    rss = gf_resident_bytes()
+    room = budget * MATRIX_MEMORY_SAFETY
+    worst = np.array(
+        [rss + need_full > room, rss + need_thin > room, rss + need_thin > budget, rss, need_full], dtype=np.int64
+    )
     comm = matrix.comm
     if comm is not None and comm.size > 1:
-        comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
-    return not over[0], need, rss, int(budget * MATRIX_MEMORY_SAFETY)
+        comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
+    rss, need = int(worst[3]), int(worst[4])
+    if not worst[0]:
+        return "full", need, rss, int(budget)
+    if not worst[2]:
+        return "thin", need, rss, int(budget)
+    return "decline", need, rss, int(budget)
 
 
 def _decline_second_order(support, need, rss, budget):
@@ -681,8 +719,8 @@ def _decline_second_order(support, need, rss, budget):
     from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
 
     why = (
-        f"the scoring accumulator over the measured K needs {format_bytes(need)}/rank on top of RSS "
-        f"{format_bytes(rss)}, budget {format_bytes(budget)}"
+        f"the scoring accumulator over the measured K needs {format_bytes(need)}/rank (half of it on a halved mesh) on "
+        f"top of {format_bytes(rss)} resident, budget {format_bytes(budget)}; worst rank"
     )
     support.scorer.declined = why
     support.scorer.release()
@@ -774,6 +812,7 @@ def block_lanczos_discovered(
     shifted_rtol=None,
     score_only=False,
     small_exact=False,
+    stop_at_freeze=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -795,6 +834,10 @@ def block_lanczos_discovered(
     then good for the scores, not for ``G``. ``small_exact`` leaves with ``"frozen_small"`` as soon as an
     unreorthogonalized support is frozen at a size :func:`~impurityModel.ed.gf_convergence.full_reort_fits` accepts,
     for the caller's reorthogonalized restart on it.
+    ``stop_at_freeze`` (``None``: off; else a replicated, rank-invariant callable) ends the run with the status
+    ``"frozen"`` on the first block after the support froze (the cap or the memory guard), provided it returns true:
+    the caller restarts from the seeds on the frozen ``P`` anyway, so the frozen continuation of the growth would be
+    discarded. A run that starts frozen (a restart, a rerun) never stops this way. The caller **must** run that restart.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -815,6 +858,7 @@ def block_lanczos_discovered(
     n_seed = support.retained_size  # the support this recurrence started on (replicated)
     # Krylov vectors since the support last grew, and its size then (replicated: global_count is an allreduced sum).
     n_since_growth, size_at_growth = 0, d.global_count
+    frozen_on_entry = bool(d.frozen)
 
     it = 0
     while it < max_blocks:
@@ -828,6 +872,12 @@ def block_lanczos_discovered(
             # Frozen and small: the exact recurrence (full reorthogonalization, from the seeds) is cheaper than an
             # unreorthogonalized one that can only end on its rounding floor. Replicated (frozen, the count).
             status = "frozen_small"
+            break
+        if stop_at_freeze is not None and d.frozen and not frozen_on_entry and stop_at_freeze():
+            # ``d.frozen`` is replicated, so every rank leaves on the same block, before the frozen continuation (and
+            # its array-kernel handoff) that the restart would throw away: on LMO unit 5 that continuation was 2,066
+            # blocks after a freeze at block 3, repeated by a 2,080-block restart.
+            status = "frozen"
             break
         if d.frozen and not reort and hasattr(engine, "array_operator"):
             handed = engine.array_operator(n_curr)
@@ -875,8 +925,10 @@ def block_lanczos_discovered(
                 if support.scorer.acc is None and support.scorer.has_stash():
                     # First fold: the accumulator is about to be allocated over the measured K. Replicated cadence, so
                     # every rank joins the collective on this block, empty or not.
-                    fits, need, rss, budget_b = _pt2_accumulator_fits(support, matrix, n_curr + q0.shape[1])
-                    if not fits:
+                    verdict, need, rss, budget_b = _pt2_accumulator_fits(support, matrix, n_curr + q0.shape[1])
+                    if verdict == "thin":
+                        support.scorer.thin()
+                    elif verdict == "decline":
                         _decline_second_order(support, need, rss, budget_b)
                 if support.scorer is not None:
                     support.scorer.fold(alpha, beta)
@@ -1215,6 +1267,7 @@ def block_Green_discovered(
             pt2_on or prune_tol > 0.0 or (refine is not None and refine.rounds > 0 and bool(refine.shifts)),
             # Upper bound of len(ScoringPlan.accumulator_shifts): need_y is decided later, from the seeds.
             (2 * (len(refine.shifts) + (len(refine.checks) if refine.verify else 0)) if refine_on else 0),
+            pt2=pt2_on,
             # The second-order accumulator is not priced here: its size is |K| x the mesh, and |K| is measured after the
             # first shell (``_pt2_accumulator_fits``); a guessed |K| at the cap refused every SMO unit.
         )
@@ -1234,6 +1287,8 @@ def block_Green_discovered(
                 f"budgets {format_bytes(report['budget_discovered'])} / {format_bytes(report['budget_retained'])}.",
                 flush=True,
             )
+    if pt2_asked and pt2_zs is None and cap_info is not None:
+        cap_info["pt2"] = {"declined": pt2_why}
     if pt2_asked and pt2_zs is None and verbose and rank == 0:
         print(
             f"GF second-order growth rule unavailable ({pt2_why}): this unit grows by the amplitude rule "
@@ -1293,6 +1348,10 @@ def block_Green_discovered(
         engine=engine,
         max_blocks=_GROWTH_MAX_BLOCKS,
         small_exact=not resolved_reort,
+        # The restart below is certain once a pruned growth froze on a support larger than the seeds'
+        # (``_needs_restart``): end the growth at the freeze instead of running a frozen continuation the restart
+        # discards. G is the restart's either way, bitwise.
+        stop_at_freeze=lambda: _needs_restart(support, n_seed),
     )
     growth_status = status
     if status == "stalled" and not _needs_restart(support, n_seed) and not full_reort_fits(support.retained_size):
@@ -1304,7 +1363,7 @@ def block_Green_discovered(
     support.scorer = None
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
-    passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
+    passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0, "growth_stop": growth_status}
     passes.update(restart_blocks=0, restart_seconds=0.0)
     if (
         refine is not None
@@ -1374,7 +1433,7 @@ def block_Green_discovered(
         # Only the accumulator's growth: the resident one is in the RSS already (it is freed after the admission).
         acc_bytes = int(REFINE_SKEW * n_shifts * add * len(psi_arr) * 16)
         over = np.array(
-            [current_rss_bytes() + (after - before) + acc_bytes > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64
+            [gf_resident_bytes() + (after - before) + acc_bytes > budget * MATRIX_MEMORY_SAFETY], dtype=np.int64
         )
         if comm is not None and comm.size > 1:
             comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
@@ -1553,7 +1612,7 @@ def block_Green_discovered(
         n_rule = int(sc.admitted)
         n_first = max(int(support.retained_size) - n_seed - n_rule, 0)
         why_stop = (
-            "the cap"
+            ("the memory guard" if support.memory_frozen else "the cap")
             if support.cap_hit
             else (
                 ("twice its last admission" if sc.last_admission is not None else "its quiet floor")
@@ -1567,6 +1626,7 @@ def block_Green_discovered(
                 "rule_rows": n_rule,
                 "mesh_points": int(sc.zs0.size),
                 "mesh_points_kept": int(sc.kept.size),
+                "mesh_thinned": bool(sc.thinned),
                 "blocks": int(sc.blocks),
                 "last_admission": sc.last_admission,
                 "stop": why_stop,
@@ -1575,7 +1635,8 @@ def block_Green_discovered(
             last = "never" if sc.last_admission is None else f"block {sc.last_admission}"
             print(
                 f"GF second-order growth: {n_first:,} rows from the first shell, {n_rule:,} from the rule, "
-                f"{sc.kept.size} of {sc.zs0.size} mesh points kept, last admission {last} of {sc.blocks}, "
+                f"{sc.kept.size} of {sc.zs0.size} mesh points kept"
+                f"{' (halved to fit the memory)' if sc.thinned else ''}, last admission {last} of {sc.blocks}, "
                 f"growth ended by {'closure under H' if why_stop == 'closed' else why_stop}",
                 flush=True,
             )
@@ -1606,6 +1667,18 @@ def block_Green_discovered(
         cap_info["csr_fallback"] = bool(support.decisions.frozen and cap_info["engine"] != "none")
         cap_info["csr_seconds"] = seconds
         cap_info["passes"] = passes
+        if pt2_asked:
+            # Plain words for the per-unit summary, the one line every unit gets on rank 0's output (the unit's own
+            # lines above are printed by its colour's root only).
+            from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL
+
+            declined = (cap_info.get("pt2") or {}).get("declined")
+            thinned = bool((cap_info.get("pt2") or {}).get("mesh_thinned"))
+            passes["growth_rule"] = (
+                f"second-order rule (gf_pt2_tol {pt2_tol:g}{', mesh halved to fit the memory' if thinned else ''})"
+                if declined is None
+                else f"amplitude rule {DEFAULT_GF_PRUNE_TOL:g}, not gf_pt2_tol {pt2_tol:g}: {declined}"
+            )
         cap_info["k_over_p"] = k_over_p
     n_blocks = len(alphas)
     if not converged_flag[0] and rank == 0:

@@ -18,6 +18,7 @@ from impurityModel.test.gf.test_gf_truncation import _excited_basis, _siam_6
 def _knobs_unset(monkeypatch):
     monkeypatch.delenv("GF_CSR_MEMORY_SAFETY", raising=False)
     monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY", raising=False)
+    monkeypatch.delenv("GF_SHARED_MEMORY_PER_NODE", raising=False)  # the tests patch current_rss_bytes
 
 
 def test_the_csr_budget_is_the_guard_formula_at_its_own_fraction():
@@ -124,7 +125,7 @@ class _Ranks26:
         pass
 
 
-def _smo_heavy_unit_decision(monkeypatch, factor, refine_shifts):
+def _smo_heavy_unit_decision(monkeypatch, factor, refine_shifts, csr_gib=6.6, guard_gib=5.5, pt2=False):
     """``choose_matrix_mode`` at the shape the SMO cubic run logged (26 ranks, 2.6M seed rows, auto cap 21.05M, fan-out
     23.8, RSS 2.4 GiB, discovered budget 5.5 GiB)."""
     import types
@@ -140,10 +141,12 @@ def _smo_heavy_unit_decision(monkeypatch, factor, refine_shifts):
         is_distributed=True,
         local_basis=range(100_000),
         size=2_600_000,
-        gf_csr_memory_budget=int(6.6 * gib),
+        gf_csr_memory_budget=int(csr_gib * gib),
     )
     report = {}
-    mode = gf_recurrence.choose_matrix_mode(basis, None, 21_047_324, 1, int(5.5 * gib), report, True, refine_shifts)
+    mode = gf_recurrence.choose_matrix_mode(
+        basis, None, 21_047_324, 1, int(guard_gib * gib), report, True, refine_shifts, pt2=pt2
+    )
     return mode, report
 
 
@@ -155,3 +158,17 @@ def test_a_unit_that_reaches_a_quarter_of_its_cap_is_not_priced_at_the_cap(monke
     mode, report = _smo_heavy_unit_decision(monkeypatch, 4, 60)
     assert mode == "discovered" and report["priced_from"] == "4 x the seeds"
     assert report["n_p_priced"] == 4 * 2_600_000
+
+
+def test_a_second_order_unit_that_does_not_fit_at_the_growth_price_is_priced_at_its_seeds(monkeypatch):
+    """The rule needs the frontier rows: rather than lose it to ``retained`` (and the amplitude trickle: SMO unit 5,
+    2,387 growth blocks against unit 12's 536 under the rule), the unit runs discovered and the guard freezes it."""
+    tight = {"csr_gib": 4.4, "guard_gib": 3.67}
+    mode, report = _smo_heavy_unit_decision(monkeypatch, 4, 0, **tight)
+    assert (mode, report["priced_from"]) == ("retained", "4 x the seeds"), "premise: the growth price refuses"
+    mode, report = _smo_heavy_unit_decision(monkeypatch, 4, 0, pt2=True, **tight)
+    assert mode == "discovered" and report["priced_from"].startswith("the seeds")
+    mode, report = _smo_heavy_unit_decision(monkeypatch, 4, 0, pt2=True)
+    assert report["priced_from"] == "4 x the seeds", "a unit that fits at the growth price is not re-priced"
+    mode, _report = _smo_heavy_unit_decision(monkeypatch, 4, 0, pt2=True, csr_gib=2.6, guard_gib=2.6)
+    assert mode == "retained", "nothing fits even at the seeds"

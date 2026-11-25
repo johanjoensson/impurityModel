@@ -151,7 +151,7 @@ def test_grow_mode_stops_when_the_next_admission_would_not_fit_the_memory_budget
         return basis
 
     monkeypatch.setattr(aim, "basis", budgeted, raising=False)
-    monkeypatch.setattr(recurrence, "current_rss_bytes", lambda: 2 * 10**12)
+    monkeypatch.setattr(recurrence, "gf_resident_bytes", lambda: 2 * 10**12)
     starved = _refined(aim, mesh, monkeypatch, 0.1, rounds=8, swap=0.5)["dSigma_real"]
     assert starved > 0.1
     # ... and it is the memory guard that stopped it, not a refinement that never ran
