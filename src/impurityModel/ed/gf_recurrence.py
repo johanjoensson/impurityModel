@@ -1291,7 +1291,8 @@ def block_Green_discovered(
     )
     growth_status = status
     if status == "stalled" and not _needs_restart(support, n_seed) and not full_reort_fits(support.retained_size):
-        # No restart follows: the recurrence that stalled ran on the final P all along, which it exhausted.
+        # No restart follows: the support has not changed for |P| vectors, so the recurrence has exhausted the final
+        # P (a counted unit that grew earlier admitted its rows whole, so its run is still the Lanczos of P H P).
         status = "exhausted"
     if pt2_scorer is not None:
         pt2_scorer.release()  # the accumulator is GBs on a large unit: the restart and the refinement never read it
@@ -1446,7 +1447,11 @@ def block_Green_discovered(
             support.decisions.frozen = True
             conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
             plateau_cell[0] = getattr(conv, "plateau_hit", [False])
-            # A small support is reorthogonalized here too (its size after a grow round, replicated): see ``exact``.
+            # A small support is reorthogonalized here too: see ``exact``. Its size is the live count (a grow round
+            # admits rows before ``global_count`` is updated, after the refinement); collective, every rank reruns.
+            n_live = np.array([matrix.n_alive_local], dtype=np.int64)
+            if comm is not None and comm.size > 1:
+                comm.Allreduce(MPI.IN_PLACE, n_live, op=MPI.SUM)
             return block_lanczos_discovered(
                 matrix,
                 support,
@@ -1454,7 +1459,7 @@ def block_Green_discovered(
                 conv,
                 slater_weight_min=slaterWeightMin,
                 deflate_tol=DEFLATE_TOL_SEEDS,
-                reort=resolved_reort or full_reort_fits(support.retained_size),
+                reort=resolved_reort or full_reort_fits(int(n_live[0])),
                 engine=engine,
                 shifted=shifted,
                 shifted_rtol=shifted_rtol,
@@ -1516,7 +1521,7 @@ def block_Green_discovered(
     seconds = time.perf_counter() - t0
     if status in ("converged", "invariant_subspace"):
         converged_flag[0] = True
-    if support.cap_hit and verbose and rank == 0:
+    if (support.cap_hit or support.closed) and verbose and rank == 0:
         print(support.freeze_message(), flush=True)
     k_over_p = float("nan")
     # The retained and matrix-free modes prune too (the cut is in the policy), but they hold no K store to size.
