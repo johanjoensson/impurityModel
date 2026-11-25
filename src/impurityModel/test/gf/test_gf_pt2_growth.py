@@ -239,25 +239,52 @@ def _stub_support(budget, n_k, n_z=31):
 
     return types.SimpleNamespace(
         decisions=types.SimpleNamespace(memory_budget=budget),
-        scorer=types.SimpleNamespace(zs=np.zeros(n_z)),
+        scorer=types.SimpleNamespace(zs=np.zeros(n_z), kept=np.arange(n_z)),
     ), types.SimpleNamespace(n_k_local=n_k, comm=None)
 
 
-def test_the_accumulator_is_priced_on_the_measured_k_against_the_budget(monkeypatch):
+def test_the_accumulator_is_priced_on_the_measured_k_and_gives_way_mesh_first(monkeypatch):
+    """Whole mesh inside MATRIX_MEMORY_SAFETY of the guard's budget, else the halved mesh (16 of 31 points) inside that
+    room, else the halved mesh inside the whole budget, else no rule."""
     from impurityModel.ed import gf_recurrence
 
     monkeypatch.setattr(gf_recurrence, "current_rss_bytes", lambda: 1000)
     support, matrix = _stub_support(None, 10**6)
-    assert gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0], "no budget: the guard is off"
-    need = int(gf_recurrence.REFINE_SKEW * 31 * 2 * 10**6 * np.dtype(gf_growth_score.PT2_ACC_DTYPE).itemsize)
-    edge = int((1000 + need) / gf_recurrence.MATRIX_MEMORY_SAFETY)
-    support, matrix = _stub_support(edge + 10, 10**6)
-    fits, got, rss, _budget = gf_recurrence._pt2_accumulator_fits(support, matrix, 2)
-    assert fits and got == need and rss == 1000
-    support, matrix = _stub_support(edge - 10, 10**6)
-    assert not gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0]
-    support, matrix = _stub_support(edge + 10, 2 * 10**6)  # the same budget, twice the measured K
-    assert not gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0]
+    assert gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0] == "full", "no budget: the guard is off"
+    per_point = gf_recurrence.REFINE_SKEW * 2 * 10**6 * np.dtype(gf_growth_score.PT2_ACC_DTYPE).itemsize
+    full, thin = int(per_point * 31), int(per_point * 16)
+    safety = gf_recurrence.MATRIX_MEMORY_SAFETY
+
+    def verdict(budget, n_k=10**6):
+        support, matrix = _stub_support(budget, n_k)
+        return gf_recurrence._pt2_accumulator_fits(support, matrix, 2)
+
+    v, got, rss, _b = verdict((1000 + full) / safety + 10)
+    assert (v, got, rss) == ("full", full, 1000)
+    assert verdict((1000 + full) / safety - 10)[0] == "thin"
+    assert verdict((1000 + thin) / safety + 10)[0] == "thin"
+    assert verdict((1000 + thin) / safety - 10)[0] == "thin", "the halved mesh may use the whole budget"
+    assert verdict(1000 + thin + 10)[0] == "thin"
+    assert verdict(1000 + thin - 10)[0] == "decline"
+    assert verdict(1000 + thin + 10, 2 * 10**6)[0] == "decline", "the same budget, twice the measured K"
+
+
+def test_thinning_keeps_every_other_point_and_the_ends():
+    sc = gf_growth_score.GrowthScorer(np.linspace(-1, 1, 31) + 0.1j, 1e-3, None)
+    sc.thin()
+    assert sc.thinned and sc.kept.size == 16 and sc.kept[0] == 0 and sc.kept[-1] == 30
+    np.testing.assert_array_equal(sc.zs, np.linspace(-1, 1, 31)[::2] + 0.1j)
+    assert sc._live.size == 16
+
+
+def test_a_halved_mesh_keeps_the_rule_and_says_so(monkeypatch):
+    from impurityModel.ed import gf_recurrence
+
+    monkeypatch.setattr(gf_recurrence, "_pt2_accumulator_fits", lambda support, matrix, width: ("thin", 0, 0, 0))
+    _g, info = _run(1e-3)
+    assert "declined" not in info["pt2"] and info["pt2"]["mesh_thinned"]
+    assert info["pt2"]["mesh_points_kept"] <= 16
+    assert info["passes"]["growth_rule"] == "second-order rule (gf_pt2_tol 0.001, mesh halved to fit the memory)"
 
 
 @pytest.mark.mpi
@@ -271,7 +298,7 @@ def test_an_accumulator_that_does_not_fit_hands_the_unit_to_the_amplitude_rule_i
 
     def refuse(support, matrix, width):
         calls.append(width)
-        return False, 123, 456, 789
+        return "decline", 123, 456, 789
 
     monkeypatch.setattr(gf_recurrence, "_pt2_accumulator_fits", refuse)
     comm = MPI.COMM_WORLD
@@ -280,6 +307,9 @@ def test_an_accumulator_that_does_not_fit_hands_the_unit_to_the_amplitude_rule_i
     assert len(calls) == 1, "decided once, at the first fold"
     assert "123.0 B" in info["pt2"]["declined"] and "456.0 B" in info["pt2"]["declined"]
     assert "declined" in info["pt2"] and "pt2" not in info_amp
+    # The unit summary (the one line every unit gets on rank 0's output) says which rule it grew by, and why.
+    assert info["passes"]["growth_rule"].startswith(f"amplitude rule {DEFAULT_GF_PRUNE_TOL:g}, not gf_pt2_tol 0.001: ")
+    assert "123.0 B" in info["passes"]["growth_rule"] and "growth_rule" not in info_amp["passes"]
     np.testing.assert_allclose(g, g_amp, atol=1e-12)
     c = comm if comm.size > 1 else None
     assert _keys(info, c) == _keys(info_amp, c)
@@ -292,11 +322,12 @@ def test_an_accumulator_that_fits_keeps_the_rule_and_is_priced_on_both_block_wid
 
     def fits(support, matrix, width):
         widths.append(width)
-        return True, 0, 0, 0
+        return "full", 0, 0, 0
 
     monkeypatch.setattr(gf_recurrence, "_pt2_accumulator_fits", fits)
     _g, info = _run(1e-12)
     assert "declined" not in info["pt2"] and info["pt2"]["rule_rows"] > 0
+    assert info["passes"]["growth_rule"] == "second-order rule (gf_pt2_tol 1e-12)"
     assert widths == [2 * len(_seeds())], "ShiftedGalerkin holds (rows, n_z, p) and (rows, n_z, w): the sum of the two"
 
 

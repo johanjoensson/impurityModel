@@ -1039,6 +1039,8 @@ def _passes_text(passes):
     ]
     if passes.get("status"):
         parts.append(f"status {passes['status']}")
+    if passes.get("growth_rule"):
+        parts.append(f"grown by the {passes['growth_rule']}")
     peak = passes.get("peak_shifts")
     freq = f"G at {peak['n_shifts']} self-energy-sensitive frequencies" if peak else ""
     if peak and peak["n_shifts"]:

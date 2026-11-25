@@ -180,8 +180,16 @@ Two further limits: the unit's scoring accumulator (|K| x 31 x width complex) is
 `gf_pt2_tol` set the spectra and off-diagonal drivers hand the unit's frequency mesh to the convergence monitor as
 well, so its stopping rule differs from a run without the option.
 
-Limits. A unit with no real-frequency evaluation mesh (Matsubara only), or one whose matrix mode is not `discovered`,
-falls back to the amplitude rule with `gf_prune_tol = 1e-3` and says so in its log. The re-solve of a failing block
+Memory. The rule needs the discovered-key matrix and its accumulator, and gives way in this order so that it runs
+whenever it can: a discovered matrix that does not fit at the growth price (`GROWTH_PRICE_FACTOR` x the seeds) is priced
+again at the seeds alone, and runs if it fits there (the measured guard then freezes the growth where the memory runs
+out); an accumulator over the measured K that does not fit `MATRIX_MEMORY_SAFETY` of the guard's budget runs on every
+other mesh point (16 of 31: half the memory, measured on SMO unit 7 at twice the error of `G`), first inside that room,
+then inside the whole budget. The unit line names the rule that grew it, and whether the mesh was halved.
+
+Limits. A unit with no real-frequency evaluation mesh (Matsubara only), one whose matrix mode is not `discovered`, or
+one without the memory for even the halved mesh, falls back to the amplitude rule with `gf_prune_tol = 1e-3` and says
+so in its log. The re-solve of a failing block
 (`gf_prune_tol`) does not run under `gf_pt2_tol`. Refinement acts on cap-frozen units only. Unmeasured: complex
 Hamiltonians, chunks wider than 2 states, cap-bound units other than SMO unit 7, Sigma on NiO and FCC Ni, NiO PM above
 about 50k rows, rank-count invariance on real archives, memory on NiO and FCC Ni.

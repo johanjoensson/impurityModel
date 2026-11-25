@@ -299,3 +299,12 @@ def test_the_unit_summary_says_the_growth_stopped_at_the_freeze():
     text = _passes_text({"growth_blocks": 3, "growth_seconds": 1.0, "growth_stop": "frozen", "restart_blocks": 9})
     assert "growth 3 blk/1.0 s (stopped when the basis froze)" in text
     assert "stopped" not in _passes_text({"growth_blocks": 3, "growth_seconds": 1.0, "growth_stop": "converged"})
+
+
+def test_the_unit_summary_names_the_growth_rule():
+    from impurityModel.ed.gf_units import _passes_text
+
+    text = _passes_text(
+        {"growth_blocks": 3, "growth_seconds": 1.0, "growth_rule": "second-order rule (gf_pt2_tol 5e-4)"}
+    )
+    assert text.endswith(", grown by the second-order rule (gf_pt2_tol 5e-4)")
