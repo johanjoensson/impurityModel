@@ -777,9 +777,12 @@ def block_lanczos_discovered(
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
 
     Returns ``(alphas, betas, widths, status, q_last)``: the padded ``(m, n, n)`` coefficient arrays, the
-    per-block widths, why it stopped (``"converged"``, ``"quiet"``, ``"invariant_subspace"``, ``"diverged"``,
-    ``"exhausted"`` or ``"max_iter"``; ``"exhausted"`` = a frozen reort-off recurrence has used as many vectors as
-    the support has determinants, so it sits on its rounding floor and cannot reach the tolerance) and this rank's rows of the last accepted block (P-slot order of the final matrix).
+    per-block widths, why it stopped (``"converged"``, ``"quiet"``, ``"closed"``, ``"stalled"``,
+    ``"invariant_subspace"``, ``"diverged"``, ``"exhausted"`` or ``"max_iter"``; ``"exhausted"`` = a frozen reort-off
+    recurrence has used as many vectors as the support has determinants, so it sits on its rounding floor and cannot
+    reach the tolerance; ``"closed"`` = a pruned support that grew closed under ``H``, and ``"stalled"`` = a growing
+    support admitted nothing for as many vectors as it has determinants, both leaving for the restart on the final
+    ``P``) and this rank's rows of the last accepted block (P-slot order of the final matrix).
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
     ``shifted`` (a :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) is stepped with every block the
     recurrence accepts (a diverged step is not folded in; an invariant subspace is, as an exact solution) and told
@@ -806,6 +809,8 @@ def block_lanczos_discovered(
     store = [x] if reort else None
     n_vectors = 0  # Krylov vectors produced since the support froze (replicated)
     n_seed = support.retained_size  # the support this recurrence started on (replicated)
+    # Krylov vectors since the support last grew, and its size then (replicated: global_count is an allreduced sum).
+    n_since_growth, size_at_growth = 0, d.global_count
 
     it = 0
     while it < max_blocks:
@@ -917,6 +922,19 @@ def block_lanczos_discovered(
             break
         if d.frozen:  # counted from the freeze: before it the support was still growing
             n_vectors += n_curr
+        elif d.global_count != size_at_growth:
+            n_since_growth, size_at_growth = 0, d.global_count
+        else:
+            n_since_growth += n_curr
+            if shifted is None and krylov_exhausted(n_since_growth, d.global_count):
+                # A growing support that admitted nothing for |P| vectors: the recurrence has spent the space it has,
+                # and a deferred row that has not crossed the cut by now is held back by a change on its rounding
+                # floor. The growth is over; the caller restarts on the final P (or, if P never grew, this run was
+                # already on it). Replicated: the count and the support size are.
+                status = "stalled"
+                widths.append(n_curr)
+                it += 1
+                break
         # One block of lag: the block that fills the space is followed by the genuine breakdown (an invariant subspace,
         # detected at the top of the next iteration), which is the better verdict.
         # A scoring run (``shifted``) has its own stop rule (``shifted_rtol``) and must reach it.
@@ -1260,6 +1278,9 @@ def block_Green_discovered(
         max_blocks=_GROWTH_MAX_BLOCKS,
     )
     growth_status = status
+    if status == "stalled" and not _needs_restart(support, n_seed):
+        # No restart follows: the recurrence that stalled ran on the final P all along, which it exhausted.
+        status = "exhausted"
     if pt2_scorer is not None:
         pt2_scorer.release()  # the accumulator is GBs on a large unit: the restart and the refinement never read it
     support.scorer = None

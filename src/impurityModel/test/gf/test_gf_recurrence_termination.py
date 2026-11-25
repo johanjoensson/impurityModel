@@ -88,6 +88,18 @@ def test_a_closed_support_ends_without_the_monitor(mode, prune_tol, monkeypatch)
     assert not info["cap_hit"], "a closed support is not cap-bound"
 
 
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("prune_tol", [0.5, 0.9])
+def test_a_growth_that_admits_nothing_more_ends_without_the_monitor(mode, prune_tol, monkeypatch):
+    """A cut far above the frontier's amplitudes defers rows that never cross it: the support stops growing without
+    closing, and the growth ends ``stalled`` after ``|P|`` vectors without an admission."""
+    set_gf_switches(monkeypatch, matrix_mode=mode)
+    _never_converging(monkeypatch)
+    _g, info = _run(prune_tol=prune_tol)
+    _assert_ended_by_a_rule(info)
+    assert not info["closed"] and info["retained_size"] < 18, "premise: rows were deferred and never admitted"
+
+
 @_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_small_closed_support_is_solved_exactly(mode, monkeypatch):

@@ -132,8 +132,9 @@ def test_the_quiet_stop_ends_growth_early_and_leaves_the_basis_of_the_unstopped_
     monkeypatch.setattr(gf_growth_score, "PT2_QUIET_BLOCKS", 10**9)
     g_full, full = _run(tau)
     # Where the growth reaches every determinant H can (tau 1e-12), the support closes and both runs end there, the
-    # closure stop coming no later than the quiet one.
-    if full["closed"]:
+    # closure stop coming no later than the quiet one. Without the quiet stop a growth that admits nothing more still
+    # ends, ``stalled`` after |P| vectors (tau 1e-3), which may be the same block.
+    if full["closed"] or full["pt2"]["stop"] == "stalled":
         assert stopped["passes"]["growth_blocks"] <= full["passes"]["growth_blocks"]
     else:
         assert stopped["passes"]["growth_blocks"] < full["passes"]["growth_blocks"]
