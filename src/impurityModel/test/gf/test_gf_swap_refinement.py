@@ -144,6 +144,11 @@ def test_a_spec_without_shifts_is_declined_with_the_reason(comm):
 def test_the_spec_stop_tolerance_reaches_every_recurrence_and_later_rounds_stop_on_the_residual_alone(
     monkeypatch, comm
 ):
+    # The unreorthogonalized control flow (score-only reruns, a separate final run) of a support above
+    # GF_FULL_REORT_MAX; a small one ends every rerun on an invariant subspace instead.
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, full_reort_max=0)
     from impurityModel.ed import gf_recurrence
 
     calls, real = [], gf_recurrence.block_lanczos_discovered
@@ -213,6 +218,11 @@ def test_a_unit_with_nothing_swappable_is_declined_before_any_scoring_is_compute
 @pytest.mark.parametrize("comm", COMMS)
 def test_a_final_recurrence_that_diverges_falls_back_to_round_zeros_support(monkeypatch, comm):
     """The Green's-function rerun on the swapped support is checked for divergence like the scoring reruns."""
+    # The unreorthogonalized control flow (score-only reruns, a separate final run) of a support above
+    # GF_FULL_REORT_MAX; a small one ends every rerun on an invariant subspace instead.
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, full_reort_max=0)
     from impurityModel.ed import gf_recurrence
 
     g_breadth, info0 = _run(10, comm=comm)
@@ -352,6 +362,11 @@ def test_the_default_scoring_residual_is_inside_the_range_the_oracle_ranks_exact
 def test_the_last_permitted_round_is_also_the_green_function_run(monkeypatch, comm):
     """Review R6: a refinement that uses all its rounds ends on a recurrence that is both scored and converged, so
     there is no further accumulator-free recurrence; one that stops early still needs it."""
+    # The unreorthogonalized control flow (score-only reruns, a separate final run) of a support above
+    # GF_FULL_REORT_MAX; a small one ends every rerun on an invariant subspace instead.
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, full_reort_max=0)
     from impurityModel.ed import gf_recurrence
 
     real = gf_recurrence.block_lanczos_discovered

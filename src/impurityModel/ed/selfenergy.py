@@ -800,7 +800,7 @@ def calc_selfenergy(
                 blocks=solve_blocks,
                 verbose=verbosity >= 1,
                 verbose_extra=verbosity >= 2,
-                reort=None,  # the Green's-function recurrence never reorthogonalizes
+                reort=None,  # off, except on a small frozen support (gf_convergence.GF_FULL_REORT_MAX), solved exactly
                 dN=dN,
                 occ_cutoff=occ_cutoff,
                 slaterWeightMin=slaterWeightMin,

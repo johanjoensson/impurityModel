@@ -21,6 +21,7 @@ from impurityModel.test.gf.test_gf_truncation import (
     DELTA,
     OMEGA,
     _MODES,
+    _assert_php_oracle,
     _dense_reference_on,
     _excited_basis,
     _redistribute_as_width1,
@@ -28,8 +29,6 @@ from impurityModel.test.gf.test_gf_truncation import (
     _siam_6,
 )
 from impurityModel.test.support.gf_switches import set_gf_switches
-
-_NO_FULL_REORT_YET = pytest.mark.xfail(strict=True, reason="small frozen supports are not reorthogonalized yet")
 
 #: Far above any block count the stop rules need on the 18-determinant fixture, far below a hang.
 _BUDGET = 400
@@ -100,7 +99,6 @@ def test_a_growth_that_admits_nothing_more_ends_without_the_monitor(mode, prune_
     assert not info["closed"] and info["retained_size"] < 18, "premise: rows were deferred and never admitted"
 
 
-@_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_small_closed_support_is_solved_exactly(mode, monkeypatch):
     """Below ``GF_FULL_REORT_MAX`` the frozen recurrence is reorthogonalized: it ends on a genuine invariant subspace
@@ -113,7 +111,6 @@ def test_a_small_closed_support_is_solved_exactly(mode, monkeypatch):
     np.testing.assert_allclose(g, _dense_reference_on(info["proxy"].retained_keys()), atol=1e-10)
 
 
-@_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_large_closed_support_ends_exhausted(mode, monkeypatch):
     """Above the bound (forced here: ``GF_FULL_REORT_MAX = 0``) the frozen recurrence stays unreorthogonalized and
@@ -127,7 +124,6 @@ def test_a_large_closed_support_ends_exhausted(mode, monkeypatch):
 
 
 @pytest.mark.mpi
-@_NO_FULL_REORT_YET
 @pytest.mark.parametrize("mode", _MODES)
 def test_a_closed_support_ends_on_every_rank(mode, monkeypatch):
     """Multi-rank (an empty rank at -n 3): closure is decided on the replicated frontier count, so every rank stops
@@ -138,7 +134,7 @@ def test_a_closed_support_ends_on_every_rank(mode, monkeypatch):
     g, info = _run(comm=comm)
     _assert_ended_by_a_rule(info)
     assert len(set(comm.allgather((info["status"], info["passes"]["growth_blocks"], info["n_vectors"])))) == 1
-    np.testing.assert_allclose(g, _dense_reference_on(info["proxy"].retained_keys(), comm), atol=1e-9)
+    _assert_php_oracle(g, info, comm)
 
 
 def test_a_closed_unit_is_not_re_solved_with_a_tighter_selection():

@@ -119,6 +119,22 @@ _GF_PLATEAU_FACTOR = 1000.0
 _GF_PLATEAU_MAX_CHANGE = 1e-6
 
 
+#: Supports of at most this many determinants run their frozen recurrence with full reorthogonalization, so it ends
+#: on a genuine invariant subspace after at most ``|P|`` vectors and its continued fraction is the exact resolvent of
+#: ``P H P``. Without it a small space with a stiff spectrum sits on a rounding floor above the monitor's tolerance
+#: (NiO 2p+3d, 0 bath: |P| = 68, real-axis change 1e-8..1e-7 per check against 1e-9, two clusters 120 Ry apart).
+#: The Krylov store is ``|P|^2`` complex numbers (16 MB here) and the cost grows as ``|P|^3``: measured at block
+#: width 4, 0.02 / 0.10 / 0.76 / 6.7 / 54 s at |P| = 250 / 500 / 1000 / 2000 / 4000, against 0.006 / 0.02 / 0.08 /
+#: 0.29 / 1.0 s unreorthogonalized. ``0`` switches it off.
+GF_FULL_REORT_MAX = 1000
+
+
+def full_reort_fits(n_dim):
+    """Whether a frozen support of ``n_dim`` determinants (replicated) runs with full reorthogonalization
+    (:data:`GF_FULL_REORT_MAX`, read at call time). Replicated verdict."""
+    return 0 < int(n_dim) <= GF_FULL_REORT_MAX
+
+
 def krylov_exhausted(n_vectors, n_dim):
     """Whether ``n_vectors`` Lanczos vectors exhaust a space of ``n_dim`` (replicated inputs, replicated verdict).
 

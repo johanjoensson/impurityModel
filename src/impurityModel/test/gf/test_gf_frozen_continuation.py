@@ -26,8 +26,9 @@ def _shipped_defaults(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _retained_mode(monkeypatch):
-    """The continuation is the ``"retained"`` mode's frozen phase."""
-    set_gf_switches(monkeypatch, matrix_mode="retained")
+    """The continuation is the ``"retained"`` mode's frozen phase, of a support above ``GF_FULL_REORT_MAX`` (a small
+    one is solved by a reorthogonalized restart instead)."""
+    set_gf_switches(monkeypatch, matrix_mode="retained", full_reort_max=0)
 
 
 def _spy(monkeypatch):

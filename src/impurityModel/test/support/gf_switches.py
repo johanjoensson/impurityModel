@@ -14,10 +14,16 @@ def _truthy(value):
     return str(value).strip().lower() not in ("0", "false", "no", "")
 
 
-def set_gf_switches(monkeypatch, *, closure_freeze=None, matrix_mode=None):
-    """Set the switches for the current test (restored by ``monkeypatch``); ``None`` leaves one alone."""
-    from impurityModel.ed import gf_solvers
+def set_gf_switches(monkeypatch, *, closure_freeze=None, matrix_mode=None, full_reort_max=None):
+    """Set the switches for the current test (restored by ``monkeypatch``); ``None`` leaves one alone.
 
+    ``full_reort_max`` sets ``gf_convergence.GF_FULL_REORT_MAX``: ``0`` keeps a small fixture on the
+    unreorthogonalized frozen path (the array-kernel continuation, the exhausted stop, the restart's necessity)
+    that only supports above the bound take in production."""
+    from impurityModel.ed import gf_convergence, gf_solvers
+
+    if full_reort_max is not None:
+        monkeypatch.setattr(gf_convergence, "GF_FULL_REORT_MAX", int(full_reort_max))
     if closure_freeze is not None:
         monkeypatch.setattr(gf_solvers, "_BICGSTAB_CLOSURE_FREEZE", _truthy(closure_freeze))
     if matrix_mode is not None:

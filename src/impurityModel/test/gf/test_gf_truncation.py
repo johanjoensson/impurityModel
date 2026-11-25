@@ -619,8 +619,11 @@ def test_frozen_csr_mpi_matches_the_matrix_free_unit(chunks, monkeypatch):
 def test_frozen_csr_starts_from_a_bounded_block_budget(monkeypatch):
     """The array kernel preallocates its coefficient buffers at its block budget, and ``ceil(N/p)``
     at a 10M-determinant frozen basis is GiBs. The handoff starts small and doubles: a 1-block
-    floor on a seed-frozen unit still ends exact on P."""
+    floor on a seed-frozen unit still ends exact on P. (Above ``GF_FULL_REORT_MAX``, forced here: a small frozen
+    support is solved by a reorthogonalized restart and never reaches the handoff.)"""
     from impurityModel.ed import BlockLanczosCore, gf_solvers
+
+    set_gf_switches(monkeypatch, full_reort_max=0)
 
     budgets = []
     real_kernel = BlockLanczosCore.block_lanczos

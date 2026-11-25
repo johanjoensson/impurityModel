@@ -36,6 +36,7 @@ from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix, st
 from impurityModel.ed.gf_convergence import (
     _gf_monitor_tol,
     _make_gf_convergence_monitor,
+    full_reort_fits,
     krylov_exhausted,
 )
 from impurityModel.ed.gf_growth_score import PT2_ACC_DTYPE, GrowthScorer, pt2_mesh
@@ -772,6 +773,7 @@ def block_lanczos_discovered(
     shifted=None,
     shifted_rtol=None,
     score_only=False,
+    small_exact=False,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -790,7 +792,9 @@ def block_lanczos_discovered(
     every shift's residual (the Galerkin residual or the deflation floor, whichever is larger) is below it, so
     "converged" then means the Green's function *and* the scoring solutions are. ``score_only`` stops on that residual
     alone (the Green's-function monitor is still called every block) and reports ``"scored"``: the coefficients are
-    then good for the scores, not for ``G``.
+    then good for the scores, not for ``G``. ``small_exact`` leaves with ``"frozen_small"`` as soon as an
+    unreorthogonalized support is frozen at a size :func:`~impurityModel.ed.gf_convergence.full_reort_fits` accepts,
+    for the caller's reorthogonalized restart on it.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -820,6 +824,11 @@ def block_lanczos_discovered(
             comm.Allreduce(MPI.IN_PLACE, probe, op=MPI.MAX)
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
+        if small_exact and d.frozen and not reort and shifted is None and full_reort_fits(d.global_count):
+            # Frozen and small: the exact recurrence (full reorthogonalization, from the seeds) is cheaper than an
+            # unreorthogonalized one that can only end on its rounding floor. Replicated (frozen, the count).
+            status = "frozen_small"
+            break
         if d.frozen and not reort and hasattr(engine, "array_operator"):
             handed = engine.array_operator(n_curr)
             if handed is not None:
@@ -1247,7 +1256,9 @@ def block_Green_discovered(
     )
     t0 = time.perf_counter()
     n_seed = support.retained_size
-    seed_keys = matrix.p_keys() if support.prunes else None
+    # The seeds' P slots, for a restart on the final P: a pruned unit restarts, and so may a small one (the exact
+    # reorthogonalized run), which a seed set above GF_FULL_REORT_MAX can never become.
+    seed_keys = matrix.p_keys() if support.prunes or full_reort_fits(n_seed) else None
     refining = refine is not None and refine.rounds > 0 and matrix_mode == "discovered"
     seeds_initial = (matrix.p_keys(), q0.copy()) if refining else None
     operator_real = all(np.imag(amp) == 0 for _term, amp in hOp.items())  # replicated: every rank holds hOp
@@ -1276,9 +1287,10 @@ def block_Green_discovered(
         reort=resolved_reort,
         engine=engine,
         max_blocks=_GROWTH_MAX_BLOCKS,
+        small_exact=not resolved_reort,
     )
     growth_status = status
-    if status == "stalled" and not _needs_restart(support, n_seed):
+    if status == "stalled" and not _needs_restart(support, n_seed) and not full_reort_fits(support.retained_size):
         # No restart follows: the recurrence that stalled ran on the final P all along, which it exhausted.
         status = "exhausted"
     if pt2_scorer is not None:
@@ -1383,7 +1395,20 @@ def block_Green_discovered(
             _decline_nothing_swappable()
         else:
             acc = ShiftedGalerkin(plan.accumulator_shifts, matrix.n_p_local)
-    if _needs_restart(support, n_seed) or acc is not None:
+    # A small frozen support is solved exactly: a reorthogonalized restart from the seeds, which ends on a genuine
+    # invariant subspace within |P| vectors, unless the growth already did (replicated: statuses and counts are). A
+    # refining unit's restart (``acc``) too: a scoring run has no ``exhausted`` stop, and unreorthogonalized on a small
+    # stiff space it ran to the divergence guard (NiO 2p+3d: 34,350 blocks on 72 determinants).
+    exact = (
+        not resolved_reort
+        and full_reort_fits(support.retained_size)
+        and (
+            growth_status not in ("converged", "invariant_subspace")
+            or _needs_restart(support, n_seed)
+            or acc is not None
+        )
+    )
+    if _needs_restart(support, n_seed) or acc is not None or exact:
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
         # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P
@@ -1403,11 +1428,12 @@ def block_Green_discovered(
             converged,
             slater_weight_min=slaterWeightMin,
             deflate_tol=DEFLATE_TOL_SEEDS,
-            reort=resolved_reort,
+            reort=resolved_reort or exact,
             engine=engine,
             shifted=acc,
             shifted_rtol=None if plan is None else plan.stop_rtol,
-            max_blocks=_GROWTH_MAX_BLOCKS,
+            # Reorthogonalized, |P| vectors span the space (width >= 1): two more blocks see the breakdown.
+            max_blocks=min(_GROWTH_MAX_BLOCKS, support.retained_size + 2) if exact else _GROWTH_MAX_BLOCKS,
         )
         passes.update(restart_blocks=len(widths), restart_seconds=time.perf_counter() - t_restart)
     if acc is not None:
@@ -1420,6 +1446,7 @@ def block_Green_discovered(
             support.decisions.frozen = True
             conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
             plateau_cell[0] = getattr(conv, "plateau_hit", [False])
+            # A small support is reorthogonalized here too (its size after a grow round, replicated): see ``exact``.
             return block_lanczos_discovered(
                 matrix,
                 support,
@@ -1427,7 +1454,7 @@ def block_Green_discovered(
                 conv,
                 slater_weight_min=slaterWeightMin,
                 deflate_tol=DEFLATE_TOL_SEEDS,
-                reort=resolved_reort,
+                reort=resolved_reort or full_reort_fits(support.retained_size),
                 engine=engine,
                 shifted=shifted,
                 shifted_rtol=shifted_rtol,

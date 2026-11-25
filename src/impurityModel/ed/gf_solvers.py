@@ -25,7 +25,12 @@ from impurityModel.ed.basis_transcription import (
 from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_lanczos
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor, krylov_exhausted
+from impurityModel.ed.gf_convergence import (
+    _gf_monitor_tol,
+    _make_gf_convergence_monitor,
+    full_reort_fits,
+    krylov_exhausted,
+)
 from impurityModel.ed.gf_primitives import (
     FrozenColumnMatvec,
     _distributed_seed_qr,
@@ -250,8 +255,11 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         )
 
     # The continued fraction only consumes alphas/betas plus the final residual block
-    # (q_last below), so with reort NONE skip the full Krylov-basis retention.
-    resolved_reort = _gf_reort(reort)
+    # (q_last below), so with reort NONE skip the full Krylov-basis retention. A small sector is reorthogonalized
+    # whatever was asked (GF_FULL_REORT_MAX): it then ends on a genuine invariant subspace, exact, instead of on the
+    # rounding floor an unreorthogonalized run of |P| vectors reaches. ``basis.size`` is global, so the verdict is
+    # replicated.
+    resolved_reort = _gf_reort(reort) or full_reort_fits(basis.size)
     alphas, betas, Q_list, widths = _array_block_lanczos(
         basis, hOp, psi_dense_local, dense, delta, resolved_reort, slaterWeightMin, eval_meshes, info
     )

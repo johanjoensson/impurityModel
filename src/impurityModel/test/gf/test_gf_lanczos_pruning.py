@@ -84,7 +84,11 @@ def test_without_the_restart_the_recurrence_is_not_exact_which_is_why_it_exists(
     seeds on the final ``P`` is what makes it the resolvent of ``P H P``."""
     from impurityModel.ed import gf_recurrence
 
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
     monkeypatch.setattr(gf_recurrence, "_needs_restart", lambda support, n_seed: False)
+    # Above GF_FULL_REORT_MAX, where only the restart can make it exact (a small support is solved exactly anyway).
+    set_gf_switches(monkeypatch, full_reort_max=0)
     G, info, z = _run(monkeypatch, 0.225, reort=reort)
     assert np.max(np.abs(G - _dense_G_on(_retained(info), z))) > 1e-4
 
@@ -129,7 +133,8 @@ def test_a_unit_the_cap_froze_after_a_deferred_row_came_back_is_still_exact(monk
     from impurityModel.ed import gf_recurrence
     from impurityModel.test.support.gf_switches import set_gf_switches
 
-    set_gf_switches(monkeypatch, matrix_mode=mode)
+    # Above GF_FULL_REORT_MAX (forced): the negative control below must reach the unreorthogonalized first pass.
+    set_gf_switches(monkeypatch, matrix_mode=mode, full_reort_max=0)
     G, info, z = _run(monkeypatch, 0.225, cap=cap)
     assert info["cap_hit"] and info["engine"] == mode
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
