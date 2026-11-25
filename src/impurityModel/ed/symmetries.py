@@ -503,6 +503,27 @@ def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol
     return BlockStructure(new_blocks, identical, *others, inequivalent), True
 
 
+def bath_anchors(h, impurity_orbitals, bath_orbitals):
+    """``{bath orbital: impurity orbital}``: the impurity orbital each bath orbital belongs with.
+
+    The impurity orbital it couples to most strongly (largest ``|h[b, o]| + |h[o, b]|``); with no direct
+    coupling, the one nearest to it through the hopping graph (:func:`_nearest_impurity_orbital`); a site no
+    impurity orbital reaches, the first impurity orbital. :func:`group_orbitals_by_blocks` puts each bath orbital
+    in its anchor's group, and the double counting reads from the same rule which shells have a bath
+    (:func:`impurityModel.ed.dc_static.shells_with_bath`), so the two cannot disagree.
+    """
+    imp = list(impurity_orbitals)
+    nearest = _nearest_impurity_orbital(h, imp, list(bath_orbitals))
+    anchors = {}
+    for b in bath_orbitals:
+        couplings = [abs(h[b, o]) + abs(h[o, b]) for o in imp]
+        if b in nearest and max(couplings) <= _NO_DIRECT_COUPLING:
+            anchors[b] = nearest[b]
+        else:
+            anchors[b] = imp[int(np.argmax(couplings))]
+    return anchors
+
+
 def group_orbitals_by_blocks(
     op,
     impurity_orbitals,
@@ -587,14 +608,8 @@ def group_orbitals_by_blocks(
     impurity_dict = {g: [list(orbs)] for g, orbs in enumerate(manifolds)}
     valence_dict = {g: [] for g in range(len(manifolds))}
     conduction_dict = {g: [] for g in range(len(manifolds))}
-    nearest = _nearest_impurity_orbital(h, imp, sorted(val_set | con_set))
-    for b in sorted(val_set | con_set):
-        couplings = [abs(h[b, o]) + abs(h[o, b]) for o in imp]
-        if b in nearest and max(couplings) <= _NO_DIRECT_COUPLING:
-            g = imp_to_group[nearest[b]]
-        else:
-            g = imp_to_group[imp[int(np.argmax(couplings))]]
-        (valence_dict if b in val_set else conduction_dict)[g].append(b)
+    for b, anchor in bath_anchors(h, imp, sorted(val_set | con_set)).items():
+        (valence_dict if b in val_set else conduction_dict)[imp_to_group[anchor]].append(b)
     valence_dict = {g: [sorted(v)] for g, v in valence_dict.items()}
     conduction_dict = {g: [sorted(c)] for g, c in conduction_dict.items()}
     return impurity_dict, (valence_dict, conduction_dict)

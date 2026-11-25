@@ -59,6 +59,7 @@ _FIELDS = (
     ("n_ref", "{:.4f}"),
     ("u", "{:.4f}"),
     ("j", "{:.4f}"),
+    ("shells", "{}"),
     ("gap_center", "{:.6f}"),
     ("gap_width", "{:.6f}"),
     ("omega_plus", "{:.6f}"),

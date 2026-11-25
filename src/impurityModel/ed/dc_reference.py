@@ -254,7 +254,8 @@ def discretized_impurity_occupation(model, tau):
 
     It counts the whole impurity. On a multi-shell impurity with a bath-less shell, the double-counting
     search counts only the shells a bath hops to, so its ``n0`` is smaller than this by the bath-less
-    shell's filling. The RSPt interface never sets ``shell_ls``, so there the two agree.
+    shell's filling. The RSPt interface sets ``shell_ls`` for a cluster of several shells, so there
+    the two differ whenever a shell has no bath.
     """
     return _reference_impurity_occupation(model, tau, warn=False)
 

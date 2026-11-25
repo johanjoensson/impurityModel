@@ -8,7 +8,18 @@ inherits its saturation check) unless the caller supplies the filling explicitly
 :func:`impurityModel.ed.atomic_physics.uj_from_u4` derives the average Coulomb repulsion and
 exchange that FLL and AMF need from ``model.u4``; :func:`impurityModel.ed.sigma.get_Sigma_static`
 is the static Hartree-Fock self-energy :func:`sigma_inf_dc` *is*.
+
+**Several shells** (``model.shell_ls`` with more than one entry). FLL, AMF and nominal are evaluated
+per shell: each shell ``a`` has its own occupation ``N_a`` and its own ``(U_a, J_a)``, read from its
+own block of ``u4``. Each shell also feels the Hartree and averaged exchange of the other shells'
+charge, taken from the inter-shell elements of ``u4`` at the uniform density
+``⊕_a (N_a / n_a) I_a`` (:func:`_fll_multishell_matrix`). The result is block-diagonal by shell. An
+occupation, ``u`` or ``j`` given explicitly must then have one value per shell; a single number is
+refused rather than split. :func:`with_bathless_shells_at_nominal_fll` gives the ED criteria the
+double counting of a shell they cannot shift.
 """
+
+import dataclasses
 
 import numpy as np
 
@@ -20,8 +31,10 @@ from impurityModel.ed.dc_reference import (
     _reference_impurity_occupation,
     _warn_if_reference_saturated,
 )
-from impurityModel.ed.lie_algebra import extract_tensors, rotate_two_body
+from impurityModel.ed.lie_algebra import extract_tensors, rotate_two_body, tensors_to_operator
+from impurityModel.ed.observables import shell_column_slices, shell_index_of_orbitals
 from impurityModel.ed.sigma import get_Sigma_static
+from impurityModel.ed.symmetries import bath_anchors
 
 
 def _model_u4_dense(model):
@@ -89,20 +102,260 @@ def _model_uj(model):
     return uj_from_u4(u4_spherical)
 
 
-def _require_single_shell_scheme(model, scheme):
-    """Refuse a closed-form scheme on a declared multi-shell model, on every rank, before any work.
+def _is_multishell(model):
+    """Whether ``model`` declares more than one shell. An inferred single shell is the legacy path."""
+    return model.shell_ls is not None and len(model.shell_ls) > 1
 
-    ``fll``/``amf``/``nominal`` spread one occupation ``N`` and one ``(U, J)`` over every impurity
-    orbital. Over a deep, bath-less shell next to a correlated one that is not a double counting at
-    all. :func:`sigma_inf_dc` (``Sigma_static(u4, rho)``) is the multi-shell scheme: it takes the
-    inter-shell ``F^k/G^k`` from ``u4`` and each shell's own density from ``rho``.
+
+def _shell_rows(model):
+    """Per shell, the positions (into ``model.impurity_indices``) of the impurity orbitals it holds."""
+    if isinstance(model.rot_to_spherical, dict):
+        raise ValueError("a multi-shell double counting needs an ndarray rot_to_spherical with shell_ls, not a dict.")
+    index = shell_index_of_orbitals(model.rot_to_spherical, model.shell_ls)
+    return [np.flatnonzero(index == a) for a in range(len(model.shell_ls))]
+
+
+def shells_with_bath(model):
+    """Per shell of a multi-shell ``model``, whether any bath orbital belongs with it.
+
+    The rule :func:`solver_basis.prepare_solver_basis` uses for ``shell_has_bath``: a bath orbital belongs with
+    the impurity orbital :func:`symmetries.bath_anchors` gives it.
     """
-    shells = model.shell_ls  # only an explicit declaration: an inferred single shell is the legacy path
-    if shells is not None and len(shells) > 1:
-        raise NotImplementedError(
-            f"{scheme} double counting is not defined for a multi-shell impurity (shell_ls={shells}); "
-            "use sigma_inf_dc, which takes the inter-shell terms from u4 and each shell's density from rho."
+    rows = _shell_rows(model)
+    impurity = list(model.impurity_indices)
+    bath = [o for o in range(model.n_spin_orbitals) if o not in set(impurity)]
+    h = extract_tensors(model.h0, n_orb=model.n_spin_orbitals, two_body=False)[0]
+    shell_of = {impurity[k]: a for a, r in enumerate(rows) for k in r}
+    reached = {shell_of[anchor] for anchor in bath_anchors(h, impurity, bath).values()}
+    return [a in reached for a in range(len(rows))]
+
+
+def _per_shell(value, n_shells, name):
+    """``value`` as a list with one entry per shell (``None`` entries: derive it).
+
+    A dict must be keyed by the shell indices ``0 .. n_shells-1``. A single number is refused: splitting one
+    occupation or one ``(U, J)`` over several shells is exactly what a per-shell double counting must not do.
+    """
+    if value is None:
+        return [None] * n_shells
+    if isinstance(value, dict):
+        if set(value) != set(range(n_shells)):
+            raise ValueError(f"{name} must be keyed by the shell indices {list(range(n_shells))}, got {sorted(value)}.")
+        return [None if value[a] is None else float(value[a]) for a in range(n_shells)]
+    if np.ndim(value) == 0:
+        raise ValueError(
+            f"{name}={value} is one number, but this impurity has {n_shells} shells: give one value per shell "
+            "(a sequence, or a dict keyed by shell index)."
         )
+    values = list(value)
+    if len(values) != n_shells:
+        raise ValueError(f"{name} has {len(values)} entries, but this impurity has {n_shells} shells.")
+    return [None if v is None else float(v) for v in values]
+
+
+def _spin_major_basis(rot_rows, l, tol=1e-6):
+    """A unitary on one shell's rows that orders them by spin: the first half one spin, the second the other.
+
+    ``rot_rows`` is the shell's block of ``rot_to_spherical`` (its rows, its ``2(2l+1)`` columns, the first
+    ``2l+1`` of which are one spin). The projector onto that spin, compressed onto the rows, has eigenvalues 0
+    and 1 exactly when the rows span a spin-collinear space; its eigenvectors are then the spin-major basis.
+    This works for a partial set (t2g only) as well as a whole shell: :func:`uj_from_u4` averages over the
+    orbitals present, never over spherical columns the set does not hold.
+    """
+    half = 2 * l + 1
+    spin = rot_rows[:, :half]
+    projector = spin @ spin.conj().T
+    eigenvalues, vectors = np.linalg.eigh(0.5 * (projector + projector.conj().T))
+    if np.any(np.minimum(np.abs(eigenvalues), np.abs(eigenvalues - 1.0)) > tol):
+        raise ValueError(
+            f"the orbitals of the l={l} shell are not spin-collinear (e.g. a spin-orbit-coupled basis), so no "
+            "(U, J) can be read from u4; pass explicit u=/j= per shell."
+        )
+    first, second = vectors[:, eigenvalues > 0.5], vectors[:, eigenvalues <= 0.5]
+    if first.shape[1] != second.shape[1]:
+        raise ValueError(
+            f"the l={l} set holds {first.shape[1]} orbitals of one spin and {second.shape[1]} of the other; "
+            "(U, J) needs both spins of every orbital. Pass explicit u=/j= per shell."
+        )
+    return np.hstack([first, second])
+
+
+def _shell_uj(model, u4_dense, rows, wanted=None):
+    """``[(U_a, J_a), ...]``: :func:`uj_from_u4` on each shell's own block of ``u4``.
+
+    ``wanted`` (shell indices) limits the work to those shells; the others are ``None``. A shell whose
+    ``(U, J)`` is not needed is never asked to be spin-collinear.
+    """
+    rot = np.asarray(model.rot_to_spherical, dtype=complex)
+    out = []
+    for a, (r, l, cols) in enumerate(zip(rows, model.shell_ls, shell_column_slices(model.shell_ls))):
+        if wanted is not None and a not in wanted:
+            out.append(None)
+            continue
+        w = _spin_major_basis(rot[np.ix_(r, np.arange(rot.shape[1])[cols])], int(l))
+        out.append(uj_from_u4(rotate_two_body(u4_dense[np.ix_(r, r, r, r)], w)))
+    return out
+
+
+def _shell_reference_occupations(model, tau, rows, warn=True):
+    """Per shell, its DFT reference occupation: the trace of its block of the Fermi-filled ``h0``.
+
+    The saturation warning is per shell and only for a shell with a bath: a deep, bath-less core is meant
+    to be full.
+    """
+    rho = _noninteracting_impurity_rho(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+    occupations = [float(np.real(np.trace(rho[np.ix_(r, r)]))) for r in rows]
+    if warn:
+        for n_a, r, has_bath in zip(occupations, rows, shells_with_bath(model)):
+            if has_bath:
+                _warn_if_reference_saturated(n_a, len(r), _SATURATION_ADVICE["static"])
+    return occupations
+
+
+def _shell_block_diagonal(matrix, rows):
+    """``matrix`` with every block between two different shells set to zero."""
+    out = np.zeros_like(matrix)
+    for r in rows:
+        out[np.ix_(r, r)] = matrix[np.ix_(r, r)]
+    return out
+
+
+def _uniform_shell_density(rows, occupations, n_imp):
+    r"""``\bar\rho = \oplus_a (N_a / n_a) I_a``: each shell's charge spread evenly over its own orbitals."""
+    rho = np.zeros((n_imp, n_imp), dtype=complex)
+    for r, n_a in zip(rows, occupations):
+        rho[r, r] = n_a / len(r)
+    return rho
+
+
+def _intra_shell_part(u4_dense, rows):
+    """The elements of ``u4`` whose four indices all lie in one shell."""
+    shell = np.empty(u4_dense.shape[0], dtype=int)
+    for a, r in enumerate(rows):
+        shell[r] = a
+    s = shell[:, None, None, None]
+    same = (s == shell[None, :, None, None]) & (s == shell[None, None, :, None]) & (s == shell[None, None, None, :])
+    return np.where(same, u4_dense, 0.0)
+
+
+def _shell_summary(model, occupations, uj=None, levels=None):
+    """The record's ``shells`` field: one ``l=.., N=.., U=.., J=..`` entry per shell."""
+    parts = []
+    for a, l in enumerate(model.shell_ls):
+        entry = f"l={l}: N={occupations[a]:.4f}"
+        if uj is not None:
+            entry += f" U={uj[a][0]:.4f} J={uj[a][1]:.4f}"
+        if levels is not None:
+            entry += f" dc_level={levels[a]:.6f}"
+        parts.append(entry)
+    return "; ".join(parts)
+
+
+def _shell_levels(dc, rows):
+    """Per shell, the mean diagonal of its block of ``dc``."""
+    return [float(np.real(np.trace(dc[np.ix_(r, r)]))) / len(r) for r in rows]
+
+
+def _fll_multishell_matrix(model, *, n, u, j, tau=None):
+    r"""Per-shell FLL on a multi-shell model. Returns ``(dc, occupations, uj, rows)``.
+
+    .. math::
+        V = \bigoplus_a \Big[v_a I_a + \big(\Sigma_{static}(u_4, \bar\rho)
+            - \Sigma_{static}(u_4^{intra}, \bar\rho)\big)_{aa}\Big],\quad
+        v_a = U_a (N_a - \tfrac12) - \tfrac12 J_a (N_a - 1).
+
+    FLL and AMF differ only in the self-interaction, which is inside a shell; between shells both are the
+    Hartree and averaged exchange of the other shells' charge at the uniform density :math:`\bar\rho`. So
+    each shell gets its own FLL potential plus the inter-shell part of AMF. With no inter-shell elements in
+    ``u4`` the result is block-diagonal copies of the single-shell FLL.
+    """
+    n_shells = len(model.shell_ls)
+    rows = _shell_rows(model)
+    n_list = _per_shell(n, n_shells, "n")
+    u_list = _per_shell(u, n_shells, "u")
+    j_list = _per_shell(j, n_shells, "j")
+    n_imp = len(model.impurity_indices)
+    needs_u4 = any(v is None for v in u_list + j_list)
+    u4_dense = _model_u4_dense(model) if (needs_u4 or model.u4 is not None) else None
+    if any(v is None for v in n_list):
+        reference = _shell_reference_occupations(model, tau, rows)
+        n_list = [ref if v is None else v for v, ref in zip(n_list, reference)]
+    if needs_u4:
+        derived = _shell_uj(
+            model, u4_dense, rows, wanted={a for a in range(n_shells) if u_list[a] is None or j_list[a] is None}
+        )
+        u_list = [d[0] if v is None else v for v, d in zip(u_list, derived)]
+        j_list = [d[1] if v is None else v for v, d in zip(j_list, derived)]
+    dc = np.zeros((n_imp, n_imp), dtype=complex)
+    if u4_dense is not None:
+        rho = _uniform_shell_density(rows, n_list, n_imp)
+        dc += get_Sigma_static(u4_dense, rho) - get_Sigma_static(_intra_shell_part(u4_dense, rows), rho)
+        dc = _shell_block_diagonal(dc, rows)
+    for r, n_a, u_a, j_a in zip(rows, n_list, u_list, j_list):
+        dc[r, r] += u_a * (n_a - 0.5) - 0.5 * j_a * (n_a - 1.0)
+    return dc, n_list, list(zip(u_list, j_list)), rows
+
+
+def _fll_multishell(model, record, *, n, u, j, tau=None):
+    dc, occupations, uj, rows = _fll_multishell_matrix(model, n=n, u=u, j=j, tau=tau)
+    record.update(status="closed_form", n_ref=float(sum(occupations)))
+    record["shells"] = _shell_summary(model, occupations, uj, _shell_levels(dc, rows))
+    record["dc_trace"], record["dc_level"] = dc_record.dc_levels(dc)
+    record["dc_spread"] = dc_record.dc_spread(dc)
+    return dc
+
+
+def _nominal_per_shell(model, nominal_occupation):
+    """The nominal occupation of each shell, from a per-shell dict or sequence (``BasisOptions.nominal_occ``)."""
+    values = _per_shell(nominal_occupation, len(model.shell_ls), "nominal_occupation")
+    if any(v is None for v in values):
+        raise ValueError("nominal_occupation needs a value for every shell.")
+    return values
+
+
+def with_bathless_shells_at_nominal_fll(model, nominal_occ, *, rank=0):
+    r"""``model`` with the double counting of every bath-less shell set to FLL at the nominal occupations.
+
+    The ED criteria shift only the shells a bath hops to (``dc_guess + mu P``): a deep shell's occupation is
+    pinned by its energy, so no criterion measured on the impurity can fix its double counting. It would
+    otherwise keep whatever guess the caller sent. Here it gets the per-shell FLL potential of
+    :func:`_fll_multishell_matrix` evaluated at ``nominal_occ`` (one entry per shell), which includes the
+    Hartree and exchange of the other shells' nominal charge. The blocks between a bath-less shell and any
+    other shell are zero. The shells with a bath keep the guess, and the search shifts them from there.
+
+    Must run before the solver basis is built: ``H = h0 - DC + U`` is assembled from ``model.dc``, and the
+    double counting searched for has to be the one the self-energy then solves with.
+
+    Single shell, every shell with a bath, or none with a bath (the search refuses that case itself):
+    ``model`` unchanged.
+    """
+    if not _is_multishell(model):
+        return model
+    has_bath = shells_with_bath(model)
+    if all(has_bath) or not any(has_bath):
+        return model
+    # Only the bath-less blocks are kept, so only their (U, J) is derived: the intra-shell part of a shell with a
+    # bath is discarded (placeholder 0), and its basis need not be spin-collinear.
+    placeholder = [0.0 if has else None for has in has_bath]
+    fll, _, _, rows = _fll_multishell_matrix(
+        model, n=_nominal_per_shell(model, nominal_occ), u=placeholder, j=placeholder
+    )
+    n_imp = len(model.impurity_indices)
+    dc = np.array(extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0], dtype=complex)
+    for a, r in enumerate(rows):
+        if has_bath[a]:
+            continue
+        dc[r, :] = 0.0
+        dc[:, r] = 0.0
+        dc[np.ix_(r, r)] = fll[np.ix_(r, r)]
+        if rank == 0:
+            level = float(np.real(np.trace(fll[np.ix_(r, r)]))) / len(r)
+            print(
+                f"DC of the bath-less shell l={model.shell_ls[a]}: FLL at the nominal occupations, "
+                f"level {level:.6f} (the search does not shift it).",
+                flush=True,
+            )
+    return dataclasses.replace(model, dc=tensors_to_operator(dc).to_dict())
 
 
 def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
@@ -134,16 +387,21 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
         Fundamental temperature for the DFT occupation (ignored if ``n`` is given).
     n : float, optional
         Impurity occupation ``N``. ``None`` uses the DFT impurity occupation.
+        On several shells: one value per shell (sequence, or dict keyed by shell index; ``None``
+        entries are derived), see the module docstring.
     u, j : float, optional
         Average Coulomb repulsion and exchange. ``None`` derives them from ``model.u4`` via
         :func:`_model_uj`.
+        On several shells: one value per shell (sequence, or dict keyed by shell index; ``None``
+        entries are derived), see the module docstring.
 
     Returns
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
-    _require_single_shell_scheme(model, "fll")
     with dc_record.recording("fll") as record:
+        if _is_multishell(model):
+            return _fll_multishell(model, record, tau=tau, n=n, u=u, j=j)
         return _fll(model, record, tau=tau, n=n, u=u, j=j)
 
 
@@ -187,14 +445,28 @@ def amf_dc(model, *, tau=0.002, n=None):
         Fundamental temperature for the DFT occupation (ignored if ``n`` is given).
     n : float, optional
         Impurity occupation ``N``. ``None`` uses the DFT impurity occupation.
+        On several shells: one value per shell (sequence, or dict keyed by shell index; ``None``
+        entries are derived), see the module docstring.
 
     Returns
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
-    _require_single_shell_scheme(model, "amf")
     with dc_record.recording("amf") as record:
         n_imp = len(model.impurity_indices)
+        if _is_multishell(model):
+            rows = _shell_rows(model)
+            occupations = _per_shell(n, len(rows), "n")
+            if any(v is None for v in occupations):
+                reference = _shell_reference_occupations(model, tau, rows)
+                occupations = [ref if v is None else v for v, ref in zip(occupations, reference)]
+            rho = _uniform_shell_density(rows, occupations, n_imp)
+            dc = _shell_block_diagonal(get_Sigma_static(_model_u4_dense(model), rho), rows)
+            record.update(status="closed_form", n_ref=float(sum(occupations)))
+            record["shells"] = _shell_summary(model, occupations, levels=_shell_levels(dc, rows))
+            record["dc_trace"], record["dc_level"] = dc_record.dc_levels(dc)
+            record["dc_spread"] = dc_record.dc_spread(dc)
+            return dc
         u4_dense = _model_u4_dense(model)
         identity = np.identity(n_imp, dtype=complex)
         if n is None:
@@ -223,22 +495,28 @@ def nominal_dc(model, nominal_occupation, *, u=None, j=None):
     Parameters
     ----------
     model : ImpurityModel
-    nominal_occupation : float
-        The nominal impurity occupation (``sum(BasisOptions.nominal_occ.values())``).
+    nominal_occupation : float or dict
+        The nominal impurity occupation. A dict (``BasisOptions.nominal_occ``) is summed on one shell;
+        on several shells it gives each shell's nominal occupation and must be keyed by shell index.
     u, j : float, optional
         Average Coulomb repulsion and exchange. ``None`` derives them from ``model.u4`` via
         :func:`_model_uj` (see :func:`fll_dc`).
+        On several shells: one value per shell (sequence, or dict keyed by shell index; ``None``
+        entries are derived), see the module docstring.
 
     Returns
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
-    _require_single_shell_scheme(model, "nominal")
     with dc_record.recording("nominal") as record:
         # Same key, different provenance: `n_ref` here is the integer charge state the model was
         # set up for, not a filling read off the bath fit. The two are not comparable across
         # records -- that is the whole reason this scheme exists -- so the record says which it is.
         record["n_ref_kind"] = "nominal integer occupation"
+        if _is_multishell(model):
+            return _fll_multishell(model, record, n=_nominal_per_shell(model, nominal_occupation), u=u, j=j)
+        if isinstance(nominal_occupation, dict):
+            nominal_occupation = sum(nominal_occupation.values())
         return _fll(model, record, n=float(nominal_occupation), u=u, j=j)
 
 

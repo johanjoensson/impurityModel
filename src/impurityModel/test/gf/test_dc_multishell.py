@@ -16,7 +16,7 @@ P_ORBS = list(range(6))
 D_ORBS = list(range(6, 16))
 
 
-def _p_plus_d(p_level=-60.0, u=0.0, d_rotation=None):
+def _p_plus_d(p_level=-60.0, u=0.0, d_rotation=None, upd=0.0):
     h = np.zeros((20, 20), dtype=complex)
     for o in P_ORBS:
         h[o, o] = p_level
@@ -31,6 +31,9 @@ def _p_plus_d(p_level=-60.0, u=0.0, d_rotation=None):
         for j in D_ORBS:
             if i != j:
                 u4[i, j, i, j] = u
+    for i in P_ORBS:
+        for j in D_ORBS:
+            u4[i, j, i, j] = u4[j, i, j, i] = upd
     rot = np.eye(16, dtype=complex)
     if d_rotation is not None:
         # the model as the caller states it: the d shell in a rotated (non-spherical) basis
@@ -138,6 +141,20 @@ def test_fixed_occupation_dc_shifts_only_the_hybridising_shell():
     np.testing.assert_allclose(d_block, d_block[0, 0] * np.identity(10), atol=1e-12)
     # the d occupation is 1 on the plateau mu in (1, 4) of E(n) = n (1 - mu) + 3 n (n - 1) / 2
     assert 1.0 < d_block[0, 0].real < 4.0
+    assert sector == 7
+
+
+def test_the_bathless_shell_of_a_search_takes_fll_at_the_nominal_occupations():
+    """With a p-d direct 0.5 the p shell's FLL is the Hartree of the nominal d charge, 2 * 0.5 (U_p = 0); the search
+    holds it there and moves the d block alone."""
+    model, basis, solver = _p_plus_d(u=3.0, upd=0.5)
+    dc, sector = dc_occupation.fixed_occupation_dc(
+        model, basis, solver, occupation=1.0, comm=MPI.COMM_WORLD, return_sector=True
+    )
+    np.testing.assert_allclose(dc[:6, :6], 1.0 * np.identity(6), atol=1e-12)
+    assert not np.abs(dc[:6, 6:]).any()
+    d_block = dc[6:, 6:]
+    np.testing.assert_allclose(d_block, d_block[0, 0] * np.identity(10), atol=1e-12)
     assert sector == 7
 
 

@@ -291,21 +291,6 @@ def _two_shell_model():
     return ImpurityModel.from_solver_matrix(h, 16, u4=u4, rot_to_spherical=np.eye(16), shell_ls=(1, 2))
 
 
-@pytest.mark.parametrize(
-    "scheme, kwargs",
-    [
-        (fll_dc, {}),
-        (fll_dc, {"n": 2.0, "u": 3.0, "j": 0.5}),
-        (amf_dc, {"n": 2.0}),
-        (nominal_dc, {"nominal_occupation": 8}),
-    ],
-)
-def test_the_closed_form_schemes_refuse_a_multishell_model(scheme, kwargs):
-    # One N and one (U, J) over a deep bath-less shell plus a correlated one is not a double counting.
-    with pytest.raises(NotImplementedError, match=r"multi-shell.*sigma_inf_dc"):
-        scheme(_two_shell_model(), **kwargs)
-
-
 def test_sigma_inf_dc_is_the_multishell_scheme_and_returns_the_full_matrix():
     rho = np.zeros((16, 16), dtype=complex)
     rho[np.arange(6), np.arange(6)] = 1.0

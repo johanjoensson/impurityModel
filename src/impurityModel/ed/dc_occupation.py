@@ -37,6 +37,7 @@ from impurityModel.ed.dc_sector_context import (
     _resolve_dc_de2_min,
     _resolve_dc_e_pt2_tol,
 )
+from impurityModel.ed.dc_static import with_bathless_shells_at_nominal_fll
 from impurityModel.ed.density_matrices import occupation_moments
 from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
@@ -393,6 +394,10 @@ def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosit
         sector total at this ``mu`` (see :func:`_evaluate_occupation_and_energy_at_mu`).
     """
     config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
+    # The search does not shift a bath-less shell: it takes FLL at the nominal occupations (rank-local).
+    model = with_bathless_shells_at_nominal_fll(
+        model, basis.nominal_occ, rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank
+    )
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
     ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
@@ -504,6 +509,10 @@ def fixed_occupation_dc(
         modelling verdict -- "no solution here" -- not a tolerable miss to approximate silently).
     """
     config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
+    # The search does not shift a bath-less shell: it takes FLL at the nominal occupations (rank-local).
+    model = with_bathless_shells_at_nominal_fll(
+        model, basis.nominal_occ, rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank
+    )
     with dc_record.recording(
         "occupation", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:

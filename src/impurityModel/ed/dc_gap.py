@@ -24,6 +24,7 @@ from impurityModel.ed.dc_sector_context import (
     _reject_if_memory_bound,
     _warn_if_a_neighbour_sector_is_thermal,
 )
+from impurityModel.ed.dc_static import with_bathless_shells_at_nominal_fll
 
 #: Energy tolerance for the gap criterion, as a fraction of the *measured* gap width.
 #:
@@ -468,6 +469,10 @@ def fixed_gap_dc(
         ``allow_charge_state_change`` is ``False``.
     """
     config.assert_uniform(MPI.COMM_WORLD)  # collective: a rank-divergent env knob is an error, not a deadlock
+    # The search does not shift a bath-less shell: it takes FLL at the nominal occupations (rank-local).
+    model = with_bathless_shells_at_nominal_fll(
+        model, basis.nominal_occ, rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank
+    )
     with dc_record.recording(
         "gap", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:
