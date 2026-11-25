@@ -402,7 +402,8 @@ def test_the_refine_options_default_to_on_and_accept_a_valid_set():
 
 
 def test_an_unset_pruning_is_the_default():
-    assert SolverOptions().resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
+    assert SolverOptions().resolved_gf_prune_tol == 0.0, "the second-order rule is the default"
+    assert SolverOptions(gf_pt2_tol=0.0).resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
     assert SolverOptions(gf_prune_tol=0.0).resolved_gf_prune_tol == 0.0
     assert SolverOptions(gf_prune_tol=2e-4).resolved_gf_prune_tol == 2e-4
     assert SolverOptions(gf_refine_rounds=0).resolved_gf_refine_rounds == 0

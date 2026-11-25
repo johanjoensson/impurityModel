@@ -1032,7 +1032,8 @@ _TABLE_LIST += [
                 "Second-order growth rule, replacing the amplitude rule gf_prune_tol: a frontier determinant is "
                 "scored by its coherent second-order weight over the unit's real-frequency window, and the growth "
                 "admits the highest scores until the score mass left out is at most this fraction (a budget on the "
-                "relative error of the unit's G). Absent: the amplitude rule. Not with gf_prune_tol or "
+                "relative error of the unit's G). Absent: 1e-3, the default growth rule, unless gf_prune_tol or "
+                "gf_first_shell_tol is set (the amplitude rule); 0 switches it off. Not with gf_prune_tol or "
                 "gf_first_shell_tol.",
                 minimum=0.0,
             ),

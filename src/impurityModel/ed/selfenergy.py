@@ -582,7 +582,7 @@ def calc_selfenergy(
     sparse_green = solver.sparse_green
     gf_prune_tol = solver.resolved_gf_prune_tol
     gf_first_shell_tol = solver.gf_first_shell_tol
-    gf_pt2_tol = solver.gf_pt2_tol
+    gf_pt2_tol = solver.resolved_gf_pt2_tol
     gf_refine_rounds = solver.resolved_gf_refine_rounds
     gf_refine = RefineSpec(
         rounds=gf_refine_rounds,

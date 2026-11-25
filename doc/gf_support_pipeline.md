@@ -149,10 +149,11 @@ window trimmed less) but is ω-blind like `amplitude`, so it did not address the
 deferred-weight store per unit. A deferred determinant that matters at a pole of the bath is recovered by the grow mode
 of the refinement below.
 
-### Second-order growth (`gf_pt2_tol`, opt-in)
+### Second-order growth (`gf_pt2_tol`, default 1e-3)
 
-`gf_pt2_tol` replaces the amplitude rule (setting both is an error). After the `slaterWeightMin` cut and the whole first
-shell, a frontier determinant `f` gets
+The default growth rule since 2026-11-25 (`gf_pt2_tol` unset is 1e-3; `0`, or setting `gf_prune_tol` /
+`gf_first_shell_tol`, asks for the amplitude rule). It replaces the amplitude rule (setting both is an error). After
+the `slaterWeightMin` cut and the whole first shell, a frontier determinant `f` gets
 
     s_f = max_k  sum_cols |rho_f(z_k)|^2 / |z_k - H_ff| / ||G_P(z_k)||,    rho = H X(z),  X = (z - H_PP)^-1 seed,
 

@@ -114,7 +114,7 @@ def test_gf_pt2_tol_is_a_registered_solver_option_read_from_tokens_and_attrs():
     opts = SolverOptions(**solver)
     assert opts.gf_pt2_tol == 1e-3
     assert opts.resolved_gf_prune_tol == 0.0  # the second-order rule replaces the amplitude rule
-    assert SolverOptions().gf_pt2_tol is None and SolverOptions().resolved_gf_prune_tol == 1e-3
+    assert SolverOptions().gf_pt2_tol is None and SolverOptions().resolved_gf_prune_tol == 0.0
     _, solver_kwargs = options_from_attrs(options_to_attrs(BasisOptions(nominal_occ={0: 8}), opts))
     assert SolverOptions(**solver_kwargs) == opts
 
@@ -125,7 +125,6 @@ def test_gf_pt2_tol_is_a_registered_solver_option_read_from_tokens_and_attrs():
         ({"gf_pt2_tol": 1e-3, "gf_prune_tol": 1e-3}, "replaces the amplitude rule"),
         ({"gf_pt2_tol": 1e-3, "gf_prune_tol": 0.0}, "replaces the amplitude rule"),
         ({"gf_pt2_tol": 1e-3, "gf_first_shell_tol": 0.0}, "first shell is kept whole"),
-        ({"gf_pt2_tol": 0.0}, r"must lie in \(0, 1\)"),
         ({"gf_pt2_tol": 1.0}, r"must lie in \(0, 1\)"),
         ({"gf_pt2_tol": float("nan")}, r"must lie in \(0, 1\)"),
     ],
@@ -133,6 +132,24 @@ def test_gf_pt2_tol_is_a_registered_solver_option_read_from_tokens_and_attrs():
 def test_gf_pt2_tol_refuses_a_contradiction_by_name(kwargs, match):
     with pytest.raises(ValueError, match=match):
         SolverOptions(**kwargs)
+
+
+def test_the_second_order_rule_is_the_default_growth_rule():
+    """Unset, the rule runs at ``DEFAULT_GF_PT2_TOL``; an amplitude-rule option, or ``0``, asks for the amplitude
+    rule."""
+    from impurityModel.ed.options import DEFAULT_GF_PRUNE_TOL, DEFAULT_GF_PT2_TOL
+
+    assert DEFAULT_GF_PT2_TOL == 1e-3
+    assert SolverOptions().resolved_gf_pt2_tol == DEFAULT_GF_PT2_TOL
+    assert SolverOptions(gf_pt2_tol=5e-4).resolved_gf_pt2_tol == 5e-4
+    for amplitude in ({"gf_prune_tol": 2e-4}, {"gf_prune_tol": 0.0}, {"gf_first_shell_tol": 0.0}, {"gf_pt2_tol": 0.0}):
+        opts = SolverOptions(**amplitude)
+        assert opts.resolved_gf_pt2_tol is None, amplitude
+    assert SolverOptions(gf_pt2_tol=0.0).resolved_gf_prune_tol == DEFAULT_GF_PRUNE_TOL
+    assert SolverOptions(gf_pt2_tol=0.0, gf_prune_tol=2e-4).resolved_gf_prune_tol == 2e-4
+    off = SolverOptions(gf_pt2_tol=0.0)
+    _, solver_kwargs = options_from_attrs(options_to_attrs(BasisOptions(nominal_occ={0: 8}), off))
+    assert SolverOptions(**solver_kwargs).resolved_gf_pt2_tol is None, "an explicit off survives the archive"
 
 
 def test_the_growth_recurrence_refuses_both_growth_rules_at_once():

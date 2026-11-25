@@ -25,6 +25,7 @@ from impurityModel.ed.gs_report import ReportFiles
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import load_model
 from impurityModel.ed.observables import shell_column_slices, shell_index_of_orbitals
+from impurityModel.ed.options import SolverOptions
 
 # Local stuff
 from impurityModel.ed.sector_ensemble import resolve_mixed_valence
@@ -525,7 +526,7 @@ def calc_spectroscopy(
             occ_cutoff=basis.occ_cutoff,
             slater_weight_min=basis.slater_weight_min,
             verbose=verbosity >= 1,
-            gf_pt2_tol=None if solver is None else solver.gf_pt2_tol,
+            gf_pt2_tol=(SolverOptions() if solver is None else solver).resolved_gf_pt2_tol,
             layout=layout,
         )
         return run_techniques(target, requests)
