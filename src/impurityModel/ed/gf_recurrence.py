@@ -748,6 +748,7 @@ def block_lanczos_discovered(
     shifted=None,
     shifted_rtol=None,
     score_only=False,
+    stop_at_freeze=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -764,6 +765,10 @@ def block_lanczos_discovered(
     "converged" then means the Green's function *and* the scoring solutions are. ``score_only`` stops on that residual
     alone (the Green's-function monitor is still called every block) and reports ``"scored"``: the coefficients are
     then good for the scores, not for ``G``.
+    ``stop_at_freeze`` (``None``: off; else a replicated, rank-invariant callable) ends the run with the status
+    ``"frozen"`` on the first block after the support froze (the cap or the memory guard), provided it returns true:
+    the caller restarts from the seeds on the frozen ``P`` anyway, so the frozen continuation of the growth would be
+    discarded. A run that starts frozen (a restart, a rerun) never stops this way. The caller **must** run that restart.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -781,6 +786,7 @@ def block_lanczos_discovered(
     status = "max_iter"
     store = [x] if reort else None
     n_vectors = 0  # Krylov vectors produced since the support froze (replicated)
+    frozen_on_entry = bool(d.frozen)
 
     it = 0
     while it < max_blocks:
@@ -790,6 +796,12 @@ def block_lanczos_discovered(
             comm.Allreduce(MPI.IN_PLACE, probe, op=MPI.MAX)
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
+        if stop_at_freeze is not None and d.frozen and not frozen_on_entry and stop_at_freeze():
+            # ``d.frozen`` is replicated, so every rank leaves on the same block, before the frozen continuation (and
+            # its array-kernel handoff) that the restart would throw away: on LMO unit 5 that continuation was 2,066
+            # blocks after a freeze at block 3, repeated by a 2,080-block restart.
+            status = "frozen"
+            break
         if d.frozen and not reort and hasattr(engine, "array_operator"):
             handed = engine.array_operator(n_curr)
             if handed is not None:
@@ -1219,6 +1231,10 @@ def block_Green_discovered(
         deflate_tol=DEFLATE_TOL_SEEDS,
         reort=resolved_reort,
         engine=engine,
+        # The restart below is certain once a pruned growth froze on a support larger than the seeds'
+        # (``_needs_restart``): end the growth at the freeze instead of running a frozen continuation the restart
+        # discards. G is the restart's either way, bitwise.
+        stop_at_freeze=lambda: _needs_restart(support, n_seed),
     )
     growth_status = status
     if pt2_scorer is not None:
@@ -1226,7 +1242,7 @@ def block_Green_discovered(
     support.scorer = None
     # The unit's wall by pass: the first run (growth, and the frozen continuation of a unit the cap
     # froze) and the restart on the final P. Rank-local clocks; the caller reports rank 0's.
-    passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0}
+    passes = {"growth_blocks": len(widths), "growth_seconds": time.perf_counter() - t0, "growth_stop": growth_status}
     passes.update(restart_blocks=0, restart_seconds=0.0)
     if (
         refine is not None

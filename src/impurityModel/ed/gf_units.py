@@ -1033,7 +1033,8 @@ def _passes_text(passes):
     if not passes or "growth_blocks" not in passes:
         return ""
     parts = [
-        f"growth {passes['growth_blocks']:,} blk/{passes['growth_seconds']:.1f} s",
+        f"growth {passes['growth_blocks']:,} blk/{passes['growth_seconds']:.1f} s"
+        + (" (stopped when the basis froze)" if passes.get("growth_stop") == "frozen" else ""),
         f"restart {passes.get('restart_blocks', 0):,} blk/{passes.get('restart_seconds', 0.0):.1f} s",
     ]
     if passes.get("status"):
