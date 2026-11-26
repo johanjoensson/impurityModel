@@ -30,11 +30,12 @@ from impurityModel.ed.manybody_basis import (
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
-    current_rss_bytes,
     emit_memory_warning,
     format_bytes,
+    peak_resident_set_bytes,
     peak_rss_bytes,
     reset_peak_rss,
+    resident_set_bytes,
     rss_breakdown,
 )
 from impurityModel.ed.solver_trace import note as _trace_note
@@ -880,7 +881,7 @@ class CIPSISolver:
         """
         measure = affordable_growth is not None
         if measure:
-            rss_start = current_rss_bytes()
+            rss_start = resident_set_bytes()
             peak_is_own = reset_peak_rss()
         Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
         # Global row count of the shared support H|psi_ref> spans (before the not-in-basis
@@ -910,7 +911,7 @@ class CIPSISolver:
             # (measured: ~6x the owned candidate block, doc/plans/dc_smo_memory.md round 6);
             # `_admit_top` below adds only per-candidate scalars. Sampled per rank, then reduced
             # unconditionally -- the callable is replicated, so every rank takes this branch.
-            transient = (peak_rss_bytes() - rss_start) if peak_is_own else -1
+            transient = (peak_resident_set_bytes() - rss_start) if peak_is_own else -1
             transient = self._allreduce_max(int(transient))
             # The baseline is the RSS the round *started* from, not the RSS now: at this point
             # the candidate space (`Hpsi_ref`, `local_Djs`, `overlaps`, `scores`) is still
@@ -1102,7 +1103,9 @@ class CIPSISolver:
                 slaterWeightMin=slaterWeightMin,
                 psi_refs=psi_refs,
             )
-            eigensolve_peak = peak_rss_bytes() if measuring else 0
+            # Both measures: VmHWM for the cycle report, the guard's own measure (shared memory per node under
+            # GF_SHARED_MEMORY_PER_NODE) for the trip-wire.
+            eigensolve_peak = (peak_rss_bytes(), peak_resident_set_bytes()) if measuring else (0, 0)
             if len(e_ref) == 0:
                 break
             e0 = float(np.min(e_ref))
@@ -1182,7 +1185,9 @@ class CIPSISolver:
                     subthreshold_de2_mass=float(sel.get("subthreshold_de2_mass", 0.0)),
                     residual_pt2=float(sel.get("residual_pt2", 0.0)),
                 )
-            peak_rss, anon_rss, shmem_rss, local_min, local_max = self._cycle_memory(eigensolve_peak, cycle)
+            charged_peak, peak_rss, anon_rss, shmem_rss, local_min, local_max = self._cycle_memory(
+                eigensolve_peak, cycle
+            )
             if self.basis.comm is None or self.basis.comm.rank == 0:
                 _heartbeat.beat(
                     f"GS expansion cycle {cycle}: {old_size:,} -> {old_size + n_new:,} determinants, "
@@ -1200,7 +1205,7 @@ class CIPSISolver:
                     flush=True,
                 )
             cycle += 1
-            guard.after_cycle(peak_rss, anon_rss, shmem_rss)
+            guard.after_cycle(charged_peak, anon_rss, shmem_rss)
 
             truncated = False
             if guard.capped and not self.stop_at_cap and self.basis.size + n_new > guard.threshold:
@@ -1284,15 +1289,19 @@ class CIPSISolver:
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
 
     def _cycle_memory(self, eigensolve_peak, cycle):
-        """``(peak_rss, anon_rss, shmem_rss, local_min, local_max)`` for the cycle just run, and its trace note.
+        """``(charged_peak, peak_rss, anon_rss, shmem_rss, local_min, local_max)`` for the cycle just run, and its
+        trace note. ``eigensolve_peak`` is ``(VmHWM, charged)`` sampled after the cycle's eigensolve.
 
         Unconditional collectives (never gated on rank-local state such as ``verbose``): single-scalar
         reductions against a selection round that costs seconds to minutes. ``VmHWM`` alone cannot be
         attributed -- under an MPI that uses shared memory the ``shmem`` part is a node-wide pool every rank
-        counts -- so ``anon``, the part a code change can move, is reported beside it.
+        counts -- so ``anon``, the part a code change can move, is reported beside it. ``charged_peak`` is what the
+        memory guard compares against its budget: the peak in :func:`memory_estimate.resident_set_bytes`'s measure,
+        which is ``VmHWM`` unless ``GF_SHARED_MEMORY_PER_NODE`` charges the shared pool once per node.
         """
         local_count = len(self.basis.local_basis)
-        peak_rss = max(peak_rss_bytes(), eigensolve_peak)
+        peak_rss = max(peak_rss_bytes(), eigensolve_peak[0])
+        charged_peak = max(peak_resident_set_bytes(), eigensolve_peak[1])
         rss_parts = rss_breakdown()
         anon_rss, shmem_rss = rss_parts["anon"], rss_parts["shmem"]
         if self.basis.is_distributed:
@@ -1300,6 +1309,7 @@ class CIPSISolver:
             local_max = comm.allreduce(local_count, op=MPI.MAX)
             local_min = comm.allreduce(local_count, op=MPI.MIN)
             peak_rss = comm.allreduce(peak_rss, op=MPI.MAX)
+            charged_peak = comm.allreduce(charged_peak, op=MPI.MAX)
             anon_rss = comm.allreduce(anon_rss, op=MPI.MAX)
             shmem_rss = comm.allreduce(shmem_rss, op=MPI.MAX)
         else:
@@ -1310,10 +1320,11 @@ class CIPSISolver:
             local_max=int(local_max),
             local_min=int(local_min),
             vm_hwm_bytes=int(peak_rss),
+            charged_peak_bytes=int(charged_peak),
             anon_rss_bytes=int(anon_rss),
             shmem_rss_bytes=int(shmem_rss),
         )
-        return peak_rss, anon_rss, shmem_rss, local_min, local_max
+        return charged_peak, peak_rss, anon_rss, shmem_rss, local_min, local_max
 
     def _record_truncation(self, cap_cycles, guard, discarded_total=0.0, cap_bound=True):
         """Write ``truncation_report`` (and warn): a cap or the memory guard limited this expansion.

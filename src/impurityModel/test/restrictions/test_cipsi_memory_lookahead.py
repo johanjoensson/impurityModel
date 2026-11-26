@@ -73,9 +73,9 @@ class _FakeMemory:
         self.floor = floor
         self.peak = floor
         self.resets = 0
-        monkeypatch.setattr(cipsi_solver, "current_rss_bytes", lambda: self.floor)
+        monkeypatch.setattr(cipsi_solver, "resident_set_bytes", lambda: self.floor)
         monkeypatch.setattr(cipsi_solver, "reset_peak_rss", self._reset)
-        monkeypatch.setattr(cipsi_solver, "peak_rss_bytes", self._peak)
+        monkeypatch.setattr(cipsi_solver, "peak_resident_set_bytes", self._peak)
 
     def _reset(self):
         self.resets += 1

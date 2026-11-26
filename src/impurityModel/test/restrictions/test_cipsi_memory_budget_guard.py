@@ -177,7 +177,7 @@ def test_the_guard_fires_once_and_does_not_ratchet_the_cap_down(monkeypatch):
     from impurityModel.ed import cipsi_solver as _cs
 
     budget = 1 << 40
-    # Keyed on cycles (one eigensolve each), not on calls to `peak_rss_bytes`: a cycle samples the
+    # Keyed on cycles (one eigensolve each), not on calls to `peak_resident_set_bytes`: a cycle samples the
     # high-water mark more than once (after the eigensolve, in the selection round, at the
     # trip-wire), so counting calls would move the "first two cycles" boundary.
     cycles = {"n": 0}
@@ -191,7 +191,7 @@ def test_the_guard_fires_once_and_does_not_ratchet_the_cap_down(monkeypatch):
         return 0 if cycles["n"] <= 2 else budget * 2
 
     monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", counting_eigenvectors)
-    monkeypatch.setattr(_cs, "peak_rss_bytes", fake_peak_rss)
+    monkeypatch.setattr(_cs, "peak_resident_set_bytes", fake_peak_rss)
 
     H = _hamiltonian()
     all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
@@ -316,7 +316,7 @@ def test_the_trip_wire_sees_a_peak_that_happens_during_the_eigensolve(monkeypatc
 
     monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", spiking_eigenvectors)
     monkeypatch.setattr(_cs, "reset_peak_rss", fake_reset)
-    monkeypatch.setattr(_cs, "peak_rss_bytes", lambda: budget * 2 if state["spiked"] else 0)
+    monkeypatch.setattr(_cs, "peak_resident_set_bytes", lambda: budget * 2 if state["spiked"] else 0)
 
     solver = _make_solver(None)
     solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
@@ -405,7 +405,7 @@ def _expand_with_rss(monkeypatch, rss_from_cycle, budget=1 << 40, cap=10**6):
         return 0 if rss_from_cycle is None or cycles["n"] < rss_from_cycle else budget * 2
 
     monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", counting_eigenvectors)
-    monkeypatch.setattr(_cs, "peak_rss_bytes", fake_peak_rss)
+    monkeypatch.setattr(_cs, "peak_resident_set_bytes", fake_peak_rss)
     all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
     solver = _make_solver(None, truncation_threshold=cap)
     solver.basis.clear()
@@ -470,3 +470,79 @@ def test_a_trip_wire_that_cuts_deeper_than_the_starting_cap_withholds():
     guard._lower(990)
     guard.note_truncation(1050)
     assert guard.withheld
+
+
+def _shared_pool_on_every_rank(monkeypatch, budget):
+    """Every RSS reading the guard takes holds a shared pool three times the budget, on top of a small own part,
+    as on SMO where the MPI transport pool reached 3.1 GiB/rank against a 3.4 GiB budget. The fakes sit in
+    ``memory_estimate``, below the measure the guard calls, so the measure itself is what is tested."""
+    from impurityModel.ed import memory_estimate as me
+
+    own, pool = budget // 10, 3 * budget
+    monkeypatch.setattr(me, "peak_rss_bytes", lambda: own + pool)
+    monkeypatch.setattr(me, "current_rss_bytes", lambda: own + pool)
+    monkeypatch.setattr(me, "rss_breakdown", lambda: {"anon": own, "file": 0, "shmem": pool})
+    monkeypatch.setattr(me, "node_shmem_bytes", lambda: pool)
+
+
+def test_a_shared_pool_trips_the_guard_only_when_it_is_charged_once_per_rank(monkeypatch):
+    """Off, ``VmRSS`` charges each rank the whole node pool and the guard pins the basis at its seed: the SMO
+    N_imp=2 classes were expanded at 2-176 determinants this way. With ``GF_SHARED_MEMORY_PER_NODE`` inside an
+    accounting block, the pool is charged once over the node's ranks and the expansion is the unguarded one."""
+    from impurityModel.ed import memory_estimate as me
+
+    budget = 1 << 30
+    H = _hamiltonian()
+    unguarded = _make_solver(None)
+    unguarded.expand(H, Within.thermal(unguarded.basis.tau), de2_min=GS_DE2_MIN)
+    assert unguarded.basis.size > 1, "the toy must grow, or a pinned seed proves nothing"
+
+    _shared_pool_on_every_rank(monkeypatch, budget)
+    monkeypatch.delenv("GF_SHARED_MEMORY_PER_NODE", raising=False)
+    per_rank = _make_solver(None)
+    with me.shared_memory_accounting(128):
+        per_rank.expand(H, Within.thermal(per_rank.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
+    assert per_rank.truncation_report is not None and per_rank.truncation_report["memory_bound"]
+
+    monkeypatch.setenv("GF_SHARED_MEMORY_PER_NODE", "1")
+    per_node = _make_solver(None)
+    with me.shared_memory_accounting(128):
+        per_node.expand(H, Within.thermal(per_node.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
+    assert per_node.truncation_report is None
+    assert set(per_node.basis.local_basis) == set(unguarded.basis.local_basis)
+
+
+@pytest.mark.mpi
+def test_a_sector_solve_measures_its_budget_and_guards_with_the_node_share(monkeypatch):
+    """``solve_sector`` enters the accounting block around its budget and its expansions, with the ranks of
+    ``comm`` on this node, and leaves it on return. Without the block the knob would change nothing for the
+    ground state (it covered only the GF stage until 2026-11)."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.eigensolvers import Lowest
+
+    comm = MPI.COMM_WORLD
+    monkeypatch.setenv("GF_SHARED_MEMORY_PER_NODE", "1")
+    seen = []
+    real_budget = groundstate.expand_memory_budget
+
+    def recording_budget(c):
+        seen.append(me._SHARED_MEMORY_RANKS[0])
+        return real_budget(c)
+
+    monkeypatch.setattr(groundstate, "expand_memory_budget", recording_budget)
+    groundstate.solve_sector(
+        _hamiltonian(),
+        IMPURITY_ORBITALS,
+        BATH_STATES,
+        {0: 1},
+        tau=1e-3,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        manifold=Lowest(),
+        comm=comm,
+        verbose=False,
+        truncation_threshold=np.inf,
+    )
+    assert seen and all(r == me.ranks_per_node(comm) for r in seen)
+    assert me._SHARED_MEMORY_RANKS[0] is None, "the block must be left on return"

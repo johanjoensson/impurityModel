@@ -350,7 +350,15 @@ def solve_sector(
     # One call is one *sector solve* -- the unit the occupation walk and the double-counting search
     # are both counted in. The nested timers say which of build / expand / diagonalize the cost
     # sits in; all are no-ops outside a solver_trace.tracing() block.
-    with solver_trace.timed("sector_solve", n0=tuple(sorted(N0.items()))) as sector_fields:
+    # The memory budget (`expand_memory_budget`) and the expansion's guards measure the resident set the same way:
+    # with GF_SHARED_MEMORY_PER_NODE, the node's shared pool is charged once per node, not once per rank (the
+    # MPI transport pool reached 3.1 GiB/rank on SMO and pinned every later class of the sector at its seed).
+    # Collective on `comm` the first time (cached on it after); every rank is here.
+    node_ranks = memory_estimate.ranks_per_node(comm)
+    with (
+        memory_estimate.shared_memory_accounting(node_ranks),
+        solver_trace.timed("sector_solve", n0=tuple(sorted(N0.items()))) as sector_fields,
+    ):
         with solver_trace.timed("build"):
             basis, solver = build_basis_and_solver(
                 h_op,

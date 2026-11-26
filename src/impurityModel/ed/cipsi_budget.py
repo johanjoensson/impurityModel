@@ -14,7 +14,7 @@ import numpy as np
 
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import emit_memory_warning, format_bytes
+from impurityModel.ed.memory_estimate import emit_memory_warning, format_bytes, resident_set_note
 
 
 class MemoryGuard:
@@ -168,7 +168,7 @@ class MemoryGuard:
                 f"max over ranks) >= the {format_bytes(budget)} memory budget. Your "
                 f"truncation_threshold={cap_text} is kept as set; if the job is killed, set "
                 f"truncation_threshold <= {self.basis.size:,}, use 'auto', or run fewer ranks per node. "
-                "(Shared memory may be over-counted under MPI.)",
+                f"(Measured as {resident_set_note()}.)",
                 root=self._root,
                 kind="gs-memory",
             )
@@ -180,8 +180,8 @@ class MemoryGuard:
         if not lowered:
             return
         emit_memory_warning(
-            f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
-            f"{format_bytes(budget)} memory budget mid-expansion; tightening {self._was(previous)} to a "
+            f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} ({resident_set_note()}) "
+            f"reached the {format_bytes(budget)} memory budget mid-expansion; tightening {self._was(previous)} to a "
             f"fixed-budget cap at the current basis ({self.basis.size:,} determinants) rather than risk an "
             "uncatchable OOM kill.",
             root=self._root,

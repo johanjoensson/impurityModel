@@ -913,5 +913,31 @@ def test_the_gf_resident_set_is_vmrss_unless_shared_memory_is_charged_per_node(m
         assert me.resident_set_bytes() == 2300 * mib
 
 
+def test_the_peak_charges_the_node_share_of_the_shared_pool_not_the_whole_pool(monkeypatch):
+    """``VmHWM`` has no anon/shmem split. Inside an accounting block the shared pages held now are taken out of it
+    and the node's share put back, never below the current resident set; outside one, or with the knob off, the peak
+    is ``VmHWM``. The numbers are the SMO N_imp=2 sector's: 3.1 GiB of a 3.5 GiB peak was the MPI transport pool."""
+    mib = 2**20
+    parts = {"anon": 400 * mib, "file": 60 * mib, "shmem": 3100 * mib}
+    monkeypatch.setattr(me, "peak_rss_bytes", lambda: 3600 * mib)
+    monkeypatch.setattr(me, "current_rss_bytes", lambda: 3560 * mib)
+    monkeypatch.setattr(me, "rss_breakdown", lambda: dict(parts))
+    monkeypatch.setattr(me, "node_shmem_bytes", lambda: 3200 * mib)
+    monkeypatch.delenv("GF_SHARED_MEMORY_PER_NODE", raising=False)
+    with me.shared_memory_accounting(128):
+        assert me.peak_resident_set_bytes() == 3600 * mib, "the knob is off: VmHWM"
+    monkeypatch.setenv("GF_SHARED_MEMORY_PER_NODE", "1")
+    assert me.peak_resident_set_bytes() == 3600 * mib, "outside a block: VmHWM"
+    with me.shared_memory_accounting(128):
+        assert me.peak_resident_set_bytes() == (3600 - 3100 + 25) * mib
+        # A peak that the shared pages held now would push below the current resident set is floored there.
+        parts["shmem"] = 3590 * mib
+        assert me.peak_resident_set_bytes() == me.resident_set_bytes() == (400 + 60 + 25) * mib
+    # No breakdown readable: VmHWM, never an estimate from zeros.
+    monkeypatch.setattr(me, "rss_breakdown", lambda: {"anon": 0, "file": 0, "shmem": 0})
+    with me.shared_memory_accounting(128):
+        assert me.peak_resident_set_bytes() == 3600 * mib
+
+
 def test_the_node_shared_memory_is_read_from_meminfo():
     assert me.node_shmem_bytes() >= 0

@@ -1030,7 +1030,7 @@ def _resident_adjusted_budget(safety, available, resident_bytes):
 
 
 def resident_bytes_per_rank(comm=None):
-    """This process's resident set (:func:`current_rss_bytes`), MAX-reduced over ``comm``.
+    """This process's resident set (:func:`resident_set_bytes`), MAX-reduced over ``comm``.
 
     .. warning:: **Collective on** ``comm``. Every rank must reach it; never gate the call on
        rank-local state (CLAUDE.md's MPI rules). The lowercase ``allreduce`` is safe here only
@@ -1040,7 +1040,7 @@ def resident_bytes_per_rank(comm=None):
     MAX rather than mean: the budget has to hold on the heaviest rank, and ``routing_hash`` is
     deliberately locality-preserving, so the busiest rank owns ~2.79x the mean at 256 ranks.
     """
-    resident = current_rss_bytes()
+    resident = resident_set_bytes()
     if comm is None or comm.size == 1:
         return resident
     return comm.allreduce(resident, op=MPI.MAX)
@@ -1596,14 +1596,15 @@ def node_shmem_bytes():
     return 0
 
 
-#: ``[n]``: the ranks of the whole calculation on this rank's node while a Green's-function stage charges shared
-#: memory per node (:func:`shared_memory_accounting`); ``[None]``: the GF stage measures ``VmRSS`` like everything
-#: else. A one-element holder, set and restored only by that context manager.
+#: ``[n]``: the ranks of the whole calculation on this rank's node while a ground-state sector solve or a
+#: Green's-function stage charges shared memory per node (:func:`shared_memory_accounting`); ``[None]``: the guards
+#: measure ``VmRSS``. A one-element holder, set and restored only by that context manager.
 _SHARED_MEMORY_RANKS = [None]
 
 
 def resident_set_bytes():
-    """The resident set the Green's-function memory guard and fit checks measure. Rank-local; no collective.
+    """The resident set the memory guards measure: the ground-state (CIPSI) guards and the Green's-function guard
+    and fit checks. Rank-local; no collective.
 
     ``VmRSS`` (:func:`current_rss_bytes`), unless a :func:`shared_memory_accounting` block is active
     (``GF_SHARED_MEMORY_PER_NODE``): then ``RssAnon + RssFile`` plus the node's ``Shmem`` over the ranks on the node,
@@ -1619,6 +1620,26 @@ def resident_set_bytes():
     return parts["anon"] + parts["file"] + node_shmem_bytes() // max(1, int(ranks))
 
 
+def peak_resident_set_bytes():
+    """The high-water mark in the measure of :func:`resident_set_bytes`. Rank-local; no collective.
+
+    ``VmHWM`` (:func:`peak_rss_bytes`) outside a :func:`shared_memory_accounting` block. Inside one, ``VmHWM`` has
+    no anon/shmem split, so the shared pages this rank holds *now* (``RssShmem``) are taken out of it and the
+    node's share put back: ``VmHWM - RssShmem + Shmem / ranks``, and never below :func:`resident_set_bytes`.
+    Shared pages are not handed back while the MPI library keeps its transport pool mapped, so ``RssShmem`` now is
+    at least what the peak held; where it grew after the peak, the estimate is low by that growth, and the floor
+    at the current resident set bounds the error.
+    """
+    ranks = _SHARED_MEMORY_RANKS[0]
+    if ranks is None:
+        return peak_rss_bytes()
+    parts = rss_breakdown()
+    if not (parts["anon"] or parts["file"] or parts["shmem"]):
+        return peak_rss_bytes()
+    own_peak = max(0, peak_rss_bytes() - parts["shmem"])
+    return max(own_peak + node_shmem_bytes() // max(1, int(ranks)), resident_set_bytes())
+
+
 def resident_set_note():
     """How :func:`resident_set_bytes` measures right now, in words for a memory warning."""
     ranks = _SHARED_MEMORY_RANKS[0]
@@ -1629,8 +1650,9 @@ def resident_set_note():
 
 @contextmanager
 def shared_memory_accounting(node_ranks):
-    """Within the block, :func:`resident_set_bytes` charges shared memory per node (``node_ranks``: the whole
-    calculation's ranks on this node, :func:`ranks_per_node` of the full communicator), when
+    """Within the block, :func:`resident_set_bytes` and :func:`peak_resident_set_bytes` charge shared memory per
+    node (``node_ranks``: the whole calculation's ranks on this node, :func:`ranks_per_node` of the full
+    communicator; a smaller count only over-charges), when
     ``GF_SHARED_MEMORY_PER_NODE`` is on; otherwise it is a no-op. Rank-local; the knob is uniform (``assert_uniform``),
     so every rank measures the same way. Restores the previous setting on exit."""
     previous = _SHARED_MEMORY_RANKS[0]

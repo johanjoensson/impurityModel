@@ -197,9 +197,11 @@ GF_SHARED_MEMORY_PER_NODE = Knob(
     kind="bool",
     default=False,
     group="units",
-    doc="""Charge shared memory once per node, not once per rank, in the Green's-function units' memory
-    guard and in every GF fit check that reads the resident set (the discovered/retained matrix mode, the
-    second-order scoring accumulator, grow mode, the frozen CSR, the colour count and the per-unit budgets).
+    doc="""Charge shared memory once per node, not once per rank, in the memory guards: the ground-state
+    (CIPSI) guards of every sector solve and their budget, the Green's-function units' memory guard and every
+    GF fit check that reads the resident set (the discovered/retained matrix mode, the second-order scoring
+    accumulator, grow mode, the frozen CSR, the colour count and the per-unit budgets). The name is kept from
+    when it covered the GF stage only.
     Off, a rank's resident set is ``VmRSS``, which counts every shared-memory page the rank has touched;
     under an MPI whose intra-node transport is a node-wide shared pool every rank counts the same pages, so
     the guard over-reads each rank by up to the whole pool (the LMO ground state: 1.6 GiB of a 2.3 GiB
@@ -207,8 +209,9 @@ GF_SHARED_MEMORY_PER_NODE = Knob(
     (``/proc/meminfo``) divided by the ranks on the node: the sum over the node's ranks is then the node's
     real use, which is what the OOM killer and ``MemAvailable`` (the budgets' source) measure. It is
     conservative where the node holds shared memory of other processes (tmpfs), and per-rank ``RssFile``
-    still counts the shared libraries once per rank. Only the GF stage is affected; the ground-state
-    (CIPSI) guards keep ``VmRSS``.""",
+    still counts the shared libraries once per rank. The peak (``VmHWM``) has no split; it is charged as
+    ``VmHWM - RssShmem + Shmem / ranks`` (:func:`memory_estimate.peak_resident_set_bytes`). The cycle
+    reports still print the raw ``VmHWM``.""",
 )
 
 GF_CSR_MEMORY_SAFETY = Knob(
