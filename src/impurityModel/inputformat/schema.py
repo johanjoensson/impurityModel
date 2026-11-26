@@ -283,7 +283,8 @@ _DC_ENERGY_DIFFERENCE_KEYS = (
         _E_PT2_TOL_DOC + " Here: the charge-sector solves. Absent inherits "
         "[many_body_basis].e_pt2_tol, so the double "
         "counting is measured on a space converged as far as the self-energy run's. Loosen it "
-        "(e.g. 1e-5 eV) when the search is the cost. fixed_occupation takes no override: it "
+        "only when the search is the cost: the peak and gap criteria difference sector energies, so "
+        "the error does not cancel and 1/|chi| amplifies it. fixed_occupation takes no override: it "
         "solves on the production ground-state path and uses [many_body_basis].e_pt2_tol.",
         minimum=0.0,
     ),
