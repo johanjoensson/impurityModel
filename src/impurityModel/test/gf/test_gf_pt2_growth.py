@@ -375,3 +375,47 @@ def test_scores_are_current_on_the_cadence_whatever_the_fold_batch(monkeypatch):
     g_single, single = _run(1e-6)
     assert _keys(batched) == _keys(single)
     np.testing.assert_allclose(g_batched, g_single, atol=1e-12)
+
+
+def _restart_with_and_without_the_drop(monkeypatch, tau, comm):
+    """``(drops, G with the drop, G without it, info)`` of one unit: the drop is spied on, then disabled."""
+    from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+
+    real = DistributedSparseMatrix.drop_frontier
+    drops = []
+
+    def spy(self):
+        n_k = self.n_k_local
+        out = real(self)
+        drops.append((out, n_k, self.n_k_local, self.n_p_local))
+        return out
+
+    monkeypatch.setattr(DistributedSparseMatrix, "drop_frontier", spy)
+    g, info = _run(tau, comm=comm)
+    monkeypatch.setattr(DistributedSparseMatrix, "drop_frontier", lambda self: False)
+    g_kept, info_kept = _run(tau, comm=comm)
+    return drops, g, g_kept, info, info_kept
+
+
+@pytest.mark.parametrize("tau", [0.1, 1e-3])
+def test_the_restart_drops_the_rows_outside_p_and_its_green_function_is_bitwise_unchanged(tau, monkeypatch):
+    """No refinement follows a second-order growth, so the restart runs on ``P H P`` alone (``drop_frontier``): the
+    continued fraction is bitwise the one on the whole discovered matrix, and the unit still reports the |K|/|P| its
+    growth reached."""
+    drops, g, g_kept, info, info_kept = _restart_with_and_without_the_drop(monkeypatch, tau, None)
+    assert len(drops) == 1 and drops[0][0] is True
+    _ok, n_k_before, n_k_after, n_p = drops[0]
+    assert n_k_before > n_p == n_k_after, "the fixture must have a frontier to drop"
+    np.testing.assert_array_equal(g, g_kept)
+    assert info["k_over_p"] == info_kept["k_over_p"] > 1.0
+    assert info["passes"]["restart_blocks"] == info_kept["passes"]["restart_blocks"] > 0
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("tau", [0.1, 1e-3])
+def test_the_dropped_frontier_restart_is_bitwise_unchanged_on_every_rank(tau, monkeypatch):
+    comm = MPI.COMM_WORLD
+    drops, g, g_kept, info, info_kept = _restart_with_and_without_the_drop(monkeypatch, tau, comm)
+    assert len(drops) == 1 and drops[0][0] is True
+    np.testing.assert_array_equal(g, g_kept)
+    assert info["k_over_p"] == info_kept["k_over_p"]

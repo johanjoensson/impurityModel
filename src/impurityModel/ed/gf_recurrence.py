@@ -730,6 +730,14 @@ def _decline_second_order(support, need, rss, budget):
     support._eta2 = support._eta**2
 
 
+def _global_k_and_p(matrix, comm):
+    """Global ``(|K|, |P| live)`` of ``matrix``. **Collective** on a distributed ``comm``."""
+    sizes = np.array([matrix.n_k_local, matrix.n_alive_local], dtype=np.int64)
+    if comm is not None and comm.size > 1:
+        comm.Allreduce(MPI.IN_PLACE, sizes, op=MPI.SUM)
+    return sizes
+
+
 def _arm_plateau(converged):
     """Let the convergence monitor ``converged`` stop on a plateau (:data:`gf_convergence._GF_PLATEAU_FACTOR`): only a
     frozen, unreorthogonalized recurrence calls this, the one that can sit on a rounding floor. A stand-in monitor
@@ -1473,12 +1481,21 @@ def block_Green_discovered(
             or acc is not None
         )
     )
+    k_sizes = None  # global (|K|, |P|) of a pruned discovered unit, for its report
     if _needs_restart(support, n_seed) or acc is not None or exact:
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
         # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P
         # slots renumbered in key order for the handoff, so the seed block follows its keys. A refining unit
         # restarts too: the scoring solutions are accumulated on that run, which is on the final P.
+        if matrix_mode == "discovered" and acc is None:
+            # Only a refinement reads the rows outside P after the growth, and none follows (``acc`` is replicated):
+            # drop them, so the restart's matvec scatters the P H P entries alone. Measured on SMO unit 12, the
+            # frontier's entries and their K -> P lookups were most of a restart block. ``k_sizes`` keeps the
+            # report's |K|. Collective, on every rank or none.
+            if support.prunes:
+                k_sizes = _global_k_and_p(matrix, comm)
+            matrix.drop_frontier()
         q0 = _seed_block_on_final_slots(matrix, *(seeds_initial if seeds_initial else (seed_keys, q0)))
         support.decisions.frozen = True
         t_restart = time.perf_counter()
@@ -1643,9 +1660,8 @@ def block_Green_discovered(
     if matrix_mode == "discovered" and support.prunes:
         # A deferred row stays in K, so under pruning |K|/|P| is unbounded in principle: report it. The sums are
         # collective and the branch is replicated (mode and pruning are), never gated on the verbose rank.
-        sizes = np.array([matrix.n_k_local, matrix.n_alive_local], dtype=np.int64)
-        if comm is not None and comm.size > 1:
-            comm.Allreduce(MPI.IN_PLACE, sizes, op=MPI.SUM)
+        # Measured before the restart dropped the rows outside P, when it did (``k_sizes`` is replicated).
+        sizes = k_sizes if k_sizes is not None else _global_k_and_p(matrix, comm)
         k_over_p = float(sizes[0]) / max(float(sizes[1]), 1.0)
         if verbose and rank == 0:
             print(
