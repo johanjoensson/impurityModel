@@ -13,6 +13,7 @@ from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.test.basis.test_sparse_matrix_build import _basis, _det
 from impurityModel.test.gf.test_gf_truncation import _redistribute_as_width1
+from impurityModel.test.support.testtol import oracle_gf_tolerance
 
 N_ORB = 14
 SECTOR = 3432  # 7 electrons in 14 orbitals
@@ -50,17 +51,18 @@ def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min
     full = chain_seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
     info = {}
-    alphas, betas, r = (block_Green_sparse if kernel is None else kernel)(
-        chain_operator() if op is None else op,
-        seeds,
-        basis,
-        DELTA,
-        reort=reort,
-        verbose=verbose,
-        cap_info=info,
-        slaterWeightMin=slater_min,
-        **kernel_kw,
-    )
+    with oracle_gf_tolerance():
+        alphas, betas, r = (block_Green_sparse if kernel is None else kernel)(
+            chain_operator() if op is None else op,
+            seeds,
+            basis,
+            DELTA,
+            reort=reort,
+            verbose=verbose,
+            cap_info=info,
+            slaterWeightMin=slater_min,
+            **kernel_kw,
+        )
     return alphas, betas, r, info
 
 

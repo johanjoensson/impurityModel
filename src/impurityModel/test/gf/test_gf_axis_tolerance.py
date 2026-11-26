@@ -196,8 +196,8 @@ def test_unset_options_take_the_default_and_an_explicit_option_wins(monkeypatch)
 
 
 def _plateau_monitor(monkeypatch, arm):
-    """A monitor whose tolerance is unreachable (floor patched to 1e-30), with the plateau limit at 1e-4."""
-    monkeypatch.setattr(gf_convergence, "_GF_REL_TOL_FLOOR", 1e-30)
+    """A monitor whose tolerance is unreachable (default patched to 1e-30), with the plateau limit at 1e-4."""
+    monkeypatch.setattr(gf_convergence, "DEFAULT_GF_TOL", 1e-30)
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_FACTOR", 1e26)
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MAX_CHANGE", 1e-4)
     monkeypatch.setattr(gf_convergence, "_GF_PLATEAU_MIN_BLOCKS", 8)

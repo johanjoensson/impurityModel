@@ -30,6 +30,7 @@ from impurityModel.test.support.aim_fixtures import (
     semicircle_star,
     spin_of,
 )
+from impurityModel.test.support.testtol import ORACLE_GF_TOL
 
 NB = 2  # 12 spin-orbitals: a 15-determinant ground-state sector, removal sectors of 90 and 20
 
@@ -90,6 +91,7 @@ def test_the_charge_transfer_weight_grows_with_the_hybridization():
 def _driver_G(aim, matsubara, omega, delta=0.3):
     basis = aim.basis(sorted(aim.gs.keys()), comm=MPI.COMM_SELF)
     mat, real, _report = get_Greens_function(
+        gf_tol=ORACLE_GF_TOL,
         matsubara_mesh=matsubara,
         omega_mesh=omega,
         psis=[aim.gs],

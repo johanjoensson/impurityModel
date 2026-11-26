@@ -24,6 +24,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for backward compat
     _GF_MONITOR_POINTS,
     _GF_REL_TOL_FLOOR,
+    DEFAULT_GF_TOL,
     _gf_axis_tols,
     _gf_eval_meshes,
     _gf_rel_tol,

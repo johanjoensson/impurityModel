@@ -1070,7 +1070,7 @@ _TABLE_LIST += [
                 None,
                 "Convergence tolerance of the block-Lanczos Green's function (relative change of G) on "
                 "every evaluation axis. Absent takes "
-                "max(slater_weight_min^2, 1e-9).",
+                "max(slater_weight_min^2, 1e-6).",
                 minimum=0.0,
             ),
             Key(

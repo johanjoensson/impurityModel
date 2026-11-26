@@ -8,6 +8,8 @@ sum/inner-product/eigensolve rather than an exact algebraic identity on a tiny d
 array (those may legitimately use a literal machine-epsilon-scale tolerance directly).
 """
 
+import contextlib
+
 import numpy as np
 
 EPS = np.finfo(float).eps
@@ -68,3 +70,25 @@ def eig_atol(h_norm, n=1, dtype=np.complex128, c=1e3):
 #: about the residual, which such a comparison would read as a failure; these tests check the method, not the
 #: default, so they converge past it.
 ORACLE_E_PT2_TOL = 1e-8
+
+
+#: The Green's-function recurrence tolerance (relative change of ``G``) for tests that compare a ``G`` with the
+#: exact resolvent to ~1e-8. The production default (``gf_convergence.DEFAULT_GF_TOL``, 1e-6) stops a few 1e-6
+#: short of that; these tests check the recurrence, not the default.
+ORACLE_GF_TOL = 1e-9
+
+
+@contextlib.contextmanager
+def oracle_gf_tolerance():
+    """Run a Green's-function kernel called directly (no ``gf_tol`` argument) at :data:`ORACLE_GF_TOL`.
+
+    Sets ``gf_convergence.DEFAULT_GF_TOL`` for the duration; the same on every rank, so collective-safe.
+    """
+    from impurityModel.ed import gf_convergence
+
+    saved = gf_convergence.DEFAULT_GF_TOL
+    gf_convergence.DEFAULT_GF_TOL = ORACLE_GF_TOL
+    try:
+        yield
+    finally:
+        gf_convergence.DEFAULT_GF_TOL = saved

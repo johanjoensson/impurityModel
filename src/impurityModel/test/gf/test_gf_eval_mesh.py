@@ -29,7 +29,7 @@ import scipy.linalg as la
 from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.greens_function import (
     _GF_MONITOR_POINTS,
-    _GF_REL_TOL_FLOOR,
+    DEFAULT_GF_TOL,
     _gf_eval_meshes,
     _gf_rel_tol,
     _make_gf_convergence_monitor,
@@ -187,14 +187,14 @@ def test_a_matsubara_only_run_stops_far_earlier_and_stays_exact():
 def test_the_declared_tolerance_is_the_one_that_is_applied():
     """`_gf_rel_tol` is the single source of truth for the monitor and the diagnostic summary.
 
-    It is `max(slaterWeightMin**2, _GF_REL_TOL_FLOOR)`, so the floor -- not the cutoff -- governs
-    every production slaterWeightMin (1e-5 gives 1e-10, well under the floor). Only a cutoff
-    looser than `sqrt(_GF_REL_TOL_FLOOR)` ever overrides it.
+    It is `max(slaterWeightMin**2, DEFAULT_GF_TOL)`, so the floor -- not the cutoff -- governs
+    every production slaterWeightMin (1e-5 gives 1e-10, well under it). Only a cutoff
+    looser than `sqrt(DEFAULT_GF_TOL)` ever overrides it.
     """
-    assert _gf_rel_tol(0.0) == _GF_REL_TOL_FLOOR
-    assert _gf_rel_tol(1e-5) == _GF_REL_TOL_FLOOR  # 1e-10 < floor
-    assert _gf_rel_tol(1e-12) == _GF_REL_TOL_FLOOR
+    assert _gf_rel_tol(0.0) == DEFAULT_GF_TOL
+    assert _gf_rel_tol(1e-5) == DEFAULT_GF_TOL  # 1e-10 < floor
+    assert _gf_rel_tol(1e-12) == DEFAULT_GF_TOL
     # A cutoff above sqrt(floor) does override it: the basis truncation, not the monitor, is then
     # the accuracy limit.
-    loose = 10 * np.sqrt(_GF_REL_TOL_FLOOR)
-    assert _gf_rel_tol(loose) == loose**2 > _GF_REL_TOL_FLOOR
+    loose = 10 * np.sqrt(DEFAULT_GF_TOL)
+    assert _gf_rel_tol(loose) == loose**2 > DEFAULT_GF_TOL

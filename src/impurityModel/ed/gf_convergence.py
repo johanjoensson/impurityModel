@@ -56,12 +56,19 @@ from impurityModel.ed.work_queue import queue_progress
 # finishes all 240 units in 5.2 s; the band-wide one manages 45 of them in 300 s and is still going
 # after two hours, all of it inside `_block_cf_inverse`, this monitor's own O(k^2) rebuild.
 #
-# The 1e-9 floor stands: it is strictly tighter than the old 1e-6, so nothing can silently degrade.
 # See doc/plans/bicgstab_per_frequency_gf.md, Phases 3a-quater and 3a-quinquies.
 #
-# Note `_gf_rel_tol` takes max(slaterWeightMin**2, this), so this floor -- not the cutoff --
-# governs every production slaterWeightMin (1e-5 gives 1e-10, far below it). Only a cutoff looser
-# than sqrt(floor) ever overrides it, and then basis truncation is the accuracy limit anyway.
+#: The default relative-change tolerance of the GF monitor (``gf_tol`` unset). `_gf_rel_tol` takes
+#: max(slaterWeightMin**2, this), so this value -- not the cutoff -- governs every production
+#: slaterWeightMin (1e-3 gives 1e-6). Measured on SMO cubic 2-bath (GS e_pt2_tol 1e-5, gf_pt2_tol 1e-3,
+#: against 1e-9): 1e-6 cuts the restart by 42% of its blocks and puts 2.6e-5 on the real-axis Sigma,
+#: 1/30 of the 7e-4 the PT2-grown support already leaves there; the Matsubara Sigma does not move (<1e-16).
+#: 1e-5 adds half the support's error and 1e-4 eight times it. Tighter than the support's accuracy buys nothing.
+#: (It was 1e-9 from the per-frequency plan, a conservative pick calibrated on a G with no weight in its window;
+#: this is the re-measurement on a physical workload that plan asked for, debug/missing_weight/FINDINGS.md.)
+DEFAULT_GF_TOL = 1e-6
+#: A trailing coupling block below this, relative to the largest alpha block, is an invariant subspace (the
+#: continued fraction is exact). Not a convergence tolerance.
 _GF_REL_TOL_FLOOR = 1e-9
 # Minimum blocks before the convergence mesh may be frozen (let the extremal Ritz values start
 # to settle before we commit to a sampling window).
@@ -249,9 +256,9 @@ def _gf_monitor_tol(slaterWeightMin, eval_meshes=None):
 
 def _gf_rel_tol(slaterWeightMin):
     """Relative-change convergence tolerance: the basis-truncation floor ``slaterWeightMin**2``
-    but never below :data:`_GF_REL_TOL_FLOOR`. Used by both the runtime monitor and the
+    but never below :data:`DEFAULT_GF_TOL`. Used by both the runtime monitor and the
     diagnostic summary so they apply identical thresholds."""
-    return max(slaterWeightMin**2, _GF_REL_TOL_FLOOR)
+    return max(slaterWeightMin**2, DEFAULT_GF_TOL)
 
 
 def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
@@ -493,7 +500,7 @@ def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cac
     return np.max(np.abs(G_new - G_prev)) / max(scale, np.finfo(float).tiny)
 
 
-def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=_GF_REL_TOL_FLOOR):
+def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=DEFAULT_GF_TOL):
     r"""Post-hoc, band-wide block-Lanczos convergence summary over the per-thermal-state
     coefficients.
 
@@ -522,7 +529,7 @@ def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=_GF_REL_TOL
             pass the same signed value the coefficients were produced with (``+delta`` for the
             addition side, ``-delta`` for removal; see ``SIDES`` in ``greens_function.py``).
         tol: Relative-change threshold below which a state counts as converged. Defaults to
-            :data:`_GF_REL_TOL_FLOOR`; pass :func:`_gf_rel_tol` (slaterWeightMin) to match the
+            :data:`DEFAULT_GF_TOL`; pass :func:`_gf_rel_tol` (slaterWeightMin) to match the
             monitor's basis-truncation floor.
 
     Returns:

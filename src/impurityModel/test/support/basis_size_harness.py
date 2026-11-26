@@ -27,6 +27,7 @@ from mpi4py import MPI
 from impurityModel.ed import solver_trace
 from impurityModel.ed.greens_function import get_Greens_function
 from impurityModel.test.support.aim_fixtures import free_G_inverse, reference_G, self_energy
+from impurityModel.test.support.testtol import ORACLE_GF_TOL
 
 METHODS = ("lanczos-cap", "lanczos-pruned")
 NON_BINDING = 10**9  # a finite cap that never binds: installs the tracking proxy without truncating
@@ -188,6 +189,7 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
     t0 = time.perf_counter()
     with env(**spec["env"]), solver_trace.tracing() as trace, contextlib.redirect_stdout(io.StringIO()):
         G_mats, G_real, report = get_Greens_function(
+            gf_tol=ORACLE_GF_TOL,
             matsubara_mesh=mats,
             omega_mesh=omega,
             psis=psis,

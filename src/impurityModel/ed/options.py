@@ -151,7 +151,7 @@ class SolverOptions:
     gf_tol : float or None
         Convergence tolerance of the block-Lanczos Green's function (relative change of ``G``
         between checks) on every evaluation axis. ``None`` (default):
-        ``max(slaterWeightMin**2, 1e-9)``.
+        ``max(slaterWeightMin**2, 1e-6)``.
     gf_real_tol : float or None
         The same tolerance on the real-frequency axis only; ``None`` (default):
         the ``gf_tol`` value. A looser real-axis tolerance shortens the recurrence without
@@ -715,7 +715,7 @@ _CLI = {
     "gf_tol": (
         "--gf-tol",
         "Block-Lanczos Green's-function convergence tolerance (relative change of G) on every axis "
-        "(default: max(slater_weight_min^2, 1e-9), or the archive's).",
+        "(default: max(slater_weight_min^2, 1e-6), or the archive's).",
     ),
     "gf_real_tol": ("--gf-real-tol", "The same tolerance on the real-frequency axis only (default: --gf-tol's value)."),
     "gf_min_weight": (
