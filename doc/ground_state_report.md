@@ -183,7 +183,7 @@ binding.
 
 The determinant count is the size of the *variational* (CIPSI-selected) basis, not of
 the full Hilbert space. The expansion stops once the determinants it has not admitted carry,
-**summed**, at most `e_pt2_tol` (default `1e-8`) of Epstein-Nesbet PT2 energy for every
+**summed**, at most `e_pt2_tol` (default `1e-5`) of Epstein-Nesbet PT2 energy for every
 reference state of the expansion. That residual is a second-order estimate of the energy error
 and tracks it closely (within 2% on a SIAM checked against exact diagonalization). A per-determinant
 threshold (`de2_min`, off by default) bounds each omitted determinant but not their sum, and

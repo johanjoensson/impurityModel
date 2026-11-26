@@ -31,6 +31,7 @@ from impurityModel.ed.observables import (
 from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+from impurityModel.test.support.testtol import ORACLE_E_PT2_TOL
 
 
 def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
@@ -93,7 +94,16 @@ def test_the_ground_state_is_a_spin_eigenstate():
         comm=None,
     )
     solver = CIPSISolver(basis)
-    solver.expand(h_full, Within.thermal(solver.basis.tau), dense_cutoff=2000, de2_min=1e-10, slaterWeightMin=1e-12)
+    # Determinant-by-determinant selection (no orbits, unlike the production solve): the triplet's Sz = 0 member
+    # sits ~r/5 off the Sz = +-1 pair (1.9e-6 at the 1e-5 default, 1.8e-9 here), so converge past the default.
+    solver.expand(
+        h_full,
+        Within.thermal(solver.basis.tau),
+        dense_cutoff=2000,
+        de2_min=1e-10,
+        slaterWeightMin=1e-12,
+        e_pt2_tol=ORACLE_E_PT2_TOL,
+    )
     # Six, not four: the ground state is a 3-fold triplet with a second triplet ~1e-5 above it.
     # `manifold_observable_values` diagonalises the observable inside each degenerate group, so a
     # request that cuts a group in half yields the eigenvalues of a *truncated* block -- which is

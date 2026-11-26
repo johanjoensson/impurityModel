@@ -78,7 +78,15 @@ DEGENERACY_TOL = 1e-9
 #: states converged. A bound on the *sum* over every candidate left out, not on each one: the
 #: per-candidate ``de2_min`` it replaced as the accuracy control stopped the SrMnO3 production
 #: ground state with 5.1e-4 of PT2 energy left below a 1e-8 floor (doc/plans/dc_smo_memory.md).
-DEFAULT_E_PT2_TOL = 1e-8
+#:
+#: Sized to the self-energy, not to the energy: on SrMnO3 cubic 2- and 3-bath replays the Matsubara
+#: self-energy, the static self-energy and the impurity density matrix all move by about the residual
+#: itself (1e-4: 5.6e-5 / 5.8e-5 on the Matsubara axis), while the real axis stays at the Green's
+#: function's own error (~1e-3 at ``gf_pt2_tol`` 1e-3) down to 1e-5 and causality is unchanged at every
+#: tolerance. 1e-5 keeps the GS a decade and more under a self-consistency target of ~1e-4 in Sigma
+#: at half the determinants of 1e-8 (SMO 2-bath: 92k vs 179k, GS phase 76 s vs 183 s). A run that
+#: needs a tighter ground state sets ``e_pt2_tol`` itself.
+DEFAULT_E_PT2_TOL = 1e-5
 
 #: How far above the eigensolver's residual tolerance the degeneracy grouping tolerance must sit.
 #: A Ritz pair converged to ``||r||`` has ``|theta - lambda| <= ||r||``, and *within* a cluster the

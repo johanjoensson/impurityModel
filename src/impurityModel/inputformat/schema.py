@@ -969,7 +969,7 @@ _TABLE_LIST += [
                 Kind.ENERGY,
                 None,
                 _E_PT2_TOL_DOC + " Here: the production ground state, and the default for the "
-                "double-counting search. Absent is the solver's default, 1e-8 eV. Must be "
+                "double-counting search. Absent is the solver's default, 1e-5 eV. Must be "
                 "positive.",
                 minimum=0.0,
             ),

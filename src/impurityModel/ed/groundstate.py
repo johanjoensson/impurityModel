@@ -44,7 +44,9 @@ from impurityModel.ed.utils import (
 #:
 #: This is the accuracy the answer is quoted at, so it is the accuracy anything the answer is
 #: derived from has to be computed at. It bounds the *sum* of the PT2 contributions left out
-#: (:meth:`CIPSISolver.expand`'s ``e_pt2_tol``), which is what bounds the energy error.
+#: (:meth:`CIPSISolver.expand`'s ``e_pt2_tol``), which is what bounds the energy error -- and,
+#: measured, the Matsubara self-energy error, which follows the residual one to one (see
+#: :data:`~impurityModel.ed.cipsi_solver.DEFAULT_E_PT2_TOL` for the measurements behind 1e-5).
 GS_E_PT2_TOL = DEFAULT_E_PT2_TOL
 
 #: Per-determinant Epstein-Nesbet PT2 floor for the same solves: off. It used to be the accuracy

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from impurityModel.ed.h0_format import write_h0_file
+from impurityModel.ed.h0_format import RY_TO_EV, write_h0_file
 from impurityModel.test.support.aim_fixtures import semicircle_star
 
 #: The TOML input :func:`write_metal` fills in; ``{{ }}`` is a literal brace pair for ``str.format``.
@@ -100,12 +100,14 @@ def write_metal(
     n_matsubara=16,
     real_mesh=(-1.5, 1.5, 301),
     broadening=0.02,
+    e_pt2_tol=None,
 ):
     """Write ``<name>.h0`` and ``<name>.toml`` into ``directory``; returns the TOML path.
 
     ``nominal_occupation`` defaults to ``n_orb`` (half filling). Both axes are on by default because
     :func:`freeze_replay.grade` compares the Matsubara and the real-axis self-energy. ``U = J = 0`` is the
-    exactly solvable leg (Sigma identically zero).
+    exactly solvable leg (Sigma identically zero). ``e_pt2_tol`` (eV) pins the ground state's CIPSI tolerance;
+    ``None`` leaves the solver's default.
     """
     if n_orb < 1 or n_b < 2 or n_b % 2:
         # An odd star has a level at zero: the input pipeline splits the bath into valence and conduction by the
@@ -136,6 +138,8 @@ def write_metal(
         matsubara="true" if n_matsubara > 0 else "false",
         n_matsubara=int(n_matsubara),
     )
+    if e_pt2_tol is not None:
+        toml += f"\n[many_body_basis]\ne_pt2_tol = {e_pt2_tol / RY_TO_EV!r}\n"  # the file's energies are in Ry
     path = directory / f"{name}.toml"
     path.write_text(toml, encoding="utf-8")
     return path

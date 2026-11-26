@@ -18,6 +18,7 @@ from impurityModel.ed.average import energy_cut
 from impurityModel.ed.interaction_models import kanamori_u4
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
+from impurityModel.test.support.testtol import ORACLE_E_PT2_TOL
 
 
 def det(occ):
@@ -110,8 +111,8 @@ def check_model(h_op, imp, bath, N0, n_orb, *, comm=None, tau=0.05, spectra=None
     """Run ``solve_ground_state`` and compare it with the dense answer: a list of failure messages.
 
     Every sector the run solves (``groundstate.solve_sector``) is held to the exact lowest level of its
-    electron count, to 1e-6 -- the count is read off the solved basis by popcount, not derived from
-    ``N0``. The winner must sit at the global minimum, and its thermal window must be the exact one
+    electron count, to 1e-6 (at ``ORACLE_E_PT2_TOL``) -- the count is read off the solved basis by popcount, not
+    derived from ``N0``. The winner must sit at the global minimum, and its thermal window must be the exact one
     (a degenerate group straddling the cut may come back whole). A winner whose basis mixes electron
     counts is a failure, not a skipped check. ``options`` go to ``solve_ground_state``; the cap is off.
     """
@@ -142,6 +143,7 @@ def check_model(h_op, imp, bath, N0, n_orb, *, comm=None, tau=0.05, spectra=None
         verbose=0,
         truncation_threshold=np.inf,
         dense_cutoff=1000,
+        e_pt2_tol=ORACLE_E_PT2_TOL,
     )
     kw.update(options)
     groundstate.solve_sector = recording

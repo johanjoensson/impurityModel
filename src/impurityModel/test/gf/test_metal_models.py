@@ -11,6 +11,7 @@ import pytest
 
 from impurityModel.test.support import freeze_replay as fr
 from impurityModel.test.support.metal_models import metal_h0, write_metal
+from impurityModel.test.support.testtol import ORACLE_E_PT2_TOL
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +123,9 @@ def test_grade_zero_counts_the_acausal_points():
 
 
 def test_a_non_interacting_metal_has_the_self_energy_zero(tmp_path):
-    toml = write_metal(tmp_path, "u0", n_b=4, U=0.0, n_matsubara=4, real_mesh=(-1.5, 1.5, 61))
+    toml = write_metal(
+        tmp_path, "u0", n_b=4, U=0.0, n_matsubara=4, real_mesh=(-1.5, 1.5, 61), e_pt2_tol=ORACLE_E_PT2_TOL
+    )
     res = fr.run(str(toml), str(tmp_path / "u0"), verbosity=0)
     g = fr.grade_zero(res)
     # The solver's own floor (Lanczos tolerance, the G0^-1 - G^-1 subtraction), not truncation: the model is far
@@ -160,7 +163,17 @@ def test_derived_excitation_bounds_leave_a_metal_self_energy_alone(tmp_path, mon
     import impurityModel.ed.greens_function as gf_module
     import impurityModel.ed.groundstate as gs_module
 
-    toml = write_metal(tmp_path, "m", n_orb=1, n_b=6, v=0.3, U=0.5, n_matsubara=4, real_mesh=(-1.5, 1.5, 21))
+    toml = write_metal(
+        tmp_path,
+        "m",
+        n_orb=1,
+        n_b=6,
+        v=0.3,
+        U=0.5,
+        n_matsubara=4,
+        real_mesh=(-1.5, 1.5, 21),
+        e_pt2_tol=ORACLE_E_PT2_TOL,
+    )
     seen = []
     observe = gs_module.get_effective_excitation_bounds
     monkeypatch.setattr(

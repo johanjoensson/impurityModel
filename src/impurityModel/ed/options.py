@@ -88,7 +88,7 @@ class BasisOptions:
         Residual Epstein-Nesbet PT2 energy the ground-state CIPSI expansion is converged to (the
         *summed* PT2 contribution of every determinant left out, which is what the energy error
         follows; see ``doc/plans/cipsi_pt2_convergence.md``). ``None`` uses
-        :data:`groundstate.GS_E_PT2_TOL` (``1e-8``). The double-counting search's charge-sector
+        :data:`groundstate.GS_E_PT2_TOL` (``1e-5``). The double-counting search's charge-sector
         solves inherit it unless the double-counting line sets their own.
     de2_min : float or None
         Optional per-determinant Epstein-Nesbet PT2 floor for the same expansion. It *loosens* a

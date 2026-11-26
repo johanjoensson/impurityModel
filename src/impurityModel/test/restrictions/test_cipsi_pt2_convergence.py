@@ -22,6 +22,9 @@ E_CON = np.sort(_rng.uniform(0.5, 4.0, N_CON))
 # Hybridizations spread over a decade and a half: many candidates, most of them weak.
 V_VAL = 10 ** _rng.uniform(-1.5, -0.3, N_VAL)
 V_CON = 10 ** _rng.uniform(-1.5, -0.3, N_CON)
+#: The tolerance the mechanism tests below were calibrated at (744 of 22,356 determinants, caps just
+#: under that bind). Tighter than the library default, so those tests pass it explicitly.
+TIGHT = 1e-8
 VALENCE = [2 + 2 * i + s for i in range(N_VAL) for s in (0, 1)]
 CONDUCTION = [2 + 2 * N_VAL + 2 * i + s for i in range(N_CON) for s in (0, 1)]
 
@@ -88,23 +91,23 @@ def test_the_default_converges_the_energy_to_e_pt2_tol(exact):
     assert report["converged"] is True and report["residual_pt2"] <= DEFAULT_E_PT2_TOL
     assert report["limited_by"] is None
     assert -1e-12 <= e0 - exact_e0 <= DEFAULT_E_PT2_TOL
-    # Converged by selection, not by admitting everything (measured: 744 of 22,356).
+    # Converged by selection, not by admitting everything (measured: 188 of 22,356 at 1e-5).
     assert size < exact_size / 10
 
 
 def test_a_looser_tolerance_is_honoured_and_still_bounds_the_error(exact_e0):
     e0, size, solver = _expand(e_pt2_tol=1e-5)
-    _, tight_size, _ = _expand()
+    _, tight_size, _ = _expand(e_pt2_tol=TIGHT)
     assert solver.convergence_report["converged"] is True
     assert e0 - exact_e0 <= 1e-5
     assert size < tight_size
 
 
 def test_a_floor_that_stops_short_is_reported(exact_e0, capsys):
-    _, _, solver = _expand(de2_min=1e-6)
+    _, _, solver = _expand(de2_min=1e-6, e_pt2_tol=TIGHT)
     report = solver.convergence_report
     assert report["converged"] is False and report["limited_by"] == "de2_min"
-    assert report["residual_pt2"] > DEFAULT_E_PT2_TOL
+    assert report["residual_pt2"] > TIGHT
     assert "not converged" in capsys.readouterr().out
 
 
@@ -154,7 +157,7 @@ def _capped_solver(cap):
         delta_conduction_occ={0: 1},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), dense_cutoff=1000)
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), dense_cutoff=1000, e_pt2_tol=TIGHT)
     return solver
 
 

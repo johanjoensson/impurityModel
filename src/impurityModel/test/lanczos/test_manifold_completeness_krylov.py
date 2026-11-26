@@ -32,6 +32,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+from impurityModel.test.support.testtol import ORACLE_E_PT2_TOL
 
 # Below the 800-determinant basis the expansion reaches, so every solve takes the Krylov branch.
 DENSE_CUTOFF = 100
@@ -73,6 +74,7 @@ def expanded():
         dense_cutoff=DENSE_CUTOFF,
         de2_min=1e-10,
         slaterWeightMin=SLATER_WEIGHT_MIN,
+        e_pt2_tol=ORACLE_E_PT2_TOL,  # the spread below was measured here; the default's is ~1.9e-6 (no orbits)
     )
     yield solver, h_full
 

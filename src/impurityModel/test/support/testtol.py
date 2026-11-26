@@ -61,3 +61,10 @@ def eig_atol(h_norm, n=1, dtype=np.complex128, c=1e3):
     """
     eps = np.finfo(dtype).eps if np.issubdtype(dtype, np.floating) or np.issubdtype(dtype, np.complexfloating) else EPS
     return c * n * eps * max(abs(h_norm), 1.0)
+
+
+#: The CIPSI ``e_pt2_tol`` (eV) for tests that compare a selected ground state with the exact answer to ~1e-6.
+#: The production default (``cipsi_solver.DEFAULT_E_PT2_TOL``, 1e-5) leaves an energy and Matsubara error of
+#: about the residual, which such a comparison would read as a failure; these tests check the method, not the
+#: default, so they converge past it.
+ORACLE_E_PT2_TOL = 1e-8

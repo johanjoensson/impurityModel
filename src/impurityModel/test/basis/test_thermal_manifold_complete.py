@@ -26,6 +26,7 @@ from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.test.support.comms import COMMS
+from impurityModel.test.support.testtol import ORACLE_E_PT2_TOL
 
 N_ORB = 6
 TAU = 0.27  # energy_cut = 2.49: the singlet, the triplet and the second singlet are inside
@@ -102,6 +103,7 @@ def test_the_walk_asks_for_the_lowest_state_only(comm, monkeypatch):
         comm=comm,
         verbose=False,
         truncation_threshold=np.inf,
+        e_pt2_tol=ORACLE_E_PT2_TOL,
     )
     exact = _sector_spectrum(_model(), 2, comm)
     assert search.energy == pytest.approx(exact[0], abs=1e-6)  # the walk is loose by design
