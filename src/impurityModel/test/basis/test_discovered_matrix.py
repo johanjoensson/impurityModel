@@ -334,3 +334,64 @@ def test_replaced_segments_are_not_kept_alive_by_the_owner_cache(comm):
     mat.exchange_plan(WIDTH, rows="P")
     live = {id(packed) for _, _, packed, _ in mat._segments}
     assert {id(p) for p, _f in mat._segment_owner_cache.values()} <= live
+
+
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("sorted_slots", [False, True])
+def test_dropping_the_frontier_keeps_the_p_rows_bitwise_and_needs_no_translation(comm, sorted_slots, monkeypatch):
+    """``drop_frontier`` (before a restart that never reads the rows outside P): the ``rows="P"`` product, the P
+    keys and their diagonal are unchanged bitwise, ``K`` is ``P`` with K slot = P slot, and the matvec no longer
+    translates through the K -> P table. Several grow batches and a tiny rewrite chunk cover the segment and
+    chunk boundaries; ``sorted_slots`` the single segment a freeze's sort leaves."""
+    from impurityModel.ed import DistributedSparseMatrix as dsm
+
+    op = _operator()
+    admitted = _admitted(150)
+    mine = _owned(admitted, comm)
+    mat = DistributedSparseMatrix(op, 1, comm, batch=200)
+    third = max(1, len(mine) // 3)
+    for part in (mine[:third], mine[third:]):
+        mat.grow(part)
+    if sorted_slots:
+        mat.sort_p_slots()
+    assert any(comm.allgather(mat.n_k_local > mat.n_p_local)) if comm is not None else mat.n_k_local > mat.n_p_local
+    assert mat._gather_tables("P")[4], "the fixture must need the translation before the drop"
+    X = _x_of(mat.p_keys())
+    before = mat.matvec(X, rows="P").copy()
+    keys_before = [_key(k) for k in mat.p_keys()]
+    diag_before = np.array(mat.k_diagonal()[mat.p_to_k_slot()])
+    p_diag_before = mat.diagonal()
+    p_nnz = mat.p_nnz()
+    epoch = mat.epoch
+    monkeypatch.setattr(dsm, "_GROW_BATCH", 7)
+    assert mat.drop_frontier() is True
+    assert mat.epoch == epoch + 1
+    assert mat.n_k_local == mat.n_p_local and not mat.keep_frontier
+    np.testing.assert_array_equal(mat.k_to_p_slot(), np.arange(mat.n_p_local))
+    np.testing.assert_array_equal(mat.p_to_k_slot(), np.arange(mat.n_p_local))
+    assert not mat._gather_tables("P")[4], "the P rows must need no translation after the drop"
+    assert [_key(k) for k in mat.p_keys()] == keys_before
+    np.testing.assert_array_equal(mat.key_slots(mat.p_keys()), np.arange(mat.n_p_local))
+    assert mat.nnz == p_nnz, "only the entries outside P may go"
+    np.testing.assert_array_equal(mat.matvec(X, rows="P"), before)
+    np.testing.assert_array_equal(mat.matvec(X, rows="all"), before)
+    np.testing.assert_array_equal(mat.k_diagonal(), diag_before)
+    np.testing.assert_array_equal(mat.diagonal(), p_diag_before)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_dropping_the_frontier_with_a_dead_column_on_any_rank_changes_nothing(comm):
+    """A dead P slot has no K slot of its own number: the drop declines on every rank alike."""
+    op = _operator()
+    admitted = _admitted(150)
+    mat = _matrix(op, comm, _owned(admitted, comm))
+    root_has = mat.n_p_local > 0 if comm is None else comm.bcast(mat.n_p_local > 0 and comm.rank == 0, root=0)
+    if comm is None or comm.rank == 0:
+        mat.drop_columns(np.arange(min(1, mat.n_p_local)))
+    else:
+        mat.drop_columns(np.zeros(0, dtype=np.int64))
+    n_k, epoch = mat.n_k_local, mat.epoch
+    assert mat.drop_frontier() is (not root_has)
+    if root_has:
+        assert mat.n_k_local == n_k and mat.epoch == epoch and mat.keep_frontier
+        _check_matvec(mat, op, admitted, comm, exact_k=False)

@@ -586,6 +586,66 @@ class DistributedSparseMatrix:
         self._tables = None
         return keep
 
+    def drop_frontier(self):
+        """Drop every K row outside ``P`` for good: ``K`` becomes ``P``, K slot ``i`` is P slot ``i``, and the stored
+        entries keep only their rows in ``P``, rewritten to P slots. A ``rows="P"`` matvec then scatters only the
+        entries it keeps, with no translation through the global K -> P table, which it otherwise read once per
+        stored entry, frontier entries included (SMO removal units, ``|K|/|P|`` ~ 3.6: 64% of a restart block).
+        ``rows="all"`` returns the P rows from here on, and the matrix is ``P H P`` (``keep_frontier`` is off).
+
+        Needs every P slot live on every rank; otherwise nothing changes and ``False`` is returned (replicated).
+        The P slots, and so every dense block over them, are unchanged. **Collective** (epoch)."""
+        self._need_keys("drop_frontier")
+        all_live = np.array([bool(self.alive().all())], dtype=np.int64)
+        if self.comm is not None:
+            self.comm.Allreduce(MPI.IN_PLACE, all_live, op=MPI.MIN)
+        if not all_live[0]:
+            return False
+        _rc, _cc, goff, ptab, use_ptab = self._gather_tables("P")
+        if use_ptab:
+            # One segment at a time, its entries in chunks: the transient is a chunk's decode, not the matrix twice.
+            chunk = _GROW_BATCH
+            for i, (c0, indptr, packed, data) in enumerate(self._segments):
+                n = len(indptr) - 1
+                if not len(packed):
+                    continue
+                kept_packed, kept_data, counts = [], [], np.zeros(n, dtype=np.int64)
+                for e0 in range(0, len(packed), chunk):
+                    e1 = min(e0 + chunk, len(packed))
+                    owner, slot = self._decode(packed[e0:e1])
+                    new = ptab[goff[owner] + slot]
+                    keep = new >= 0
+                    col = np.searchsorted(indptr, np.arange(e0, e1, dtype=np.int64), side="right") - 1
+                    counts += np.bincount(col[keep], minlength=n)
+                    kept_packed.append((owner[keep] << 32) | new[keep])
+                    kept_data.append(data[e0:e1][keep])
+                new_ptr = np.zeros(n + 1, dtype=np.int64)
+                np.cumsum(counts, out=new_ptr[1:])
+                self._segments[i] = (c0, new_ptr, self._compact(np.concatenate(kept_packed)), np.concatenate(kept_data))
+        # The K store holds the P keys in key order; K slot = P slot.
+        n_p = self.n_p_local
+        old_pos = self._pos_of_slot[self._p_kslot]
+        order = np.argsort(old_pos, kind="stable")  # P slots in key order
+        kstore = self._kstore
+        self._kstore = ManyBodyState.from_keys([kstore.key_at(int(q)) for q in old_pos[order]])
+        if len(self._k_diag) == self.n_k_local:
+            k_diag = np.array(self._k_diag[self._p_kslot])
+            k_diag.flags.writeable = False
+            self._k_diag = k_diag
+        else:
+            self._k_diag = np.zeros(0, dtype=complex)  # recomputed on the next k_diagonal()
+        self._slot_of_pos = order.astype(np.int64)
+        self._pos_of_slot = np.empty(n_p, dtype=np.int64)
+        self._pos_of_slot[order] = np.arange(n_p, dtype=np.int64)
+        self._p_kslot = np.arange(n_p, dtype=np.int64)
+        self._k_pslot = np.arange(n_p, dtype=np.int64)
+        self.keep_frontier = False
+        self._segment_owner_cache = {}
+        self._flags = None
+        self.epoch += 1
+        self._tables = None
+        return True
+
     # -- the exchange layout ------------------------------------------------------------------------
 
     def _gather_tables(self, rows):
