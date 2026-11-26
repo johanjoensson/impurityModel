@@ -255,7 +255,7 @@ def test_the_accumulator_is_priced_on_the_measured_k_and_gives_way_mesh_first(mo
     room, else the halved mesh inside the whole budget, else no rule."""
     from impurityModel.ed import gf_recurrence
 
-    monkeypatch.setattr(gf_recurrence, "gf_resident_bytes", lambda: 1000)
+    monkeypatch.setattr(gf_recurrence, "resident_set_bytes", lambda: 1000)
     support, matrix = _stub_support(None, 10**6)
     assert gf_recurrence._pt2_accumulator_fits(support, matrix, 2)[0] == "full", "no budget: the guard is off"
     per_point = gf_recurrence.REFINE_SKEW * 2 * 10**6 * np.dtype(gf_growth_score.PT2_ACC_DTYPE).itemsize

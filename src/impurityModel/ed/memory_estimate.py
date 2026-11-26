@@ -1597,20 +1597,20 @@ def node_shmem_bytes():
 
 
 #: ``[n]``: the ranks of the whole calculation on this rank's node while a Green's-function stage charges shared
-#: memory per node (:func:`gf_shared_memory_accounting`); ``[None]``: the GF stage measures ``VmRSS`` like everything
+#: memory per node (:func:`shared_memory_accounting`); ``[None]``: the GF stage measures ``VmRSS`` like everything
 #: else. A one-element holder, set and restored only by that context manager.
-_GF_SHARED_MEMORY_RANKS = [None]
+_SHARED_MEMORY_RANKS = [None]
 
 
-def gf_resident_bytes():
+def resident_set_bytes():
     """The resident set the Green's-function memory guard and fit checks measure. Rank-local; no collective.
 
-    ``VmRSS`` (:func:`current_rss_bytes`), unless a :func:`gf_shared_memory_accounting` block is active
+    ``VmRSS`` (:func:`current_rss_bytes`), unless a :func:`shared_memory_accounting` block is active
     (``GF_SHARED_MEMORY_PER_NODE``): then ``RssAnon + RssFile`` plus the node's ``Shmem`` over the ranks on the node,
     so the node's ranks together are charged its shared pool once instead of once each. Falls back to ``VmRSS``
     where ``/proc/self/status`` has no breakdown.
     """
-    ranks = _GF_SHARED_MEMORY_RANKS[0]
+    ranks = _SHARED_MEMORY_RANKS[0]
     if ranks is None:
         return current_rss_bytes()
     parts = rss_breakdown()
@@ -1619,27 +1619,27 @@ def gf_resident_bytes():
     return parts["anon"] + parts["file"] + node_shmem_bytes() // max(1, int(ranks))
 
 
-def gf_resident_note():
-    """How :func:`gf_resident_bytes` measures right now, in words for a memory warning."""
-    ranks = _GF_SHARED_MEMORY_RANKS[0]
+def resident_set_note():
+    """How :func:`resident_set_bytes` measures right now, in words for a memory warning."""
+    ranks = _SHARED_MEMORY_RANKS[0]
     if ranks is None:
         return "VmRSS, which counts the node's shared memory once per rank"
     return f"own memory plus the node's shared memory divided over its {ranks} ranks"
 
 
 @contextmanager
-def gf_shared_memory_accounting(node_ranks):
-    """Within the block, :func:`gf_resident_bytes` charges shared memory per node (``node_ranks``: the whole
+def shared_memory_accounting(node_ranks):
+    """Within the block, :func:`resident_set_bytes` charges shared memory per node (``node_ranks``: the whole
     calculation's ranks on this node, :func:`ranks_per_node` of the full communicator), when
     ``GF_SHARED_MEMORY_PER_NODE`` is on; otherwise it is a no-op. Rank-local; the knob is uniform (``assert_uniform``),
     so every rank measures the same way. Restores the previous setting on exit."""
-    previous = _GF_SHARED_MEMORY_RANKS[0]
+    previous = _SHARED_MEMORY_RANKS[0]
     if config.GF_SHARED_MEMORY_PER_NODE.get():
-        _GF_SHARED_MEMORY_RANKS[0] = max(1, int(node_ranks))
+        _SHARED_MEMORY_RANKS[0] = max(1, int(node_ranks))
     try:
         yield
     finally:
-        _GF_SHARED_MEMORY_RANKS[0] = previous
+        _SHARED_MEMORY_RANKS[0] = previous
 
 
 def reset_peak_rss():

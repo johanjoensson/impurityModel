@@ -895,22 +895,22 @@ def test_the_gf_resident_set_is_vmrss_unless_shared_memory_is_charged_per_node(m
     monkeypatch.setattr(me, "rss_breakdown", lambda: {"anon": 640 * mib, "file": 60 * mib, "shmem": 1600 * mib})
     monkeypatch.setattr(me, "node_shmem_bytes", lambda: 3200 * mib)
     monkeypatch.delenv("GF_SHARED_MEMORY_PER_NODE", raising=False)
-    assert me.gf_resident_bytes() == 2300 * mib
-    with me.gf_shared_memory_accounting(128):
-        assert me.gf_resident_bytes() == 2300 * mib, "the knob is off: the block is a no-op"
+    assert me.resident_set_bytes() == 2300 * mib
+    with me.shared_memory_accounting(128):
+        assert me.resident_set_bytes() == 2300 * mib, "the knob is off: the block is a no-op"
     monkeypatch.setenv("GF_SHARED_MEMORY_PER_NODE", "1")
-    assert me.gf_resident_bytes() == 2300 * mib, "outside a GF stage nothing changes"
-    with me.gf_shared_memory_accounting(128):
-        assert me.gf_resident_bytes() == (640 + 60 + 25) * mib
-        assert "128 ranks" in me.gf_resident_note()
-        with me.gf_shared_memory_accounting(1):
-            assert me.gf_resident_bytes() == (640 + 60 + 3200) * mib
-        assert me.gf_resident_bytes() == (640 + 60 + 25) * mib, "nested blocks restore the outer one"
-    assert me.gf_resident_bytes() == 2300 * mib and "VmRSS" in me.gf_resident_note()
+    assert me.resident_set_bytes() == 2300 * mib, "outside a GF stage nothing changes"
+    with me.shared_memory_accounting(128):
+        assert me.resident_set_bytes() == (640 + 60 + 25) * mib
+        assert "128 ranks" in me.resident_set_note()
+        with me.shared_memory_accounting(1):
+            assert me.resident_set_bytes() == (640 + 60 + 3200) * mib
+        assert me.resident_set_bytes() == (640 + 60 + 25) * mib, "nested blocks restore the outer one"
+    assert me.resident_set_bytes() == 2300 * mib and "VmRSS" in me.resident_set_note()
     # No breakdown readable: VmRSS, never zero.
     monkeypatch.setattr(me, "rss_breakdown", lambda: {"anon": 0, "file": 0, "shmem": 0})
-    with me.gf_shared_memory_accounting(128):
-        assert me.gf_resident_bytes() == 2300 * mib
+    with me.shared_memory_accounting(128):
+        assert me.resident_set_bytes() == 2300 * mib
 
 
 def test_the_node_shared_memory_is_read_from_meminfo():

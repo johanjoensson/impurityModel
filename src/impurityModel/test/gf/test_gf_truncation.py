@@ -528,7 +528,7 @@ def test_the_csr_fit_check_compares_the_estimate_with_the_budget(monkeypatch):
 
     basis = _excited_basis(np.inf)
     assert gf_solvers._frozen_csr_fits(basis, _siam_6(), None, None)
-    monkeypatch.setattr(gf_solvers, "gf_resident_bytes", lambda: 10**9)
+    monkeypatch.setattr(gf_solvers, "resident_set_bytes", lambda: 10**9)
     assert gf_solvers._frozen_csr_fits(basis, _siam_6(), 2 * 10**9, None)
     assert not gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**9 + 1, None)
 
@@ -537,7 +537,7 @@ def test_the_csr_fit_check_reports_what_it_decided_on(monkeypatch):
     from impurityModel.ed import gf_solvers
 
     basis = _excited_basis(np.inf)
-    monkeypatch.setattr(gf_solvers, "gf_resident_bytes", lambda: 10**9)
+    monkeypatch.setattr(gf_solvers, "resident_set_bytes", lambda: 10**9)
     report = {}
     assert gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**10, None, report=report)
     assert report["n_local"] == len(basis.local_basis)
@@ -571,7 +571,7 @@ def test_the_csr_fit_check_runs_on_every_rank_including_empty_ones(monkeypatch):
 
     comm = MPI.COMM_WORLD
     basis = _excited_basis(np.inf, comm=comm)
-    monkeypatch.setattr(gf_solvers, "gf_resident_bytes", lambda: 10**9)
+    monkeypatch.setattr(gf_solvers, "resident_set_bytes", lambda: 10**9)
     for budget in (10**10, 10**9 + 1):
         report = {}
         fits = gf_solvers._frozen_csr_fits(basis, _siam_6(), budget, comm, report=report)

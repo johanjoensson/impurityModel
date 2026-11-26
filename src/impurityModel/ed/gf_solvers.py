@@ -44,7 +44,7 @@ from impurityModel.ed.gf_primitives import (
 )
 from impurityModel.ed.GMRES import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import gf_resident_bytes
+from impurityModel.ed.memory_estimate import resident_set_bytes
 from impurityModel.ed.mpi_comm import matvec_column_chunk_width
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
@@ -502,7 +502,7 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=
     fanout = elements / sampled if sampled else 0.0
     n_ranks = comm.size if comm is not None else 1
     need = _frozen_matrix_need(n_local, fanout, frozen_basis.size, n_ranks, width, work_blocks)
-    rss = gf_resident_bytes()
+    rss = resident_set_bytes()
     over = rss + need > memory_budget
     if comm is not None and comm.size > 1:
         over = comm.allreduce(bool(over), op=MPI.LOR)
